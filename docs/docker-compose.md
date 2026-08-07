@@ -1,7 +1,7 @@
 # Docker Compose
 
-[`../compose.yaml`](../compose.yaml) runs a single-node local QM baseline: the private
-core API and a PostgreSQL 16 database. It is intended for development and evaluation,
+[`../docker-compose.yaml`](../docker-compose.yaml) runs a single-node local QM baseline: the private
+core API and a PostgreSQL 18 database. It is intended for development and evaluation,
 not as a complete production topology. The public portal, web UI, admin surface, auth
 broker, TLS termination, backups, and monitoring are intentionally outside this file.
 
