@@ -1,0 +1,70 @@
+# Local single-node QM baseline. This starts only the private core API and Postgres.
+# It deliberately does not mount the Docker socket; use a supported remote sandbox
+# (for example, Sprites) when agent turns need command execution.
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-qm}
+      POSTGRES_DB: ${POSTGRES_DB:-qm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  core:
+    build:
+      context: .
+      dockerfile: deploy/core/Dockerfile
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: "8080"
+      ORG_ID: ${ORG_ID:-acme}
+      HARNESS: ${HARNESS:-mock}
+      HARNESS_SECURITY_POSTURE: ${HARNESS_SECURITY_POSTURE:-auto}
+      SESSION_STORE: postgres
+      RUN_STORE: postgres
+      DATABASE_URL: postgresql://${POSTGRES_USER:-qm}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-qm}
+      CONNECTOR_SECRET_KEY: ${CONNECTOR_SECRET_KEY:?Set CONNECTOR_SECRET_KEY in .env}
+      SANDBOX_BACKEND: ${SANDBOX_BACKEND:-local}
+      DATA_DIR: /data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - ${QM_BIND_ADDRESS:-127.0.0.1}:${QM_PORT:-8080}:8080
+    volumes:
+      - core-data:/data
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 300s
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  postgres-data:
+  core-data:
