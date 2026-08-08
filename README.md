@@ -114,27 +114,32 @@ operator's own cloud account; initialization does not generate or enable deploym
 and this repository has no production deployment workflow. See
 [`deployment.md`](./deployment.md) for the details.
 
-## Run the core locally with Docker Compose
+## Run locally with Docker Compose
 
-The repository also includes a single-node Compose baseline for the private core API and
-Postgres. It is useful for local development and evaluation; it is not a production
-deployment recipe. It intentionally exposes only the core API on loopback and does not
-mount the Docker socket into the core container.
+The repository includes a Compose stack for Postgres, the private core API, Web UI,
+Admin, Portal, and an Nginx edge. It is useful for local development and evaluation;
+production operators still need TLS certificates, secret management, backups,
+monitoring, and an isolated sandbox.
+
+Set `POSTGRES_PASSWORD`, `CONNECTOR_SECRET_KEY`, `CORE_SIGNING_SECRET`,
+`CAPABILITY_SECRET`, `PORTAL_IDENTITY_SECRET`, and `PORTAL_SESSION_SECRET` to
+distinct values generated with `openssl rand -hex 32`.
 
 ```bash
 cp .env.example .env
-# Set POSTGRES_PASSWORD and CONNECTOR_SECRET_KEY to distinct values from:
-# openssl rand -hex 32
 docker compose up --build --wait
 curl -fsS http://127.0.0.1:8080/healthz
+curl -fsS http://127.0.0.1:8088/healthz
 ```
 
-The default harness is `mock`. To run real agent turns, configure a model provider and
-a supported sandbox in `.env`; the local sandbox needs its own deliberately secured
-Docker integration and image, so it is not enabled by this Compose file. Shut the stack
-down with `docker compose down` (without `-v` if you want to retain Postgres data).
-See [`docs/docker-compose.md`](./docs/docker-compose.md) for configuration and safety
-notes.
+Open `http://localhost:8088/` for the user interface and
+`http://localhost:8088/admin/` for administration. To run real agent turns, configure
+the `pi` harness selected by `.env.example` with a model provider and a supported
+sandbox in `.env`; the local sandbox needs its own
+deliberately secured Docker integration and image, so it is not enabled by this Compose
+file. Shut the stack down with `docker compose down` (without `-v` if you want to retain
+Postgres data). See [`docs/docker-compose.md`](./docs/docker-compose.md) for service,
+authentication, and production-edge configuration.
 
 ## Contributing
 

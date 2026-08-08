@@ -24,6 +24,7 @@ process.env.ADMIN_UPSTREAM = upstreamUrl;
 process.env.CORE_API_URL = upstreamUrl;
 process.env.PORTAL_LOCAL_AUTH_BYPASS = "1";
 process.env.PORTAL_DEV_PRINCIPAL = "local-admin";
+process.env.PORTAL_XFF_TRUSTED_HOPS = "1";
 
 const { isLoopbackAddress, server } = await import("../src/index.ts");
 await new Promise<void>((r) => server.listen(0, r));
@@ -55,6 +56,22 @@ test("local auth bypass only treats loopback client addresses as local", () => {
   assert.equal(isLoopbackAddress("192.168.1.10"), false);
   assert.equal(isLoopbackAddress("::ffff:192.168.1.10"), false);
   assert.equal(isLoopbackAddress(undefined), false);
+});
+
+test("local auth bypass uses the client address resolved through the trusted proxy", async () => {
+  const local = await fetch(`${base}/auth/login?returnTo=/`, {
+    headers: { "x-forwarded-for": "127.0.0.1" },
+    redirect: "manual",
+  });
+  assert.equal(local.headers.get("location"), "/");
+  assert.match(local.headers.get("set-cookie") ?? "", /portal_session=/);
+
+  const remote = await fetch(`${base}/auth/login?returnTo=/`, {
+    headers: { "x-forwarded-for": "203.0.113.7" },
+    redirect: "manual",
+  });
+  assert.match(remote.headers.get("location") ?? "", /^https:\/\/slack\.com\/openid\/connect\/authorize/);
+  assert.doesNotMatch(remote.headers.get("set-cookie") ?? "", /portal_session=/);
 });
 
 test("local auth bypass respects logout until explicit login", async () => {

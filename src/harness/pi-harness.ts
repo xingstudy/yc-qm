@@ -1008,7 +1008,7 @@ async function buildModelRuntime(keys: ProviderKeys | string): Promise<ModelRunt
     modelsPath,
   });
   for (const [provider, apiKey] of Object.entries(k)) {
-    if (apiKey) await runtime.setRuntimeApiKey(provider, apiKey, { allowNetwork: false });
+    if (apiKey) await runtime.setRuntimeApiKey(provider, apiKey);
   }
   return runtime;
 }

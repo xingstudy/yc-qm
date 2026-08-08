@@ -1,6 +1,3 @@
-# Local single-node QM baseline. This starts only the private core API and Postgres.
-# It deliberately does not mount the Docker socket; use a supported remote sandbox
-# (for example, Sprites) when agent turns need command execution.
 services:
   postgres:
     image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
@@ -9,7 +6,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-qm}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
@@ -21,6 +18,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
 
   core:
     build:
@@ -38,13 +41,17 @@ services:
       RUN_STORE: postgres
       DATABASE_URL: postgresql://${POSTGRES_USER:-qm}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-qm}
       CONNECTOR_SECRET_KEY: ${CONNECTOR_SECRET_KEY:?Set CONNECTOR_SECRET_KEY in .env}
+      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET in .env}
+      CAPABILITY_SECRET: ${CAPABILITY_SECRET:?Set CAPABILITY_SECRET in .env}
+      PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET:?Set PORTAL_IDENTITY_SECRET in .env}
+      REQUIRE_SIGNED_PORTAL_IDENTITY: "1"
       SANDBOX_BACKEND: ${SANDBOX_BACKEND:-local}
       DATA_DIR: /data
     depends_on:
       postgres:
         condition: service_healthy
     ports:
-      - ${QM_BIND_ADDRESS:-127.0.0.1}:${QM_PORT:-8080}:8080
+      - ${QM_INTERNAL_BIND_ADDRESS:-127.0.0.1}:${QM_PORT:-8080}:8080
     volumes:
       - core-data:/data
     init: true
@@ -64,6 +71,245 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+  web-ui:
+    build:
+      context: .
+      dockerfile: deploy/web-ui/Dockerfile
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: "8080"
+      CORE_API_URL: http://core:8080
+      CORE_ORG_ID: ${ORG_ID:-acme}
+      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET in .env}
+      PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET:?Set PORTAL_IDENTITY_SECRET in .env}
+      WEB_UI_PUBLIC_URL: ${PORTAL_PUBLIC_URL:-http://localhost:8088}
+      WEB_UI_PRINCIPALS: ${WEB_UI_PRINCIPALS:-}
+    depends_on:
+      core:
+        condition: service_healthy
+    ports:
+      - ${QM_INTERNAL_BIND_ADDRESS:-127.0.0.1}:${QM_WEB_UI_PORT:-8096}:8080
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  admin:
+    build:
+      context: .
+      dockerfile: deploy/admin/Dockerfile
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: "8080"
+      CORE_API_URL: http://core:8080
+      CORE_ORG_ID: ${ORG_ID:-acme}
+      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET in .env}
+      PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET:?Set PORTAL_IDENTITY_SECRET in .env}
+      ADMIN_BASE_PATH: /admin
+    depends_on:
+      core:
+        condition: service_healthy
+    ports:
+      - ${QM_INTERNAL_BIND_ADDRESS:-127.0.0.1}:${QM_ADMIN_PORT:-8090}:8080
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  portal:
+    build:
+      context: .
+      dockerfile: deploy/portal/Dockerfile
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: "8080"
+      CORE_API_URL: http://core:8080
+      CORE_ORG_ID: ${ORG_ID:-acme}
+      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET in .env}
+      PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET:?Set PORTAL_IDENTITY_SECRET in .env}
+      PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET:?Set PORTAL_SESSION_SECRET in .env}
+      PORTAL_PUBLIC_URL: ${PORTAL_PUBLIC_URL:-http://localhost:8088}
+      PORTAL_LOCAL_AUTH_BYPASS: ${PORTAL_LOCAL_AUTH_BYPASS:-1}
+      PORTAL_DEV_PRINCIPAL: ${PORTAL_DEV_PRINCIPAL:-dev-admin}
+      PORTAL_XFF_TRUSTED_HOPS: ${PORTAL_XFF_TRUSTED_HOPS:-1}
+      QM_INTERNAL_BIND_ADDRESS: ${QM_INTERNAL_BIND_ADDRESS:-127.0.0.1}
+      WEB_UI_UPSTREAM: http://web-ui:8080
+      ADMIN_UPSTREAM: http://admin:8080
+      OIDC_AUTH_ENDPOINT: ${OIDC_AUTH_ENDPOINT:-}
+      OIDC_TOKEN_ENDPOINT: ${OIDC_TOKEN_ENDPOINT:-}
+      OIDC_USERINFO_ENDPOINT: ${OIDC_USERINFO_ENDPOINT:-}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_JWKS_URI: ${OIDC_JWKS_URI:-}
+      OIDC_SCOPES: ${OIDC_SCOPES:-openid email profile}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_PRINCIPAL_CLAIM: ${OIDC_PRINCIPAL_CLAIM:-email}
+      OIDC_ALLOWED_EMAIL_DOMAIN: ${OIDC_ALLOWED_EMAIL_DOMAIN:-}
+      OIDC_ALLOWED_EMAILS: ${OIDC_ALLOWED_EMAILS:-}
+      AUTH_BROKER_UPSTREAM: ${AUTH_BROKER_UPSTREAM:-}
+      AUTH_BROKER_PREFIX: ${AUTH_BROKER_PREFIX:-/idp}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        if [ "$$PORTAL_LOCAL_AUTH_BYPASS" = "1" ]; then
+          case "$$QM_INTERNAL_BIND_ADDRESS" in 127.0.0.1|::1) ;; *) echo "local auth bypass requires a loopback QM_INTERNAL_BIND_ADDRESS" >&2; exit 1 ;; esac
+        fi
+        exec node src/index.ts
+    depends_on:
+      core:
+        condition: service_healthy
+      web-ui:
+        condition: service_healthy
+      admin:
+        condition: service_healthy
+    ports:
+      - ${QM_INTERNAL_BIND_ADDRESS:-127.0.0.1}:${QM_PORTAL_PORT:-8097}:8080
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  auth:
+    profiles:
+      - auth
+    build:
+      context: .
+      dockerfile: deploy/auth/Dockerfile
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: "8080"
+      CORE_API_URL: http://core:8080
+      CORE_ORG_ID: ${ORG_ID:-acme}
+      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET in .env}
+      AUTH_ISSUER: ${AUTH_ISSUER:-}
+      AUTH_CLIENT_ID: ${AUTH_CLIENT_ID:-}
+      AUTH_CLIENT_SECRET: ${AUTH_CLIENT_SECRET:-}
+      AUTH_REDIRECT_URI: ${AUTH_REDIRECT_URI:-}
+      AUTH_SIGNING_JWK: ${AUTH_SIGNING_JWK:-}
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:-}
+      AUTH_ALLOWED_EMAILS: ${AUTH_ALLOWED_EMAILS:-}
+      AUTH_ALLOWED_EMAIL_DOMAIN: ${AUTH_ALLOWED_EMAIL_DOMAIN:-}
+      AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM:-}
+      AUTH_BRAND_NAME: ${AUTH_BRAND_NAME:-qm}
+      AUTH_EMAIL_TRANSPORT: ${AUTH_EMAIL_TRANSPORT:-resend}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_TLS: ${SMTP_TLS:-starttls}
+    depends_on:
+      core:
+        condition: service_healthy
+    ports:
+      - ${QM_INTERNAL_BIND_ADDRESS:-127.0.0.1}:${QM_AUTH_PORT:-8099}:8080
+    networks:
+      default:
+        aliases:
+          - qm-auth.internal
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  nginx:
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    environment:
+      QM_BIND_ADDRESS: ${QM_BIND_ADDRESS:-127.0.0.1}
+      QM_INTERNAL_BIND_ADDRESS: ${QM_INTERNAL_BIND_ADDRESS:-127.0.0.1}
+      PORTAL_LOCAL_AUTH_BYPASS: ${PORTAL_LOCAL_AUTH_BYPASS:-1}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        config=/etc/nginx/qm/nginx.conf
+        if [ "$$PORTAL_LOCAL_AUTH_BYPASS" = "1" ]; then
+          case "$$QM_BIND_ADDRESS" in 127.0.0.1|::1) ;; *) echo "local auth bypass requires a loopback QM_BIND_ADDRESS" >&2; exit 1 ;; esac
+          case "$$QM_INTERNAL_BIND_ADDRESS" in 127.0.0.1|::1) ;; *) echo "local auth bypass requires a loopback QM_INTERNAL_BIND_ADDRESS" >&2; exit 1 ;; esac
+          config=/etc/nginx/qm/nginx-local.conf
+        fi
+        exec nginx -c "$$config" -g 'daemon off;'
+    depends_on:
+      portal:
+        condition: service_healthy
+    ports:
+      - ${QM_BIND_ADDRESS:-127.0.0.1}:${QM_HTTP_PORT:-8088}:8080
+    volumes:
+      - ./deploy/nginx:/etc/nginx/qm:ro
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -qO-
+        - http://127.0.0.1:8080/healthz
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
 
 volumes:
   postgres-data:

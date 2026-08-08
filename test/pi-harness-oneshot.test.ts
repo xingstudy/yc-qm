@@ -186,7 +186,7 @@ test("oneShot removes its temp dirs even when the session call throws", async ()
   assert.equal(after, before, "oneShot must leave no temp dirs behind");
 });
 
-test("oneShot completes an authenticated Pi 0.82 turn", async (t) => {
+test("oneShot completes an authenticated Pi 0.84 turn", async (t) => {
   let apiKey: string | undefined;
   let requestBody = "";
   const server = createServer((request, response) => {

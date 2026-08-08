@@ -5,8 +5,8 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
-const piCodingAgentTarball =
-  "https://github.com/yc-software/pi/releases/download/qm-pi-coding-agent-0.82.0-security.2/earendil-works-pi-coding-agent-0.82.0-qm-security.2.tgz";
+const piCodingAgentTarball = "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.1.tgz";
+const piLicensePath = "licenses/earendil-works-pi-coding-agent.LICENSE";
 
 function installedVersion(path: string): string {
   const manifestUrl = new URL(`../node_modules/${path}/package.json`, import.meta.url);
@@ -36,7 +36,7 @@ function lockedVersions(packages: Record<string, { version?: unknown }>, depende
 
 test("Pi and MCP security overrides are materialized by the root lockfile", () => {
   const lock = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8")) as {
-    packages?: Record<string, { resolved?: unknown; version?: unknown; hasShrinkwrap?: unknown }>;
+    packages?: Record<string, { resolved?: unknown; version?: unknown; hasShrinkwrap?: unknown; license?: unknown }>;
   };
   const packages = lock.packages ?? {};
   const pi = packages["node_modules/@earendil-works/pi-coding-agent"];
@@ -45,16 +45,25 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
 
   assert.equal(pi?.resolved, piCodingAgentTarball);
   assert.equal(pi?.hasShrinkwrap, true);
-  assert.deepEqual(lockedVersions(packages, "brace-expansion"), ["5.0.8"]);
-  assert.deepEqual(lockedVersions(packages, "protobufjs"), ["7.6.5"]);
-  assert.deepEqual(lockedVersions(packages, "@hono/node-server"), ["2.0.10"]);
-  assert.equal(dependencyVersion(minimatchManifest, "brace-expansion"), "5.0.8");
-  assert.equal(dependencyVersion(piManifest, "protobufjs"), "7.6.5");
-  assert.equal(installedVersion("@hono/node-server"), "2.0.10");
+  assert.equal(pi?.license, "MIT");
   assert.match(
-    readFileSync(new URL("../node_modules/@earendil-works/pi-coding-agent/LICENSE", import.meta.url), "utf8"),
+    readFileSync(new URL(`../${piLicensePath}`, import.meta.url), "utf8"),
     /Copyright \(c\) 2025 Mario Zechner/,
   );
+  for (const dockerfile of ["deploy/core/Dockerfile", "deploy/egress-proxy/Dockerfile"]) {
+    assert.match(
+      readFileSync(new URL(`../${dockerfile}`, import.meta.url), "utf8"),
+      new RegExp(`COPY ${piLicensePath}`),
+    );
+  }
+  assert.deepEqual(lockedVersions(packages, "brace-expansion"), ["5.0.9"]);
+  assert.deepEqual(lockedVersions(packages, "fast-uri").sort(), ["3.1.5", "4.1.2"]);
+  assert.deepEqual(lockedVersions(packages, "protobufjs"), ["7.6.5"]);
+  assert.deepEqual(lockedVersions(packages, "@hono/node-server"), ["2.0.10"]);
+  assert.equal(dependencyVersion(minimatchManifest, "brace-expansion"), "5.0.9");
+  assert.equal(dependencyVersion(piManifest, "undici"), "8.9.0");
+  assert.equal(dependencyVersion(piManifest, "protobufjs"), "7.6.5");
+  assert.equal(installedVersion("@hono/node-server"), "2.0.10");
 });
 
 test("MCP Streamable HTTP works through the patched Hono major", async (t) => {

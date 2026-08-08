@@ -55,8 +55,8 @@
     "@aws-sdk/client-secrets-manager": "^3.1089.0",
     "@aws-sdk/client-sts": "^3.1075.0",
     "@aws-sdk/credential-provider-node": "^3.972.70",
-    "@earendil-works/pi-ai": "0.82.0",
-    "@earendil-works/pi-coding-agent": "https://github.com/yc-software/pi/releases/download/qm-pi-coding-agent-0.82.0-security.2/earendil-works-pi-coding-agent-0.82.0-qm-security.2.tgz",
+    "@earendil-works/pi-ai": "0.84.1",
+    "@earendil-works/pi-coding-agent": "0.84.1",
     "@fly/sprites": "0.0.1",
     "@openai/codex": "0.144.5",
     "@opencode-ai/plugin": "1.17.18",
@@ -79,16 +79,6 @@
   },
   "overrides": {
     "@hono/node-server": "2.0.10",
-    "@fastify/ajv-compiler": {
-      "fast-uri": "3.1.4"
-    },
-    "ajv": {
-      "fast-uri": "3.1.4"
-    },
-    "brace-expansion": "5.0.8",
-    "fast-json-stringify": {
-      "fast-uri": "4.1.1"
-    },
     "protobufjs": "7.6.5"
   },
   "devDependencies": {

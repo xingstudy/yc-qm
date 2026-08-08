@@ -7,6 +7,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm audit --omit=dev --audit-level=moderate \
   && rm -rf /root/.npm /tmp/node-compile-cache
+COPY licenses/earendil-works-pi-coding-agent.LICENSE /usr/share/licenses/qm/pi-coding-agent.LICENSE
 
 COPY src ./src
 COPY cli/templates/slack-manifest.json ./cli/templates/slack-manifest.json

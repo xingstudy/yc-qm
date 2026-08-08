@@ -328,7 +328,7 @@ export function isLoopbackAddress(address: string | null | undefined): boolean {
 
 function localDevSession(req: IncomingMessage, nowMs = Date.now(), ignoreLogout = false): SessionClaims | null {
   if (!LOCAL_AUTH_BYPASS) return null;
-  if (!isLoopbackAddress(req.socket.remoteAddress)) return null;
+  if (!isLoopbackAddress(clientIpOf(req))) return null;
   if (!ignoreLogout && readCookie(req.headers.cookie, LOCAL_LOGOUT_COOKIE) === "1") return null;
   const now = Math.floor(nowMs / 1000);
   return { k: "session", sub: LOCAL_AUTH_PRINCIPAL, org: ORG, iat: now, exp: now + SESSION_TTL_S };
@@ -845,7 +845,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       clearCookie("portal_session", "/", SECURE_COOKIES, COOKIE_DOMAIN),
       ...(COOKIE_DOMAIN ? [clearCookie("portal_session", "/", SECURE_COOKIES)] : []),
       clearCookie("portal_oidc_tmp", "/auth", SECURE_COOKIES),
-      ...(LOCAL_AUTH_BYPASS && isLoopbackAddress(req.socket.remoteAddress)
+      ...(LOCAL_AUTH_BYPASS && isLoopbackAddress(clientIpOf(req))
         ? [setCookie(LOCAL_LOGOUT_COOKIE, "1", { path: "/", maxAge: SESSION_TTL_S, secure: SECURE_COOKIES })]
         : []),
     ]);
