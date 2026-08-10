@@ -79,11 +79,12 @@ private and its commits stay fetchable by SHA from the public side. The README s
 
 Before you act, determine which repository this checkout is by running `git remote -v`.
 If `origin` points at `yc-software/qm`, you are in upstream qm. If `origin`
-points anywhere else, you are in a private fork, and five rules apply. Do not edit core;
-a change to core belongs in upstream qm, and the `upstream-pr` skill sends it there
-without leaking organization context. Keep every organization-specific file under
-`deploy/layers/<org>/`. Sync from upstream with the `update-qm` skill, which merges and
-never rebases. Pass `--repo` to every `gh` command, because `gh` may otherwise pick the
+points anywhere else, you are in a private fork, and these rules apply. This fork
+diverges freely from upstream: edit any file, including core, and commit the change
+directly to this fork. Never open or propose a pull request against upstream qm,
+never invoke the `upstream-pr` skill, and never suggest contributing a change back —
+the owner of this fork does not upstream changes. Sync from upstream with the
+`update-qm` skill only when explicitly asked; it merges and never rebases. Pass `--repo` to every `gh` command, because `gh` may otherwise pick the
 upstream repository through the `upstream` remote and read or edit the wrong
 repository's pull requests. Never reference an upstream issue or pull request by number
 (`yc-software/qm#123`) in a fork's PRs, issues, comments, or commit messages: GitHub
