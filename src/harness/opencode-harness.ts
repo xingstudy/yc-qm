@@ -46,12 +46,8 @@ export interface OpenCodeHarnessOptions {
   binaryPath?: string;
   startupTimeoutMs?: number;
   tasks?: TaskStore;
-  /**
-   * Admin-registered custom providers, resolved (with keys) when the
-   * opencode server starts. Registrations made while a server is already
-   * running apply to the next server start.
-   */
   resolveCustomProviders?: () => Promise<Array<{ spec: CustomProviderSpec; apiKey?: string }>>;
+  customProvidersVersion?: () => number;
 }
 
 export function openCodeHarnessConfigOptions(config: Config): OpenCodeHarnessOptions {
@@ -95,6 +91,7 @@ type Runtime = {
   bridge: ReturnType<typeof createServer>;
   jail: string;
   bridgeUrl: string;
+  customProvidersVersion: number;
   close(): Promise<void>;
 };
 
@@ -463,6 +460,32 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
   const defaultTurnWallClockMs = opts.turnWallClockMs ?? CONFIG_DEFAULTS.turnWallClockSec * 1000;
   let runtime: Runtime | null = null;
   let starting: Promise<Runtime> | null = null;
+  let runtimeUsers = 0;
+  const idleWaiters = new Set<() => void>();
+  const waitForIdle = (): Promise<void> =>
+    runtimeUsers === 0
+      ? Promise.resolve()
+      : new Promise((resolve) => {
+          idleWaiters.add(resolve);
+        });
+  const resolveIdle = (): void => {
+    if (runtimeUsers > 0) return;
+    for (const resolve of idleWaiters) resolve();
+    idleWaiters.clear();
+  };
+  const leaseRuntime = (leased: Runtime) => {
+    runtimeUsers += 1;
+    let released = false;
+    return {
+      runtime: leased,
+      release() {
+        if (released) return;
+        released = true;
+        runtimeUsers -= 1;
+        resolveIdle();
+      },
+    };
+  };
 
   const childState = (parent: ActiveTurn): ActiveTurn => ({
     ...parent,
@@ -554,10 +577,8 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
     await operation;
   };
 
-  const ensureRuntime = async (): Promise<Runtime> => {
-    if (runtime && runtime.process.exitCode === null) return runtime;
-    if (starting) return await starting;
-    starting = (async () => {
+  const startRuntime = (customProvidersVersion: number): Promise<Runtime> => {
+    return (async () => {
       const jail = mkdtempSync(join(tmpdir(), "qm-opencode-"));
       const bridge = createServer(async (req, res) => {
         try {
@@ -787,6 +808,7 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
           bridge,
           jail,
           bridgeUrl,
+          customProvidersVersion,
           async close() {
             abortEvents.abort();
             await terminateProcess(proc!);
@@ -810,16 +832,37 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
         throw error;
       }
     })();
-    try {
-      return await starting;
-    } finally {
-      starting = null;
+  };
+
+  const acquireRuntime = async () => {
+    while (true) {
+      const expectedCustomProvidersVersion = opts.customProvidersVersion?.() ?? 0;
+      if (
+        runtime &&
+        runtime.process.exitCode === null &&
+        runtime.customProvidersVersion === expectedCustomProvidersVersion
+      )
+        return leaseRuntime(runtime);
+      if (!starting)
+        starting = (async () => {
+          await waitForIdle();
+          if (runtime) {
+            const stale = runtime;
+            runtime = null;
+            await stale.close();
+          }
+          return await startRuntime(opts.customProvidersVersion?.() ?? 0);
+        })();
+      const pending = starting;
+      try {
+        await pending;
+      } finally {
+        if (starting === pending) starting = null;
+      }
     }
   };
 
-  const runPrompt = async (turn: HarnessTurnInput): Promise<HarnessTurnResult> => {
-    if (turn.cancel?.aborted) return { reply: "", stopped: true };
-    const rt = await ensureRuntime();
+  const runPromptWithRuntime = async (turn: HarnessTurnInput, rt: Runtime): Promise<HarnessTurnResult> => {
     if (turn.cancel?.aborted) return { reply: "", stopped: true };
     const selectedModel = turn.model ?? resolveModelId(turn.scopeLabel);
     const model = modelRef(selectedModel);
@@ -1068,24 +1111,37 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
         ...(tapeWriteFailed ? { tapeWriteFailed: true } : {}),
       };
     } finally {
-      if (timer) clearTimeout(timer);
-      if (!signalsStopped) await stopSignals?.();
-      await Promise.allSettled(queuedSignals);
-      turn.cancel?.removeEventListener("abort", onCancel);
-      if (opts.tasks) {
-        const taskIds = [...state.seenTasks.keys()];
-        await Promise.all(
-          taskIds.map(async (taskId) => {
-            const task = await opts.tasks!.get(taskId);
-            if (task && (task.status === "pending" || task.status === "in_progress")) {
-              await opts.tasks!.transitionStatus(task.id, task.status, "failed", turn.runId ?? turn.session.id);
-            }
-          }),
-        );
+      try {
+        if (timer) clearTimeout(timer);
+        if (!signalsStopped) await stopSignals?.();
+        await Promise.allSettled(queuedSignals);
+        turn.cancel?.removeEventListener("abort", onCancel);
+        if (opts.tasks) {
+          const taskIds = [...state.seenTasks.keys()];
+          await Promise.all(
+            taskIds.map(async (taskId) => {
+              const task = await opts.tasks!.get(taskId);
+              if (task && (task.status === "pending" || task.status === "in_progress")) {
+                await opts.tasks!.transitionStatus(task.id, task.status, "failed", turn.runId ?? turn.session.id);
+              }
+            }),
+          );
+        }
+        await flushLlmRequests();
+      } finally {
+        for (const [id, candidate] of active) if (candidate.turn === turn) active.delete(id);
+        await rt.client.session.delete({ path: { id: sessionId } }).catch(() => undefined);
       }
-      await flushLlmRequests();
-      for (const [id, candidate] of active) if (candidate.turn === turn) active.delete(id);
-      await rt.client.session.delete({ path: { id: sessionId } }).catch(() => undefined);
+    }
+  };
+
+  const runPrompt = async (turn: HarnessTurnInput): Promise<HarnessTurnResult> => {
+    if (turn.cancel?.aborted) return { reply: "", stopped: true };
+    const lease = await acquireRuntime();
+    try {
+      return await runPromptWithRuntime(turn, lease.runtime);
+    } finally {
+      lease.release();
     }
   };
 

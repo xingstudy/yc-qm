@@ -41,6 +41,10 @@ test("custom provider models resolve from the runtime catalog entry, whatever th
   assert.equal(viaAnthropic.provider, "qa");
   assert.equal(viaAnthropic.api, "anthropic-messages");
 
+  const colliding = getBaseModel("gpt-4o", { name: "Gateway GPT", provider: "qa", api: "openai-completions" });
+  assert.equal(colliding.provider, "qa");
+  assert.equal(colliding.api, "openai-completions");
+
   assert.throws(() => getBaseModel("qa-large", { name: "QA Large", provider: "qa" }), /Unsupported/);
 });
 

@@ -149,7 +149,8 @@ export function resolveModel(id: string): PiModel | undefined {
         })
       : undefined;
   }
-  return builtinModel(id) ?? (resolveCustomModel(id) as unknown as PiModel | undefined);
+  if (entry) return builtinModel(id);
+  return (resolveCustomModel(id) as unknown as PiModel | undefined) ?? builtinModel(id);
 }
 
 export function auxiliaryModelForProvider(provider: string): string | undefined {

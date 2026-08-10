@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assistantFailure, createOpenCodeHarness, latestAssistantParts } from "../src/harness/opencode-harness.ts";
@@ -299,27 +299,34 @@ test("custom providers materialize into the opencode config (enabled + provider 
   const dir = mkdtempSync(join(tmpdir(), "opencode-custom-"));
   const dump = join(dir, "config.json");
   const bin = fakeSidecar(dir, "custom", promptHandlers(okAssistant));
-  // wrap the binary so it writes the config it received before exec
   const wrapped = join(dir, "custom-wrapped");
   writeFileSync(
     wrapped,
     `#!/bin/sh\nprintf '%s' "$OPENCODE_CONFIG_CONTENT" > ${JSON.stringify(dump)}\nexec ${JSON.stringify(bin)} "$@"\n`,
   );
   chmodSync(wrapped, 0o755);
+  let customVersion = 1;
+  let customBaseUrl = "http://litellm.internal:4000/v1";
+  let customKey = "sk-lite";
+  let resolveCalls = 0;
   const harness = createOpenCodeHarness({
     binaryPath: wrapped,
-    resolveCustomProviders: async () => [
-      {
-        spec: {
-          id: "litellm",
-          name: "LiteLLM",
-          protocol: "openai" as const,
-          baseUrl: "http://litellm.internal:4000/v1",
-          models: [{ id: "deepseek-chat", name: "DeepSeek", contextWindow: 128000, maxTokens: 8192 }],
+    customProvidersVersion: () => customVersion,
+    resolveCustomProviders: async () => {
+      resolveCalls += 1;
+      return [
+        {
+          spec: {
+            id: "litellm",
+            name: "LiteLLM",
+            protocol: "openai" as const,
+            baseUrl: customBaseUrl,
+            models: [{ id: "deepseek-chat", name: "DeepSeek", contextWindow: 128000, maxTokens: 8192 }],
+          },
+          apiKey: customKey,
         },
-        apiKey: "sk-lite",
-      },
-    ],
+      ];
+    },
   });
   const entries: SessionEntry[] = [];
   const llmRows: HarnessLlmRequestRecord[] = [];
@@ -332,7 +339,154 @@ test("custom providers materialize into the opencode config (enabled + provider 
     assert.equal(litellm.options.baseURL, "http://litellm.internal:4000/v1");
     assert.equal(litellm.options.apiKey, "sk-lite");
     assert.deepEqual(litellm.models["deepseek-chat"], { name: "DeepSeek", limit: { context: 128000, output: 8192 } });
+    customBaseUrl = "http://litellm.internal:5000/v1";
+    customKey = "sk-rotated";
+    customVersion += 1;
+    await harness.turns.runTurn(turnInput(entries, llmRows));
+    const refreshed = JSON.parse(readFileSync(dump, "utf8"));
+    assert.equal(refreshed.provider.litellm.options.baseURL, customBaseUrl);
+    assert.equal(refreshed.provider.litellm.options.apiKey, customKey);
+    assert.equal(resolveCalls, 2);
   } finally {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode rebuilds when custom providers change during sidecar startup", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-opencode-test-"));
+  const dump = join(dir, "startup-config.json");
+  const started = join(dir, "startup-started");
+  const release = join(dir, "startup-release");
+  const bin = fakeSidecar(dir, "startup-custom", promptHandlers(okAssistant));
+  const wrapped = join(dir, "startup-custom-wrapped");
+  writeFileSync(
+    wrapped,
+    `#!/bin/sh
+printf '%s' "$OPENCODE_CONFIG_CONTENT" > ${JSON.stringify(dump)}
+if [ ! -f ${JSON.stringify(started)} ]; then
+  touch ${JSON.stringify(started)}
+  while [ ! -f ${JSON.stringify(release)} ]; do sleep 0.01; done
+fi
+exec ${JSON.stringify(bin)} "$@"
+`,
+  );
+  chmodSync(wrapped, 0o755);
+  let customVersion = 1;
+  let customKey = "sk-old";
+  let resolveCalls = 0;
+  const harness = createOpenCodeHarness({
+    binaryPath: wrapped,
+    customProvidersVersion: () => customVersion,
+    resolveCustomProviders: async () => {
+      resolveCalls += 1;
+      return [
+        {
+          spec: {
+            id: "litellm",
+            name: "LiteLLM",
+            protocol: "openai" as const,
+            baseUrl: "http://litellm.internal/v1",
+            models: [{ id: "deepseek-chat" }],
+          },
+          apiKey: customKey,
+        },
+      ];
+    },
+  });
+  try {
+    const firstInput = turnInput([], []);
+    const cancel = new AbortController();
+    firstInput.cancel = cancel.signal;
+    const firstTurn = harness.turns.runTurn(firstInput);
+    while (!existsSync(started)) await new Promise((resolve) => setTimeout(resolve, 10));
+    customVersion = 2;
+    customKey = "sk-new";
+    cancel.abort();
+    const secondTurn = harness.turns.runTurn(turnInput([], []));
+    writeFileSync(release, "ready");
+    assert.equal((await firstTurn).stopped, true);
+    assert.equal((await secondTurn).reply, "hello from fake");
+    const config = JSON.parse(readFileSync(dump, "utf8"));
+    assert.equal(config.provider.litellm.options.apiKey, "sk-new");
+    assert.equal(resolveCalls, 2);
+  } finally {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode keeps a runtime leased before its session becomes active", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-opencode-test-"));
+  const dump = join(dir, "leased-config.json");
+  const bin = fakeSidecar(dir, "leased-custom", promptHandlers(okAssistant));
+  const wrapped = join(dir, "leased-custom-wrapped");
+  writeFileSync(
+    wrapped,
+    `#!/bin/sh
+printf '%s' "$OPENCODE_CONFIG_CONTENT" > ${JSON.stringify(dump)}
+exec ${JSON.stringify(bin)} "$@"
+`,
+  );
+  chmodSync(wrapped, 0o755);
+  let customVersion = 1;
+  let customKey = "sk-old";
+  let resolveCalls = 0;
+  const harness = createOpenCodeHarness({
+    binaryPath: wrapped,
+    customProvidersVersion: () => customVersion,
+    resolveCustomProviders: async () => {
+      resolveCalls += 1;
+      return [
+        {
+          spec: {
+            id: "litellm",
+            name: "LiteLLM",
+            protocol: "openai" as const,
+            baseUrl: "http://litellm.internal/v1",
+            models: [{ id: "deepseek-chat" }],
+          },
+          apiKey: customKey,
+        },
+      ];
+    },
+  });
+  let releaseEmit!: () => void;
+  const emitGate = new Promise<void>((resolve) => {
+    releaseEmit = resolve;
+  });
+  let emitStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    emitStarted = resolve;
+  });
+  try {
+    const firstInput = turnInput([], []);
+    const originalEmit = firstInput.emit;
+    firstInput.emit = async (entry) => {
+      if (entry.type === "user") {
+        emitStarted();
+        await emitGate;
+      }
+      return originalEmit(entry);
+    };
+    const firstTurn = harness.turns.runTurn(firstInput);
+    await started;
+    customVersion = 2;
+    customKey = "sk-new";
+    let secondSettled = false;
+    const secondTurn = harness.turns.runTurn(turnInput([], [])).finally(() => {
+      secondSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(secondSettled, false);
+    releaseEmit();
+    assert.equal((await firstTurn).reply, "hello from fake");
+    assert.equal((await secondTurn).reply, "hello from fake");
+    const config = JSON.parse(readFileSync(dump, "utf8"));
+    assert.equal(config.provider.litellm.options.apiKey, "sk-new");
+    assert.equal(resolveCalls, 2);
+  } finally {
+    releaseEmit();
     await harness.turns.close?.();
     rmSync(dir, { recursive: true, force: true });
   }

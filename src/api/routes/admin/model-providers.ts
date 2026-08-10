@@ -58,9 +58,27 @@ export async function getModelProviders(ctx: ApiCtx): Promise<void> {
     resource: "model-providers",
     scopeLabel: orgScope(ctx.deps),
   });
+  await ctx.deps.refreshCustomProviders?.();
+  const [providers, customProviders, models] = await Promise.all([
+    ctx.deps.modelCredentials.statuses(),
+    ctx.deps.customProviders?.statuses() ?? Promise.resolve([]),
+    selectableModelCatalog(ctx.deps.modelCredentialFetch),
+  ]);
+  const catalogProviders = new Set(models.map((model) => model.provider));
   return sendJson(ctx.res, 200, {
-    providers: await ctx.deps.modelCredentials.statuses(),
-    models: await selectableModelCatalog(ctx.deps.modelCredentialFetch),
+    providers: [
+      ...providers,
+      ...customProviders
+        .filter((provider) => !provider.disabled && provider.hasKey && catalogProviders.has(provider.id))
+        .map((provider) => ({
+          provider: provider.id,
+          name: provider.name,
+          configured: true,
+          source: "admin" as const,
+          kind: "custom" as const,
+        })),
+    ],
+    models,
   });
 }
 

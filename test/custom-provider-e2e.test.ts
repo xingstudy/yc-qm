@@ -127,7 +127,10 @@ test("QA: full custom-provider lifecycle against a live fake upstream", async ()
         protocol: "openai",
         baseUrl: upstreamUrl,
         apiKey: "sk-qa-good",
-        models: [{ id: "qa-chat", name: "QA Chat", contextWindow: 64000, maxTokens: 4096 }],
+        models: [
+          { id: "qa-chat", name: "QA Chat", contextWindow: 64000, maxTokens: 4096 },
+          { id: "gpt-4o", name: "Gateway GPT" },
+        ],
       }),
     });
     assert.equal(r.status, 200);
@@ -164,6 +167,12 @@ test("QA: full custom-provider lifecycle against a live fake upstream", async ()
       provider: "qa",
       api: "openai-completions",
     });
+    assert.ok(runtimeBody.modelsByHarness.pi!.includes("gpt-4o"));
+    assert.deepEqual(runtimeBody.modelCatalog["gpt-4o"], {
+      name: "Gateway GPT",
+      provider: "qa",
+      api: "openai-completions",
+    });
 
     // 6. REAL model call through QM's pi path → fake upstream answers
     const reply = await oneShot(
@@ -178,6 +187,20 @@ test("QA: full custom-provider lifecycle against a live fake upstream", async ()
     assert.ok(call, "completion request reached the upstream");
     assert.equal(call!.model, "qa-chat");
     assert.equal(call!.auth, "Bearer sk-qa-good", "stored key was sent to the custom endpoint");
+
+    const collidingModel = resolveModel("gpt-4o");
+    assert.equal(collidingModel?.provider, "qa");
+    assert.equal((collidingModel as { baseUrl?: string })?.baseUrl, upstreamUrl);
+    const collidingReply = await oneShot(
+      "qa",
+      collidingModel as unknown as Model<Api>,
+      { qa: "sk-qa-good" },
+      "you are terse",
+      "say anything",
+    );
+    assert.equal(collidingReply, "QA UPSTREAM REPLY");
+    const collidingCall = seen.find((record) => record.path.endsWith("/chat/completions") && record.model === "gpt-4o");
+    assert.equal(collidingCall?.auth, "Bearer sk-qa-good");
 
     // 7. edit WITHOUT key keeps the stored key
     r = await api("/v1/admin/custom-providers/qa", {

@@ -7,6 +7,7 @@
  * per-call resolver.
  */
 
+import { randomUUID } from "node:crypto";
 import { decryptSecret, deriveConnectorKey, encryptSecret } from "../connectors/connector-client-store.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import { validateCustomProviderSpec, type CustomProviderSpec } from "./custom-providers.ts";
@@ -14,6 +15,7 @@ import { validateCustomProviderSpec, type CustomProviderSpec } from "./custom-pr
 export interface StoredCustomProvider extends CustomProviderSpec {
   apiKeyEnc?: string;
   disabled?: boolean;
+  revision?: string;
   updatedAt: number;
   updatedBy: string;
 }
@@ -30,6 +32,7 @@ export interface CustomProviderStore {
   enabled(): Promise<CustomProviderSpec[]>;
   /** Everything, for the admin surface (no secrets). */
   statuses(): Promise<CustomProviderStatus[]>;
+  runtimeSnapshot(): Promise<{ providers: CustomProviderSpec[]; fingerprint: string }>;
   /** Plaintext key for one provider, or null when absent/disabled. */
   resolveKey(id: string): Promise<string | null>;
   upsert(spec: CustomProviderSpec, apiKey: string | undefined, updatedBy: string): Promise<void>;
@@ -51,11 +54,16 @@ export function createCustomProviderStore(input: {
   keyMaterial: string | Buffer;
 }): CustomProviderStore {
   const key = deriveConnectorKey(input.keyMaterial, "custom-model-providers");
+  const update = input.backing.update?.bind(input.backing);
+  const insertIfAbsent = input.backing.insertIfAbsent?.bind(input.backing);
+  if (!update || !insertIfAbsent) {
+    throw new Error("custom provider storage requires atomic update and insert operations");
+  }
 
   return {
     async enabled() {
       const all = await input.backing.all();
-      return all.filter((p) => !p.disabled).map(strip);
+      return all.filter((p) => !p.disabled && p.apiKeyEnc).map(strip);
     },
 
     async statuses() {
@@ -71,6 +79,27 @@ export function createCustomProviderStore(input: {
         .sort((a, b) => a.id.localeCompare(b.id));
     },
 
+    async runtimeSnapshot() {
+      const all = (await input.backing.all()).sort((a, b) => a.id.localeCompare(b.id));
+      return {
+        providers: all.filter((provider) => !provider.disabled && provider.apiKeyEnc).map(strip),
+        fingerprint: JSON.stringify(
+          all.map((provider) => ({
+            id: provider.id,
+            revision:
+              provider.revision ??
+              JSON.stringify({
+                ...strip(provider),
+                disabled: provider.disabled ?? false,
+                hasKey: Boolean(provider.apiKeyEnc),
+                updatedAt: provider.updatedAt,
+                updatedBy: provider.updatedBy,
+              }),
+          })),
+        ),
+      };
+    },
+
     async resolveKey(id) {
       const saved = await input.backing.get(id);
       if (!saved || saved.disabled || !saved.apiKeyEnc) return null;
@@ -81,28 +110,46 @@ export function createCustomProviderStore(input: {
       validateCustomProviderSpec(spec);
       const actor = updatedBy.trim();
       if (!actor) throw new Error("updatedBy is required");
-      const existing = await input.backing.get(spec.id);
       const trimmedKey = apiKey?.trim();
-      const apiKeyEnc = trimmedKey ? encryptSecret(trimmedKey, key) : existing?.apiKeyEnc;
-      await input.backing.put(spec.id, {
+      const saved = (apiKeyEnc: string): StoredCustomProvider => ({
         ...spec,
-        ...(apiKeyEnc ? { apiKeyEnc } : {}),
+        apiKeyEnc,
         disabled: false,
+        revision: randomUUID(),
         updatedAt: Date.now(),
         updatedBy: actor,
       });
+      if (trimmedKey) {
+        const next = saved(encryptSecret(trimmedKey, key));
+        if (await insertIfAbsent(spec.id, next)) return;
+        await update(spec.id, () => next);
+        return;
+      }
+      const updated = await update(spec.id, (existing) => {
+        const sameEndpoint =
+          existing && !existing.disabled && existing.protocol === spec.protocol && existing.baseUrl === spec.baseUrl;
+        if (!sameEndpoint || !existing.apiKeyEnc) {
+          throw new Error("API key is required when creating, restoring, or changing the provider endpoint");
+        }
+        return saved(existing.apiKeyEnc);
+      });
+      if (!updated) throw new Error("API key is required when creating, restoring, or changing the provider endpoint");
     },
 
     async delete(id, updatedBy) {
-      const existing = await input.backing.get(id);
-      if (!existing || existing.disabled) return false;
-      await input.backing.put(id, {
-        ...existing,
-        disabled: true,
-        updatedAt: Date.now(),
-        updatedBy,
+      let removed = false;
+      const updated = await update(id, (existing) => {
+        if (existing.disabled) return existing;
+        removed = true;
+        return {
+          ...strip(existing),
+          disabled: true,
+          revision: randomUUID(),
+          updatedAt: Date.now(),
+          updatedBy,
+        };
       });
-      return true;
+      return Boolean(updated && removed);
     },
   };
 }

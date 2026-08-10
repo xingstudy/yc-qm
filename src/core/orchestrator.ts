@@ -170,7 +170,9 @@ const ACTIVITY_ENTRY_TYPES = new Set<EntryType>(["tool_call", "tool_result", "ap
 
 function knownBrowseModel(id: string | null | undefined): { id: string; provider: string } | undefined {
   const provider = id ? resolveModel(id)?.provider : undefined;
-  return id && provider ? { id, provider } : undefined;
+  return id && (provider === "anthropic" || provider === "openai" || provider === "openrouter")
+    ? { id, provider }
+    : undefined;
 }
 
 const SHARED_CORE_MD = loadProtocolFile("shared-core");

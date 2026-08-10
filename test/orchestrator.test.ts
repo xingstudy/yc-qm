@@ -693,6 +693,39 @@ test("browse follows a live org base model change, not the process-start default
   assert.equal(captured?.env?.BROWSE_LAB_MODEL_PROVIDER, "openai");
 });
 
+test("browse does not send a custom base model to a runner that cannot use custom provider credentials", async () => {
+  const built = freshApp();
+  const { app, sandbox } = built;
+  let captured: ProvisionOptions | undefined;
+  const realProvision = sandbox.provision.bind(sandbox);
+  sandbox.provision = (layers, opts) => {
+    captured = opts;
+    return realProvision(layers, opts);
+  };
+  await built.customProviders.upsert(
+    {
+      id: "gateway",
+      name: "Gateway",
+      protocol: "openai",
+      baseUrl: "https://gateway.example/v1",
+      models: [{ id: "gateway-model" }],
+    },
+    "sk-gateway",
+    "admin@example.com",
+  );
+  await built.refreshCustomProviders();
+  built.config.setBaseModel("org:default-org", "gateway-model");
+  try {
+    const result = await app.turn(dm("!run echo browse", { conversation: { kind: "dm", threadRef: "dm:U1:custom" } }));
+    assert.equal(result.status, "ok");
+    assert.equal(captured?.env?.BROWSE_LAB_MODEL, undefined);
+    assert.equal(captured?.env?.BROWSE_LAB_MODEL_PROVIDER, undefined);
+  } finally {
+    await built.customProviders.delete("gateway", "admin@example.com");
+    await built.refreshCustomProviders();
+  }
+});
+
 test("an OpenAI deployment tells the browse runner to build an OpenAI client", async () => {
   const config = testConfig({
     dataDir: mkdtempSync(join(tmpdir(), "ap-")),

@@ -123,14 +123,17 @@ let version = 0;
  * built-in.
  */
 export function setCustomProviders(specs: CustomProviderSpec[]): void {
+  const normalized = specs
+    .map((spec) => ({ ...spec, models: spec.models.map((model) => ({ ...model })) }))
+    .sort((a, b) => a.id.localeCompare(b.id));
   const next = new Map<string, CustomRuntimeModel>();
-  for (const spec of specs) {
+  for (const spec of normalized) {
     for (const m of spec.models) {
       next.set(m.id, toRuntimeModel(spec, m));
     }
   }
   registry = next;
-  providers = specs.map((s) => ({ ...s, models: [...s.models] }));
+  providers = normalized;
   version += 1;
 }
 

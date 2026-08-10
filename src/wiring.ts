@@ -159,7 +159,7 @@ import { createConsentLinkStore, type ConsentLinkStore, type ConsentLinkRecord }
 import { createModelGateway, type ModelGateway } from "./model/model-gateway.ts";
 import { createModelCredentialStore, type ModelCredentialStore } from "./model/model-credential-store.ts";
 import { setProviderBaseUrls } from "./model/provider-endpoints.ts";
-import { setCustomProviders } from "./model/custom-providers.ts";
+import { customProvidersVersion, setCustomProviders } from "./model/custom-providers.ts";
 import { createCustomProviderStore, type CustomProviderStore } from "./model/custom-provider-store.ts";
 import { createMemorySessionStore } from "./sessions/memory-session-store.ts";
 import { createPostgresSessionStore } from "./sessions/postgres-session-store.ts";
@@ -266,7 +266,7 @@ import { createPostgresErrorLog } from "./admin/postgres-error-log.ts";
 import { createMetricsSink, type MetricsSink } from "./admin/metrics-sink.ts";
 import { createPostgresMetricsSink } from "./admin/postgres-metrics-sink.ts";
 import { errMessage, swallowAs } from "./util/errors.ts";
-import { sleep } from "./util/async.ts";
+import { createKeyedQueue, sleep } from "./util/async.ts";
 import { createSlackInstallationStore, type SlackInstallationStore } from "./surfaces/slack-installation.ts";
 
 export interface Runtime {
@@ -691,9 +691,20 @@ export function buildApp(
     backing: artifactMap("custom_model_providers"),
     keyMaterial: config.connectorSecretKey ?? randomBytes(32),
   });
-  const refreshCustomProviders = async () => {
-    setCustomProviders(await customProviders.enabled());
-  };
+  const customProviderQueue = createKeyedQueue<"custom-providers">();
+  let customProviderFingerprint = "";
+  const refreshCustomProviders = () =>
+    customProviderQueue("custom-providers", async () => {
+      const snapshot = await customProviders.runtimeSnapshot();
+      const fingerprint = snapshot.fingerprint;
+      if (fingerprint === customProviderFingerprint) return;
+      setCustomProviders(snapshot.providers);
+      customProviderFingerprint = fingerprint;
+    });
+  const customProviderRefresh = createSweeper(refreshCustomProviders, 10_000, {
+    label: "custom provider refresh",
+    immediate: true,
+  });
   void refreshCustomProviders().catch((e) =>
     console.error("[wiring] custom provider hydration failed:", errMessage(e)),
   );
@@ -746,6 +757,7 @@ export function buildApp(
         ...openCodeHarnessConfigOptions(config),
         signals: runSignals,
         tasks,
+        customProvidersVersion,
         resolveCustomProviders: async () => {
           const enabled = await customProviders.enabled();
           return Promise.all(
@@ -779,12 +791,13 @@ export function buildApp(
     ),
   };
   const judgeModelId = (): string => config.judgeModelId ?? auxiliaryModelFor(orgBaseModelId() ?? fallback.modelId);
-  const harness = createHarnessRouter(adapters, adapters.get(fallbackHarness)!, (input) =>
-    resolveRuntimeChoiceDurable(configStore, runtimeOrgScope, input.scopeLabel, fallback, {
+  const harness = createHarnessRouter(adapters, adapters.get(fallbackHarness)!, async (input) => {
+    await refreshCustomProviders();
+    return resolveRuntimeChoiceDurable(configStore, runtimeOrgScope, input.scopeLabel, fallback, {
       ...(input.harness ? { harnessId: input.harness as HarnessId } : {}),
       ...(input.model ? { modelId: input.model } : {}),
-    }),
-  );
+    });
+  });
 
   const leaseTtlMs = config.leaseTtlMs;
   const maxAttempts = config.maxAttempts;
@@ -1380,6 +1393,7 @@ export function buildApp(
     : null;
   const runtime: Runtime = {
     start() {
+      customProviderRefresh.start();
       if (!config.backgroundWorkEnabled) return;
       for (const w of workers) w.start();
       reaper.start();
@@ -1398,6 +1412,7 @@ export function buildApp(
       await Promise.all(workers.map((w) => w.releaseInFlight()));
     },
     async stop() {
+      customProviderRefresh.stop();
       reaper.stop();
       processReaper?.stop();
       monitorPoller?.stop();

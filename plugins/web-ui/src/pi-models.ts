@@ -30,6 +30,8 @@ function builtinModel(id: string): PiModel | undefined {
 
 export function getBaseModel(id: string, fallback?: CatalogModelInfo): PiModel {
   const builtin = builtinModel(id);
+  if (fallback?.api && (!builtin || fallback.provider !== builtin.provider))
+    return dynamicModel(id, fallback as CatalogModelInfo & { api: string });
   if (builtin) return builtin;
   const clone = CLONE_TEMPLATES[id];
   if (clone) {

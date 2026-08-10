@@ -84,6 +84,9 @@ export async function putScopeConfig(ctx: ApiCtx): Promise<void> {
   if (!desc) return sendJson(res, 404, { error: "not_found", message: `unknown admin resource: ${resource}` });
   return withScopeMutationLock(async () => {
     try {
+      if (resource === "base-model" || resource === "runtime" || resource === "webui-models") {
+        await deps.refreshCustomProviders?.();
+      }
       const result = await desc.apply(ctx, actor, targetScope);
       if ("error" in result) {
         return sendJson(res, result.status ?? 400, { error: result.code ?? "bad_request", message: result.error });
@@ -201,6 +204,7 @@ export async function getScopeConfig(ctx: ApiCtx): Promise<void> {
   const actor = await authorizeAdmin(ctx, targetScope);
   if (!actor) return;
   await deps.config.refreshScope(targetScope);
+  await deps.refreshCustomProviders?.();
   audit(deps, { principalId: actor.id, action: "config.read", resource: "config", scopeLabel: targetScope });
   const serviceCredentials = await Promise.all(
     (deps.serviceCreds ? await deps.serviceCreds.listServiceCredentials(targetScope) : []).map(async (c) => {

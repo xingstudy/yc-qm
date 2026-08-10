@@ -43,3 +43,19 @@ test("?view=onboarding resolves to the onboarding view", () => {
 test("unknown views still fall back to the default view", () => {
   assert.equal(resolveView("/admin/no-such-view", ""), "history");
 });
+
+test("custom providers participate in onboarding without re-entering their managed key", () => {
+  const onboarding = slice("let onboardingModels = {};", "function openOnboardingTarget(target) {");
+  assert.match(onboarding, /status\.name \|\| MODEL_PROVIDER_LABELS\[status\.provider\]/);
+  assert.match(onboarding, /const custom = status\?\.kind === "custom";/);
+  assert.match(onboarding, /baseModel \+ " is no longer available\. Choose another base model\."/);
+  assert.match(onboarding, /onboarding-model-key"\)\.disabled = custom/);
+  assert.match(onboarding, /\? "Use as base model"/);
+  assert.match(onboarding, /: "Add a key below first"/);
+  assert.match(onboarding, /if \(!custom && !apiKey\)/);
+  assert.match(onboarding, /if \(custom && !status\.configured\)/);
+  assert.match(onboarding, /loadOnboarding\(id, models\[0\]\?\.id \|\| ""\)/);
+  assert.match(onboarding, /const \[models, slack, catalog, config, customProvidersReady\] = await Promise\.all/);
+  assert.match(onboarding, /if \(!apiKey && !existing\?\.hasKey\)/);
+  assert.match(onboarding, /return \{ setupReady: true, customProvidersReady \}/);
+});

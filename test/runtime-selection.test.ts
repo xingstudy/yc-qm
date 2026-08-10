@@ -7,6 +7,7 @@ import {
 } from "../src/resolution/config-store.ts";
 import { resolveRuntimeChoice, resolveRuntimeChoiceDurable } from "../src/harness/harness-router.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { setCustomProviders } from "../src/model/custom-providers.ts";
 
 const ORG = "org:default-org" as const;
 const PERSONAL = "personal:alice" as const;
@@ -58,6 +59,32 @@ test("runtime resolution falls back to the first approved harness when deploymen
     harnessId: "codex",
     modelId: "gpt-5.6-sol",
   });
+});
+
+test("runtime resolution falls back after the selected custom model is removed", () => {
+  const config = createMemoryConfigStore("default-org");
+  const fallback = { harnessId: "pi" as const, modelId: "claude-opus-4-8" };
+  config.setApprovedHarnesses(["pi"]);
+  setCustomProviders([
+    {
+      id: "gateway",
+      name: "Gateway",
+      protocol: "openai",
+      baseUrl: "https://gateway.example/v1",
+      models: [{ id: "gateway-model" }],
+    },
+  ]);
+  try {
+    config.setRuntimeSelection(ORG, { harnessId: "pi", modelId: "gateway-model" });
+    assert.deepEqual(resolveRuntimeChoice(config, ORG, PERSONAL, fallback), {
+      harnessId: "pi",
+      modelId: "gateway-model",
+    });
+    setCustomProviders([]);
+    assert.deepEqual(resolveRuntimeChoice(config, ORG, PERSONAL, fallback), fallback);
+  } finally {
+    setCustomProviders([]);
+  }
 });
 
 test("runtime resolution reads approvals and selections from shared durable state on every turn", async () => {

@@ -52,8 +52,15 @@ test("anthropic-protocol providers produce anthropic-messages models with defaul
 });
 
 test("resolveModel falls back to custom models; built-ins shadow custom ids", () => {
-  setCustomProviders([{ ...GATEWAY, models: [{ id: "acme-large" }, { id: "claude-opus-5", name: "impostor" }] }]);
+  setCustomProviders([
+    {
+      ...GATEWAY,
+      models: [{ id: "acme-large" }, { id: "gpt-4o", name: "Gateway GPT" }, { id: "claude-opus-5", name: "impostor" }],
+    },
+  ]);
   assert.equal(resolveModel("acme-large")?.provider, "acme-gateway");
+  assert.equal(resolveModel("gpt-4o")?.provider, "acme-gateway");
+  assert.equal(resolveModel("gpt-4o")?.baseUrl, GATEWAY.baseUrl);
   // The built-in claude-opus-5 must win over a custom model claiming its id.
   assert.equal(String(resolveModel("claude-opus-5")?.provider), "anthropic");
 });
@@ -113,8 +120,46 @@ test("store round-trip: upsert encrypts the key, statuses never leak it, delete 
   assert.equal(await store.delete("acme-gateway", "admin@example.com"), true);
   assert.equal(await store.resolveKey("acme-gateway"), null);
   assert.deepEqual(await store.enabled(), []);
-  assert.equal((await store.statuses())[0]!.disabled, true);
+  const deleted = (await store.statuses())[0]!;
+  assert.equal(deleted.disabled, true);
+  assert.equal(deleted.hasKey, false);
+  await assert.rejects(store.upsert(GATEWAY, undefined, "admin@example.com"), /API key is required/);
   assert.equal(await store.delete("never-existed", "admin@example.com"), false);
+});
+
+test("keyless edits cannot change endpoints or overwrite a concurrent key rotation", async () => {
+  const store = createCustomProviderStore({
+    backing: createMemoryMap<StoredCustomProvider>(),
+    keyMaterial: "k",
+  });
+  await store.upsert(GATEWAY, "sk-old", "admin@example.com");
+  await assert.rejects(
+    store.upsert({ ...GATEWAY, baseUrl: "https://other.example/v1" }, undefined, "admin@example.com"),
+    /API key is required/,
+  );
+  await Promise.all([
+    store.upsert(GATEWAY, "sk-new", "rotator@example.com"),
+    store.upsert({ ...GATEWAY, name: "Renamed" }, undefined, "editor@example.com"),
+  ]);
+  assert.equal(await store.resolveKey(GATEWAY.id), "sk-new");
+});
+
+test("key rotations change the durable runtime fingerprint even within one millisecond", async () => {
+  const backing = createMemoryMap<StoredCustomProvider>();
+  const store = createCustomProviderStore({ backing, keyMaterial: "k" });
+  const realNow = Date.now;
+  Date.now = () => 42;
+  try {
+    await store.upsert(GATEWAY, "sk-old", "admin@example.com");
+    const before = await store.runtimeSnapshot();
+    await store.upsert(GATEWAY, "sk-new", "admin@example.com");
+    const after = await store.runtimeSnapshot();
+    assert.notEqual(after.fingerprint, before.fingerprint);
+    assert.equal((await backing.get(GATEWAY.id))?.updatedAt, 42);
+    assert.equal(await store.resolveKey(GATEWAY.id), "sk-new");
+  } finally {
+    Date.now = realNow;
+  }
 });
 
 test("store validates specs on upsert", async () => {
@@ -123,6 +168,19 @@ test("store validates specs on upsert", async () => {
     keyMaterial: "k",
   });
   await assert.rejects(store.upsert({ ...GATEWAY, id: "anthropic" }, "k", "a@b.c"), /reserved/);
+  await assert.rejects(store.upsert(GATEWAY, undefined, "a@b.c"), /API key is required/);
+});
+
+test("the runtime excludes historical providers without keys", async () => {
+  const backing = createMemoryMap<StoredCustomProvider>();
+  const store = createCustomProviderStore({ backing, keyMaterial: "k" });
+  await backing.put(GATEWAY.id, {
+    ...GATEWAY,
+    updatedAt: 1,
+    updatedBy: "legacy-import",
+  });
+  assert.deepEqual(await store.enabled(), []);
+  assert.equal((await store.statuses())[0]?.hasKey, false);
 });
 
 test("registered models surface in the catalog and vanish on unregister", () => {
