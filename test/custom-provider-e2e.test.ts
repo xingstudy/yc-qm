@@ -152,6 +152,19 @@ test("QA: full custom-provider lifecycle against a live fake upstream", async ()
     assert.equal(modelSupportedByHarness("qa-chat", "codex"), false);
     assert.equal(modelServiceable("qa-chat", { anthropic: false, openai: false, openrouter: false }), true);
 
+    r = await fetch(`${base}/v1/runtime-config?principalId=alice&scopeId=personal%3Aalice`);
+    assert.equal(r.status, 200);
+    const runtimeBody = (await r.json()) as {
+      modelsByHarness: Record<string, string[]>;
+      modelCatalog: Record<string, { name: string; provider: string; api?: string }>;
+    };
+    assert.ok(runtimeBody.modelsByHarness.pi!.includes("qa-chat"), "picker advertises the custom model");
+    assert.deepEqual(runtimeBody.modelCatalog["qa-chat"], {
+      name: "QA Chat",
+      provider: "qa",
+      api: "openai-completions",
+    });
+
     // 6. REAL model call through QM's pi path → fake upstream answers
     const reply = await oneShot(
       "qa",

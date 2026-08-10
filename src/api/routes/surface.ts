@@ -1164,10 +1164,10 @@ async function runtimeConfigBody(ctx: ApiCtx, scope: ScopeId): Promise<Record<st
   const advertisedModelIds = new Set(Object.values(modelsByHarness).flat());
   const modelCatalog = Object.fromEntries(
     [...advertisedModelIds].flatMap((id) => {
-      const model = catalog.find((candidate) => candidate.id === id);
-      if (model) return [[id, { name: model.name, provider: model.provider }]];
       const resolved = resolveModel(id);
-      return resolved ? [[id, { name: resolved.name, provider: resolved.provider }]] : [];
+      if (!resolved) return [];
+      const model = catalog.find((candidate) => candidate.id === id);
+      return [[id, { name: model?.name ?? resolved.name, provider: resolved.provider, api: resolved.api }]];
     }),
   );
   return {

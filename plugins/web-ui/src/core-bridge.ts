@@ -5,6 +5,7 @@ import { swallow } from "../../chassis/src/errors.ts";
 import { groupDmText } from "./group-dm-label.ts";
 import { base64ToBytes } from "./paste-text.ts";
 import { defaultEffortForModel, harnessSupportsEffort } from "./model-options.ts";
+import type { CatalogModelInfo } from "./pi-models.ts";
 
 const BASE_URL = ((import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? "/").replace(/\/$/, "");
 
@@ -473,7 +474,7 @@ export interface RuntimeConfig {
   scopeId: string;
   approvedHarnesses: string[];
   modelsByHarness: Record<string, string[]>;
-  modelCatalog: Record<string, { name: string; provider: string }>;
+  modelCatalog: Record<string, CatalogModelInfo>;
   orgDefault: { harnessId: string; modelId: string; effortLevel?: string; fastMode?: boolean; revision: number };
   scopeOverride: {
     harnessId: string;

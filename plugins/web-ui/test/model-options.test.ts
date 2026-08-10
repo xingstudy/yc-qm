@@ -197,3 +197,15 @@ test("a scope's own model list is derived without disturbing the active picker",
     "reading a scope's options never re-points the composer's picker",
   );
 });
+
+test("custom provider models from the runtime catalog stay in the picker", () => {
+  const catalog = { "qa-large": { name: "QA Large", provider: "qa", api: "openai-completions" } };
+  const scoped = runtimeModelOptions(["pi"], { pi: ["qa-large"] }, catalog);
+  assert.deepEqual(
+    scoped.map((o) => o.value),
+    ["pi:qa-large"],
+  );
+  assert.equal(scoped[0]!.label, "QA Large");
+  assert.equal(scoped[0]!.model.provider, "qa");
+  assert.equal(scoped[0]!.model.api, "openai-completions");
+});

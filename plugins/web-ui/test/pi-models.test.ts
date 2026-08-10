@@ -30,6 +30,20 @@ test("models this pi-ai build lacks are cloned from a template of their own prov
   assert.equal(sol.provider, "openai", "an OpenAI model never resolves through an Anthropic template");
 });
 
+test("custom provider models resolve from the runtime catalog entry, whatever the provider", () => {
+  const viaOpenai = getBaseModel("qa-large", { name: "QA Large", provider: "qa", api: "openai-completions" });
+  assert.equal(viaOpenai.id, "qa-large");
+  assert.equal(viaOpenai.name, "QA Large");
+  assert.equal(viaOpenai.provider, "qa");
+  assert.equal(viaOpenai.api, "openai-completions");
+
+  const viaAnthropic = getBaseModel("qa-claude", { name: "QA Claude", provider: "qa", api: "anthropic-messages" });
+  assert.equal(viaAnthropic.provider, "qa");
+  assert.equal(viaAnthropic.api, "anthropic-messages");
+
+  assert.throws(() => getBaseModel("qa-large", { name: "QA Large", provider: "qa" }), /Unsupported/);
+});
+
 test("fast-mode support is fed from core's runtime config, not a hardcoded client copy", () => {
   setFastModeModelIds(null, []);
   assert.equal(modelSupportsFastMode(null, "claude-opus-4-8"), false);

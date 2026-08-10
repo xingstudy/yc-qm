@@ -198,13 +198,14 @@ test("OpenRouter catalog exposes runtime-supported tool models as selectable bas
     assert.equal(runtime.status, 200);
     const runtimeBody = (await runtime.json()) as {
       modelsByHarness: Record<string, string[]>;
-      modelCatalog: Record<string, { name: string; provider: string }>;
+      modelCatalog: Record<string, { name: string; provider: string; api?: string }>;
       effective: { harnessId: string; modelId: string };
     };
     assert.ok(runtimeBody.modelsByHarness.pi!.includes("anthropic/claude-sonnet-4.5"));
     assert.deepEqual(runtimeBody.modelCatalog["anthropic/claude-sonnet-4.5"], {
       name: "Anthropic: Claude Sonnet 4.5",
       provider: "openrouter",
+      api: "openai-completions",
     });
     assert.deepEqual(runtimeBody.effective, { harnessId: "pi", modelId: "anthropic/claude-sonnet-4.5" });
 

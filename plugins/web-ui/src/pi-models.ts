@@ -14,6 +14,12 @@ const CLONE_TEMPLATES: Readonly<Record<string, { template: string; name: string 
 
 type PiModel = Model<Api>;
 
+export interface CatalogModelInfo {
+  name: string;
+  provider: string;
+  api?: string;
+}
+
 function builtinModel(id: string): PiModel | undefined {
   for (const provider of KNOWN_PROVIDERS) {
     const model = getModel(provider, id as Parameters<typeof getModel>[1]) as PiModel | undefined;
@@ -22,7 +28,7 @@ function builtinModel(id: string): PiModel | undefined {
   return undefined;
 }
 
-export function getBaseModel(id: string, fallback?: { name: string; provider: string }): PiModel {
+export function getBaseModel(id: string, fallback?: CatalogModelInfo): PiModel {
   const builtin = builtinModel(id);
   if (builtin) return builtin;
   const clone = CLONE_TEMPLATES[id];
@@ -30,11 +36,23 @@ export function getBaseModel(id: string, fallback?: { name: string; provider: st
     const template = builtinModel(clone.template);
     if (template) return cloneModel(template, id, clone.name);
   }
-  if (fallback?.provider === "openrouter") {
-    const template = getModel("openrouter", "openrouter/auto" as Parameters<typeof getModel>[1]) as PiModel | undefined;
-    if (template) return cloneModel(template, id, fallback.name);
-  }
+  if (fallback?.api) return dynamicModel(id, fallback as CatalogModelInfo & { api: string });
   throw new Error(`Unsupported model: ${id}`);
+}
+
+function dynamicModel(id: string, info: CatalogModelInfo & { api: string }): PiModel {
+  return {
+    id,
+    name: info.name,
+    provider: info.provider,
+    api: info.api,
+    baseUrl: "",
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128_000,
+    maxTokens: 8_192,
+  } as PiModel;
 }
 
 function cloneModel(model: PiModel, id: string, name: string): PiModel {
