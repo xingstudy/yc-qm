@@ -59,7 +59,10 @@ predate this skill becoming the default):
 - The model key that drives the inner browser agent — always required, named for the
   provider core resolved:
   `BROWSE_LAB_ANTHROPIC_KEY`, `BROWSE_LAB_OPENAI_KEY`, or `BROWSE_LAB_OPENROUTER_KEY`. Core sets
-  `BROWSE_LAB_MODEL_PROVIDER` alongside it so the runner picks the matching client.
+  `BROWSE_LAB_MODEL_PROVIDER` alongside it so the runner picks the matching client, and
+  delivers the key itself from the org's model provider config (an admin-saved provider
+  key, or a custom provider with its own endpoint) — an explicit Sandbox-env credential
+  under the same name overrides the derived one.
 - Remote providers only: your provider key — `KERNEL_API_KEY`, `ANCHOR_API_KEY`, or
   `BROWSERBASE_API_KEY`, the org key for creating the stealth browser.
 - Remote providers only: the person's OWN browser-profile name, under the env key your
@@ -207,7 +210,7 @@ class FastChatAnthropic(ChatAnthropic):
 
 OPENAI_COMPATIBLE = {
     "openai": ("BROWSE_LAB_OPENAI_KEY", None),
-    "openrouter": ("BROWSE_LAB_OPENROUTER_KEY", "https://openrouter.ai/api/v1"),
+    "openrouter": ("BROWSE_LAB_OPENROUTER_KEY", os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")),
 }
 if PROVIDER in OPENAI_COMPATIBLE:
     from browser_use import ChatOpenAI

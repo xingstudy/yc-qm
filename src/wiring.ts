@@ -1006,6 +1006,8 @@ export function buildApp(
     resolveConnectorClient: resolveClient,
     ...(keychain ? { keychain } : {}),
     serviceCreds: credentialStore,
+    modelCredentials,
+    customProviders,
     deliveries,
     approvals,
     approvalGrants: artifactMap<CommandApprovalGrant>("approval_grants"),

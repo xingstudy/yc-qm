@@ -11,6 +11,7 @@ import type { Config } from "../src/config.ts";
 import type { ProvisionOptions, Sandbox } from "../src/sandbox/sandbox.ts";
 import { verifyCapabilityToken, EGRESS_PROXY_AUD } from "../src/auth/capability-token.ts";
 import { egressClaimAllowingControlPlane } from "../src/core/orchestrator.ts";
+import { resolveModel } from "../src/model/pi-models.ts";
 import { TURN_FILES_DIR, turnFileId } from "../src/core/attachments.ts";
 import { contextSummaryPayload } from "../src/harness/context-compaction.ts";
 import { egressDecision } from "../src/resolution/egress-policy.ts";
@@ -693,7 +694,7 @@ test("browse follows a live org base model change, not the process-start default
   assert.equal(captured?.env?.BROWSE_LAB_MODEL_PROVIDER, "openai");
 });
 
-test("browse does not send a custom base model to a runner that cannot use custom provider credentials", async () => {
+test("browse derives key and base URL from a custom provider's admin config", async () => {
   const built = freshApp();
   const { app, sandbox } = built;
   let captured: ProvisionOptions | undefined;
@@ -718,12 +719,87 @@ test("browse does not send a custom base model to a runner that cannot use custo
   try {
     const result = await app.turn(dm("!run echo browse", { conversation: { kind: "dm", threadRef: "dm:U1:custom" } }));
     assert.equal(result.status, "ok");
-    assert.equal(captured?.env?.BROWSE_LAB_MODEL, undefined);
-    assert.equal(captured?.env?.BROWSE_LAB_MODEL_PROVIDER, undefined);
+    assert.equal(captured?.env?.BROWSE_LAB_MODEL, "gateway-model");
+    assert.equal(captured?.env?.BROWSE_LAB_MODEL_PROVIDER, "openai", "an openai-protocol provider maps to the runner's OpenAI client");
+    assert.equal(captured?.env?.BROWSE_LAB_OPENAI_KEY, "sk-gateway", "the admin-configured provider key rides the provision env");
+    assert.equal(captured?.env?.OPENAI_BASE_URL, "https://gateway.example/v1", "the provider's base URL rides with it");
   } finally {
     await built.customProviders.delete("gateway", "admin@example.com");
     await built.refreshCustomProviders();
   }
+});
+
+test("an explicit browse key credential overrides the provider-derived key", async () => {
+  const built = freshApp();
+  const { app, sandbox, serviceCreds } = built;
+  let captured: ProvisionOptions | undefined;
+  const realProvision = sandbox.provision.bind(sandbox);
+  sandbox.provision = (layers, opts) => {
+    captured = opts;
+    return realProvision(layers, opts);
+  };
+  await built.customProviders.upsert(
+    {
+      id: "gateway",
+      name: "Gateway",
+      protocol: "openai",
+      baseUrl: "https://gateway.example/v1",
+      models: [{ id: "gateway-model" }],
+    },
+    "sk-gateway",
+    "admin@example.com",
+  );
+  await built.refreshCustomProviders();
+  built.config.setBaseModel("org:default-org", "gateway-model");
+  await serviceCreds.setServiceCredential(scopeId("org", "default-org"), {
+    slug: "browse-openai-key",
+    name: "Browse OpenAI key",
+    delivery: "env",
+    envKey: "BROWSE_LAB_OPENAI_KEY",
+    secret: "sk-explicit",
+    host: "",
+  });
+  try {
+    const result = await app.turn(dm("!run echo browse", { conversation: { kind: "dm", threadRef: "dm:U1:custom2" } }));
+    assert.equal(result.status, "ok");
+    assert.equal(captured?.env?.BROWSE_LAB_OPENAI_KEY, "sk-explicit", "the service credential wins over the provider store");
+    assert.equal(
+      captured?.env?.OPENAI_BASE_URL,
+      undefined,
+      "an overridden key keeps the runner on the SDK default endpoint — key and base URL are a matched pair",
+    );
+  } finally {
+    await built.customProviders.delete("gateway", "admin@example.com");
+    await built.refreshCustomProviders();
+  }
+});
+
+test("browse rides the admin-saved model credential for a builtin provider", async () => {
+  const config = testConfig({
+    dataDir: mkdtempSync(join(tmpdir(), "ap-")),
+    signingSecret: "test-secret",
+    apiBaseUrl: "https://core.example.com",
+  });
+  const built = buildApp(config);
+  const { app, sandbox } = built;
+  let captured: ProvisionOptions | undefined;
+  const realProvision = sandbox.provision.bind(sandbox);
+  sandbox.provision = (layers, opts) => {
+    captured = opts;
+    return realProvision(layers, opts);
+  };
+  await built.modelCredentials.set("openai", "openai-admin-key", "admin@example.com");
+  built.config.setBaseModel("org:default-org", "gpt-5.6-sol");
+  const res = await app.turn(dm("!run echo keys", { conversation: { kind: "dm", threadRef: "dm:U1:builtinkey" } }));
+  assert.equal(res.status, "ok");
+  assert.equal(captured?.env?.BROWSE_LAB_MODEL, "gpt-5.6-sol");
+  assert.equal(captured?.env?.BROWSE_LAB_MODEL_PROVIDER, "openai");
+  assert.equal(captured?.env?.BROWSE_LAB_OPENAI_KEY, "openai-admin-key", "the builtin provider's key comes from the model credential store");
+  assert.equal(
+    captured?.env?.OPENAI_BASE_URL,
+    resolveModel("gpt-5.6-sol")?.baseUrl,
+    "the endpoint the harness uses rides with the key",
+  );
 });
 
 test("an OpenAI deployment tells the browse runner to build an OpenAI client", async () => {

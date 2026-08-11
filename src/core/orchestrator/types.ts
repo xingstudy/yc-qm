@@ -23,6 +23,8 @@ import type { ProcessRegistry } from "../../processes/process-registry.ts";
 import type { MonitorStore } from "../../monitors/monitor-store.ts";
 import type { CronStore } from "../../cron/cron-store.ts";
 import type { ConnectorTokenStore, Keychain, ServiceCredentialStore } from "../../credentials/keychain.ts";
+import type { ModelCredentialStore } from "../../model/model-credential-store.ts";
+import type { CustomProviderStore } from "../../model/custom-provider-store.ts";
 import type { DeviceFlowCutoverStore } from "../../credentials/device-flow-cutover.ts";
 import type { CredentialUsageSink } from "../../admin/credential-usage-sink.ts";
 import type { LivenessCache } from "../../credentials/resident-auth.ts";
@@ -152,6 +154,8 @@ export interface OrchestratorDeps {
   credentialUsage?: CredentialUsageSink;
   keychain?: Keychain;
   serviceCreds?: ServiceCredentialStore;
+  modelCredentials?: ModelCredentialStore;
+  customProviders?: CustomProviderStore;
   deliveries?: DeliveryStore;
   directory?: DirectoryStore;
   managedGroups?: Pick<ManagedGroupDirectory, "recognizes" | "members" | "version" | "withVersion">;

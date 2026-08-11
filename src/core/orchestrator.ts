@@ -127,7 +127,7 @@ import { randomUUID } from "node:crypto";
 import { LRUCache } from "lru-cache";
 import type { SkillResolution } from "../skills/skill-store.ts";
 import type { Orchestrator, OrchestratorDeps, OrchestratorInput } from "./orchestrator/types.ts";
-import { resolveModel } from "../model/pi-models.ts";
+import { resolveModel, type ModelProvider } from "../model/pi-models.ts";
 import {
   MAX_AUTO_ATTACHMENT_SCREEN_BYTES,
   approvalGrantId,
@@ -168,7 +168,28 @@ class ProjectRosterChanged extends Error {}
 
 const ACTIVITY_ENTRY_TYPES = new Set<EntryType>(["tool_call", "tool_result", "approval_request", "approval_resolved"]);
 
-function knownBrowseModel(id: string | null | undefined): { id: string; provider: string } | undefined {
+type BrowseChoice = {
+  id: string;
+  provider: ModelProvider;
+  keyEnv: string;
+  key?: string;
+  baseUrlEnv: string;
+  baseUrl: string;
+};
+
+const BROWSE_MODEL_KEY_ENV: Record<ModelProvider, string> = {
+  anthropic: "BROWSE_LAB_ANTHROPIC_KEY",
+  openai: "BROWSE_LAB_OPENAI_KEY",
+  openrouter: "BROWSE_LAB_OPENROUTER_KEY",
+};
+
+const BROWSE_MODEL_BASE_URL_ENV: Record<ModelProvider, string> = {
+  anthropic: "ANTHROPIC_BASE_URL",
+  openai: "OPENAI_BASE_URL",
+  openrouter: "OPENROUTER_BASE_URL",
+};
+
+function knownBrowseModel(id: string | null | undefined): { id: string; provider: ModelProvider } | undefined {
   const provider = id ? resolveModel(id)?.provider : undefined;
   return id && (provider === "anthropic" || provider === "openai" || provider === "openrouter")
     ? { id, provider }
@@ -198,6 +219,39 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
   const memoryStrategy =
     deps.memoryStrategy ?? createPerTurnStrategy({ harness: deps.harness.models, memory: deps.memory });
   const blobTransfer = deps.blobTransfer ?? createMemoryBlobTransferStore();
+
+  async function resolveBrowseChoice(id: string | null | undefined): Promise<BrowseChoice | undefined> {
+    if (!id) return undefined;
+    const model = resolveModel(id);
+    if (!model) return undefined;
+    const known = knownBrowseModel(id);
+    if (known) {
+      const key = await deps.modelCredentials
+        ?.resolve(known.provider)
+        .catch(swallowAs("orchestrator: browse model key", null));
+      return {
+        ...known,
+        keyEnv: BROWSE_MODEL_KEY_ENV[known.provider],
+        ...(key ? { key } : {}),
+        baseUrlEnv: BROWSE_MODEL_BASE_URL_ENV[known.provider],
+        baseUrl: model.baseUrl,
+      };
+    }
+    if (!deps.customProviders) return undefined;
+    const key = await deps.customProviders
+      .resolveKey(model.provider)
+      .catch(swallowAs("orchestrator: browse custom provider key", null));
+    if (!key) return undefined;
+    const provider: ModelProvider = model.api === "anthropic-messages" ? "anthropic" : "openai";
+    return {
+      id,
+      provider,
+      keyEnv: BROWSE_MODEL_KEY_ENV[provider],
+      key,
+      baseUrlEnv: BROWSE_MODEL_BASE_URL_ENV[provider],
+      baseUrl: model.baseUrl,
+    };
+  }
 
   const pendingCaptures = new Map<ScopeId, Promise<void>>();
 
@@ -1016,11 +1070,18 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         if (browseSteps && !("BROWSE_LAB_MAX_STEPS" in connectorEnv))
           connectorEnv.BROWSE_LAB_MAX_STEPS = String(browseSteps);
         const browseChoice =
-          knownBrowseModel(deps.config?.getBrowseModel(toScopeId("org", orgId()))) ??
-          knownBrowseModel(deps.resolveBaseModelId?.());
-        if (browseChoice && !("BROWSE_LAB_MODEL" in connectorEnv)) {
-          connectorEnv.BROWSE_LAB_MODEL = browseChoice.id;
-          connectorEnv.BROWSE_LAB_MODEL_PROVIDER = browseChoice.provider;
+          (await resolveBrowseChoice(deps.config?.getBrowseModel(toScopeId("org", orgId())))) ??
+          (await resolveBrowseChoice(deps.resolveBaseModelId?.()));
+        if (browseChoice) {
+          if (!("BROWSE_LAB_MODEL" in connectorEnv)) {
+            connectorEnv.BROWSE_LAB_MODEL = browseChoice.id;
+            connectorEnv.BROWSE_LAB_MODEL_PROVIDER = browseChoice.provider;
+          }
+          if (browseChoice.key && !(browseChoice.keyEnv in connectorEnv)) {
+            connectorEnv[browseChoice.keyEnv] = browseChoice.key;
+            if (!(browseChoice.baseUrlEnv in connectorEnv))
+              connectorEnv[browseChoice.baseUrlEnv] = browseChoice.baseUrl;
+          }
         }
       }
       let actorIsOrgAdmin = false;
