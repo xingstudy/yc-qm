@@ -17,13 +17,14 @@ if [[ -n "${FLY_SANDBOX_APP_NAME:-}" ]] && command -v flyctl >/dev/null 2>&1; th
   BASE_REF="registry.fly.io/${FLY_SANDBOX_APP_NAME}:dev"
   echo "==> building ${BASE_REF} from fly/Dockerfile on Fly's remote amd64 builder"
   flyctl deploy --build-only --push --remote-only --image-label dev \
+    --build-arg INSTALL_BROWSER_ENGINE=1 \
     --app "${FLY_SANDBOX_APP_NAME}" -c fly/fly.toml --dockerfile fly/Dockerfile . --yes
   flyctl auth docker
   docker pull --platform "${PLATFORM}" "${BASE_REF}"
   docker tag "${BASE_REF}" "${BASE_TAG}"
 else
   echo "==> building ${BASE_TAG} from fly/Dockerfile (${PLATFORM})"
-  docker build --platform "${PLATFORM}" -f fly/Dockerfile -t "${BASE_TAG}" .
+  docker build --platform "${PLATFORM}" -f fly/Dockerfile --build-arg INSTALL_BROWSER_ENGINE=1 -t "${BASE_TAG}" .
 fi
 
 echo "==> building ${LOCAL_TAG} from local/Dockerfile (fingerprint ${FINGERPRINT})"

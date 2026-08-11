@@ -7,6 +7,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - postgres-data:/var/lib/postgresql
+    ports:
+      - ${QM_INTERNAL_BIND_ADDRESS:-127.0.0.1}:${QM_POSTGRES_PORT:-5432}:5432
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
@@ -39,21 +41,25 @@ services:
       HARNESS_SECURITY_POSTURE: ${HARNESS_SECURITY_POSTURE:-auto}
       SESSION_STORE: postgres
       RUN_STORE: postgres
-      DATABASE_URL: postgresql://${POSTGRES_USER:-qm}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-qm}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-qm}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@127.0.0.1:${QM_POSTGRES_PORT:-5432}/${POSTGRES_DB:-qm}
       CONNECTOR_SECRET_KEY: ${CONNECTOR_SECRET_KEY:?Set CONNECTOR_SECRET_KEY in .env}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET in .env}
       CAPABILITY_SECRET: ${CAPABILITY_SECRET:?Set CAPABILITY_SECRET in .env}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET:?Set PORTAL_IDENTITY_SECRET in .env}
       REQUIRE_SIGNED_PORTAL_IDENTITY: "1"
-      SANDBOX_BACKEND: ${SANDBOX_BACKEND:-local}
+      SANDBOX_BACKEND: local
+      AGENT_API_URL: http://host.docker.internal:8080
+      PUBLIC_WEB_URL: ${PORTAL_PUBLIC_URL:-http://localhost:8088}
       DATA_DIR: /data
     depends_on:
       postgres:
         condition: service_healthy
-    ports:
-      - ${QM_INTERNAL_BIND_ADDRESS:-127.0.0.1}:${QM_PORT:-8080}:8080
+    network_mode: host
+    group_add:
+      - "${DOCKER_GID:?Set DOCKER_GID in .env — see .env.example}"
     volumes:
       - core-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
     init: true
     restart: unless-stopped
     stop_grace_period: 300s
@@ -85,6 +91,8 @@ services:
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET:?Set PORTAL_IDENTITY_SECRET in .env}
       WEB_UI_PUBLIC_URL: ${PORTAL_PUBLIC_URL:-http://localhost:8088}
       WEB_UI_PRINCIPALS: ${WEB_UI_PRINCIPALS:-}
+    extra_hosts:
+      - core:host-gateway
     depends_on:
       core:
         condition: service_healthy
@@ -119,6 +127,8 @@ services:
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET in .env}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET:?Set PORTAL_IDENTITY_SECRET in .env}
       ADMIN_BASE_PATH: /admin
+    extra_hosts:
+      - core:host-gateway
     depends_on:
       core:
         condition: service_healthy
@@ -173,6 +183,8 @@ services:
       OIDC_ALLOWED_EMAILS: ${OIDC_ALLOWED_EMAILS:-}
       AUTH_BROKER_UPSTREAM: ${AUTH_BROKER_UPSTREAM:-}
       AUTH_BROKER_PREFIX: ${AUTH_BROKER_PREFIX:-/idp}
+    extra_hosts:
+      - core:host-gateway
     command:
       - /bin/sh
       - -ec
@@ -236,6 +248,8 @@ services:
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_TLS: ${SMTP_TLS:-starttls}
+    extra_hosts:
+      - core:host-gateway
     depends_on:
       core:
         condition: service_healthy

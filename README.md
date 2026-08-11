@@ -119,7 +119,8 @@ and this repository has no production deployment workflow. See
 The repository includes a Compose stack for Postgres, the private core API, Web UI,
 Admin, Portal, and an Nginx edge. It is useful for local development and evaluation;
 production operators still need TLS certificates, secret management, backups,
-monitoring, and an isolated sandbox.
+monitoring, and an isolated sandbox. The stack requires Linux (native Docker or WSL2):
+core uses host networking to reach its sandbox containers.
 
 Set `POSTGRES_PASSWORD`, `CONNECTOR_SECRET_KEY`, `CORE_SIGNING_SECRET`,
 `CAPABILITY_SECRET`, `PORTAL_IDENTITY_SECRET`, and `PORTAL_SESSION_SECRET` to
@@ -134,12 +135,15 @@ curl -fsS http://127.0.0.1:8088/healthz
 
 Open `http://localhost:8088/` for the user interface and
 `http://localhost:8088/admin/` for administration. To run real agent turns, configure
-the `pi` harness selected by `.env.example` with a model provider and a supported
-sandbox in `.env`; the local sandbox needs its own
-deliberately secured Docker integration and image, so it is not enabled by this Compose
-file. Shut the stack down with `docker compose down` (without `-v` if you want to retain
-Postgres data). See [`docs/docker-compose.md`](./docs/docker-compose.md) for service,
-authentication, and production-edge configuration.
+the `pi` harness selected by `.env.example` with a model provider in `.env`. The Compose
+file wires core to the host Docker daemon for the local sandbox: set `DOCKER_GID` in
+`.env` to the socket's group id (`stat -c %g /var/run/docker.sock`) and build the sandbox
+image once with `npm run sandbox:local:build` (or two plain `docker build`s — see
+`scripts/local-sandbox-build.sh`). The socket mount grants core near-root control of the
+host, which suits a single-tenant box only. Shut the stack down with `docker compose
+down` (without `-v` if you want to retain Postgres data). See
+[`docs/docker-compose.md`](./docs/docker-compose.md) for service, authentication, and
+production-edge configuration.
 
 ## Contributing
 

@@ -1,19 +1,20 @@
 ---
 name: browse
-description: Drive a real stealth browser from your shell — act on websites (order food, file an expense, pull data behind a login), with per-person persistent sign-ins via the provider's managed auth (Kernel, Anchor, or Browserbase — picked by which API key you have). Use for ACTING on a site; to just read a page, use curl/wget first. Requires keychain grants for the provider key and the browser model key; without them, follow the missing-key steps below.
+description: Drive a real browser from your shell — act on websites (order food, file an expense, pull data behind a login), with per-person persistent sign-ins. The browser is a hosted stealth browser (Kernel, Anchor, or Browserbase — picked by which API key you have) or, when no provider key is set, your computer's own local Chromium. Use for ACTING on a site; to just read a page, use curl/wget first. Requires the browser model key; remote providers also need their provider key — without either, follow the missing-key steps below.
 ---
 
 # Browse (the skill-based browser)
 
 This is the platform's browser: the logic lives in this skill and runs in your shell; only
 the heavy runtime (browser-use + Chromium) is baked into your computer's image at
-`/opt/browser-engine/venv`. The browser itself is a remote stealth browser you drive over
-CDP, hosted by whichever provider the deployment configures. It is slow and expensive — for _acting on_ a site, not
+`/opt/browser-engine/venv`. The browser you drive over CDP is either a remote stealth
+browser hosted by whichever provider the deployment configures, or — when no provider key
+is set — the Chromium already in your computer's image (the local provider). It is slow and expensive — for _acting on_ a site, not
 reading one. To retrieve information (read a page, check a price, hit an API), reach for
 `curl`/`wget` first; browse only when you must interact — sign in, fill and submit forms,
 click through a flow — or when a plain fetch is genuinely blocked by heavy JS or a bot wall.
-(To verify a localhost site you built, don't use this at all — a remote browser can't reach
-your loopback; use the local headless `chromium` binary.)
+(A remote provider's browser can't reach your loopback; the local provider's browser runs
+on your computer and reaches whatever it reaches, host services included.)
 
 ## Pick the provider
 
@@ -33,8 +34,9 @@ person's own keychain key overrides the org one. Keys you may see today:
 - Several set → the first in the order above, unless the person asks for another or the
   chosen key is rejected (401/403 on browser create) — a dead key means that provider is
   absent, not that browsing is.
-- None set → org-key browsing is off here (externals in the room, or the admin saved no
-  provider key). Say so rather than hunting for keys.
+- None set → **local**: read `skills/browse/providers/local.md` and browse with your
+  computer's own Chromium. No provider key, no profile credential — but also no stealth,
+  no live view, and no managed sign-in flow.
 
 Read the provider doc BEFORE creating anything — it owns every provider-shaped step:
 creating and deleting the browser, the person's profile, routing a sign-in wall, and giving
@@ -51,15 +53,17 @@ profile, and decline tasks that need an account.
 
 ## Prerequisites (each run)
 
-You need three values (the `BROWSE_LAB_*` names are historical — they predate this skill
-becoming the default):
+What you need depends on the provider (the `BROWSE_LAB_*` names are historical — they
+predate this skill becoming the default):
 
-- Your provider key — `KERNEL_API_KEY`, `ANCHOR_API_KEY`, or `BROWSERBASE_API_KEY`, the
-  org key for creating the stealth browser.
-- The model key that drives the inner browser agent, named for the provider core resolved:
+- The model key that drives the inner browser agent — always required, named for the
+  provider core resolved:
   `BROWSE_LAB_ANTHROPIC_KEY`, `BROWSE_LAB_OPENAI_KEY`, or `BROWSE_LAB_OPENROUTER_KEY`. Core sets
   `BROWSE_LAB_MODEL_PROVIDER` alongside it so the runner picks the matching client.
-- The person's OWN browser-profile name, under the env key your provider doc names. The
+- Remote providers only: your provider key — `KERNEL_API_KEY`, `ANCHOR_API_KEY`, or
+  `BROWSERBASE_API_KEY`, the org key for creating the stealth browser.
+- Remote providers only: the person's OWN browser-profile name, under the env key your
+  provider doc names. The
   provider doc's header has an `export PROFILE_ENV=… PROFILE_SERVICE=…` line the profile
   snippets below depend on — run it first. **The profile name is the credential that decides
   whose signed-in sessions the browser wakes up with** — treat it exactly like a password:
@@ -67,9 +71,12 @@ becoming the default):
   and its owner should never grant it into a shared scope. Profiles are provider-bound:
   one provider's value (a Kernel or Anchor profile name, a Browserbase context id) means
   nothing at another — never register one provider's profile under another's env key.
+  The local provider keeps its profile as an on-disk directory instead — its doc owns
+  that; skip every profile snippet below in local mode.
 
-**Check your environment first**: on most deployments the org configures the two API keys,
-so the provider key and the model key are already set in your shell — skip
+**Check your environment first**: on most deployments the org configures the keys,
+so the model key (and the provider key, for a remote provider) is already set in your
+shell — with a remote provider, skip
 straight to the profile check below. Only when one is absent do the keys go through the
 keychain: materialize your grant (your keychain manifest shows the grant id), then source it:
 
