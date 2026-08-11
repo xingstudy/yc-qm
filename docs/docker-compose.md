@@ -15,14 +15,14 @@ Each application listens on port 8080 inside the Compose network, except core, w
 runs with `network_mode: host` so it can reach the per-scope sandbox containers on their
 host-published loopback ports. The default host ports are:
 
-| Service  | Host port | Purpose                     |
-| -------- | --------: | --------------------------- |
-| Nginx    |      8088 | Browser entry point         |
-| core     |      8080 | Private API diagnostics     |
-| Admin    |      8090 | Direct diagnostics          |
-| Web UI   |      8096 | Direct diagnostics          |
-| Portal   |      8097 | Direct diagnostics          |
-| auth     |      8099 | Optional broker diagnostics |
+| Service  | Host port | Purpose                                                 |
+| -------- | --------: | ------------------------------------------------------- |
+| Nginx    |      8088 | Browser entry point                                     |
+| core     |      8080 | Private API diagnostics                                 |
+| Admin    |      8090 | Direct diagnostics                                      |
+| Web UI   |      8096 | Direct diagnostics                                      |
+| Portal   |      8097 | Direct diagnostics                                      |
+| auth     |      8099 | Optional broker diagnostics                             |
 | Postgres |      5432 | Loopback only, for core's host-networked `DATABASE_URL` |
 
 Set `QM_BIND_ADDRESS` for Nginx, `QM_INTERNAL_BIND_ADDRESS` for diagnostic ports, and
@@ -35,8 +35,8 @@ because those services require the signed identity produced by Portal.
 Core is the exception to that loopback posture: host networking binds its API to port
 8080 on every host interface — sandbox containers reach it through the bridge gateway,
 so it cannot be loopback-only. Firewall 8080 (and keep 5432 on loopback) on any machine
-with untrusted LAN peers, and run this stack on Linux; `network_mode: host` does not
-work under Docker Desktop for Mac.
+with untrusted LAN peers. This reference stack is supported only on Linux or WSL2,
+regardless of host-network feature availability on other platforms.
 
 Portal and Nginx refuse to start if localhost login bypass is enabled while the relevant
 bind address is non-loopback. In that mode Nginx selects its loopback-only development
@@ -50,15 +50,35 @@ Copy the environment template and generate a distinct value for every required s
 
 ```bash
 cp .env.example .env
-openssl rand -hex 32
+
+qm_socket_gid="$(stat -c %g /var/run/docker.sock)"
+sed -i "s/^DOCKER_GID=.*/DOCKER_GID=${qm_socket_gid}/" .env
+
+for qm_secret_name in \
+  POSTGRES_PASSWORD \
+  CONNECTOR_SECRET_KEY \
+  CORE_SIGNING_SECRET \
+  CAPABILITY_SECRET \
+  PORTAL_IDENTITY_SECRET \
+  PORTAL_SESSION_SECRET \
+  SKILL_SIGNING_SECRET
+do
+  qm_secret_value="$(openssl rand -hex 32)"
+  sed -i "s/^${qm_secret_name}=.*/${qm_secret_name}=${qm_secret_value}/" .env
+done
 ```
 
 Set `POSTGRES_PASSWORD`, `CONNECTOR_SECRET_KEY`, `CORE_SIGNING_SECRET`,
-`CAPABILITY_SECRET`, `PORTAL_IDENTITY_SECRET`, and `PORTAL_SESSION_SECRET` in `.env`.
-The four authentication secrets must be distinct.
+`CAPABILITY_SECRET`, `PORTAL_IDENTITY_SECRET`, `PORTAL_SESSION_SECRET`, and
+`SKILL_SIGNING_SECRET` in `.env`. The generated signing and encryption secrets must be
+distinct. Compose requires `DOCKER_GID` while resolving its configuration, so set it
+before the first `docker compose` command.
 
 ```bash
-docker compose up --build --wait
+npm ci
+npm run sandbox:local:build
+docker compose config --quiet
+docker compose up -d --build --wait
 curl -fsS http://127.0.0.1:8080/healthz
 curl -fsS http://127.0.0.1:8088/healthz
 ```
@@ -68,20 +88,23 @@ login bypass as `dev-admin`. Set `ADMIN_GRANTS=dev-admin:org_admin` before the f
 boot of a new database if that principal should administer the instance.
 
 The named `postgres-data` and `core-data` volumes survive `docker compose down`.
-`docker compose down -v` deletes both volumes and the durable local data they contain.
+`docker compose down -v` deletes both of those volumes, but it does not delete the
+per-scope `qm-home-*` volumes created by the local sandbox backend.
 
 ## Production authentication
 
 Set `NODE_ENV=production`, `PORTAL_LOCAL_AUTH_BYPASS=0`, an HTTPS
 `PORTAL_PUBLIC_URL`, and the Portal OIDC variables. Portal refuses to start in production
 with missing or placeholder secrets, insecure endpoints, or no configured identity
-boundary.
+boundary. Set `OIDC_ALLOWED_EMAIL_DOMAIN`, `OIDC_ALLOWED_EMAILS`, or
+`PORTAL_EXPECTED_TEAM_ID` to constrain that boundary to an email domain, explicit email
+list, or Slack workspace.
 
 The optional built-in email broker requires its full `AUTH_*` configuration and either
 Resend or SMTP credentials. Enable it with:
 
 ```bash
-docker compose --profile auth up --build --wait
+docker compose --profile auth up -d --build --wait
 ```
 
 Give `auth` the issuer `${PORTAL_PUBLIC_URL}/idp`, configure Portal's broker upstream as
@@ -107,14 +130,17 @@ socket and spawns one `qm-sandbox-local` container per scope, reaching each on t
 loopback (core uses `network_mode: host`; sandbox agent URLs inside those containers
 resolve `host.docker.internal`). The socket mount grants core near-root control of the
 host — appropriate for a single-tenant machine, not a shared one. Build the sandbox image
-before the first agent turn:
+before the first agent turn and after updating sandbox sources:
 
 ```bash
-npm run sandbox:local:build   # or run the two docker builds in scripts/local-sandbox-build.sh
+npm run sandbox:local:build
 ```
 
+The script runs the two Docker builds defined in `scripts/local-sandbox-build.sh`.
+
 `DOCKER_GID` in `.env` must match the socket's group id (`stat -c %g
-/var/run/docker.sock`) so the unprivileged core process can open it.
+/var/run/docker.sock`) so the unprivileged core process can open it. The start procedure
+above sets it before Compose validates the file.
 
 Operate the stack with:
 
@@ -123,6 +149,24 @@ docker compose ps
 docker compose logs --tail=200 core portal nginx
 docker compose down
 ```
+
+`--wait` and `/healthz` are liveness checks, not end-to-end readiness checks. Verify a
+real browser sign-in, agent turn, sandbox creation, model call, and any required connector
+before relying on the deployment.
+
+After checking out an approved source revision, take a tested backup and rebuild both the
+sandbox and application images:
+
+```bash
+npm ci
+npm run sandbox:local:build
+docker compose up -d --build --wait
+```
+
+Durable state spans the `postgres-data` and `core-data` Compose volumes plus per-scope
+`qm-home-*` Docker volumes created by the local sandbox backend. A recovery plan must
+cover all three stores and the encryption/signing secrets required to use them. Compose
+does not provide database rollback, high availability, or zero-downtime rollout.
 
 A production installation additionally needs tested database backups, external secret
 management, monitoring, resource limits, and a supported isolated sandbox. Fly and AWS
