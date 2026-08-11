@@ -7,7 +7,7 @@ const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf
 test("admin shell uses the QM identity with org-injectable branding", () => {
   assert.match(html, /<title>QM Admin<\/title>/);
   assert.match(html, /<meta name="brand-self-label" content="Agent" \/>/);
-  assert.match(html, /<div class="brand"><span id="brand-product">Agent<\/span>&nbsp;Admin /);
+  assert.match(html, /<div class="brand">\s*<span id="brand-product">Agent<\/span>&nbsp;Admin /);
   assert.doesNotMatch(html, new RegExp(["Work", "Claw"].join(" "), "i"));
   assert.doesNotMatch(html, new RegExp(["Quarter", "master"].join(""), "i"));
 });
@@ -38,8 +38,8 @@ test("temporary onboarding covers model credentials, Slack, and OAuth setup", ()
   assert.match(html, /view-onboarding/);
   assert.match(html, /Model provider/);
   assert.match(html, /OpenRouter/);
-  assert.match(html, /api\("GET", "\/api\/model-providers"\)/);
-  assert.match(html, /api\("PUT", "\/api\/model-providers\/" \+ encodeURIComponent\(provider\)/);
+  assert.match(html, /onboardingRequest\("GET", "\/api\/model-providers"\)/);
+  assert.match(html, /onboardingRequest\(\s*"PUT",\s*"\/api\/model-providers\/" \+ encodeURIComponent\(provider\)/);
   assert.match(html, /models\.data\.models/);
   assert.doesNotMatch(html, /const ONBOARDING_MODELS/);
   assert.match(html, /viewLoadedAt\.onboarding = Date\.now\(\)/);
@@ -215,7 +215,7 @@ test("effective egress summary preserves deny-before-allow semantics", () => {
   );
   assert.match(
     html,
-    /else if \(effectiveDenyCount\) \{\s*effectiveEgressLabel = plural\(effectiveDenyCount, "denied host"\) \+ " · all other hosts allowed";/,
+    /else if \(effectiveDenyCount\) \{\s*effectiveEgressLabel =\s*plural\(effectiveDenyCount, "denied host"\) \+ " · " \+ adminTr\("all other hosts allowed"\);/,
   );
 });
 

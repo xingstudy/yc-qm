@@ -1,5 +1,7 @@
 # qm
 
+> 本项目是基于 [yc-software/qm](https://github.com/yc-software/qm) 的二次开发版本，主要用于简化部署和日常运维。
+
 A multiplayer agent harness for work. In Slack and on the web.
 
 ![The QM web UI: two concurrent sessions, a sidebar of personal files, crons, keychain, deploys, memory, and skills](./docs/screenshots/web-ui-hero.png)
@@ -158,9 +160,9 @@ not a public issue.
 The deployment repository above carries config and a sandbox layer, and never needs a
 source checkout. Some organizations want the opposite trade: the whole codebase in one
 place, so engineers and coding agents read core and customizations together, while the
-customizations themselves stay private. For that, keep a **private fork**: a standalone
-private repository whose history begins as a clone of qm and whose core stays identical
-to upstream.
+customizations themselves stay private. This repository follows that **private
+downstream** model: its history begins as a clone of qm, while deployment-focused
+improvements and other local changes may intentionally diverge from upstream.
 
 Populate it once, then clone it to work in:
 
@@ -188,14 +190,11 @@ need, or disable the ones you do not want running.
 
 Everything specific to your organization goes in `deploy/layers/<org>/` — config, sandbox
 tools and skills, plugin images, infrastructure — in the same shape `qm init` produces. See
-[`deploy/layers/README.md`](./deploy/layers/README.md). Core stays byte-identical to
-upstream, which is what keeps merges small.
+[`deploy/layers/README.md`](./deploy/layers/README.md). Keeping organization-specific data
+inside that boundary still makes upstream merges easier even when shared code diverges.
 
-Two skills maintain the boundary in both directions. `update-qm` merges upstream qm into
-the private fork and opens the sync PR; `upstream-pr` sends an organization-agnostic fix back to
-qm, cutting the branch from `upstream/main` and checking the outgoing diff, commit
-messages, and screenshots for organization identifiers before it pushes. Nothing under
-`deploy/layers/` ever travels upstream.
+Use `update-qm` when deliberately merging upstream qm into this repository. Upstream updates
+are merged rather than rebased, and downstream changes remain in this repository.
 
 ## Going deeper
 

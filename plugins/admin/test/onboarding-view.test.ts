@@ -59,3 +59,14 @@ test("custom providers participate in onboarding without re-entering their manag
   assert.match(onboarding, /if \(!apiKey && !existing\?\.hasKey\)/);
   assert.match(onboarding, /return \{ setupReady: true, customProvidersReady \}/);
 });
+
+test("onboarding requests turn network failures into retryable results", async () => {
+  const requestSource = slice("async function onboardingRequest", "function onboardingBadge");
+  const context = vm.createContext({
+    api: async () => {
+      throw new Error("offline");
+    },
+  });
+  const result = await vm.runInContext(`${requestSource}\nonboardingRequest("GET", "/api/test");`, context);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), { ok: false, status: 0, data: null });
+});
