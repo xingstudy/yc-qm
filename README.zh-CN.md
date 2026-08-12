@@ -77,45 +77,78 @@ QM 的方式与 OpenCode、Codex 和 Claude Code 等本地编程 Agent 类似：
 ### 仅拉取镜像的单机生产部署
 
 [`compose.production.yaml`](./compose.production.yaml) 是单机生产部署包。它从 Docker Hub
-运行 QM 服务，并通过可选的 `auth` profile 启用内置邮件登录代理。生产主机只需要 Docker
-Engine、Docker Compose v2、`curl` 和负责 TLS 终止的反向代理或负载均衡器；**不需要**源码工作树、
+运行 QM 服务，并内置必需的 `auth` 邮件登录代理。生产主机只需要 Docker Engine、Docker
+Compose v2、`curl`、`cosign` 和负责 TLS 终止的反向代理或负载均衡器；**不需要**源码工作树、
 Node.js、npm 或本地构建镜像。
 
 发布清单 [`images.production.env`](./images.production.env) 默认使用 Docker Hub 命名空间
 `xingstudy`。每个 `QM_*_IMAGE` 都固定为不可变的 `@sha256:` digest。该清单是发布版本的一部分；
-不要把 digest 改成标签或 `latest`。
+不要把 digest 改成标签或 `latest`。生产镜像只支持 Linux `amd64`/`x86_64` 主机。
+
+独立的 `release-production-images.yml` 工作流只从 `main` 发布，并要求输入
+`prod-vMAJOR.MINOR.PATCH` 格式的版本，例如 `prod-v0.6.0`；现有 Release 和 CLI 工作流不会发布
+这套生产镜像。发布前，必须通过 GitHub 规则禁止更新或删除 `prod-v*` Git 标签，在每个 Docker Hub
+目标仓库启用相同模式的不可变标签，并配置发布主体独占、最小推送权限的 `DOCKERHUB_TOKEN`
+Environment secret，不能配置为普通仓库 secret。GitHub 的 `production-images` Environment
+必须要求发布审批、只允许 `main` 部署，并限制审批人。还要创建私有仓库
+`xingstudy/qm-production-staging`；候选镜像只在该仓库中接受扫描，
+超过 30 天恢复窗口的构建标签应及时清理，且绝不能用于部署。如果部分版本标签已经写入后发布中断，
+使用失败工作流的 `resume_run_id` 再次调度，复用保留 30 天的原始签名 digest 产物，不能重新构建。
+生成的 digest 清单是不可变的发布记录，部署和回滚都必须使用它。
 
 [`.env.production.example`](./.env.production.example) 的每个配置项都有匿名且格式有效的示例值，
 包括密钥和私有 JWK。这些值只是文档样例，绝不能直接部署。使用初始化脚本创建真实配置；脚本会生成彼此不同的替换密钥、私有 JWK 和 Docker socket 组 ID，且不会输出密钥值：
 
 ```bash
+QM_RELEASE=prod-v0.6.0
 mkdir qm-production && cd qm-production
-curl -fsSLO https://raw.githubusercontent.com/xingstudy/yc-qm/main/compose.production.yaml
-curl -fsSLO https://raw.githubusercontent.com/xingstudy/yc-qm/main/.env.production.example
-curl -fsSLO https://raw.githubusercontent.com/xingstudy/yc-qm/main/images.production.env
-curl -fsSLO https://raw.githubusercontent.com/xingstudy/yc-qm/main/scripts/init-production-env.sh
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/compose.production.yaml"
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/.env.production.example"
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/images.production.env"
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/images.production.json"
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/SHA256SUMS"
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/SHA256SUMS.bundle"
+mkdir -p scripts
+curl -fsSL "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/init-production-env.sh" -o scripts/init-production-env.sh
 chmod 700 scripts/init-production-env.sh
+cosign verify-blob \
+  --bundle SHA256SUMS.bundle \
+  --certificate-identity='https://github.com/xingstudy/yc-qm/.github/workflows/release-production-images.yml@refs/heads/main' \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+  SHA256SUMS
+sha256sum -c SHA256SUMS
+docker login
+while IFS='=' read -r _ image; do
+  cosign verify "$image" \
+    --certificate-identity='https://github.com/xingstudy/yc-qm/.github/workflows/release-production-images.yml@refs/heads/main' \
+    --certificate-oidc-issuer=https://token.actions.githubusercontent.com > /dev/null
+done < images.production.env
 ./scripts/init-production-env.sh
 ```
 
 首次启动前编辑 `.env.production`，替换公开 HTTPS 地址、组织 ID、初始管理员授权、允许登录的邮箱域或邮箱、发件人和 SMTP 凭据、模型供应商凭据等运营样例值。将脚本生成的密钥安全保存到密钥管理系统。使用内置登录代理还必须填写邮件传输配置；Issuer、回调地址和私有端点必须始终与模板中的公开 URL 及 `auth` 服务配置一致。
 
-如所选仓库是私有的，先登录 Docker Hub；随后校验、拉取并只启动 digest 固定的镜像：
+完成签名校验和配置后，再校验、拉取并只启动 digest 固定的镜像：
 
 ```bash
-docker login
-docker compose --env-file .env.production -f compose.production.yaml --profile auth config --quiet
-docker compose --env-file .env.production -f compose.production.yaml --profile auth pull
-docker compose --env-file .env.production -f compose.production.yaml --profile auth up -d --wait --pull always
+docker compose --env-file .env.production -f compose.production.yaml config --quiet
+docker compose --env-file .env.production -f compose.production.yaml pull
+docker compose --env-file .env.production -f compose.production.yaml up -d --wait --pull always
 docker compose --env-file .env.production -f compose.production.yaml ps
-curl -fsS https://your-qm.example/healthz
+curl -fsS http://127.0.0.1:8088/healthz
 ```
 
 `--wait` 和 `/healthz` 只能证明服务存活。验收安装前，请使用已配置的初始管理员授权完成浏览器登录、运行一次非 mock 的真实 Agent 对话、确认创建了 `qm-sandbox-local` 容器，并验证模型供应商和所需连接器。`QM_SANDBOX_IMAGE` 同样固定为 digest；只有 sandbox base 镜像不能支撑真实对话。
 
 升级前必须备份并演练恢复 Postgres、`core-data` 和所有 `qm-home-*` 卷。将生成的签名和加密配置与备份一起保存；丢失 `CONNECTOR_SECRET_KEY` 可能导致已保存的连接器凭据无法读取。日常停止或升级时绝不可使用 `docker compose down -v`。升级时获取一整套新的匹配发布文件，审阅新的 `.env.production.example` 与 `images.production.env`，备份后执行 `pull` 和 `up -d --wait --pull always`。回滚时必须同时恢复上一套完整镜像清单和配置；若版本间数据不兼容，还要恢复数据库和卷。
 
-这仍是单机部署，不提供高可用或零停机发布。只公开 TLS 边缘入口，保持 Postgres 和所有应用直连端口私有；`PORTAL_XFF_TRUSTED_HOPS` 必须与受信任的代理链匹配，并通过主机防火墙阻断使用 host network 的 core `8080` 端口。core 挂载 `/var/run/docker.sock` 后能够创建容器，等价于接近宿主机 root 的权限；只能运行在可信、单租户 Linux 主机上，不能用于共享机器。对公网服务前还必须配置主机防火墙、备份恢复演练、监控告警、日志轮换、资源限制和隔离沙箱边界。
+这仍是单机部署，不提供高可用或零停机发布。内置 HTTP edge 默认使用
+`QM_BIND_ADDRESS=127.0.0.1`，只允许同机 TLS 反代访问，不能直接对外暴露；保持 Postgres
+和所有应用直连端口私有。`PORTAL_XFF_TRUSTED_HOPS=2` 表示外部 TLS 代理加内置 edge
+两跳受信任代理；同时必须通过主机防火墙阻断使用 host network 的 core `8080` 端口。core
+挂载 `/var/run/docker.sock` 后能够创建容器，等价于接近宿主机 root 的权限；只能运行在
+可信、单租户 Linux 主机上，不能用于共享机器。对公网服务前还必须配置主机防火墙、备份恢复演练、
+监控告警、日志轮换、资源限制和隔离沙箱边界。
 
 如果任何凭据曾粘贴到聊天、工单、Shell 历史或早期环境文件中，部署前必须轮换。包括数据库和邮件凭据、OAuth/OIDC 客户端凭据与私有 JWK、所有签名/会话/Token 密钥，以及模型供应商密钥。数据库初始化后修改密码还必须同步修改数据库角色；替换加密密钥需要有计划地迁移已有凭据。
 

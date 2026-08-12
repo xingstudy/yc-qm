@@ -57,10 +57,10 @@ test("production boot requires an explicit OIDC tenant trust boundary", () => {
     assert.match(missing.stderr, /OIDC_ALLOWED_EMAILS, OIDC_ALLOWED_EMAIL_DOMAIN, or PORTAL_EXPECTED_TEAM_ID/);
   }
   for (const gate of [
-    { OIDC_ALLOWED_EMAILS: "admin@example.com" },
-    { OIDC_ALLOWED_EMAIL_DOMAIN: "example.com" },
+    { OIDC_ALLOWED_EMAILS: "admin@example.test" },
+    { OIDC_ALLOWED_EMAIL_DOMAIN: "example.test" },
     { PORTAL_EXPECTED_TEAM_ID: "T123" },
-    { OIDC_ALLOWED_EMAIL_DOMAIN: "example.com", PORTAL_EXPECTED_TEAM_ID: "T123" },
+    { OIDC_ALLOWED_EMAIL_DOMAIN: "example.test", PORTAL_EXPECTED_TEAM_ID: "T123" },
   ]) {
     const accepted = spawnSync(process.execPath, ["--input-type=module", "-e", command], {
       cwd: process.cwd(),
@@ -81,7 +81,7 @@ test("production rejects template markers and local authentication bypass", () =
     CORE_SIGNING_SECRET: "core-signing-secret",
     OIDC_CLIENT_ID: "client-id",
     OIDC_CLIENT_SECRET: "client-secret",
-    OIDC_ALLOWED_EMAIL_DOMAIN: "example.com",
+    OIDC_ALLOWED_EMAIL_DOMAIN: "example.test",
   };
   for (const [override, pattern] of [
     [{ PORTAL_SESSION_SECRET: "replace-me" }, /PORTAL_SESSION_SECRET is required/],
@@ -89,6 +89,8 @@ test("production rejects template markers and local authentication bypass", () =
     [{ OIDC_CLIENT_ID: "replace-me" }, /OIDC_CLIENT_ID is required/],
     [{ OIDC_CLIENT_SECRET: "replace-me" }, /OIDC_CLIENT_SECRET is required/],
     [{ PORTAL_LOCAL_AUTH_BYPASS: "1" }, /PORTAL_LOCAL_AUTH_BYPASS may not be enabled/],
+    [{ OIDC_ALLOWED_EMAIL_DOMAIN: "example.com" }, /OIDC_ALLOWED_EMAIL_DOMAIN must be a valid/],
+    [{ OIDC_ALLOWED_EMAILS: "admin@example.com", OIDC_ALLOWED_EMAIL_DOMAIN: "" }, /OIDC_ALLOWED_EMAILS must be/],
   ] as const) {
     const child = spawnSync(process.execPath, ["--input-type=module", "-e", command], {
       cwd: process.cwd(),
@@ -114,7 +116,7 @@ test("production boot requires an explicit JWKS URI for custom issuers", () => {
     OIDC_AUTH_ENDPOINT: "https://auth.example.com/authorize",
     OIDC_TOKEN_ENDPOINT: "https://auth.example.com/token",
     OIDC_USERINFO_ENDPOINT: "https://auth.example.com/userinfo",
-    OIDC_ALLOWED_EMAILS: "admin@example.com",
+    OIDC_ALLOWED_EMAILS: "admin@example.test",
   };
   delete baseEnv.OIDC_JWKS_URI;
   const missing = spawnSync(process.execPath, ["--input-type=module", "-e", command], {
@@ -145,7 +147,7 @@ test("a session TTL above the default max ceiling still boots, but a contradicto
     SANDBOX_BACKEND: "local",
     OIDC_CLIENT_ID: "client-id",
     OIDC_CLIENT_SECRET: "client-secret",
-    OIDC_ALLOWED_EMAILS: "admin@example.com",
+    OIDC_ALLOWED_EMAILS: "admin@example.test",
     PORTAL_SESSION_TTL_S: "604800",
   };
   delete baseEnv.PORTAL_SESSION_MAX_TTL_S;
@@ -181,7 +183,7 @@ test("production accepts cleartext OIDC only on private-network hosts, and only 
     OIDC_TOKEN_ENDPOINT: "http://acme-auth.internal:8080/token",
     OIDC_USERINFO_ENDPOINT: "http://acme-auth.internal:8080/userinfo",
     OIDC_JWKS_URI: "http://acme-auth.internal:8080/.well-known/jwks.json",
-    OIDC_ALLOWED_EMAILS: "admin@example.com",
+    OIDC_ALLOWED_EMAILS: "admin@example.test",
     AUTH_BROKER_UPSTREAM: "http://acme-auth.internal:8080",
   };
   const boot = (env: NodeJS.ProcessEnv): { status: number | null; stderr: string } =>

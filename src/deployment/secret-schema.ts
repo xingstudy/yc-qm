@@ -1,4 +1,5 @@
 import { isStrongSigningSecret } from "../auth/source-auth.ts";
+import { isProductionPlaceholder } from "../../plugins/chassis/src/production-placeholders.ts";
 
 type SecretGate =
   | "production"
@@ -67,7 +68,7 @@ export function validateCoreSecretEnv(env: NodeJS.ProcessEnv): string[] {
 
 function isInvalidSecret(name: string, value: string | undefined): boolean {
   const candidate = value?.trim();
-  if (!candidate || /^(replace-me|placeholder|changeme|todo)$/i.test(candidate)) return true;
+  if (isProductionPlaceholder(candidate)) return true;
   return (
     (name === "CONNECTOR_SECRET_KEY" || name === "CORE_SIGNING_SECRET" || name === "SKILL_SIGNING_SECRET") &&
     !isStrongSigningSecret(candidate)

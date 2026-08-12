@@ -14,6 +14,7 @@ COPY cli/templates/slack-manifest.json ./cli/templates/slack-manifest.json
 COPY skills-seed ./skills-seed
 COPY plugins/onboarding ./plugins/onboarding
 COPY plugins/chassis ./plugins/chassis
+COPY scripts/production-preflight.ts ./scripts/production-preflight.ts
 COPY tsconfig.json ./
 
 ENV NODE_ENV=production

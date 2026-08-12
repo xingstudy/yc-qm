@@ -1,0 +1,468 @@
+name: Publish production images
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Immutable production release tag, for example prod-v0.6.0
+        required: true
+      resume_run_id:
+        description: Previous failed production workflow run whose signed digest artifacts must be resumed
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-images-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+env:
+  DOCKERHUB_NAMESPACE: xingstudy
+  DOCKERHUB_STAGING_REPOSITORY: qm-production-staging
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      release_sha: ${{ steps.validate.outputs.release_sha }}
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - id: validate
+        name: Validate release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "production images are released from main; this run is on $GITHUB_REF" >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_TAG" =~ ^prod-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release_tag must use prod-vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          release_sha=$GITHUB_SHA
+          if [ -n "$RESUME_RUN_ID" ]; then
+            if [[ ! "$RESUME_RUN_ID" =~ ^[0-9]+$ ]]; then
+              echo "resume_run_id must be a numeric workflow run ID" >&2
+              exit 1
+            fi
+            run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_RUN_ID")
+            test "$(jq -r .path <<< "$run")" = ".github/workflows/release-production-images.yml"
+            test "$(jq -r .event <<< "$run")" = "workflow_dispatch"
+            test "$(jq -r .head_branch <<< "$run")" = "main"
+            release_sha=$(jq -r .head_sha <<< "$run")
+            [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]]
+          fi
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha 2>/dev/null || true)
+          if [ -n "$existing" ] && [ "$existing" != "$release_sha" ]; then
+            echo "$RELEASE_TAG already points at a different commit" >&2
+            exit 1
+          fi
+          printf 'release_sha=%s\n' "$release_sha" >> "$GITHUB_OUTPUT"
+      - if: inputs.resume_run_id == ''
+        run: |
+          jq -n \
+            --arg release_tag '${{ inputs.release_tag }}' \
+            --arg release_sha "$GITHUB_SHA" \
+            '{release_tag: $release_tag, release_sha: $release_sha}' > release-candidate.json
+      - if: inputs.resume_run_id == ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: production-release-candidate-${{ github.run_id }}
+          path: release-candidate.json
+          if-no-files-found: error
+          retention-days: 30
+
+  sandbox-base:
+    needs: preflight
+    if: inputs.resume_run_id == ''
+    runs-on: ubuntu-latest
+    environment: production-images
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: docker.io
+          username: xingstudy
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: fly/Dockerfile
+          platforms: linux/amd64
+          provenance: mode=max
+          sbom: true
+          push: true
+          build-args: INSTALL_BROWSER_ENGINE=1
+          tags: docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}:sandbox-base-${{ github.sha }}-${{ github.run_id }}
+          cache-from: type=gha,scope=production-qm-sandbox-base
+          cache-to: type=gha,mode=max,scope=production-qm-sandbox-base
+      - name: Scan exact image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}@${{ steps.build.outputs.digest }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: 1
+      - name: Sign and verify exact image
+        run: |
+          image='docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}@${{ steps.build.outputs.digest }}'
+          cosign sign --yes "$image"
+          cosign verify "$image" \
+            --certificate-identity='https://github.com/${{ github.repository }}/.github/workflows/release-production-images.yml@refs/heads/main' \
+            --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+          printf '%s\n' "$image" > qm-sandbox-base.image
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: production-qm-sandbox-base-${{ github.run_id }}
+          path: qm-sandbox-base.image
+          if-no-files-found: error
+          retention-days: 30
+
+  images:
+    needs: preflight
+    if: inputs.resume_run_id == ''
+    runs-on: ubuntu-latest
+    environment: production-images
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: core
+            dockerfile: deploy/core/Dockerfile
+          - name: web-ui
+            dockerfile: deploy/web-ui/Dockerfile
+          - name: admin
+            dockerfile: deploy/admin/Dockerfile
+          - name: portal
+            dockerfile: deploy/portal/Dockerfile
+          - name: auth
+            dockerfile: deploy/auth/Dockerfile
+          - name: edge
+            dockerfile: deploy/edge/Dockerfile
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: docker.io
+          username: xingstudy
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          provenance: mode=max
+          sbom: true
+          push: true
+          tags: docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}:${{ matrix.name }}-${{ github.sha }}-${{ github.run_id }}
+          cache-from: type=gha,scope=production-qm-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=production-qm-${{ matrix.name }}
+      - name: Scan exact image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}@${{ steps.build.outputs.digest }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: 1
+      - name: Sign and verify exact image
+        run: |
+          image='docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}@${{ steps.build.outputs.digest }}'
+          cosign sign --yes "$image"
+          cosign verify "$image" \
+            --certificate-identity='https://github.com/${{ github.repository }}/.github/workflows/release-production-images.yml@refs/heads/main' \
+            --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+          printf '%s\n' "$image" > 'qm-${{ matrix.name }}.image'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: production-qm-${{ matrix.name }}-${{ github.run_id }}
+          path: qm-${{ matrix.name }}.image
+          if-no-files-found: error
+          retention-days: 30
+
+  sandbox-local:
+    needs:
+      - preflight
+      - sandbox-base
+    if: inputs.resume_run_id == ''
+    runs-on: ubuntu-latest
+    environment: production-images
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: docker.io
+          username: xingstudy
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: production-qm-sandbox-base-${{ github.run_id }}
+      - id: base
+        run: printf 'ref=%s\n' "$(cat qm-sandbox-base.image)" >> "$GITHUB_OUTPUT"
+      - id: fingerprint
+        run: |
+          value=$(node --input-type=module -e 'const {computeSandboxImageFingerprint}=await import("./src/sandbox/sandbox-fingerprint.ts");process.stdout.write((await computeSandboxImageFingerprint(process.cwd())) ?? "")')
+          test -n "$value"
+          printf 'value=%s\n' "$value" >> "$GITHUB_OUTPUT"
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: local/Dockerfile
+          platforms: linux/amd64
+          provenance: mode=max
+          sbom: true
+          push: true
+          build-args: |
+            BASE=${{ steps.base.outputs.ref }}
+            SANDBOX_FINGERPRINT=${{ steps.fingerprint.outputs.value }}
+          tags: docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}:sandbox-local-${{ github.sha }}-${{ github.run_id }}
+          cache-from: type=gha,scope=production-qm-sandbox-local
+          cache-to: type=gha,mode=max,scope=production-qm-sandbox-local
+      - name: Scan exact image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}@${{ steps.build.outputs.digest }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: 1
+      - name: Sign and verify exact image
+        run: |
+          image='docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}@${{ steps.build.outputs.digest }}'
+          cosign sign --yes "$image"
+          cosign verify "$image" \
+            --certificate-identity='https://github.com/${{ github.repository }}/.github/workflows/release-production-images.yml@refs/heads/main' \
+            --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+          printf '%s\n' "$image" > qm-sandbox-local.image
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: production-qm-sandbox-local-${{ github.run_id }}
+          path: qm-sandbox-local.image
+          if-no-files-found: error
+          retention-days: 30
+
+  promote:
+    needs:
+      - preflight
+      - images
+      - sandbox-base
+      - sandbox-local
+    if: >-
+      always() &&
+      needs.preflight.result == 'success' &&
+      (inputs.resume_run_id != '' ||
+      (needs.images.result == 'success' &&
+      needs.sandbox-base.result == 'success' &&
+      needs.sandbox-local.result == 'success'))
+    runs-on: ubuntu-latest
+    environment: production-images
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+          ref: ${{ needs.preflight.outputs.release_sha }}
+      - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: docker.io
+          username: xingstudy
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - if: inputs.resume_run_id == ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: production-qm-*-${{ github.run_id }}
+          merge-multiple: true
+      - if: inputs.resume_run_id != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: production-qm-*-${{ inputs.resume_run_id }}
+          merge-multiple: true
+          run-id: ${{ inputs.resume_run_id }}
+          github-token: ${{ github.token }}
+      - if: inputs.resume_run_id == ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: production-release-candidate-${{ github.run_id }}
+      - if: inputs.resume_run_id != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: production-release-candidate-${{ inputs.resume_run_id }}
+          run-id: ${{ inputs.resume_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify release candidate identity
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
+        run: |
+          test "$(jq -r .release_tag release-candidate.json)" = "$RELEASE_TAG"
+          test "$(jq -r .release_sha release-candidate.json)" = "$RELEASE_SHA"
+      - name: Verify complete signed digest set
+        run: |
+          set -euo pipefail
+          for name in core web-ui admin portal auth edge sandbox-base sandbox-local; do
+            test -s "qm-${name}.image"
+            image=$(cat "qm-${name}.image")
+            cosign verify "$image" \
+              --certificate-identity='https://github.com/${{ github.repository }}/.github/workflows/release-production-images.yml@refs/heads/main' \
+              --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+          done
+      - name: Refuse conflicting version tags
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          for name in core web-ui admin portal auth edge sandbox-base sandbox-local; do
+            image=$(cat "qm-${name}.image")
+            expected=${image##*@}
+            tag="docker.io/${DOCKERHUB_NAMESPACE}/qm-${name}:${RELEASE_TAG}"
+            if existing=$(docker buildx imagetools inspect "$tag" 2>/dev/null | awk '/^Digest:/ {print $2; exit}'); then
+              if [ "$existing" != "$expected" ]; then
+                echo "$tag already points at a different digest" >&2
+                exit 1
+              fi
+            fi
+          done
+      - name: Reserve immutable release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha 2>/dev/null || true)
+          if [ -z "$existing" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_SHA" > /dev/null || true
+          fi
+          reserved=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)
+          if [ "$reserved" != "$RELEASE_SHA" ]; then
+            echo "$RELEASE_TAG does not point at the release commit" >&2
+            exit 1
+          fi
+      - name: Promote verified digests
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          for name in core web-ui admin portal auth edge sandbox-base sandbox-local; do
+            image=$(cat "qm-${name}.image")
+            expected=${image##*@}
+            tag="docker.io/${DOCKERHUB_NAMESPACE}/qm-${name}:${RELEASE_TAG}"
+            existing=$(docker buildx imagetools inspect "$tag" 2>/dev/null | awk '/^Digest:/ {print $2; exit}' || true)
+            if [ "$existing" != "$expected" ]; then
+              docker buildx imagetools create --tag "$tag" "$image"
+            fi
+            actual=$(docker buildx imagetools inspect "$tag" | awk '/^Digest:/ {print $2; exit}')
+            test "$actual" = "$expected"
+            final="docker.io/${DOCKERHUB_NAMESPACE}/qm-${name}@${expected}"
+            cosign sign --yes "$final"
+            cosign verify "$final" \
+              --certificate-identity='https://github.com/${{ github.repository }}/.github/workflows/release-production-images.yml@refs/heads/main' \
+              --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+            printf '%s\n' "$final" > "qm-${name}.image"
+          done
+      - name: Render release manifest
+        run: |
+          set -euo pipefail
+          {
+            printf 'QM_CORE_IMAGE=%s\n' "$(cat qm-core.image)"
+            printf 'QM_WEB_UI_IMAGE=%s\n' "$(cat qm-web-ui.image)"
+            printf 'QM_ADMIN_IMAGE=%s\n' "$(cat qm-admin.image)"
+            printf 'QM_PORTAL_IMAGE=%s\n' "$(cat qm-portal.image)"
+            printf 'QM_AUTH_IMAGE=%s\n' "$(cat qm-auth.image)"
+            printf 'QM_EDGE_IMAGE=%s\n' "$(cat qm-edge.image)"
+            printf 'QM_SANDBOX_IMAGE=%s\n' "$(cat qm-sandbox-local.image)"
+          } > images.production.env
+          jq -Rn '[inputs | select(length > 0) | split("=") | {(.[0]): .[1]}] | add' < images.production.env > images.production.json
+          cp scripts/init-production-env.sh init-production-env.sh
+          sha256sum \
+            compose.production.yaml \
+            .env.production.example \
+            init-production-env.sh \
+            images.production.env \
+            images.production.json > SHA256SUMS
+          cosign sign-blob --yes --bundle SHA256SUMS.bundle SHA256SUMS
+      - name: Create production release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)
+          if [ "$existing" != "$RELEASE_SHA" ]; then
+            echo "$RELEASE_TAG no longer points at the release commit" >&2
+            exit 1
+          fi
+          assets=(
+            "compose.production.yaml#Pull-only production Compose"
+            ".env.production.example#Complete fail-closed production configuration template"
+            "init-production-env.sh#Production configuration initializer"
+            "images.production.env#Pinned Docker Hub production images"
+            "images.production.json#Pinned Docker Hub production image manifest"
+            "SHA256SUMS#Checksums for production release assets"
+          )
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "$RELEASE_TAG" \
+              --generate-notes
+          fi
+          for asset in "${assets[@]}"; do
+            file=${asset%%#*}
+            directory=$(mktemp -d)
+            if gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$(basename "$file")" --dir "$directory" > /dev/null 2>&1; then
+              if ! cmp -s "$file" "$directory/$(basename "$file")"; then
+                echo "$file already exists in the release with different contents" >&2
+                exit 1
+              fi
+            else
+              gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" "$asset"
+            fi
+          done
+          directory=$(mktemp -d)
+          if gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS.bundle --dir "$directory" > /dev/null 2>&1; then
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir "$directory" > /dev/null
+            cmp -s SHA256SUMS "$directory/SHA256SUMS"
+            cosign verify-blob \
+              --bundle "$directory/SHA256SUMS.bundle" \
+              --certificate-identity='https://github.com/${{ github.repository }}/.github/workflows/release-production-images.yml@refs/heads/main' \
+              --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+              "$directory/SHA256SUMS"
+          else
+            gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              "SHA256SUMS.bundle#Sigstore bundle for production release checksums"
+          fi

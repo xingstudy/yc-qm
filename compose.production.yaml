@@ -1,0 +1,374 @@
+x-service-defaults: &service-defaults
+  init: true
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  pids_limit: 512
+  logging:
+    driver: json-file
+    options:
+      max-size: 20m
+      max-file: "5"
+
+services:
+  preflight:
+    image: ${QM_CORE_IMAGE:?Set QM_CORE_IMAGE in .env.production}
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      SANDBOX_BACKEND: ${SANDBOX_BACKEND:-local}
+      QM_BIND_ADDRESS: ${QM_BIND_ADDRESS:-127.0.0.1}
+      PORTAL_XFF_TRUSTED_HOPS: ${PORTAL_XFF_TRUSTED_HOPS:-2}
+      ORG_ID: ${ORG_ID:?Set ORG_ID in .env.production}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+      DOCKER_GID: ${DOCKER_GID:?Set DOCKER_GID in .env.production}
+      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET in .env.production}
+      CAPABILITY_SECRET: ${CAPABILITY_SECRET:?Set CAPABILITY_SECRET in .env.production}
+      PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET:?Set PORTAL_IDENTITY_SECRET in .env.production}
+      PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET:?Set PORTAL_SESSION_SECRET in .env.production}
+      CONNECTOR_SECRET_KEY: ${CONNECTOR_SECRET_KEY:?Set CONNECTOR_SECRET_KEY in .env.production}
+      SKILL_SIGNING_SECRET: ${SKILL_SIGNING_SECRET:?Set SKILL_SIGNING_SECRET in .env.production}
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:?Set AUTH_TOKEN_SECRET in .env.production}
+      AUTH_CLIENT_SECRET: ${AUTH_CLIENT_SECRET:?Set AUTH_CLIENT_SECRET in .env.production}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?Set OIDC_CLIENT_SECRET in .env.production}
+      PORTAL_PUBLIC_URL: ${PORTAL_PUBLIC_URL:?Set PORTAL_PUBLIC_URL in .env.production}
+      PORTAL_LOCAL_AUTH_BYPASS: ${PORTAL_LOCAL_AUTH_BYPASS:-0}
+      AUTH_ISSUER: ${AUTH_ISSUER:?Set AUTH_ISSUER in .env.production}
+      AUTH_REDIRECT_URI: ${AUTH_REDIRECT_URI:?Set AUTH_REDIRECT_URI in .env.production}
+      OIDC_ISSUER: ${OIDC_ISSUER:?Set OIDC_ISSUER in .env.production}
+      OIDC_AUTH_ENDPOINT: ${OIDC_AUTH_ENDPOINT:?Set OIDC_AUTH_ENDPOINT in .env.production}
+      OIDC_TOKEN_ENDPOINT: ${OIDC_TOKEN_ENDPOINT:?Set OIDC_TOKEN_ENDPOINT in .env.production}
+      OIDC_USERINFO_ENDPOINT: ${OIDC_USERINFO_ENDPOINT:?Set OIDC_USERINFO_ENDPOINT in .env.production}
+      OIDC_JWKS_URI: ${OIDC_JWKS_URI:?Set OIDC_JWKS_URI in .env.production}
+      AUTH_BROKER_UPSTREAM: ${AUTH_BROKER_UPSTREAM:-http://qm-auth.internal:8080}
+      AUTH_BROKER_PREFIX: ${AUTH_BROKER_PREFIX:-/idp}
+      AUTH_CLIENT_ID: ${AUTH_CLIENT_ID:-qm-portal}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-qm-portal}
+      OIDC_PRINCIPAL_CLAIM: ${OIDC_PRINCIPAL_CLAIM:-email}
+      AUTH_ALLOWED_EMAIL_DOMAIN: ${AUTH_ALLOWED_EMAIL_DOMAIN:-}
+      AUTH_ALLOWED_EMAILS: ${AUTH_ALLOWED_EMAILS:-}
+      OIDC_ALLOWED_EMAIL_DOMAIN: ${OIDC_ALLOWED_EMAIL_DOMAIN:-}
+      OIDC_ALLOWED_EMAILS: ${OIDC_ALLOWED_EMAILS:-}
+      PORTAL_EXPECTED_TEAM_ID: ${PORTAL_EXPECTED_TEAM_ID:-}
+      AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM:?Set AUTH_EMAIL_FROM in .env.production}
+      ADMIN_GRANTS: ${ADMIN_GRANTS:?Set ADMIN_GRANTS in .env.production}
+      AUTH_EMAIL_TRANSPORT: ${AUTH_EMAIL_TRANSPORT:-smtp}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_TLS: ${SMTP_TLS:-implicit}
+      AUTH_SIGNING_JWK: ${AUTH_SIGNING_JWK:?Set AUTH_SIGNING_JWK in .env.production}
+      QM_CORE_IMAGE: ${QM_CORE_IMAGE:?Set QM_CORE_IMAGE in .env.production}
+      QM_WEB_UI_IMAGE: ${QM_WEB_UI_IMAGE:?Set QM_WEB_UI_IMAGE in .env.production}
+      QM_ADMIN_IMAGE: ${QM_ADMIN_IMAGE:?Set QM_ADMIN_IMAGE in .env.production}
+      QM_PORTAL_IMAGE: ${QM_PORTAL_IMAGE:?Set QM_PORTAL_IMAGE in .env.production}
+      QM_AUTH_IMAGE: ${QM_AUTH_IMAGE:?Set QM_AUTH_IMAGE in .env.production}
+      QM_EDGE_IMAGE: ${QM_EDGE_IMAGE:?Set QM_EDGE_IMAGE in .env.production}
+      QM_SANDBOX_IMAGE: ${QM_SANDBOX_IMAGE:?Set QM_SANDBOX_IMAGE in .env.production}
+    command:
+      - node
+      - scripts/production-preflight.ts
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
+
+  postgres:
+    image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-qm}
+      POSTGRES_DB: ${POSTGRES_DB:-qm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    ports:
+      - ${QM_INTERNAL_BIND_ADDRESS:-127.0.0.1}:${QM_POSTGRES_PORT:-5432}:5432
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
+
+  core:
+    <<: *service-defaults
+    image: ${QM_CORE_IMAGE:?Set QM_CORE_IMAGE in .env.production}
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      ORG_ID: ${ORG_ID:?Set ORG_ID in .env.production}
+      HARNESS: ${HARNESS:-pi}
+      HARNESS_SECURITY_POSTURE: ${HARNESS_SECURITY_POSTURE:-auto}
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
+      SESSION_STORE: postgres
+      RUN_STORE: postgres
+      DATABASE_URL: postgresql://${POSTGRES_USER:-qm}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}@127.0.0.1:${QM_POSTGRES_PORT:-5432}/${POSTGRES_DB:-qm}
+      CONNECTOR_SECRET_KEY: ${CONNECTOR_SECRET_KEY:?Set CONNECTOR_SECRET_KEY in .env.production}
+      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET in .env.production}
+      CAPABILITY_SECRET: ${CAPABILITY_SECRET:?Set CAPABILITY_SECRET in .env.production}
+      PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET:?Set PORTAL_IDENTITY_SECRET in .env.production}
+      SKILL_SIGNING_SECRET: ${SKILL_SIGNING_SECRET:?Set SKILL_SIGNING_SECRET in .env.production}
+      REQUIRE_SIGNED_PORTAL_IDENTITY: "1"
+      SANDBOX_BACKEND: local
+      LOCAL_SANDBOX_IMAGE: ${QM_SANDBOX_IMAGE:?Set QM_SANDBOX_IMAGE in .env.production}
+      AGENT_API_URL: http://host.docker.internal:8080
+      PUBLIC_WEB_URL: ${PORTAL_PUBLIC_URL:?Set PORTAL_PUBLIC_URL in .env.production}
+      DATA_DIR: /data
+      RATE_LIMIT_PER_WINDOW: ${RATE_LIMIT_PER_WINDOW:-60}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+      BUDGET_USD_PER_WINDOW: ${BUDGET_USD_PER_WINDOW:-25}
+      ORG_BUDGET_USD_PER_WINDOW: ${ORG_BUDGET_USD_PER_WINDOW:-100}
+      BUDGET_WINDOW_MS: ${BUDGET_WINDOW_MS:-86400000}
+      ADMIN_GRANTS: ${ADMIN_GRANTS:?Set ADMIN_GRANTS in .env.production}
+    depends_on:
+      preflight:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    network_mode: host
+    group_add:
+      - ${DOCKER_GID:?Set DOCKER_GID in .env.production}
+    volumes:
+      - core-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    stop_grace_period: 300s
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  web-ui:
+    <<: *service-defaults
+    image: ${QM_WEB_UI_IMAGE:?Set QM_WEB_UI_IMAGE in .env.production}
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      CORE_API_URL: http://core:8080
+      CORE_ORG_ID: ${ORG_ID:?Set ORG_ID in .env.production}
+      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET in .env.production}
+      PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET:?Set PORTAL_IDENTITY_SECRET in .env.production}
+      WEB_UI_PUBLIC_URL: ${PORTAL_PUBLIC_URL:?Set PORTAL_PUBLIC_URL in .env.production}
+      WEB_UI_PRINCIPALS: ${WEB_UI_PRINCIPALS:-}
+    extra_hosts:
+      - core:host-gateway
+    depends_on:
+      preflight:
+        condition: service_completed_successfully
+      core:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  admin:
+    <<: *service-defaults
+    image: ${QM_ADMIN_IMAGE:?Set QM_ADMIN_IMAGE in .env.production}
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      CORE_API_URL: http://core:8080
+      CORE_ORG_ID: ${ORG_ID:?Set ORG_ID in .env.production}
+      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET in .env.production}
+      PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET:?Set PORTAL_IDENTITY_SECRET in .env.production}
+      ADMIN_BASE_PATH: /admin
+    extra_hosts:
+      - core:host-gateway
+    depends_on:
+      preflight:
+        condition: service_completed_successfully
+      core:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  auth:
+    <<: *service-defaults
+    image: ${QM_AUTH_IMAGE:?Set QM_AUTH_IMAGE in .env.production}
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      CORE_API_URL: http://core:8080
+      CORE_ORG_ID: ${ORG_ID:?Set ORG_ID in .env.production}
+      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET in .env.production}
+      AUTH_ISSUER: ${AUTH_ISSUER:?Set AUTH_ISSUER in .env.production}
+      AUTH_CLIENT_ID: ${AUTH_CLIENT_ID:-qm-portal}
+      AUTH_CLIENT_SECRET: ${AUTH_CLIENT_SECRET:?Set AUTH_CLIENT_SECRET in .env.production}
+      AUTH_REDIRECT_URI: ${AUTH_REDIRECT_URI:?Set AUTH_REDIRECT_URI in .env.production}
+      AUTH_SIGNING_JWK: ${AUTH_SIGNING_JWK:?Set AUTH_SIGNING_JWK in .env.production}
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:?Set AUTH_TOKEN_SECRET in .env.production}
+      AUTH_ALLOWED_EMAILS: ${AUTH_ALLOWED_EMAILS:-}
+      AUTH_ALLOWED_EMAIL_DOMAIN: ${AUTH_ALLOWED_EMAIL_DOMAIN:-}
+      AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM:?Set AUTH_EMAIL_FROM in .env.production}
+      AUTH_BRAND_NAME: ${AUTH_BRAND_NAME:-qm}
+      AUTH_EMAIL_TRANSPORT: ${AUTH_EMAIL_TRANSPORT:-smtp}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_TLS: ${SMTP_TLS:-implicit}
+    extra_hosts:
+      - core:host-gateway
+    depends_on:
+      preflight:
+        condition: service_completed_successfully
+      core:
+        condition: service_healthy
+    networks:
+      default:
+        aliases:
+          - qm-auth.internal
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  portal:
+    <<: *service-defaults
+    image: ${QM_PORTAL_IMAGE:?Set QM_PORTAL_IMAGE in .env.production}
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      CORE_API_URL: http://core:8080
+      CORE_ORG_ID: ${ORG_ID:?Set ORG_ID in .env.production}
+      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET in .env.production}
+      PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET:?Set PORTAL_IDENTITY_SECRET in .env.production}
+      PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET:?Set PORTAL_SESSION_SECRET in .env.production}
+      PORTAL_PUBLIC_URL: ${PORTAL_PUBLIC_URL:?Set PORTAL_PUBLIC_URL in .env.production}
+      PORTAL_LOCAL_AUTH_BYPASS: "0"
+      PORTAL_XFF_TRUSTED_HOPS: ${PORTAL_XFF_TRUSTED_HOPS:-2}
+      WEB_UI_UPSTREAM: http://web-ui:8080
+      ADMIN_UPSTREAM: http://admin:8080
+      OIDC_AUTH_ENDPOINT: ${OIDC_AUTH_ENDPOINT:?Set OIDC_AUTH_ENDPOINT in .env.production}
+      OIDC_TOKEN_ENDPOINT: ${OIDC_TOKEN_ENDPOINT:?Set OIDC_TOKEN_ENDPOINT in .env.production}
+      OIDC_USERINFO_ENDPOINT: ${OIDC_USERINFO_ENDPOINT:?Set OIDC_USERINFO_ENDPOINT in .env.production}
+      OIDC_ISSUER: ${OIDC_ISSUER:?Set OIDC_ISSUER in .env.production}
+      OIDC_JWKS_URI: ${OIDC_JWKS_URI:?Set OIDC_JWKS_URI in .env.production}
+      OIDC_SCOPES: ${OIDC_SCOPES:-openid email profile}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-qm-portal}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?Set OIDC_CLIENT_SECRET in .env.production}
+      OIDC_PRINCIPAL_CLAIM: ${OIDC_PRINCIPAL_CLAIM:-email}
+      OIDC_ALLOWED_EMAIL_DOMAIN: ${OIDC_ALLOWED_EMAIL_DOMAIN:-}
+      OIDC_ALLOWED_EMAILS: ${OIDC_ALLOWED_EMAILS:-}
+      PORTAL_EXPECTED_TEAM_ID: ${PORTAL_EXPECTED_TEAM_ID:-}
+      AUTH_BROKER_UPSTREAM: ${AUTH_BROKER_UPSTREAM:-http://qm-auth.internal:8080}
+      AUTH_BROKER_PREFIX: ${AUTH_BROKER_PREFIX:-/idp}
+    extra_hosts:
+      - core:host-gateway
+    depends_on:
+      preflight:
+        condition: service_completed_successfully
+      core:
+        condition: service_healthy
+      web-ui:
+        condition: service_healthy
+      admin:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  edge:
+    <<: *service-defaults
+    image: ${QM_EDGE_IMAGE:?Set QM_EDGE_IMAGE in .env.production}
+    depends_on:
+      preflight:
+        condition: service_completed_successfully
+      portal:
+        condition: service_healthy
+    ports:
+      - ${QM_BIND_ADDRESS:-127.0.0.1}:${QM_HTTP_PORT:-8088}:8080
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+
+volumes:
+  postgres-data:
+  core-data:

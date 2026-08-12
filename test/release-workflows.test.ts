@@ -14,40 +14,32 @@ test("the release publishes signed images and never a package", () => {
   assert.equal(existsSync(".github/workflows/release-images.yml"), false);
 });
 
-test("the release publishes the edge and local sandbox images required by pull-only Compose", () => {
+test("the release is the sole sandbox-base publisher and bakes in the browser engine", () => {
   const workflow = readFileSync(".github/workflows/release-package.yml", "utf8");
 
-  for (const [name, dockerfile] of [
-    ["core", "deploy/core/Dockerfile"],
-    ["web-ui", "deploy/web-ui/Dockerfile"],
-    ["admin", "deploy/admin/Dockerfile"],
-    ["portal", "deploy/portal/Dockerfile"],
-    ["auth", "deploy/auth/Dockerfile"],
-    ["edge", "deploy/edge/Dockerfile"],
-    ["sandbox-local", "local/Dockerfile"],
-  ] as const) {
-    assert.match(workflow, new RegExp(`- name: ${name}\\n\\s+dockerfile: ${dockerfile.replace("/", "\\/")}`));
-  }
-  assert.match(workflow, /build-args: \$\{\{ matrix\.build-args \}\}/);
-  assert.doesNotMatch(workflow, /- name: sandbox-base\n/);
-});
-
-test("the release pushes signed immutable Docker Hub images", () => {
-  const workflow = readFileSync(".github/workflows/release-package.yml", "utf8");
-
-  assert.match(workflow, /permissions:\s+contents: read\s+id-token: write/);
-  assert.doesNotMatch(workflow, /packages: write/);
   assert.match(
     workflow,
-    /docker\/login-action@[^\n]+\s+with:\s+registry: docker\.io\s+username: xingstudy\s+password: \$\{\{ secrets\.DOCKERHUB_TOKEN \}\}/,
+    /- name: sandbox-base\n\s+dockerfile: fly\/Dockerfile\n\s+build-args: INSTALL_BROWSER_ENGINE=1\n/,
+  );
+  assert.match(workflow, /build-args: \$\{\{ matrix\.build-args \}\}/);
+  assert.equal(existsSync(".github/workflows/publish-sandbox-base.yml"), false);
+  assert.equal(existsSync(".github/workflows/publish-images.yml"), false);
+});
+
+test("the release signs private images without requiring anonymous registry access", () => {
+  const workflow = readFileSync(".github/workflows/release-package.yml", "utf8");
+
+  assert.doesNotMatch(workflow, /anonymously pullable|DOCKER_CONFIG="\$probe"/);
+  assert.match(workflow, /permissions:\s+contents: read\s+packages: write\s+id-token: write/);
+  assert.match(
+    workflow,
+    /docker\/login-action@[^\n]+\s+with:\s+registry: ghcr\.io\s+username: \$\{\{ github\.actor \}\}\s+password: \$\{\{ github\.token \}\}/,
   );
   assert.match(workflow, /platforms: linux\/amd64\s+provenance: false/);
   assert.match(
     workflow,
-    /image='docker\.io\/xingstudy\/qm-\$\{\{ matrix\.name \}\}@\$\{\{ steps\.build\.outputs\.digest \}\}'\s+cosign sign --yes "\$image"\s+cosign verify "\$image"/,
+    /image='ghcr\.io\/yc-software\/qm\/\$\{\{ matrix\.name \}\}@\$\{\{ steps\.build\.outputs\.digest \}\}'\s+cosign sign --yes "\$image"\s+cosign verify "\$image"/,
   );
-  assert.match(workflow, /tags: docker\.io\/xingstudy\/qm-\$\{\{ matrix\.name \}\}:\$\{\{ github\.sha \}\}/);
-  assert.doesNotMatch(workflow, /:latest/);
   assert.ok(workflow.indexOf("docker/login-action") < workflow.indexOf("docker/build-push-action"));
   assert.ok(workflow.indexOf("docker/build-push-action") < workflow.indexOf("Sign exact image"));
 });
@@ -201,4 +193,98 @@ test("images are signed from a main ref, so the pinned cosign identity keeps ver
   assert.doesNotMatch(release, /^ {2}push:$/m);
   assert.match(release, /if \[ "\$GITHUB_REF" != refs\/heads\/main \]/);
   assert.match(images, /--certificate-identity='[^']*release-package\.yml@refs\/heads\/main'/);
+});
+
+test("production images publish through a separate Docker Hub workflow", () => {
+  const workflow = readFileSync(".github/workflows/release-production-images.yml", "utf8");
+
+  assert.match(workflow, /^name: Publish production images$/m);
+  assert.match(workflow, /release_tag must use prod-vMAJOR\.MINOR\.PATCH/);
+  assert.match(workflow, /production images are released from main/);
+  assert.match(
+    workflow,
+    /docker\/login-action@[^\n]+\s+with:\s+registry: docker\.io\s+username: xingstudy\s+password: \$\{\{ secrets\.DOCKERHUB_TOKEN \}\}/,
+  );
+  assert.doesNotMatch(workflow, /:latest/);
+  assert.doesNotMatch(workflow, /ghcr\.io/);
+  assert.equal(workflow.match(/^ {4}environment: production-images$/gm)?.length, 4);
+});
+
+test("production release covers every pull-only image and explicitly targets x86_64", () => {
+  const workflow = readFileSync(".github/workflows/release-production-images.yml", "utf8");
+
+  for (const [name, dockerfile] of [
+    ["core", "deploy/core/Dockerfile"],
+    ["web-ui", "deploy/web-ui/Dockerfile"],
+    ["admin", "deploy/admin/Dockerfile"],
+    ["portal", "deploy/portal/Dockerfile"],
+    ["auth", "deploy/auth/Dockerfile"],
+    ["edge", "deploy/edge/Dockerfile"],
+  ] as const) {
+    assert.match(workflow, new RegExp(`- name: ${name}\\n\\s+dockerfile: ${dockerfile.replace("/", "\\/")}`));
+  }
+  assert.match(workflow, /^ {2}sandbox-base:$/m);
+  assert.match(workflow, /^ {2}sandbox-local:$/m);
+  assert.equal(workflow.match(/platforms: linux\/amd64/g)?.length, 3);
+});
+
+test("production version tags are promoted only after scan, signature, and complete digest verification", () => {
+  const workflow = readFileSync(".github/workflows/release-production-images.yml", "utf8");
+  const formalTag = /qm-\$\{name\}:\$\{RELEASE_TAG\}/;
+
+  assert.match(workflow, /severity: HIGH,CRITICAL\s+ignore-unfixed: false\s+exit-code: 1/g);
+  assert.match(workflow, /cosign sign --yes "\$image"/);
+  assert.match(
+    workflow,
+    /for name in core web-ui admin portal auth edge sandbox-base sandbox-local; do\s+test -s "qm-\$\{name\}\.image"/,
+  );
+  assert.match(workflow, formalTag);
+  assert.ok(
+    workflow.indexOf("Verify complete signed digest set") < workflow.indexOf("Refuse conflicting version tags"),
+  );
+  assert.ok(workflow.indexOf("Refuse conflicting version tags") < workflow.indexOf("Promote verified digests"));
+  assert.ok(workflow.indexOf("Promote verified digests") < workflow.indexOf("Create production release"));
+  const beforePromotion = workflow.slice(0, workflow.indexOf("Promote verified digests"));
+  assert.doesNotMatch(beforePromotion, /docker buildx imagetools create --tag/);
+});
+
+test("production promotion is conflict-safe and retries the same digest idempotently", () => {
+  const workflow = readFileSync(".github/workflows/release-production-images.yml", "utf8");
+
+  assert.match(
+    workflow,
+    /if \[ "\$existing" != "\$expected" \]; then\s+echo "\$tag already points at a different digest"/,
+  );
+  assert.match(
+    workflow,
+    /if \[ "\$existing" != "\$expected" \]; then\s+docker buildx imagetools create --tag "\$tag" "\$image"/,
+  );
+  assert.match(workflow, /test "\$actual" = "\$expected"/);
+  assert.match(workflow, /gh api "repos\/\$GITHUB_REPOSITORY\/git\/refs"/);
+  assert.match(workflow, /reserved=\$\(gh api "repos\/\$GITHUB_REPOSITORY\/git\/ref\/tags\/\$RELEASE_TAG"/);
+  assert.match(workflow, /if \[ "\$reserved" != "\$RELEASE_SHA" \]/);
+  assert.match(workflow, /if \[ "\$existing" != "\$RELEASE_SHA" \]/);
+  assert.doesNotMatch(workflow, /--clobber/);
+  assert.match(workflow, /cmp -s "\$file" "\$directory\/\$\(basename "\$file"\)"/);
+  assert.match(workflow, /cp scripts\/init-production-env\.sh init-production-env\.sh/);
+  assert.match(workflow, /"images\.production\.env#Pinned Docker Hub production images"/);
+  assert.match(workflow, /cosign sign-blob --yes --bundle SHA256SUMS\.bundle SHA256SUMS/);
+  assert.match(workflow, /cosign verify-blob/);
+});
+
+test("a partial production promotion resumes the original signed digest artifacts", () => {
+  const workflow = readFileSync(".github/workflows/release-production-images.yml", "utf8");
+
+  assert.match(workflow, /^ {6}resume_run_id:$/m);
+  assert.match(workflow, /if: inputs\.resume_run_id == ''/g);
+  assert.match(workflow, /run-id: \$\{\{ inputs\.resume_run_id \}\}/);
+  assert.match(workflow, /pattern: production-qm-\*-\$\{\{ inputs\.resume_run_id \}\}/);
+  assert.match(workflow, /repos\/\$GITHUB_REPOSITORY\/actions\/runs\/\$RESUME_RUN_ID/);
+  assert.match(workflow, /release_sha=\$\(jq -r \.head_sha <<< "\$run"\)/);
+  assert.match(workflow, /ref: \$\{\{ needs\.preflight\.outputs\.release_sha \}\}/);
+  assert.match(workflow, /printf 'release_sha=%s\\n' "\$release_sha" >> "\$GITHUB_OUTPUT"/);
+  assert.match(workflow, /name: production-release-candidate-\$\{\{ github\.run_id \}\}/);
+  assert.match(workflow, /name: production-release-candidate-\$\{\{ inputs\.resume_run_id \}\}/);
+  assert.match(workflow, /test "\$\(jq -r \.release_tag release-candidate\.json\)" = "\$RELEASE_TAG"/);
+  assert.match(workflow, /retention-days: 30/g);
 });

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
-const imageNames = ["CORE", "WEB_UI", "ADMIN", "PORTAL", "AUTH", "EDGE", "SANDBOX_LOCAL"] as const;
+const imageNames = ["CORE", "WEB_UI", "ADMIN", "PORTAL", "AUTH", "EDGE", "SANDBOX"] as const;
 const requiredProductionValues = [
   "POSTGRES_PASSWORD",
   "DOCKER_GID",
@@ -31,7 +31,6 @@ const generatedValues = [
   "AUTH_CLIENT_SECRET",
   "AUTH_SIGNING_JWK",
   "AUTH_TOKEN_SECRET",
-  "SMTP_PASSWORD",
 ] as const;
 
 function envValues(path: string): Map<string, string> {
@@ -47,7 +46,7 @@ function serviceBlock(compose: string, service: string): string {
   const start = compose.indexOf(`  ${service}:\n`);
   assert.notEqual(start, -1, `${service} must be declared`);
   const afterStart = start + `  ${service}:\n`.length;
-  const nextService = compose.slice(afterStart).search(/^  [a-z][a-z-]*:\n/m);
+  const nextService = compose.slice(afterStart).search(/^ {2}[a-z][a-z-]*:\n/m);
   return nextService === -1 ? compose.slice(afterStart) : compose.slice(afterStart, afterStart + nextService);
 }
 
@@ -63,11 +62,16 @@ test("the production example is a complete fail-closed template without organiza
   assert.equal(values.get("NODE_ENV"), "production");
   assert.equal(values.get("PORTAL_LOCAL_AUTH_BYPASS"), "0");
   assert.equal(values.get("AUTH_EMAIL_TRANSPORT"), "smtp");
+  assert.equal(values.get("QM_BIND_ADDRESS"), "127.0.0.1");
   assert.equal(values.get("PORTAL_PUBLIC_URL"), "https://qm.example.com");
   assert.equal(values.get("OIDC_ALLOWED_EMAIL_DOMAIN"), "example.com");
   assert.equal(values.get("AUTH_ALLOWED_EMAIL_DOMAIN"), "example.com");
   for (const name of generatedValues) {
-    assert.equal(values.get(name), "replace-me", `${name} must fail closed until initialization replaces it`);
+    if (name === "AUTH_SIGNING_JWK") {
+      assert.match(values.get(name) ?? "", /"kid":"qm-example-do-not-use"/);
+    } else {
+      assert.match(values.get(name) ?? "", /^qm-example-/);
+    }
   }
   assert.doesNotMatch(readFileSync(".env.production.example", "utf8"), /qfpay|aiagents|lijixing/i);
 });
@@ -97,10 +101,13 @@ test("the production Compose stack is image-only and exposes only the edge", () 
   }
   assert.match(compose, /^\s*edge:\s*$/m);
   assert.match(compose, /edge:[\s\S]*?ports:/);
-  for (const service of ["postgres", "web-ui", "admin", "portal", "auth"]) {
+  assert.match(serviceBlock(compose, "edge"), /QM_BIND_ADDRESS:-127\.0\.0\.1[^\n]*QM_HTTP_PORT:-8088/);
+  assert.doesNotMatch(serviceBlock(compose, "auth"), /^\s*profiles:/m);
+  for (const service of ["web-ui", "admin", "portal", "auth"]) {
     const block = serviceBlock(compose, service);
     assert.doesNotMatch(block, /^\s*ports:/m, `${service} must stay behind the edge`);
   }
+  assert.match(serviceBlock(compose, "postgres"), /127\.0\.0\.1[^\n]*:5432/);
   assert.match(compose, /\/var\/run\/docker\.sock:\/var\/run\/docker\.sock/);
   assert.match(compose, /group_add:[\s\S]*?DOCKER_GID/);
 });
@@ -109,10 +116,13 @@ test("production initialization replaces every fail-closed value and generates t
   const script = readFileSync("scripts/init-production-env.sh", "utf8");
 
   assert.match(script, /stat -c %g \/var\/run\/docker\.sock/);
+  assert.match(script, /mktemp "\$target_dir\/\.env\.production\.tmp\.XXXXXX"/);
+  assert.match(script, /mv "\$work_file" "\$target"/);
   assert.match(script, /openssl rand -hex 32/);
-  for (const name of requiredProductionValues) assert.match(script, new RegExp(`\\b${name}\\b`));
+  for (const name of generatedValues) assert.match(script, new RegExp(`\\b${name}\\b`));
   assert.match(script, /AUTH_SIGNING_JWK/);
-  assert.match(script, /generateKeyPairSync\(['"]ec['"]/);
+  assert.match(script, /openssl ecparam -name prime256v1 -genkey/);
+  assert.doesNotMatch(script, /\bnode\b|generateKeyPairSync/);
 });
 
 test("the pull-only deployment assets are all checked in", () => {
@@ -121,6 +131,7 @@ test("the pull-only deployment assets are all checked in", () => {
     "images.production.env",
     "compose.production.yaml",
     "scripts/init-production-env.sh",
+    "scripts/production-preflight.ts",
     "deploy/edge/Dockerfile",
   ]) {
     assert.equal(existsSync(path), true, `${path} is required for an image-only deployment`);

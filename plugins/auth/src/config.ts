@@ -1,4 +1,10 @@
 import type { SmtpTlsMode } from "./smtp.ts";
+import {
+  isExampleDomain,
+  isExampleEmail,
+  isExampleJwk,
+  isProductionPlaceholder,
+} from "../../chassis/src/production-placeholders.ts";
 
 type EmailTransportKind = "resend" | "smtp";
 
@@ -36,13 +42,7 @@ export interface AuthConfig {
   coreSigningSecret: string | undefined;
 }
 
-const PLACEHOLDER = /^(replace-me|placeholder|changeme|todo)$/i;
 const MAX_RATE_LIMIT_SLOTS = 64;
-
-function isMissingOrPlaceholder(value: string | undefined): boolean {
-  const candidate = value?.trim();
-  return !candidate || PLACEHOLDER.test(candidate);
-}
 
 function numberFrom(raw: string | undefined, fallback: number): number {
   const parsed = Number(raw);
@@ -131,7 +131,7 @@ export function validEmail(value: string): boolean {
 }
 
 function httpsUrlProblem(label: string, value: string, requireHttps: boolean): string | null {
-  if (isMissingOrPlaceholder(value)) return `${label} is required and may not be a placeholder`;
+  if (isProductionPlaceholder(value)) return `${label} is required and may not be a placeholder`;
   let url: URL;
   try {
     url = new URL(value);
@@ -139,6 +139,7 @@ function httpsUrlProblem(label: string, value: string, requireHttps: boolean): s
     return `${label} must be an absolute URL`;
   }
   if (requireHttps && url.protocol !== "https:") return `${label} must be https in production`;
+  if (requireHttps && isExampleDomain(url.hostname)) return `${label} must not use example.com in production`;
   if (url.search || url.hash) return `${label} must not carry a query string or fragment`;
   return null;
 }
@@ -151,20 +152,21 @@ export function bootProblems(cfg: AuthConfig, isProd: boolean): string[] {
 
   push(httpsUrlProblem("AUTH_ISSUER", cfg.issuer, isProd));
   push(httpsUrlProblem("AUTH_REDIRECT_URI", cfg.redirectUri, isProd));
-  if (isMissingOrPlaceholder(cfg.clientId)) problems.push("AUTH_CLIENT_ID is required and may not be a placeholder");
-  if (isMissingOrPlaceholder(cfg.clientSecret))
+  if (isProductionPlaceholder(cfg.clientId)) problems.push("AUTH_CLIENT_ID is required and may not be a placeholder");
+  if (isProductionPlaceholder(cfg.clientSecret))
     problems.push("AUTH_CLIENT_SECRET is required and may not be a placeholder");
   else if (cfg.clientSecret.trim().length < 32)
     problems.push(
       "AUTH_CLIENT_SECRET must be at least 32 characters — it is the portal's only credential at the token endpoint",
     );
-  if (isMissingOrPlaceholder(cfg.tokenSecret))
+  if (isProductionPlaceholder(cfg.tokenSecret))
     problems.push("AUTH_TOKEN_SECRET is required and may not be a placeholder");
   else if (cfg.tokenSecret.trim().length < 32) problems.push("AUTH_TOKEN_SECRET must be at least 32 characters");
   if (cfg.clientSecret && cfg.tokenSecret && cfg.clientSecret === cfg.tokenSecret) {
     problems.push("AUTH_CLIENT_SECRET must differ from AUTH_TOKEN_SECRET");
   }
-  if (!cfg.signingJwk) problems.push("AUTH_SIGNING_JWK is required and must be a JSON Web Key object");
+  if (!cfg.signingJwk || isExampleJwk(cfg.signingJwk))
+    problems.push("AUTH_SIGNING_JWK is required and must be a non-example JSON Web Key object");
   else if (cfg.signingJwk.kty !== "EC" || cfg.signingJwk.crv !== "P-256" || typeof cfg.signingJwk.d !== "string") {
     problems.push("AUTH_SIGNING_JWK must be a P-256 private JSON Web Key (kty EC, crv P-256, with d)");
   }
@@ -174,27 +176,36 @@ export function bootProblems(cfg: AuthConfig, isProd: boolean): string[] {
       "AUTH_ALLOWED_EMAILS or AUTH_ALLOWED_EMAIL_DOMAIN is required — without one, anybody with an inbox could sign in",
     );
   }
-  const badEmail = cfg.allowedEmails.find((email) => !validEmail(email) || isMissingOrPlaceholder(email));
+  const badEmail = cfg.allowedEmails.find(
+    (email) => !validEmail(email) || isProductionPlaceholder(email) || isExampleEmail(email),
+  );
   if (badEmail)
     problems.push("AUTH_ALLOWED_EMAILS must be a comma-separated list of valid, non-placeholder email addresses");
   if (
     cfg.allowedEmailDomain &&
-    (isMissingOrPlaceholder(cfg.allowedEmailDomain) || !validEmailDomain(cfg.allowedEmailDomain))
+    (isProductionPlaceholder(cfg.allowedEmailDomain) ||
+      isExampleDomain(cfg.allowedEmailDomain) ||
+      !validEmailDomain(cfg.allowedEmailDomain))
   ) {
     problems.push("AUTH_ALLOWED_EMAIL_DOMAIN must be a valid, non-placeholder email domain when set");
   }
 
-  if (isMissingOrPlaceholder(cfg.emailFrom) || !validEmail(senderAddress(cfg.emailFrom))) {
+  if (
+    isProductionPlaceholder(cfg.emailFrom) ||
+    isExampleEmail(senderAddress(cfg.emailFrom)) ||
+    !validEmail(senderAddress(cfg.emailFrom))
+  ) {
     problems.push('AUTH_EMAIL_FROM must be a verified sender address, optionally as "Name <sender@example.com>"');
   }
   if (cfg.transport === "resend") {
-    if (isMissingOrPlaceholder(cfg.resendApiKey))
+    if (isProductionPlaceholder(cfg.resendApiKey))
       problems.push("RESEND_API_KEY is required when AUTH_EMAIL_TRANSPORT is resend");
   } else {
-    if (isMissingOrPlaceholder(cfg.smtp.host)) problems.push("SMTP_HOST is required when AUTH_EMAIL_TRANSPORT is smtp");
-    if (isMissingOrPlaceholder(cfg.smtp.username))
+    if (isProductionPlaceholder(cfg.smtp.host) || (isProd && isExampleDomain(cfg.smtp.host)))
+      problems.push("SMTP_HOST is required and must not use an example domain when AUTH_EMAIL_TRANSPORT is smtp");
+    if (isProductionPlaceholder(cfg.smtp.username) || (isProd && isExampleEmail(cfg.smtp.username)))
       problems.push("SMTP_USERNAME is required when AUTH_EMAIL_TRANSPORT is smtp");
-    if (isMissingOrPlaceholder(cfg.smtp.password))
+    if (isProductionPlaceholder(cfg.smtp.password))
       problems.push("SMTP_PASSWORD is required when AUTH_EMAIL_TRANSPORT is smtp");
     if (!Number.isInteger(cfg.smtp.port) || cfg.smtp.port < 1 || cfg.smtp.port > 65535)
       problems.push("SMTP_PORT must be a TCP port number");
@@ -204,7 +215,7 @@ export function bootProblems(cfg: AuthConfig, isProd: boolean): string[] {
       );
   }
 
-  if (isProd && isMissingOrPlaceholder(cfg.coreSigningSecret)) {
+  if (isProd && isProductionPlaceholder(cfg.coreSigningSecret)) {
     problems.push(
       "CORE_SIGNING_SECRET is required — single-use enforcement for links and codes is durable state held by core",
     );

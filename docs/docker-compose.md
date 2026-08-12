@@ -5,7 +5,9 @@
 [`../compose.production.yaml`](../compose.production.yaml) is the production-oriented,
 single-host Compose entry point. Unlike this source-build reference stack, it contains no
 `build:` entries or source mounts: a production host only downloads the release files and
-the Docker Hub images. It does not need Node.js, npm, or this repository checkout.
+the Docker Hub images. The built-in `auth` service is required, not a Compose profile. It
+does not need Node.js, npm, or this repository checkout. Production images are Linux
+`amd64`/`x86_64` only.
 
 Use `../.env.production.example` only as a complete, anonymous configuration reference.
 Every key has an example value so operators can see expected formats, but examples are
@@ -21,13 +23,42 @@ and must remain fixed at `@sha256:` digests. A tag, including `latest`, is not a
 identifier. `QM_SANDBOX_IMAGE` must reference the published local-sandbox runtime image,
 not its base image.
 
+Download the Compose file, initializer, configuration template, image manifests,
+`SHA256SUMS`, and its Sigstore bundle from the same GitHub Release. Verify the bundle,
+checksums, and every image signature before the initializer or Compose receives any
+production secret. Do not combine files from different release tags.
+
+`release-production-images.yml` is separate from the existing Release and CLI workflows.
+It publishes only from `main` when the input matches `prod-vMAJOR.MINOR.PATCH` (for
+example, `prod-v0.6.0`). Protect matching Git tags from updates and deletion, enable
+matching immutable-tag rules in every Docker Hub repository, and give an exclusive
+`DOCKERHUB_TOKEN` only the required push access. Store it only as a secret in the
+`production-images` GitHub Environment, require reviewer approval, restrict deployments
+to `main`, and limit allowed reviewers. Create
+`xingstudy/qm-production-staging` as a private candidate repository, remove expired build
+tags after the 30-day recovery window, and never deploy from it. If a run fails after
+partial promotion, dispatch with that failed run's `resume_run_id` while its
+30-day artifacts remain available. Preserve each generated digest manifest as the
+immutable release and rollback record.
+
 ```bash
 docker login
-docker compose --env-file .env.production -f compose.production.yaml --profile auth config --quiet
-docker compose --env-file .env.production -f compose.production.yaml --profile auth pull
-docker compose --env-file .env.production -f compose.production.yaml --profile auth up -d --wait --pull always
+cosign verify-blob \
+  --bundle SHA256SUMS.bundle \
+  --certificate-identity='https://github.com/xingstudy/yc-qm/.github/workflows/release-production-images.yml@refs/heads/main' \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+  SHA256SUMS
+sha256sum -c SHA256SUMS
+while IFS='=' read -r _ image; do
+  cosign verify "$image" \
+    --certificate-identity='https://github.com/xingstudy/yc-qm/.github/workflows/release-production-images.yml@refs/heads/main' \
+    --certificate-oidc-issuer=https://token.actions.githubusercontent.com > /dev/null
+done < images.production.env
+docker compose --env-file .env.production -f compose.production.yaml config --quiet
+docker compose --env-file .env.production -f compose.production.yaml pull
+docker compose --env-file .env.production -f compose.production.yaml up -d --wait --pull always
 docker compose --env-file .env.production -f compose.production.yaml ps
-curl -fsS https://your-qm.example/healthz
+curl -fsS http://127.0.0.1:8088/healthz
 ```
 
 Production health is not complete until an allowed user signs in through the TLS edge,
@@ -40,10 +71,12 @@ the protected backup. Use a matched prior `images.production.env` and configurat
 rollback; restore durable data as well if the target release is not data-compatible.
 Avoid `docker compose down -v`, which deletes Compose-managed durable volumes.
 
-The pull-only stack is still single-host. Its edge must be behind TLS termination; direct
-service ports and Postgres stay private. Firewall core's host-networked 8080 port,
-configure `PORTAL_XFF_TRUSTED_HOPS` for the actual trusted proxy chain, and never run the
-host Docker socket mount on a shared or untrusted host. The socket gives core near-root
+The pull-only stack is still single-host. Its HTTP edge defaults to
+`QM_BIND_ADDRESS=127.0.0.1` and is only for a same-host TLS reverse proxy, never direct
+Internet exposure; direct service ports and Postgres stay private.
+`PORTAL_XFF_TRUSTED_HOPS=2` represents the external TLS proxy plus the built-in edge.
+Firewall core's host-networked 8080 port, and never run the host Docker socket mount on a
+shared or untrusted host. The socket gives core near-root
 host control. Add firewall policy, secret management, restore drills, monitoring,
 alerting, log rotation, resource limits, and sandbox isolation before Internet exposure.
 Any exposed credential must be rotated before launch, including database, mail,

@@ -5,6 +5,9 @@ data/
 
 .env
 *.env
+!.env.production.example
+!images.production.env
+.env.production
 .env.local
 *.env.local
 *.tfstate
