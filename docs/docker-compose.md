@@ -1,5 +1,57 @@
 # Docker Compose
 
+## Pull-only production stack
+
+[`../compose.production.yaml`](../compose.production.yaml) is the production-oriented,
+single-host Compose entry point. Unlike this source-build reference stack, it contains no
+`build:` entries or source mounts: a production host only downloads the release files and
+the Docker Hub images. It does not need Node.js, npm, or this repository checkout.
+
+Use `../.env.production.example` only as a complete, anonymous configuration reference.
+Every key has an example value so operators can see expected formats, but examples are
+intentionally unsafe for deployment. Run `../scripts/init-production-env.sh` once to
+write `.env.production` with fresh replacement secrets, a private JWK, and the detected
+`DOCKER_GID`; then replace the public URL, administrator, identity boundary, mail
+transport, and model-provider values. Do not copy credentials between installations.
+
+`../images.production.env` selects the release. Its `QM_CORE_IMAGE`,
+`QM_WEB_UI_IMAGE`, `QM_ADMIN_IMAGE`, `QM_PORTAL_IMAGE`, `QM_AUTH_IMAGE`,
+`QM_EDGE_IMAGE`, and `QM_SANDBOX_IMAGE` default to the `xingstudy` Docker Hub namespace
+and must remain fixed at `@sha256:` digests. A tag, including `latest`, is not a release
+identifier. `QM_SANDBOX_IMAGE` must reference the published local-sandbox runtime image,
+not its base image.
+
+```bash
+docker login
+docker compose --env-file .env.production -f compose.production.yaml --profile auth config --quiet
+docker compose --env-file .env.production -f compose.production.yaml --profile auth pull
+docker compose --env-file .env.production -f compose.production.yaml --profile auth up -d --wait --pull always
+docker compose --env-file .env.production -f compose.production.yaml ps
+curl -fsS https://your-qm.example/healthz
+```
+
+Production health is not complete until an allowed user signs in through the TLS edge,
+runs a real Agent turn, and the core creates a local sandbox from the pinned image. Check
+the configured model and each required connector as part of the same acceptance test.
+
+Back up and restore-test Postgres, `core-data`, and each `qm-home-*` volume before any
+upgrade. Keep the corresponding configuration and generated signing/encryption values in
+the protected backup. Use a matched prior `images.production.env` and configuration for
+rollback; restore durable data as well if the target release is not data-compatible.
+Avoid `docker compose down -v`, which deletes Compose-managed durable volumes.
+
+The pull-only stack is still single-host. Its edge must be behind TLS termination; direct
+service ports and Postgres stay private. Firewall core's host-networked 8080 port,
+configure `PORTAL_XFF_TRUSTED_HOPS` for the actual trusted proxy chain, and never run the
+host Docker socket mount on a shared or untrusted host. The socket gives core near-root
+host control. Add firewall policy, secret management, restore drills, monitoring,
+alerting, log rotation, resource limits, and sandbox isolation before Internet exposure.
+Any exposed credential must be rotated before launch, including database, mail,
+OIDC/OAuth, private JWK, signing/session/token, and model-provider credentials. A
+database-role change and a connector-encryption-key migration require explicit plans.
+
+## Source-build development stack
+
 [`../docker-compose.yaml`](../docker-compose.yaml) runs the local QM service stack:
 PostgreSQL, core, Web UI, Admin, Portal, and Nginx. The built-in email authentication
 broker is available through the optional `auth` profile.
