@@ -71,6 +71,35 @@ test("production boot requires an explicit OIDC tenant trust boundary", () => {
   }
 });
 
+test("production rejects template markers and local authentication bypass", () => {
+  const command = "import('./src/index.ts').then(m => m.bootChecks())";
+  const baseEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    NODE_ENV: "production",
+    PORTAL_PUBLIC_URL: "https://agent.example.com",
+    PORTAL_SESSION_SECRET: "portal-session-secret",
+    CORE_SIGNING_SECRET: "core-signing-secret",
+    OIDC_CLIENT_ID: "client-id",
+    OIDC_CLIENT_SECRET: "client-secret",
+    OIDC_ALLOWED_EMAIL_DOMAIN: "example.com",
+  };
+  for (const [override, pattern] of [
+    [{ PORTAL_SESSION_SECRET: "replace-me" }, /PORTAL_SESSION_SECRET is required/],
+    [{ CORE_SIGNING_SECRET: "replace-me" }, /CORE_SIGNING_SECRET is required/],
+    [{ OIDC_CLIENT_ID: "replace-me" }, /OIDC_CLIENT_ID is required/],
+    [{ OIDC_CLIENT_SECRET: "replace-me" }, /OIDC_CLIENT_SECRET is required/],
+    [{ PORTAL_LOCAL_AUTH_BYPASS: "1" }, /PORTAL_LOCAL_AUTH_BYPASS may not be enabled/],
+  ] as const) {
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", command], {
+      cwd: process.cwd(),
+      env: { ...baseEnv, ...override },
+      encoding: "utf8",
+    });
+    assert.notEqual(child.status, 0);
+    assert.match(child.stderr, pattern);
+  }
+});
+
 test("production boot requires an explicit JWKS URI for custom issuers", () => {
   const command = "import('./src/index.ts').then(m => m.bootChecks())";
   const baseEnv: NodeJS.ProcessEnv = {

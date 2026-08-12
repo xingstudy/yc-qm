@@ -239,6 +239,18 @@ test("production refuses missing, placeholder, or weak signing keys", () => {
   );
 });
 
+test("every production core secret rejects a fail-closed template marker", () => {
+  for (const name of [
+    "CAPABILITY_SECRET",
+    "CONNECTOR_SECRET_KEY",
+    "CORE_SIGNING_SECRET",
+    "PORTAL_IDENTITY_SECRET",
+    "SKILL_SIGNING_SECRET",
+  ] as const) {
+    assert.throws(() => loadConfig({ ...productionEnv, [name]: "replace-me" }), new RegExp(`core secrets: ${name}$`));
+  }
+});
+
 test("defaults come from CONFIG_DEFAULTS, set exactly once", () => {
   const def = loadConfig({});
   assert.equal(def.workers, CONFIG_DEFAULTS.workers);

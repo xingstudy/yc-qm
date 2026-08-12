@@ -39,6 +39,26 @@ test("production refuses missing or placeholder credentials and keys", () => {
   }
 });
 
+test("a production template marker never becomes a usable mail-broker default", () => {
+  for (const name of [
+    "AUTH_CLIENT_ID",
+    "AUTH_CLIENT_SECRET",
+    "AUTH_TOKEN_SECRET",
+    "AUTH_SIGNING_JWK",
+    "AUTH_EMAIL_FROM",
+    "SMTP_HOST",
+    "SMTP_USERNAME",
+    "SMTP_PASSWORD",
+  ] as const) {
+    const env = {
+      AUTH_EMAIL_TRANSPORT: "smtp",
+      RESEND_API_KEY: undefined,
+      [name]: "replace-me",
+    };
+    assert.match(problemsFor(env), new RegExp(name));
+  }
+});
+
 test("production refuses cleartext endpoints and cleartext SMTP", () => {
   assert.match(problemsFor({ AUTH_ISSUER: "http://agent.example.test/idp" }), /AUTH_ISSUER must be https/);
   assert.match(
@@ -132,6 +152,11 @@ test("`node src/index.ts` refuses to boot on a placeholder configuration and ser
     ...process.env,
     ...testEnv({ CORE_SIGNING_SECRET: "a".repeat(48) }),
     NODE_ENV: "production",
+    SANDBOX_BACKEND: "local",
+    CAPABILITY_SECRET: "capability",
+    CONNECTOR_SECRET_KEY: "connector-secret-0123456789abcdef",
+    PORTAL_IDENTITY_SECRET: "portal-identity",
+    SKILL_SIGNING_SECRET: "skill-signing-secret-0123456789abcdef",
   } as NodeJS.ProcessEnv;
   const refuses = spawnSync(
     process.execPath,
