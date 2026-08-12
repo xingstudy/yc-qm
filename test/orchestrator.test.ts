@@ -720,8 +720,16 @@ test("browse derives key and base URL from a custom provider's admin config", as
     const result = await app.turn(dm("!run echo browse", { conversation: { kind: "dm", threadRef: "dm:U1:custom" } }));
     assert.equal(result.status, "ok");
     assert.equal(captured?.env?.BROWSE_LAB_MODEL, "gateway-model");
-    assert.equal(captured?.env?.BROWSE_LAB_MODEL_PROVIDER, "openai", "an openai-protocol provider maps to the runner's OpenAI client");
-    assert.equal(captured?.env?.BROWSE_LAB_OPENAI_KEY, "sk-gateway", "the admin-configured provider key rides the provision env");
+    assert.equal(
+      captured?.env?.BROWSE_LAB_MODEL_PROVIDER,
+      "openai",
+      "an openai-protocol provider maps to the runner's OpenAI client",
+    );
+    assert.equal(
+      captured?.env?.BROWSE_LAB_OPENAI_KEY,
+      "sk-gateway",
+      "the admin-configured provider key rides the provision env",
+    );
     assert.equal(captured?.env?.OPENAI_BASE_URL, "https://gateway.example/v1", "the provider's base URL rides with it");
   } finally {
     await built.customProviders.delete("gateway", "admin@example.com");
@@ -762,7 +770,11 @@ test("an explicit browse key credential overrides the provider-derived key", asy
   try {
     const result = await app.turn(dm("!run echo browse", { conversation: { kind: "dm", threadRef: "dm:U1:custom2" } }));
     assert.equal(result.status, "ok");
-    assert.equal(captured?.env?.BROWSE_LAB_OPENAI_KEY, "sk-explicit", "the service credential wins over the provider store");
+    assert.equal(
+      captured?.env?.BROWSE_LAB_OPENAI_KEY,
+      "sk-explicit",
+      "the service credential wins over the provider store",
+    );
     assert.equal(
       captured?.env?.OPENAI_BASE_URL,
       undefined,
@@ -794,7 +806,11 @@ test("browse rides the admin-saved model credential for a builtin provider", asy
   assert.equal(res.status, "ok");
   assert.equal(captured?.env?.BROWSE_LAB_MODEL, "gpt-5.6-sol");
   assert.equal(captured?.env?.BROWSE_LAB_MODEL_PROVIDER, "openai");
-  assert.equal(captured?.env?.BROWSE_LAB_OPENAI_KEY, "openai-admin-key", "the builtin provider's key comes from the model credential store");
+  assert.equal(
+    captured?.env?.BROWSE_LAB_OPENAI_KEY,
+    "openai-admin-key",
+    "the builtin provider's key comes from the model credential store",
+  );
   assert.equal(
     captured?.env?.OPENAI_BASE_URL,
     resolveModel("gpt-5.6-sol")?.baseUrl,
