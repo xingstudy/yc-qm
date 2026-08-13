@@ -105,6 +105,119 @@ known limitations.
 
 ## Deploy with Docker Compose
 
+### Pull-only production deployment
+
+[`compose.production.yaml`](./compose.production.yaml) is the single-host production
+package. It runs the same QM services, including the required built-in `auth` email
+sign-in broker, from Docker Hub images. A production host needs Docker Engine, Docker
+Compose v2, `curl`, `cosign`, and a TLS-terminating reverse proxy or load balancer; it
+does **not** need a source checkout, Node.js, npm, or a local image build.
+
+The release manifest [`images.production.env`](./images.production.env) defaults to the
+`lijixing` Docker Hub namespace. Every `QM_*_IMAGE` is pinned to an immutable
+`@sha256:` digest. Treat that manifest as part of the release: do not replace a digest
+with a tag or `latest`. Production images support Linux `amd64`/`x86_64` hosts only.
+
+The separate `release-production-images.yml` workflow publishes a production release
+from `main` when its input uses `prod-vMAJOR.MINOR.PATCH`, such as `prod-v0.6.0`; the
+existing Release and CLI workflows do not publish this production image set. Before
+publishing, protect Git tags matching `prod-v*` from updates and deletion, enable Docker
+Hub immutable tags for the same pattern on every target repository, and configure an
+exclusive, least-privilege `DOCKERHUB_TOKEN` as an Environment secret, not a repository
+secret. The `production-images` GitHub Environment must require release approval, allow
+deployments only from `main`, and limit who may approve. Create
+`lijixing/qm-production-staging` as a private repository; candidates are scanned there
+before promotion, and its expired build tags should be removed after the 30-day recovery
+window. Staging images must not be deployed. If promotion stops after writing any version
+tag, dispatch the workflow with the failed run's `resume_run_id` so it reuses the
+original 30-day signed digest artifacts instead of rebuilding. Treat the generated
+digest manifest as the immutable release record used for deployment and rollback.
+
+All keys in [`.env.production.example`](./.env.production.example) deliberately have
+anonymous, syntactically usable example values, including secrets and the private JWK.
+Those values are only documentation fixtures and must never be deployed. Create the real
+file with the initializer; it generates distinct replacement secrets, a private JWK, and
+the Docker socket group ID without printing secret values:
+
+```bash
+QM_RELEASE=prod-v0.6.0
+mkdir qm-production && cd qm-production
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/compose.production.yaml"
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/.env.production.example"
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/images.production.env"
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/images.production.json"
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/SHA256SUMS"
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/SHA256SUMS.bundle"
+mkdir -p scripts
+curl -fsSL "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/init-production-env.sh" -o scripts/init-production-env.sh
+chmod 700 scripts/init-production-env.sh
+cosign verify-blob \
+  --bundle SHA256SUMS.bundle \
+  --certificate-identity='https://github.com/xingstudy/yc-qm/.github/workflows/release-production-images.yml@refs/heads/main' \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+  SHA256SUMS
+sha256sum -c SHA256SUMS
+docker login
+while IFS='=' read -r _ image; do
+  cosign verify "$image" \
+    --certificate-identity='https://github.com/xingstudy/yc-qm/.github/workflows/release-production-images.yml@refs/heads/main' \
+    --certificate-oidc-issuer=https://token.actions.githubusercontent.com > /dev/null
+done < images.production.env
+./scripts/init-production-env.sh
+```
+
+Before the first start, edit `.env.production`. Replace the operational example values
+for the public HTTPS URL, organization ID, administrator grant, allowed email domain or
+emails, mail sender and SMTP credentials, and a model-provider credential. Keep the
+generated values backed up in a secret manager. The built-in broker also requires its
+mail transport settings; its issuer, callback, and private endpoints must remain aligned
+with the public URL and `auth` service settings in the template.
+
+After signature verification and configuration, validate, pull, and start only the
+pinned images:
+
+```bash
+docker compose --env-file .env.production -f compose.production.yaml config --quiet
+docker compose --env-file .env.production -f compose.production.yaml pull
+docker compose --env-file .env.production -f compose.production.yaml up -d --wait --pull always
+docker compose --env-file .env.production -f compose.production.yaml ps
+curl -fsS http://127.0.0.1:8088/healthz
+```
+
+`--wait` and `/healthz` only prove service liveness. Complete a browser sign-in using the
+configured initial administrator grant, run a real non-mock Agent turn, confirm that a
+`qm-sandbox-local` container is created, and verify the model provider and required
+connectors before accepting the installation. `QM_SANDBOX_IMAGE` is also digest-pinned;
+the sandbox base image alone is not sufficient for real turns.
+
+Back up and restore-test Postgres, `core-data`, and every `qm-home-*` volume before an
+upgrade. Preserve the generated encryption and signing values with that backup: loss of
+`CONNECTOR_SECRET_KEY` can make stored connector credentials unreadable. Never use
+`docker compose down -v` as a routine stop or upgrade command. To upgrade, obtain a
+new matching release set, review the new `.env.production.example` and
+`images.production.env`, back up, then pull and run `up -d --wait --pull always`. To
+roll back, restore the prior complete image manifest and configuration together; restore
+the database and volumes when the release is not data-compatible.
+
+This remains a single-host deployment, not a high-availability or zero-downtime
+platform. The built-in HTTP edge defaults to `QM_BIND_ADDRESS=127.0.0.1` and is only
+for the same-host TLS reverse proxy; do not expose it directly. Keep Postgres and all
+direct application ports private. `PORTAL_XFF_TRUSTED_HOPS=2` represents the external
+TLS proxy plus the built-in edge. Firewall core's host-networked port 8080. Core mounts
+`/var/run/docker.sock` and can create containers,
+which is near-root control of the host: use a trusted, single-tenant Linux host, not a
+shared machine. Configure host firewall rules, backups with restore drills, monitoring,
+alerting, log rotation, resource limits, and an isolated sandbox boundary before treating
+this as an Internet-facing production service.
+
+If any credential was ever pasted into chat, a ticket, a shell history, or an earlier
+environment file, rotate it before deployment. Rotate database and mail credentials,
+OAuth/OIDC client credentials and private JWKs, all signing/session/token secrets, and
+provider keys. A database password change after initialization also requires changing the
+database role; changing encryption keys requires a planned credential migration.
+
+### Source-build development and reference stack
+
 The root [`docker-compose.yaml`](./docker-compose.yaml) builds and runs Postgres, core,
 Web UI, Admin, Portal, and Nginx from this source checkout. The optional `auth` profile
 adds qm's email sign-in broker.

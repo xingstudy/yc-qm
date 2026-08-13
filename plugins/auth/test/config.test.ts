@@ -4,15 +4,24 @@ import { spawnSync } from "node:child_process";
 import { bootProblems, readConfig, senderAddress } from "../src/config.ts";
 import { testEnv } from "./helpers.ts";
 
+const productionTestEnv = (over: Record<string, string | undefined> = {}): NodeJS.ProcessEnv =>
+  testEnv({
+    AUTH_ALLOWED_EMAILS: "admin@example.test,ops@example.test",
+    AUTH_EMAIL_FROM: "qm <no-reply@example.test>",
+    ...over,
+  });
+
 const problemsFor = (over: Record<string, string | undefined>, isProd = true): string =>
-  bootProblems(readConfig(testEnv(over)), isProd).join(" | ");
+  bootProblems(readConfig(productionTestEnv(over)), isProd).join(" | ");
 
 test("a complete broker configuration boots", () => {
   const signing = { CORE_SIGNING_SECRET: "a".repeat(48) };
-  assert.deepEqual(bootProblems(readConfig(testEnv(signing)), true), []);
+  assert.deepEqual(bootProblems(readConfig(productionTestEnv(signing)), true), []);
   assert.deepEqual(
     bootProblems(
-      readConfig(testEnv({ ...signing, AUTH_ALLOWED_EMAILS: undefined, AUTH_ALLOWED_EMAIL_DOMAIN: "example.com" })),
+      readConfig(
+        productionTestEnv({ ...signing, AUTH_ALLOWED_EMAILS: undefined, AUTH_ALLOWED_EMAIL_DOMAIN: "example.test" }),
+      ),
       true,
     ),
     [],
@@ -39,6 +48,26 @@ test("production refuses missing or placeholder credentials and keys", () => {
   }
 });
 
+test("a production template marker never becomes a usable mail-broker default", () => {
+  for (const name of [
+    "AUTH_CLIENT_ID",
+    "AUTH_CLIENT_SECRET",
+    "AUTH_TOKEN_SECRET",
+    "AUTH_SIGNING_JWK",
+    "AUTH_EMAIL_FROM",
+    "SMTP_HOST",
+    "SMTP_USERNAME",
+    "SMTP_PASSWORD",
+  ] as const) {
+    const env = {
+      AUTH_EMAIL_TRANSPORT: "smtp",
+      RESEND_API_KEY: undefined,
+      [name]: "replace-me",
+    };
+    assert.match(problemsFor(env), new RegExp(name));
+  }
+});
+
 test("production refuses cleartext endpoints and cleartext SMTP", () => {
   assert.match(problemsFor({ AUTH_ISSUER: "http://agent.example.test/idp" }), /AUTH_ISSUER must be https/);
   assert.match(
@@ -55,7 +84,10 @@ test("production refuses cleartext endpoints and cleartext SMTP", () => {
     }),
     /SMTP_TLS=none may not be used in production/,
   );
-  assert.equal(bootProblems(readConfig(testEnv({ AUTH_ISSUER: "http://localhost:8099" })), false).join(" | "), "");
+  assert.equal(
+    bootProblems(readConfig(productionTestEnv({ AUTH_ISSUER: "http://localhost:8099" })), false).join(" | "),
+    "",
+  );
 });
 
 test("production requires the core signing secret that makes links single-use", () => {
@@ -79,7 +111,7 @@ test("the smtp transport demands its own credentials", () => {
   assert.equal(
     problemsFor({
       ...smtp,
-      SMTP_HOST: "smtp.example.com",
+      SMTP_HOST: "smtp.example.test",
       SMTP_USERNAME: "u",
       SMTP_PASSWORD: "p",
       CORE_SIGNING_SECRET: "a".repeat(48),
@@ -90,10 +122,16 @@ test("the smtp transport demands its own credentials", () => {
 
 test("malformed allowlists and senders are refused", () => {
   assert.match(problemsFor({ AUTH_ALLOWED_EMAILS: "not-an-email" }), /valid, non-placeholder email addresses/);
+  assert.match(problemsFor({ AUTH_ALLOWED_EMAILS: "admin@example.com" }), /valid, non-placeholder email addresses/);
+  assert.match(
+    problemsFor({ AUTH_ALLOWED_EMAILS: undefined, AUTH_ALLOWED_EMAIL_DOMAIN: "example.com" }),
+    /valid, non-placeholder email domain/,
+  );
   assert.match(
     problemsFor({ AUTH_ALLOWED_EMAILS: undefined, AUTH_ALLOWED_EMAIL_DOMAIN: "nodot" }),
     /valid, non-placeholder email domain/,
   );
+  assert.match(problemsFor({ AUTH_EMAIL_FROM: "qm <no-reply@example.com>" }), /verified sender address/);
   assert.match(problemsFor({ AUTH_EMAIL_FROM: "qm <not-an-address>" }), /verified sender address/);
 });
 
@@ -130,8 +168,13 @@ test("the issuer path drives the public form action", () => {
 test("`node src/index.ts` refuses to boot on a placeholder configuration and serves /healthz once fixed", async () => {
   const base = {
     ...process.env,
-    ...testEnv({ CORE_SIGNING_SECRET: "a".repeat(48) }),
+    ...productionTestEnv({ CORE_SIGNING_SECRET: "a".repeat(48) }),
     NODE_ENV: "production",
+    SANDBOX_BACKEND: "local",
+    CAPABILITY_SECRET: "capability",
+    CONNECTOR_SECRET_KEY: "connector-secret-0123456789abcdef",
+    PORTAL_IDENTITY_SECRET: "portal-identity",
+    SKILL_SIGNING_SECRET: "skill-signing-secret-0123456789abcdef",
   } as NodeJS.ProcessEnv;
   const refuses = spawnSync(
     process.execPath,

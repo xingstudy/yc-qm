@@ -41,6 +41,7 @@ import { coreClaimStore, withinRateLimit } from "../../chassis/src/claims.ts";
 import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { errMessage } from "../../chassis/src/errors.ts";
 import { json, escapeHtml, serveEmojiFavicon } from "../../chassis/src/http.ts";
+import { isExampleDomain, isExampleEmail, isProductionPlaceholder } from "../../chassis/src/production-placeholders.ts";
 import {
   CORE_API_URL as CORE,
   CORE_ORG_ID as ORG,
@@ -1236,14 +1237,15 @@ export function bootChecks(): void {
       problems.push("OIDC_CLIENT_SECRET is required and may not be a placeholder in production");
     if (
       PRINCIPAL_RULE.allowedEmailDomain &&
-      (isMissingOrPlaceholder(PRINCIPAL_RULE.allowedEmailDomain) ||
+      (isProductionPlaceholder(PRINCIPAL_RULE.allowedEmailDomain) ||
+        isExampleDomain(PRINCIPAL_RULE.allowedEmailDomain) ||
         !validEmailDomain(PRINCIPAL_RULE.allowedEmailDomain))
     ) {
       problems.push("OIDC_ALLOWED_EMAIL_DOMAIN must be a valid, non-placeholder email domain when set");
     }
     if (
       PRINCIPAL_RULE.allowedEmails?.some(
-        (email) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || isMissingOrPlaceholder(email),
+        (email) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || isProductionPlaceholder(email) || isExampleEmail(email),
       )
     ) {
       problems.push("OIDC_ALLOWED_EMAILS must be a comma-separated list of valid, non-placeholder email addresses");
@@ -1299,10 +1301,7 @@ export function bootChecks(): void {
   }
 }
 
-function isMissingOrPlaceholder(value: string | undefined): boolean {
-  const candidate = value?.trim();
-  return !candidate || /^(replace-me|placeholder|changeme|todo)$/i.test(candidate);
-}
+const isMissingOrPlaceholder = isProductionPlaceholder;
 
 function validEmailDomain(value: string): boolean {
   if (value.length > 253 || !value.includes(".")) return false;

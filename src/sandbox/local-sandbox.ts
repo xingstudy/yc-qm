@@ -1,8 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { orgId as configOrgId } from "../config.ts";
 import { arch } from "node:os";
-import { join } from "node:path";
-import { readdir, readFile as fsReadFile } from "node:fs/promises";
 import type { WorkspaceLayer } from "../types.ts";
 import type { WorkspaceStore } from "../workspace/workspace-store.ts";
 import { createKeyedQueue, sleep } from "../util/async.ts";
@@ -26,6 +24,7 @@ import type {
   SandboxHandle,
   TeardownOptions,
 } from "./sandbox.ts";
+import { computeSandboxImageFingerprint } from "./sandbox-fingerprint.ts";
 
 const DEFAULT_LOCAL_SANDBOX_IMAGE = "qm-sandbox-local:latest";
 const HOME_DIR = "/root";
@@ -51,28 +50,7 @@ export interface LocalSandboxOptions {
   onError?: (e: { category: string; code: string; message: string; scopeLabel?: string }) => void;
 }
 
-const FINGERPRINT_FIXED_SOURCES = ["fly/Dockerfile", "local/Dockerfile", "aws/microvm-agent/agent.mjs"];
-
-export async function computeSandboxImageFingerprint(repoRoot: string): Promise<string | null> {
-  try {
-    const tools = (await readdir(join(repoRoot, "fly/tools"))).sort().map((f) => `fly/tools/${f}`);
-    const paths = [...FINGERPRINT_FIXED_SOURCES, ...tools].sort();
-    const fp = createHash("sha256");
-    for (const p of paths) {
-      fp.update(p);
-      fp.update("\0");
-      fp.update(
-        createHash("sha256")
-          .update(await fsReadFile(join(repoRoot, p)))
-          .digest(),
-      );
-      fp.update("\n");
-    }
-    return fp.digest("hex");
-  } catch {
-    return null;
-  }
-}
+export { computeSandboxImageFingerprint } from "./sandbox-fingerprint.ts";
 
 export const localContainerName = (scopeId: string): string => `qm-sbx-${localSlug(scopeId)}`;
 export const localVolumeName = (scopeId: string): string => `qm-home-${localSlug(scopeId)}`;

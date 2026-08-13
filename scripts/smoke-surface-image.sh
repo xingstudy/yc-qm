@@ -28,21 +28,21 @@ if [[ "$service" == "portal" ]]; then
     -e CORE_SIGNING_SECRET=runtime-smoke-core-signing-secret \
     -e OIDC_CLIENT_ID=runtime-smoke-client \
     -e OIDC_CLIENT_SECRET=runtime-smoke-client-secret \
-    -e OIDC_ALLOWED_EMAIL_DOMAIN=example.com \
-    -e PORTAL_PUBLIC_URL=https://portal.example.com \
+    -e OIDC_ALLOWED_EMAIL_DOMAIN=smoke.test \
+    -e PORTAL_PUBLIC_URL=https://portal.smoke.test \
     "$image" >/dev/null
 elif [[ "$service" == "auth" ]]; then
   signing_jwk="$(node -e "const {generateKeyPairSync}=require('node:crypto');process.stdout.write(JSON.stringify(generateKeyPairSync('ec',{namedCurve:'P-256'}).privateKey.export({format:'jwk'})))")"
   docker run -d --name "$container" -p 127.0.0.1::"$container_port" \
     -e CORE_SIGNING_SECRET=runtime-smoke-core-signing-secret-0123456789 \
-    -e AUTH_ISSUER=https://portal.example.com/idp \
-    -e AUTH_REDIRECT_URI=https://portal.example.com/auth/callback \
+    -e AUTH_ISSUER=https://portal.smoke.test/idp \
+    -e AUTH_REDIRECT_URI=https://portal.smoke.test/auth/callback \
     -e AUTH_CLIENT_ID=qm-portal \
     -e AUTH_CLIENT_SECRET=runtime-smoke-auth-client-secret-0123456789 \
     -e AUTH_TOKEN_SECRET=runtime-smoke-auth-token-secret-0123456789 \
     -e AUTH_SIGNING_JWK="$signing_jwk" \
-    -e AUTH_ALLOWED_EMAIL_DOMAIN=example.com \
-    -e AUTH_EMAIL_FROM="qm <no-reply@example.com>" \
+    -e AUTH_ALLOWED_EMAIL_DOMAIN=smoke.test \
+    -e AUTH_EMAIL_FROM="qm <no-reply@smoke.test>" \
     -e AUTH_EMAIL_TRANSPORT=resend \
     -e RESEND_API_KEY=re_runtime_smoke \
     "$image" >/dev/null
