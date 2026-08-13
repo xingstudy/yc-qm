@@ -261,6 +261,9 @@ test("production promotion is conflict-safe and retries the same digest idempote
   );
   assert.match(workflow, /test "\$actual" = "\$expected"/);
   assert.match(workflow, /gh api "repos\/\$GITHUB_REPOSITORY\/git\/refs"/);
+  assert.equal(workflow.match(/git\/matching-refs\/tags\/\$RELEASE_TAG/g)?.length, 2);
+  assert.match(workflow, /select\(\.ref == \$ref\) \| \.object\.sha/);
+  assert.doesNotMatch(workflow, /git\/ref\/tags\/\$RELEASE_TAG" --jq \.object\.sha 2>\/dev\/null \|\| true/);
   assert.match(workflow, /reserved=\$\(gh api "repos\/\$GITHUB_REPOSITORY\/git\/ref\/tags\/\$RELEASE_TAG"/);
   assert.match(workflow, /if \[ "\$reserved" != "\$RELEASE_SHA" \]/);
   assert.match(workflow, /if \[ "\$existing" != "\$RELEASE_SHA" \]/);

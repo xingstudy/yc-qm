@@ -63,7 +63,8 @@ jobs:
             release_sha=$(jq -r .head_sha <<< "$run")
             [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]]
           fi
-          existing=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha 2>/dev/null || true)
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG" |
+            jq -r --arg ref "refs/tags/$RELEASE_TAG" '.[] | select(.ref == $ref) | .object.sha')
           if [ -n "$existing" ] && [ "$existing" != "$release_sha" ]; then
             echo "$RELEASE_TAG already points at a different commit" >&2
             exit 1
@@ -361,7 +362,8 @@ jobs:
           RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
         run: |
           set -euo pipefail
-          existing=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha 2>/dev/null || true)
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG" |
+            jq -r --arg ref "refs/tags/$RELEASE_TAG" '.[] | select(.ref == $ref) | .object.sha')
           if [ -z "$existing" ]; then
             gh api "repos/$GITHUB_REPOSITORY/git/refs" \
               -f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_SHA" > /dev/null || true
