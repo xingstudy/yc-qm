@@ -50,7 +50,7 @@ function serviceBlock(compose: string, service: string): string {
   return nextService === -1 ? compose.slice(afterStart) : compose.slice(afterStart, afterStart + nextService);
 }
 
-test("the production example is a complete fail-closed template without organization-specific values", () => {
+test("the production example is a complete fail-closed template without organization-specific configuration", () => {
   const values = envValues(".env.production.example");
 
   for (const name of requiredProductionValues) {
@@ -73,7 +73,7 @@ test("the production example is a complete fail-closed template without organiza
       assert.match(values.get(name) ?? "", /^qm-example-/);
     }
   }
-  assert.doesNotMatch(readFileSync(".env.production.example", "utf8"), /qfpay|aiagents|lijixing/i);
+  assert.doesNotMatch(readFileSync(".env.production.example", "utf8"), /qfpay|aiagents/i);
 });
 
 test("the image manifest pins every pull-only first-party image to Docker Hub", () => {
@@ -83,7 +83,7 @@ test("the image manifest pins every pull-only first-party image to Docker Hub", 
   for (const name of imageNames) {
     const ref = values.get(`QM_${name}_IMAGE`);
     assert.ok(ref, `QM_${name}_IMAGE is required`);
-    assert.match(ref!, /^docker\.io\/xingstudy\/qm-[a-z-]+@sha256:[0-9a-f]{64}$/);
+    assert.match(ref!, /^docker\.io\/lijixing\/qm-[a-z-]+@sha256:[0-9a-f]{64}$/);
     refs.push(ref!);
   }
   assert.equal(new Set(refs).size, refs.length, "each service must have its own immutable image");

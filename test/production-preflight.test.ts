@@ -6,7 +6,7 @@ import { productionPreflightProblems } from "../scripts/production-preflight.ts"
 function validEnv(): NodeJS.ProcessEnv {
   const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const digest = (name: string): string =>
-    `docker.io/xingstudy/qm-${name}@sha256:${Buffer.from(name).toString("hex").padEnd(64, "a").slice(0, 64)}`;
+    `docker.io/lijixing/qm-${name}@sha256:${Buffer.from(name).toString("hex").padEnd(64, "a").slice(0, 64)}`;
   return {
     NODE_ENV: "production",
     PORTAL_LOCAL_AUTH_BYPASS: "0",
@@ -67,7 +67,7 @@ test("the checked-in production example fails closed without echoing secret valu
   const secret = "qm-example-secret-do-not-deploy";
   env.CORE_SIGNING_SECRET = secret;
   env.PORTAL_PUBLIC_URL = "https://qm.example.com";
-  env.QM_CORE_IMAGE = `docker.io/xingstudy/qm-core@sha256:${"0".repeat(64)}`;
+  env.QM_CORE_IMAGE = `docker.io/lijixing/qm-core@sha256:${"0".repeat(64)}`;
   const text = productionPreflightProblems(env, 989).join(" | ");
 
   assert.match(text, /CORE_SIGNING_SECRET must be replaced/);

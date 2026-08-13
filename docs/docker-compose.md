@@ -18,7 +18,7 @@ transport, and model-provider values. Do not copy credentials between installati
 
 `../images.production.env` selects the release. Its `QM_CORE_IMAGE`,
 `QM_WEB_UI_IMAGE`, `QM_ADMIN_IMAGE`, `QM_PORTAL_IMAGE`, `QM_AUTH_IMAGE`,
-`QM_EDGE_IMAGE`, and `QM_SANDBOX_IMAGE` default to the `xingstudy` Docker Hub namespace
+`QM_EDGE_IMAGE`, and `QM_SANDBOX_IMAGE` default to the `lijixing` Docker Hub namespace
 and must remain fixed at `@sha256:` digests. A tag, including `latest`, is not a release
 identifier. `QM_SANDBOX_IMAGE` must reference the published local-sandbox runtime image,
 not its base image.
@@ -35,7 +35,7 @@ matching immutable-tag rules in every Docker Hub repository, and give an exclusi
 `DOCKERHUB_TOKEN` only the required push access. Store it only as a secret in the
 `production-images` GitHub Environment, require reviewer approval, restrict deployments
 to `main`, and limit allowed reviewers. Create
-`xingstudy/qm-production-staging` as a private candidate repository, remove expired build
+`lijixing/qm-production-staging` as a private candidate repository, remove expired build
 tags after the 30-day recovery window, and never deploy from it. If a run fails after
 partial promotion, dispatch with that failed run's `resume_run_id` while its
 30-day artifacts remain available. Preserve each generated digest manifest as the

@@ -82,7 +82,7 @@ Compose v2、`curl`、`cosign` 和负责 TLS 终止的反向代理或负载均�
 Node.js、npm 或本地构建镜像。
 
 发布清单 [`images.production.env`](./images.production.env) 默认使用 Docker Hub 命名空间
-`xingstudy`。每个 `QM_*_IMAGE` 都固定为不可变的 `@sha256:` digest。该清单是发布版本的一部分；
+`lijixing`。每个 `QM_*_IMAGE` 都固定为不可变的 `@sha256:` digest。该清单是发布版本的一部分；
 不要把 digest 改成标签或 `latest`。生产镜像只支持 Linux `amd64`/`x86_64` 主机。
 
 独立的 `release-production-images.yml` 工作流只从 `main` 发布，并要求输入
@@ -91,7 +91,7 @@ Node.js、npm 或本地构建镜像。
 目标仓库启用相同模式的不可变标签，并配置发布主体独占、最小推送权限的 `DOCKERHUB_TOKEN`
 Environment secret，不能配置为普通仓库 secret。GitHub 的 `production-images` Environment
 必须要求发布审批、只允许 `main` 部署，并限制审批人。还要创建私有仓库
-`xingstudy/qm-production-staging`；候选镜像只在该仓库中接受扫描，
+`lijixing/qm-production-staging`；候选镜像只在该仓库中接受扫描，
 超过 30 天恢复窗口的构建标签应及时清理，且绝不能用于部署。如果部分版本标签已经写入后发布中断，
 使用失败工作流的 `resume_run_id` 再次调度，复用保留 30 天的原始签名 digest 产物，不能重新构建。
 生成的 digest 清单是不可变的发布记录，部署和回滚都必须使用它。

@@ -114,7 +114,7 @@ Compose v2, `curl`, `cosign`, and a TLS-terminating reverse proxy or load balanc
 does **not** need a source checkout, Node.js, npm, or a local image build.
 
 The release manifest [`images.production.env`](./images.production.env) defaults to the
-`xingstudy` Docker Hub namespace. Every `QM_*_IMAGE` is pinned to an immutable
+`lijixing` Docker Hub namespace. Every `QM_*_IMAGE` is pinned to an immutable
 `@sha256:` digest. Treat that manifest as part of the release: do not replace a digest
 with a tag or `latest`. Production images support Linux `amd64`/`x86_64` hosts only.
 
@@ -126,7 +126,7 @@ Hub immutable tags for the same pattern on every target repository, and configur
 exclusive, least-privilege `DOCKERHUB_TOKEN` as an Environment secret, not a repository
 secret. The `production-images` GitHub Environment must require release approval, allow
 deployments only from `main`, and limit who may approve. Create
-`xingstudy/qm-production-staging` as a private repository; candidates are scanned there
+`lijixing/qm-production-staging` as a private repository; candidates are scanned there
 before promotion, and its expired build tags should be removed after the 30-day recovery
 window. Staging images must not be deployed. If promotion stops after writing any version
 tag, dispatch the workflow with the failed run's `resume_run_id` so it reuses the

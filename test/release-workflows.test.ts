@@ -203,7 +203,7 @@ test("production images publish through a separate Docker Hub workflow", () => {
   assert.match(workflow, /production images are released from main/);
   assert.match(
     workflow,
-    /docker\/login-action@[^\n]+\s+with:\s+registry: docker\.io\s+username: xingstudy\s+password: \$\{\{ secrets\.DOCKERHUB_TOKEN \}\}/,
+    /docker\/login-action@[^\n]+\s+with:\s+registry: docker\.io\s+username: lijixing\s+password: \$\{\{ secrets\.DOCKERHUB_TOKEN \}\}/,
   );
   assert.doesNotMatch(workflow, /:latest/);
   assert.doesNotMatch(workflow, /ghcr\.io/);
