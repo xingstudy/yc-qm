@@ -248,7 +248,7 @@ function dockerSocketGid(): number | undefined {
   }
 }
 
-export function runProductionPreflight(env: NodeJS.ProcessEnv = process.env): void {
+function runProductionPreflight(env: NodeJS.ProcessEnv = process.env): void {
   const problems = productionPreflightProblems(env);
   if (problems.length) {
     for (const problem of problems) console.error(`[production-preflight] ${problem}`);
