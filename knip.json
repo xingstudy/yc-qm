@@ -1,7 +1,7 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "treatConfigHintsAsErrors": true,
-  "ignoreBinaries": ["flyctl", "tail", "cloudflared"],
+  "ignoreBinaries": ["flyctl", "tail", "cloudflared", "sha256sum"],
   "ignoreDependencies": ["@openai/codex", "opencode-ai"],
   "ignoreIssues": {
     "scripts/migrate-principals-to-email.d.mts": ["files"],
