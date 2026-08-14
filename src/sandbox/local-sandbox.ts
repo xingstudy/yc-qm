@@ -299,7 +299,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     processSessions: true,
     egressEnforcement: "none",
     spec: {
-      os: `Debian 12 (bookworm), glibc — local Docker container on a ${arch()} host (dev only)`,
+      os: `Ubuntu 26.04 LTS, glibc — local Docker container on a ${arch()} host (dev only)`,
       runtimes: ["Node 24", "Python 3 (venv on PATH — `pip install` just works)"],
       tools: ["git", "curl", "wget", "jq", "unzip", "gnupg", "python3", "gh", "aws (CLI v2)"],
       notInstalled: ["gcloud", "kubectl", "flyctl", "glab"],

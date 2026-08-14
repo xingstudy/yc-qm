@@ -19,7 +19,7 @@ agent-written file would be invisible to a grantee — "share this redline with 
 would silently fail. Transient spools (inbox/outbox/skills) and read-only mounts stay
 VM-only.
 
-The base image is a Debian (glibc) + Node image (see `fly/Dockerfile`), with AWS CLI v2
+The base image is an Ubuntu 26.04 LTS (glibc) + Node image (see `fly/Dockerfile`), with AWS CLI v2
 baked in; glibc means vendor install scripts and prebuilt binaries (AWS CLI v2, gcloud,
 kubectl, gh) work as they do on a typical laptop, without musl compatibility shims. The
 agent installs whatever else it needs on the resident disk, the way a colleague would.
