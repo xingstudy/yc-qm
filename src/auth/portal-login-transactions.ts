@@ -2,12 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { createPgPool, withPgTransaction } from "../persistence/pg-pool.ts";
 import { createSweeper } from "../util/sweeper.ts";
 
-export type PortalLoginTransactionStatus = "created" | "conflict" | "client_limited" | "global_limited";
+type PortalLoginTransactionStatus = "created" | "conflict" | "client_limited" | "global_limited";
 
-export type PortalLoginClaim =
+type PortalLoginClaim =
   { status: "claimed"; payload: string; claimId: string } | { status: "missing" | "used" | "expired" };
 
-export type PortalLoginCompletion = { status: "completed" | "missing" | "mismatch" };
+type PortalLoginCompletion = { status: "completed" | "missing" | "mismatch" };
 
 export interface PortalLoginTransactionStore {
   readonly durable: boolean;

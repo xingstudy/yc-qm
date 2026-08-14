@@ -10,6 +10,11 @@ let claimCalls = 0;
 let refuseClaims = false;
 
 const upstream = createServer((req: IncomingMessage, res) => {
+  const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+  if (req.method === "POST" && pathname === "/v1/auth/portal-login/create") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(JSON.stringify({ status: "created" }));
+  }
   if (req.method === "POST" && req.url?.startsWith("/v1/auth/broker/claim")) {
     claimCalls++;
     const chunks: Buffer[] = [];

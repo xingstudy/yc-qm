@@ -6,7 +6,7 @@ const CLAIM_PATH = "/v1/auth/portal-login/claim";
 const COMPLETE_PATH = "/v1/auth/portal-login/complete";
 const REQUEST_TIMEOUT_MS = 4_000;
 
-export type PortalLoginClaim =
+type PortalLoginClaim =
   { status: "claimed"; payload: string; claimId: string } | { status: "missing" | "used" | "expired" | "unavailable" };
 
 export interface PortalLoginTransactions {

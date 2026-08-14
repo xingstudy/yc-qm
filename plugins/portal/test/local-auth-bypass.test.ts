@@ -4,6 +4,11 @@ import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 
 const upstream = createServer((req: IncomingMessage, res) => {
+  const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+  if (req.method === "POST" && pathname === "/v1/auth/portal-login/create") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(JSON.stringify({ status: "created" }));
+  }
   if (req.url === "/api/whoami") {
     const m = (req.headers.cookie ?? "").match(/admin=([^;]+)/);
     const sub = m ? decodeURIComponent(m[1] ?? "") : "";

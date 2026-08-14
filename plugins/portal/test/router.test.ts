@@ -32,13 +32,18 @@ let tokenExchanges = 0;
 let loginTransactionUnavailable = false;
 
 const upstream = createServer((req: IncomingMessage, res) => {
-  if (req.url?.startsWith("/v1/auth/portal-login/")) {
+  const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+  if (
+    pathname === "/v1/auth/portal-login/create" ||
+    pathname === "/v1/auth/portal-login/claim" ||
+    pathname === "/v1/auth/portal-login/complete"
+  ) {
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
     return void req.on("end", () => {
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
       const state = String(body.state ?? "");
-      if (req.url?.startsWith("/v1/auth/portal-login/create")) {
+      if (pathname === "/v1/auth/portal-login/create") {
         if (loginTransactionUnavailable) {
           res.writeHead(503, { "content-type": "application/json" });
           return void res.end(JSON.stringify({ error: "unavailable" }));
@@ -56,7 +61,7 @@ const upstream = createServer((req: IncomingMessage, res) => {
         return void res.end(JSON.stringify({ status: "created" }));
       }
       const transaction = loginTransactions.get(state);
-      if (req.url?.startsWith("/v1/auth/portal-login/claim")) {
+      if (pathname === "/v1/auth/portal-login/claim") {
         if (!transaction) {
           res.writeHead(200, { "content-type": "application/json" });
           return void res.end(JSON.stringify({ status: "missing" }));
@@ -77,7 +82,7 @@ const upstream = createServer((req: IncomingMessage, res) => {
         );
       }
       if (
-        req.url?.startsWith("/v1/auth/portal-login/complete") &&
+        pathname === "/v1/auth/portal-login/complete" &&
         transaction?.status === "claimed" &&
         transaction.claimId === body.claimId &&
         (body.outcome === "succeeded" || body.outcome === "failed")
