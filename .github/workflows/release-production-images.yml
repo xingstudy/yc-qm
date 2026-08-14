@@ -123,9 +123,31 @@ jobs:
           exit-code: 1
       - name: Sign and verify exact image
         run: |
+          verify_with_retry() {
+            local attempt=0 delay=2 max_attempts=6 output status
+            while :; do
+              if output=$(cosign verify "$@" 2>&1); then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if [[ "$output" != *"no signatures found"* ]]; then
+                printf '%s\n' "$output" >&2
+                return "$status"
+              fi
+              printf '%s\n' "$output" >&2
+              attempt=$((attempt + 1))
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                return "$status"
+              fi
+              sleep "$delay"
+              delay=$((delay * 2))
+            done
+          }
           image='docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}@${{ steps.build.outputs.digest }}'
           cosign sign --yes "$image"
-          cosign verify "$image" \
+          verify_with_retry "$image" \
             --certificate-identity='https://github.com/${{ github.repository }}/.github/workflows/release-production-images.yml@refs/heads/main' \
             --certificate-oidc-issuer=https://token.actions.githubusercontent.com
           printf '%s\n' "$image" > qm-sandbox-base.image
@@ -190,9 +212,31 @@ jobs:
           exit-code: 1
       - name: Sign and verify exact image
         run: |
+          verify_with_retry() {
+            local attempt=0 delay=2 max_attempts=6 output status
+            while :; do
+              if output=$(cosign verify "$@" 2>&1); then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if [[ "$output" != *"no signatures found"* ]]; then
+                printf '%s\n' "$output" >&2
+                return "$status"
+              fi
+              printf '%s\n' "$output" >&2
+              attempt=$((attempt + 1))
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                return "$status"
+              fi
+              sleep "$delay"
+              delay=$((delay * 2))
+            done
+          }
           image='docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}@${{ steps.build.outputs.digest }}'
           cosign sign --yes "$image"
-          cosign verify "$image" \
+          verify_with_retry "$image" \
             --certificate-identity='https://github.com/${{ github.repository }}/.github/workflows/release-production-images.yml@refs/heads/main' \
             --certificate-oidc-issuer=https://token.actions.githubusercontent.com
           printf '%s\n' "$image" > 'qm-${{ matrix.name }}.image'
@@ -256,9 +300,31 @@ jobs:
           exit-code: 1
       - name: Sign and verify exact image
         run: |
+          verify_with_retry() {
+            local attempt=0 delay=2 max_attempts=6 output status
+            while :; do
+              if output=$(cosign verify "$@" 2>&1); then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if [[ "$output" != *"no signatures found"* ]]; then
+                printf '%s\n' "$output" >&2
+                return "$status"
+              fi
+              printf '%s\n' "$output" >&2
+              attempt=$((attempt + 1))
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                return "$status"
+              fi
+              sleep "$delay"
+              delay=$((delay * 2))
+            done
+          }
           image='docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}@${{ steps.build.outputs.digest }}'
           cosign sign --yes "$image"
-          cosign verify "$image" \
+          verify_with_retry "$image" \
             --certificate-identity='https://github.com/${{ github.repository }}/.github/workflows/release-production-images.yml@refs/heads/main' \
             --certificate-oidc-issuer=https://token.actions.githubusercontent.com
           printf '%s\n' "$image" > qm-sandbox-local.image
@@ -332,10 +398,32 @@ jobs:
       - name: Verify complete signed digest set
         run: |
           set -euo pipefail
+          verify_with_retry() {
+            local attempt=0 delay=2 max_attempts=6 output status
+            while :; do
+              if output=$(cosign verify "$@" 2>&1); then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if [[ "$output" != *"no signatures found"* ]]; then
+                printf '%s\n' "$output" >&2
+                return "$status"
+              fi
+              printf '%s\n' "$output" >&2
+              attempt=$((attempt + 1))
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                return "$status"
+              fi
+              sleep "$delay"
+              delay=$((delay * 2))
+            done
+          }
           for name in core web-ui admin portal auth edge sandbox-base sandbox-local; do
             test -s "qm-${name}.image"
             image=$(cat "qm-${name}.image")
-            cosign verify "$image" \
+            verify_with_retry "$image" \
               --certificate-identity='https://github.com/${{ github.repository }}/.github/workflows/release-production-images.yml@refs/heads/main' \
               --certificate-oidc-issuer=https://token.actions.githubusercontent.com
           done
@@ -378,6 +466,28 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
+          verify_with_retry() {
+            local attempt=0 delay=2 max_attempts=6 output status
+            while :; do
+              if output=$(cosign verify "$@" 2>&1); then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if [[ "$output" != *"no signatures found"* ]]; then
+                printf '%s\n' "$output" >&2
+                return "$status"
+              fi
+              printf '%s\n' "$output" >&2
+              attempt=$((attempt + 1))
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                return "$status"
+              fi
+              sleep "$delay"
+              delay=$((delay * 2))
+            done
+          }
           for name in core web-ui admin portal auth edge sandbox-base sandbox-local; do
             image=$(cat "qm-${name}.image")
             expected=${image##*@}
@@ -390,7 +500,7 @@ jobs:
             test "$actual" = "$expected"
             final="docker.io/${DOCKERHUB_NAMESPACE}/qm-${name}@${expected}"
             cosign sign --yes "$final"
-            cosign verify "$final" \
+            verify_with_retry "$final" \
               --certificate-identity='https://github.com/${{ github.repository }}/.github/workflows/release-production-images.yml@refs/heads/main' \
               --certificate-oidc-issuer=https://token.actions.githubusercontent.com
             printf '%s\n' "$final" > "qm-${name}.image"

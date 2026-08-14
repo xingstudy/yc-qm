@@ -1,6 +1,21 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
+
+function retryFunction(...workflows: string[]) {
+  const bodies = workflows.flatMap((workflow) =>
+    [...workflow.matchAll(/ {10}verify_with_retry\(\) \{\n(?<body>(?: {12}.*\n)+) {10}\}/g)].map(
+      (match) => match.groups?.body,
+    ),
+  );
+  const [body, ...others] = bodies;
+  if (!body || others.some((other) => other !== body))
+    throw new Error("inconsistent registry verification retry functions");
+  return `verify_with_retry() {\n${body.replace(/^ {10}/gm, "")}}\nverify_with_retry "$@"`;
+}
 
 test("the release publishes signed images and never a package", () => {
   const workflow = readFileSync(".github/workflows/release-package.yml", "utf8");
@@ -38,7 +53,7 @@ test("the release signs private images without requiring anonymous registry acce
   assert.match(workflow, /platforms: linux\/amd64\s+provenance: false/);
   assert.match(
     workflow,
-    /image='ghcr\.io\/yc-software\/qm\/\$\{\{ matrix\.name \}\}@\$\{\{ steps\.build\.outputs\.digest \}\}'\s+cosign sign --yes "\$image"\s+cosign verify "\$image"/,
+    /image='ghcr\.io\/yc-software\/qm\/\$\{\{ matrix\.name \}\}@\$\{\{ steps\.build\.outputs\.digest \}\}'\s+cosign sign --yes "\$image"\s+verify_with_retry "\$image"/,
   );
   assert.ok(workflow.indexOf("docker/login-action") < workflow.indexOf("docker/build-push-action"));
   assert.ok(workflow.indexOf("docker/build-push-action") < workflow.indexOf("Sign exact image"));
@@ -246,6 +261,165 @@ test("production version tags are promoted only after scan, signature, and compl
   assert.ok(workflow.indexOf("Promote verified digests") < workflow.indexOf("Create production release"));
   const beforePromotion = workflow.slice(0, workflow.indexOf("Promote verified digests"));
   assert.doesNotMatch(beforePromotion, /docker buildx imagetools create --tag/);
+});
+
+test("registry verification retries only delayed signature visibility with bounded exponential backoff", () => {
+  const directory = mkdtempSync(join(tmpdir(), "qm-cosign-verify-retry-"));
+  const log = join(directory, "log");
+  const cosign = join(directory, "cosign");
+  const sleep = join(directory, "sleep");
+
+  writeFileSync(
+    cosign,
+    "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$COSIGN_RETRY_LOG\"\nattempt=$(awk '/^verify / { count++ } END { print count + 0 }' \"$COSIGN_RETRY_LOG\")\nif [ \"$attempt\" -lt 3 ]; then\n  printf 'no signatures found\\n' >&2\n  exit 23\nfi\nprintf 'verified\\n'\n",
+  );
+  writeFileSync(sleep, '#!/usr/bin/env bash\nprintf \'sleep %s\\n\' "$1" >> "$COSIGN_RETRY_LOG"\n');
+  chmodSync(cosign, 0o755);
+  chmodSync(sleep, 0o755);
+
+  try {
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        retryFunction(
+          readFileSync(".github/workflows/release-production-images.yml", "utf8"),
+          readFileSync(".github/workflows/release-package.yml", "utf8"),
+        ),
+        "verify-with-retry",
+        "registry.example/image@sha256:abc",
+        "--certificate-identity=identity",
+        "--certificate-oidc-issuer=issuer",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, COSIGN_RETRY_LOG: log },
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "verified\n");
+    assert.equal(result.stderr, "no signatures found\n".repeat(2));
+    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), [
+      "verify registry.example/image@sha256:abc --certificate-identity=identity --certificate-oidc-issuer=issuer",
+      "sleep 2",
+      "verify registry.example/image@sha256:abc --certificate-identity=identity --certificate-oidc-issuer=issuer",
+      "sleep 4",
+      "verify registry.example/image@sha256:abc --certificate-identity=identity --certificate-oidc-issuer=issuer",
+    ]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("registry verification fails non-retryable errors immediately", () => {
+  const directory = mkdtempSync(join(tmpdir(), "qm-cosign-verify-retry-"));
+  const log = join(directory, "log");
+  const cosign = join(directory, "cosign");
+  const sleep = join(directory, "sleep");
+
+  writeFileSync(
+    cosign,
+    "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$COSIGN_RETRY_LOG\"\nprintf 'certificate validation failed\\n' >&2\nexit 41\n",
+  );
+  writeFileSync(sleep, '#!/usr/bin/env bash\nprintf \'sleep %s\\n\' "$1" >> "$COSIGN_RETRY_LOG"\n');
+  chmodSync(cosign, 0o755);
+  chmodSync(sleep, 0o755);
+
+  try {
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        retryFunction(
+          readFileSync(".github/workflows/release-production-images.yml", "utf8"),
+          readFileSync(".github/workflows/release-package.yml", "utf8"),
+        ),
+        "verify-with-retry",
+        "registry.example/image@sha256:abc",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, COSIGN_RETRY_LOG: log },
+      },
+    );
+
+    assert.equal(result.status, 41);
+    assert.equal(result.stderr, "certificate validation failed\n");
+    assert.equal(readFileSync(log, "utf8"), "verify registry.example/image@sha256:abc\n");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("registry verification stops after bounded delayed signature retries", () => {
+  const directory = mkdtempSync(join(tmpdir(), "qm-cosign-verify-retry-"));
+  const log = join(directory, "log");
+  const cosign = join(directory, "cosign");
+  const sleep = join(directory, "sleep");
+
+  writeFileSync(
+    cosign,
+    "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$COSIGN_RETRY_LOG\"\nprintf 'no signatures found\\n' >&2\nexit 23\n",
+  );
+  writeFileSync(sleep, '#!/usr/bin/env bash\nprintf \'sleep %s\\n\' "$1" >> "$COSIGN_RETRY_LOG"\n');
+  chmodSync(cosign, 0o755);
+  chmodSync(sleep, 0o755);
+
+  try {
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        retryFunction(
+          readFileSync(".github/workflows/release-production-images.yml", "utf8"),
+          readFileSync(".github/workflows/release-package.yml", "utf8"),
+        ),
+        "verify-with-retry",
+        "registry.example/image@sha256:abc",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, COSIGN_RETRY_LOG: log },
+      },
+    );
+
+    assert.equal(result.status, 23);
+    assert.equal(result.stderr, "no signatures found\n".repeat(6));
+    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), [
+      "verify registry.example/image@sha256:abc",
+      "sleep 2",
+      "verify registry.example/image@sha256:abc",
+      "sleep 4",
+      "verify registry.example/image@sha256:abc",
+      "sleep 8",
+      "verify registry.example/image@sha256:abc",
+      "sleep 16",
+      "verify registry.example/image@sha256:abc",
+      "sleep 32",
+      "verify registry.example/image@sha256:abc",
+    ]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("every signed registry image uses the bounded verification helper", () => {
+  const production = readFileSync(".github/workflows/release-production-images.yml", "utf8");
+  const packageWorkflow = readFileSync(".github/workflows/release-package.yml", "utf8");
+
+  assert.equal(production.match(/cosign sign --yes/g)?.length, 4);
+  assert.equal(production.match(/verify_with_retry\(\) \{/g)?.length, 5);
+  assert.equal(production.match(/verify_with_retry "\$(?:image|final)"/g)?.length, 5);
+  assert.equal(production.match(/max_attempts=6/g)?.length, 5);
+  assert.equal(production.match(/\[\[ "\$output" != \*"no signatures found"\* \]\]/g)?.length, 5);
+  assert.equal(packageWorkflow.match(/cosign sign --yes/g)?.length, 1);
+  assert.equal(packageWorkflow.match(/verify_with_retry\(\) \{/g)?.length, 1);
+  assert.equal(packageWorkflow.match(/verify_with_retry "\$image"/g)?.length, 1);
+  retryFunction(production, packageWorkflow);
 });
 
 test("production promotion is conflict-safe and retries the same digest idempotently", () => {

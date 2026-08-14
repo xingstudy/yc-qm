@@ -53,9 +53,31 @@ jobs:
           cache-to: type=gha,mode=max,scope=qm-${{ matrix.name }}
       - name: Sign exact image
         run: |
+          verify_with_retry() {
+            local attempt=0 delay=2 max_attempts=6 output status
+            while :; do
+              if output=$(cosign verify "$@" 2>&1); then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if [[ "$output" != *"no signatures found"* ]]; then
+                printf '%s\n' "$output" >&2
+                return "$status"
+              fi
+              printf '%s\n' "$output" >&2
+              attempt=$((attempt + 1))
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                return "$status"
+              fi
+              sleep "$delay"
+              delay=$((delay * 2))
+            done
+          }
           image='ghcr.io/yc-software/qm/${{ matrix.name }}@${{ steps.build.outputs.digest }}'
           cosign sign --yes "$image"
-          cosign verify "$image" \
+          verify_with_retry "$image" \
             --certificate-identity='https://github.com/${{ github.repository }}/.github/workflows/release-package.yml@refs/heads/main' \
             --certificate-oidc-issuer=https://token.actions.githubusercontent.com
           printf '%s\n' "$image" > qm-${{ matrix.name }}.image
