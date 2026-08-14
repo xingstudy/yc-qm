@@ -11,26 +11,30 @@ does not need Node.js, npm, or this repository checkout. Production images are L
 
 Use `../.env.production.example` only as a complete, anonymous configuration reference.
 Every key has an example value so operators can see expected formats, but examples are
-intentionally unsafe for deployment. Run `../scripts/init-production-env.sh` once to
+intentionally unsafe for deployment. From a source checkout, run
+`./scripts/init-production-env.sh .env.production prod-vMAJOR.MINOR.PATCH` once to
 write `.env.production` with fresh replacement secrets, a private JWK, and the detected
 `DOCKER_GID`; then replace the public URL, administrator, identity boundary, mail
-transport, and model-provider values. Do not copy credentials between installations.
+transport, and model-provider values. Never rerun the initializer for an existing
+deployment.
 
-`../images.production.env` selects the release. Its `QM_CORE_IMAGE`,
-`QM_WEB_UI_IMAGE`, `QM_ADMIN_IMAGE`, `QM_PORTAL_IMAGE`, `QM_AUTH_IMAGE`,
-`QM_EDGE_IMAGE`, and `QM_SANDBOX_IMAGE` default to the `lijixing` Docker Hub namespace
-and must remain fixed at `@sha256:` digests. A tag, including `latest`, is not a release
-identifier. `QM_SANDBOX_IMAGE` must reference the published local-sandbox runtime image,
-not its base image.
+`QM_RELEASE_TAG=prod-vMAJOR.MINOR.PATCH` selects a GitHub Release. The versioned deployer
+verifies that release and its seven image signatures, stores the exact `@sha256` lock
+under `.releases/<tag>/`, and makes Compose run those digests rather than mutable tags.
+`QM_POSTGRES_VOLUME` and `QM_CORE_VOLUME` are literal Docker volume names; they preserve
+data routing even when the working directory or Compose project changes.
 
-Download the Compose file, initializer, configuration template, image manifests,
-`SHA256SUMS`, and its Sigstore bundle from the same GitHub Release. Verify the bundle,
-checksums, and every image signature before the initializer or Compose receives any
-production secret. Do not combine files from different release tags.
+Download the Compose file, initializer, deployer, configuration template, image manifests,
+`SHA256SUMS`, and its Sigstore bundle from the same GitHub Release. Verify the bundle and
+checksums before executing the downloaded initializer or deployer. The verified deployer
+then validates every image signature before it invokes Compose with production secrets.
+The release configuration asset is named
+`default.env.production.example`; the initializer accepts that release name and the
+checked-in `.env.production.example` name. Do not combine files from different releases.
 
 `release-production-images.yml` is separate from the existing Release and CLI workflows.
-It publishes only from `main` when the input matches `prod-vMAJOR.MINOR.PATCH` (for
-example, `prod-v0.6.0`). Protect matching Git tags from updates and deletion, enable
+It publishes only from `main` when the input matches `prod-vMAJOR.MINOR.PATCH`. Protect
+matching Git tags from updates and deletion, enable
 matching immutable-tag rules in every Docker Hub repository, and give an exclusive
 `DOCKERHUB_TOKEN` only the required push access. Store it only as a secret in the
 `production-images` GitHub Environment, require reviewer approval, restrict deployments
@@ -42,24 +46,20 @@ partial promotion, dispatch with that failed run's `resume_run_id` while its
 immutable release and rollback record.
 
 ```bash
-docker login
 cosign verify-blob \
   --bundle SHA256SUMS.bundle \
   --certificate-identity='https://github.com/xingstudy/yc-qm/.github/workflows/release-production-images.yml@refs/heads/main' \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
   SHA256SUMS
 sha256sum -c SHA256SUMS
-while IFS='=' read -r _ image; do
-  cosign verify "$image" \
-    --certificate-identity='https://github.com/xingstudy/yc-qm/.github/workflows/release-production-images.yml@refs/heads/main' \
-    --certificate-oidc-issuer=https://token.actions.githubusercontent.com > /dev/null
-done < images.production.env
-docker compose --env-file .env.production -f compose.production.yaml config --quiet
-docker compose --env-file .env.production -f compose.production.yaml pull
-docker compose --env-file .env.production -f compose.production.yaml up -d --wait --pull always
-docker compose --env-file .env.production -f compose.production.yaml ps
+./scripts/deploy-production-release.sh
 curl -fsS http://127.0.0.1:8088/healthz
 ```
+
+Public release images do not require `docker login`. Use a deployment-only, read-only
+pull token only when a repository is private, registry policy requires identity, or the
+host reaches Docker Hub's anonymous limit. The `sandbox-image` one-shot service ensures
+that Compose pulls the selected `sandbox-local` image before core starts.
 
 Production health is not complete until an allowed user signs in through the TLS edge,
 runs a real Agent turn, and the core creates a local sandbox from the pinned image. Check
@@ -67,9 +67,55 @@ the configured model and each required connector as part of the same acceptance 
 
 Back up and restore-test Postgres, `core-data`, and each `qm-home-*` volume before any
 upgrade. Keep the corresponding configuration and generated signing/encryption values in
-the protected backup. Use a matched prior `images.production.env` and configuration for
-rollback; restore durable data as well if the target release is not data-compatible.
-Avoid `docker compose down -v`, which deletes Compose-managed durable volumes.
+the protected backup. For a release whose notes do not change the Compose or configuration
+contract, update only `QM_RELEASE_TAG` in the existing `.env.production`, rerun the
+versioned deployer, and repeat the acceptance checks. Do not regenerate the file or
+replace durable secrets, project identity, or volume names. The deployer obtains the
+release-specific Compose file and digest lock and removes same-project services absent
+from the selected release. Compare the new template and add only
+required keys when release notes change the configuration contract. Restore the previous
+tag for a data-compatible rollback; restore durable data as well when the target release
+is not data-compatible. Avoid
+`docker compose down -v`, which deletes Compose-managed durable volumes.
+
+The published `prod-v0.7.1` bundle predates the versioned deployer and has an inconsistent
+hidden-template asset name. Do not use it for this first-install procedure; publish a
+later production release with the updated workflow.
+
+## Migrating the source-build stack
+
+At this revision both stacks use PostgreSQL 18 with
+`postgres-data:/var/lib/postgresql` and mount `core-data:/data`. The logical names alone
+do not prove reuse: Compose normally creates
+`<project>_postgres-data` and `<project>_core-data`. Resolve the old project and actual
+mount names from the running containers before stopping them. Set the target release as
+`QM_RELEASE_TAG`, the project as `QM_COMPOSE_PROJECT`, the Postgres mount name as `QM_POSTGRES_VOLUME`, and the core mount
+name as `QM_CORE_VOLUME`. These explicit names are not redirected by
+`COMPOSE_PROJECT_NAME`, `-p`, or a different working directory. Keep the production
+environment file at mode `0600`.
+
+Preserve the old `POSTGRES_USER`, `POSTGRES_DB`, database role password, `ORG_ID`,
+`CONNECTOR_SECRET_KEY`, `CORE_SIGNING_SECRET`, `CAPABILITY_SECRET`,
+`PORTAL_IDENTITY_SECRET`, `PORTAL_SESSION_SECRET`, `SKILL_SIGNING_SECRET`, and active auth
+token, client, and JWK values. PostgreSQL initialization variables do not rotate the role
+password in an existing volume, and new encryption keys cannot read existing connector
+credentials. Add the production-only HTTPS, auth, SMTP, administrator, and model settings
+without replacing these durable values. If the existing database role password is not
+hexadecimal, rotate the actual role in a controlled maintenance window and update both
+environments; changing the file alone is not a password rotation.
+
+Create and restore-test a PostgreSQL logical backup plus backups of `core-data` and every
+global `qm-home-*` sandbox volume. An older PostgreSQL major version or a different data
+mount requires a database migration rather than direct volume reuse. Run the deployer
+`prepare` action while source is still serving; it verifies and pulls without changing
+containers. Only after success, remove the old stack with
+`docker compose ... down --remove-orphans` without `-v`, then run the offline `apply`
+action. Accept the cutover only after database, browser sign-in, administrator, real
+Agent, sandbox, model, and connector checks pass. For a data-compatible source-build
+rollback, prebuild the original source revision, run the deployer's offline `down`
+action, then start source with the same project, environment, and profiles using
+`up -d --wait --no-build --remove-orphans`. Restore the coordinated data backup before
+the source start when the production version wrote an incompatible schema or file format.
 
 The pull-only stack is still single-host. Its HTTP edge defaults to
 `QM_BIND_ADDRESS=127.0.0.1` and is only for a same-host TLS reverse proxy, never direct

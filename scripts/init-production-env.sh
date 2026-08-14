@@ -4,7 +4,10 @@ set -euo pipefail
 target="${1:-.env.production}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 template="$root/.env.production.example"
-images="${2:-$root/images.production.env}"
+if [[ ! -f "$template" ]]; then
+  template="$root/default.env.production.example"
+fi
+release_tag="${2:-}"
 if [[ -e "$target" ]]; then
   echo "$target already exists" >&2
   exit 1
@@ -28,17 +31,24 @@ replace() {
   sed -i "s|^${name}=.*|${name}=${value}|" "$work_file"
 }
 
-if [[ ! -S /var/run/docker.sock ]]; then
-  echo "/var/run/docker.sock is required to determine DOCKER_GID" >&2
+docker_socket="${QM_DOCKER_SOCKET_PATH:-/var/run/docker.sock}"
+if [[ ! -S "$docker_socket" ]]; then
+  echo "$docker_socket is required to determine DOCKER_GID" >&2
   exit 1
 fi
-replace DOCKER_GID "$(stat -c %g /var/run/docker.sock)"
+replace DOCKER_GID "$(stat -c %g "$docker_socket")"
 
-if [[ -f "$images" ]]; then
-  while IFS='=' read -r name value; do
-    [[ "$name" == QM_*_IMAGE ]] || continue
-    replace "$name" "$value"
-  done < "$images"
+if [[ -n "$release_tag" ]]; then
+  if [[ ! "$release_tag" =~ ^prod-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "$release_tag" == "prod-v0.0.0" ]]; then
+    echo "release tag must use prod-vMAJOR.MINOR.PATCH and must not be prod-v0.0.0" >&2
+    exit 1
+  fi
+  replace QM_RELEASE_TAG "$release_tag"
+fi
+configured_release="$(sed -n 's/^QM_RELEASE_TAG=//p' "$work_file")"
+if [[ ! "$configured_release" =~ ^prod-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "$configured_release" == "prod-v0.0.0" ]]; then
+  echo "the production template must contain a real QM_RELEASE_TAG or pass one as the second argument" >&2
+  exit 1
 fi
 
 for name in POSTGRES_PASSWORD CORE_SIGNING_SECRET CAPABILITY_SECRET PORTAL_IDENTITY_SECRET PORTAL_SESSION_SECRET CONNECTOR_SECRET_KEY SKILL_SIGNING_SECRET AUTH_TOKEN_SECRET; do
@@ -68,4 +78,4 @@ replace AUTH_SIGNING_JWK "$jwk"
 mv "$work_file" "$target"
 
 echo "created $target with generated local secrets"
-echo "replace the remaining qm.example.com, example.com, example email, SMTP, organization, admin, and image digest values before deployment"
+echo "replace the remaining qm.example.com, example.com, example email, SMTP, organization, and admin values before deployment"

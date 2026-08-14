@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Immutable production release tag, for example prod-v0.6.0
+        description: Immutable production release tag, for example prod-v1.2.3
         required: true
       resume_run_id:
         description: Previous failed production workflow run whose signed digest artifacts must be resumed
@@ -506,6 +506,8 @@ jobs:
             printf '%s\n' "$final" > "qm-${name}.image"
           done
       - name: Render release manifest
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           {
@@ -518,13 +520,21 @@ jobs:
             printf 'QM_SANDBOX_IMAGE=%s\n' "$(cat qm-sandbox-local.image)"
           } > images.production.env
           jq -Rn '[inputs | select(length > 0) | split("=") | {(.[0]): .[1]}] | add' < images.production.env > images.production.json
+          printf '%s\n' "$RELEASE_TAG" > release.production.tag
+          grep -qx 'QM_RELEASE_TAG=prod-v0.0.0' .env.production.example
+          sed "s/^QM_RELEASE_TAG=.*/QM_RELEASE_TAG=$RELEASE_TAG/" .env.production.example > default.env.production.example
+          grep -qx "QM_RELEASE_TAG=$RELEASE_TAG" default.env.production.example
           cp scripts/init-production-env.sh init-production-env.sh
+          cp scripts/deploy-production-release.sh deploy-production-release.sh
           sha256sum \
             compose.production.yaml \
-            .env.production.example \
+            default.env.production.example \
             init-production-env.sh \
+            deploy-production-release.sh \
+            release.production.tag \
             images.production.env \
             images.production.json > SHA256SUMS
+          sha256sum -c SHA256SUMS
           cosign sign-blob --yes --bundle SHA256SUMS.bundle SHA256SUMS
       - name: Create production release
         env:
@@ -540,8 +550,10 @@ jobs:
           fi
           assets=(
             "compose.production.yaml#Pull-only production Compose"
-            ".env.production.example#Complete fail-closed production configuration template"
+            "default.env.production.example#Complete fail-closed production configuration template"
             "init-production-env.sh#Production configuration initializer"
+            "deploy-production-release.sh#Verified production release deployer"
+            "release.production.tag#Signed production release identity"
             "images.production.env#Pinned Docker Hub production images"
             "images.production.json#Pinned Docker Hub production image manifest"
             "SHA256SUMS#Checksums for production release assets"
@@ -578,3 +590,13 @@ jobs:
             gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
               "SHA256SUMS.bundle#Sigstore bundle for production release checksums"
           fi
+          verified_directory=$(mktemp -d)
+          for file in compose.production.yaml default.env.production.example init-production-env.sh deploy-production-release.sh release.production.tag images.production.env images.production.json SHA256SUMS SHA256SUMS.bundle; do
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$file" --dir "$verified_directory"
+          done
+          cosign verify-blob \
+            --bundle "$verified_directory/SHA256SUMS.bundle" \
+            --certificate-identity='https://github.com/${{ github.repository }}/.github/workflows/release-production-images.yml@refs/heads/main' \
+            --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+            "$verified_directory/SHA256SUMS"
+          (cd "$verified_directory" && sha256sum -c SHA256SUMS)

@@ -81,12 +81,15 @@ QM 的方式与 OpenCode、Codex 和 Claude Code 等本地编程 Agent 类似：
 Compose v2、`curl`、`cosign` 和负责 TLS 终止的反向代理或负载均衡器；**不需要**源码工作树、
 Node.js、npm 或本地构建镜像。
 
-发布清单 [`images.production.env`](./images.production.env) 默认使用 Docker Hub 命名空间
-`lijixing`。每个 `QM_*_IMAGE` 都固定为不可变的 `@sha256:` digest。该清单是发布版本的一部分；
-不要把 digest 改成标签或 `latest`。生产镜像只支持 Linux `amd64`/`x86_64` 主机。
+长期保存的 `.env.production` 只用
+`QM_RELEASE_TAG=prod-vMAJOR.MINOR.PATCH` 选择版本。部署脚本只把 tag 当作 GitHub
+Release 选择器：它会验证签名校验清单和全部镜像签名，将精确的 `@sha256` 镜像集合保存到
+`.releases/<tag>/`，再把该锁文件交给 Compose；Docker 实际运行的不是未绑定 digest 的 tag。
+`QM_POSTGRES_VOLUME` 和 `QM_CORE_VOLUME` 是实际 Docker 卷名，因此移动部署目录或改变
+Compose project 都不会静默改用另一组持久数据。生产镜像只支持 Linux `amd64`/`x86_64` 主机。
 
 独立的 `release-production-images.yml` 工作流只从 `main` 发布，并要求输入
-`prod-vMAJOR.MINOR.PATCH` 格式的版本，例如 `prod-v0.6.0`；现有 Release 和 CLI 工作流不会发布
+`prod-vMAJOR.MINOR.PATCH` 格式的版本；现有 Release 和 CLI 工作流不会发布
 这套生产镜像。发布前，必须通过 GitHub 规则禁止更新或删除 `prod-v*` Git 标签，在每个 Docker Hub
 目标仓库启用相同模式的不可变标签，并配置发布主体独占、最小推送权限的 `DOCKERHUB_TOKEN`
 Environment secret，不能配置为普通仓库 secret。GitHub 的 `production-images` Environment
@@ -97,50 +100,59 @@ Environment secret，不能配置为普通仓库 secret。GitHub 的 `production
 生成的 digest 清单是不可变的发布记录，部署和回滚都必须使用它。
 
 [`.env.production.example`](./.env.production.example) 的每个配置项都有匿名且格式有效的示例值，
-包括密钥和私有 JWK。这些值只是文档样例，绝不能直接部署。使用初始化脚本创建真实配置；脚本会生成彼此不同的替换密钥、私有 JWK 和 Docker socket 组 ID，且不会输出密钥值：
+包括密钥和私有 JWK。这些值只是文档样例，绝不能直接部署。使用初始化脚本创建真实配置；脚本会生成彼此不同的替换密钥、私有 JWK 和 Docker socket 组 ID，且不会输出密钥值。这是一次性安装步骤，绝不能对已有生产配置再次运行初始化脚本：
 
 ```bash
-QM_RELEASE=prod-v0.6.0
+QM_RELEASE=prod-vX.Y.Z
 mkdir qm-production && cd qm-production
 curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/compose.production.yaml"
-curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/.env.production.example"
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/default.env.production.example"
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/release.production.tag"
 curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/images.production.env"
 curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/images.production.json"
 curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/SHA256SUMS"
 curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/SHA256SUMS.bundle"
-mkdir -p scripts
-curl -fsSL "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/init-production-env.sh" -o scripts/init-production-env.sh
-chmod 700 scripts/init-production-env.sh
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/init-production-env.sh"
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/deploy-production-release.sh"
 cosign verify-blob \
   --bundle SHA256SUMS.bundle \
   --certificate-identity='https://github.com/xingstudy/yc-qm/.github/workflows/release-production-images.yml@refs/heads/main' \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
   SHA256SUMS
 sha256sum -c SHA256SUMS
-docker login
-while IFS='=' read -r _ image; do
-  cosign verify "$image" \
-    --certificate-identity='https://github.com/xingstudy/yc-qm/.github/workflows/release-production-images.yml@refs/heads/main' \
-    --certificate-oidc-issuer=https://token.actions.githubusercontent.com > /dev/null
-done < images.production.env
-./scripts/init-production-env.sh
+mkdir -p scripts
+install -m 700 init-production-env.sh scripts/init-production-env.sh
+install -m 700 deploy-production-release.sh scripts/deploy-production-release.sh
+./scripts/init-production-env.sh .env.production "$QM_RELEASE"
 ```
 
-首次启动前编辑 `.env.production`，替换公开 HTTPS 地址、组织 ID、初始管理员授权、允许登录的邮箱域或邮箱、发件人和 SMTP 凭据、模型供应商凭据等运营样例值。将脚本生成的密钥安全保存到密钥管理系统。使用内置登录代理还必须填写邮件传输配置；Issuer、回调地址和私有端点必须始终与模板中的公开 URL 及 `auth` 服务配置一致。
+不能把 `prod-v0.7.1` 代入这套首次安装流程。该已发布包早于版本化部署脚本，而且隐藏环境模板的
+资产名与校验清单不一致；必须先用更新后的工作流发布一个更高版本。
 
-完成签名校验和配置后，再校验、拉取并只启动 digest 固定的镜像：
+首次启动前编辑 `.env.production`，替换公开 HTTPS 地址、组织 ID、初始管理员授权、允许登录的邮箱域或邮箱、发件人和 SMTP 凭据、模型供应商凭据等运营样例值。将脚本生成的密钥安全保存到密钥管理系统。使用内置登录代理还必须填写邮件传输配置；Issuer、回调地址和私有端点必须始终与模板中的公开 URL 及 `auth` 服务配置一致。公开生产镜像不需要 `docker login`；只有私有仓库、企业策略或 Docker Hub 匿名限流场景才使用部署专用、只读的拉取凭据。
+
+完成签名校验和配置后，运行部署脚本。它会下载对应版本的 Compose 和镜像清单，验证签名校验和
+七个镜像 digest，原子写入版本化发布锁，再同时加载长期配置和已验证锁启动 Compose。生产 Compose
+还会在 core 启动前显式拉取 `sandbox-local` 镜像：
 
 ```bash
-docker compose --env-file .env.production -f compose.production.yaml config --quiet
-docker compose --env-file .env.production -f compose.production.yaml pull
-docker compose --env-file .env.production -f compose.production.yaml up -d --wait --pull always
-docker compose --env-file .env.production -f compose.production.yaml ps
+./scripts/deploy-production-release.sh
 curl -fsS http://127.0.0.1:8088/healthz
 ```
 
-`--wait` 和 `/healthz` 只能证明服务存活。验收安装前，请使用已配置的初始管理员授权完成浏览器登录、运行一次非 mock 的真实 Agent 对话、确认创建了 `qm-sandbox-local` 容器，并验证模型供应商和所需连接器。`QM_SANDBOX_IMAGE` 同样固定为 digest；只有 sandbox base 镜像不能支撑真实对话。
+`--wait` 和 `/healthz` 只能证明服务存活。验收安装前，请使用已配置的初始管理员授权完成浏览器登录、运行一次非 mock 的真实 Agent 对话、确认创建了 `qm-sandbox-local` 容器，并验证模型供应商和所需连接器。
 
-升级前必须备份并演练恢复 Postgres、`core-data` 和所有 `qm-home-*` 卷。将生成的签名和加密配置与备份一起保存；丢失 `CONNECTOR_SECRET_KEY` 可能导致已保存的连接器凭据无法读取。日常停止或升级时绝不可使用 `docker compose down -v`。升级时获取一整套新的匹配发布文件，审阅新的 `.env.production.example` 与 `images.production.env`，备份后执行 `pull` 和 `up -d --wait --pull always`。回滚时必须同时恢复上一套完整镜像清单和配置；若版本间数据不兼容，还要恢复数据库和卷。
+升级前必须备份并演练恢复 Postgres、`core-data` 和所有 `qm-home-*` 卷。将生成的签名和加密配置与备份一起保存；丢失 `CONNECTOR_SECRET_KEY` 可能导致已保存的连接器凭据无法读取。日常停止或升级时绝不可使用 `docker compose down -v`。
+
+日常升级保留现有 `.env.production`，只修改 `QM_RELEASE_TAG`，然后重新运行
+`./scripts/deploy-production-release.sh`。不能重新运行初始化脚本，也不能替换数据库、加密、签名、
+会话、Token、JWK、project 或卷名。部署脚本会按版本下载 Compose 和精确 digest 锁，避免服务拓扑与
+镜像集合漂移，并移除新版本已不存在的同 project 旧服务。如果发布说明新增必需配置，先对比新模板，只补充新增项。数据向后兼容时改回旧 tag
+并重新运行部署脚本即可回滚；否则还必须恢复匹配的数据库和卷备份。保留 `.releases/` 下的版本目录，
+作为部署审计和回滚证据。
+
+从源码构建栈迁移、确认数据卷复用和回滚源码版本的详细步骤，请参阅
+[Docker Compose 运维文档](./docs/docker-compose.md#migrating-the-source-build-stack)。
 
 这仍是单机部署，不提供高可用或零停机发布。内置 HTTP edge 默认使用
 `QM_BIND_ADDRESS=127.0.0.1`，只允许同机 TLS 反代访问，不能直接对外暴露；保持 Postgres

@@ -1,9 +1,34 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { createServer } from "node:net";
+import { join } from "node:path";
 import test from "node:test";
 
 const imageNames = ["CORE", "WEB_UI", "ADMIN", "PORTAL", "AUTH", "EDGE", "SANDBOX"] as const;
+const imageRepositories: Record<(typeof imageNames)[number], string> = {
+  CORE: "core",
+  WEB_UI: "web-ui",
+  ADMIN: "admin",
+  PORTAL: "portal",
+  AUTH: "auth",
+  EDGE: "edge",
+  SANDBOX: "sandbox-local",
+};
 const requiredProductionValues = [
+  "QM_COMPOSE_PROJECT",
+  "QM_RELEASE_TAG",
+  "QM_POSTGRES_VOLUME",
+  "QM_CORE_VOLUME",
   "POSTGRES_PASSWORD",
   "DOCKER_GID",
   "CORE_SIGNING_SECRET",
@@ -62,6 +87,10 @@ test("the production example is a complete fail-closed template without organiza
   assert.equal(values.get("NODE_ENV"), "production");
   assert.equal(values.get("PORTAL_LOCAL_AUTH_BYPASS"), "0");
   assert.equal(values.get("AUTH_EMAIL_TRANSPORT"), "smtp");
+  assert.equal(values.get("QM_COMPOSE_PROJECT"), "qm");
+  assert.equal(values.get("QM_RELEASE_TAG"), "prod-v0.0.0");
+  assert.equal(values.get("QM_POSTGRES_VOLUME"), "qm_postgres-data");
+  assert.equal(values.get("QM_CORE_VOLUME"), "qm_core-data");
   assert.equal(values.get("QM_BIND_ADDRESS"), "127.0.0.1");
   assert.equal(values.get("PORTAL_PUBLIC_URL"), "https://qm.example.com");
   assert.equal(values.get("OIDC_ALLOWED_EMAIL_DOMAIN"), "example.com");
@@ -83,6 +112,7 @@ test("the image manifest pins every pull-only first-party image to Docker Hub", 
   for (const name of imageNames) {
     const ref = values.get(`QM_${name}_IMAGE`);
     assert.ok(ref, `QM_${name}_IMAGE is required`);
+    assert.equal(ref!.split("@sha256:")[0], `docker.io/lijixing/qm-${imageRepositories[name]}`);
     assert.match(ref!, /^docker\.io\/lijixing\/qm-[a-z-]+@sha256:[0-9a-f]{64}$/);
     refs.push(ref!);
   }
@@ -96,9 +126,14 @@ test("the production Compose stack is image-only and exposes only the edge", () 
   assert.doesNotMatch(compose, /^\s*build:/m);
   assert.doesNotMatch(compose, /^\s*context:/m);
   assert.doesNotMatch(compose, /^\s*-\s*\.\//m);
+  assert.match(compose, /^name: \$\{QM_COMPOSE_PROJECT:\?[^}]+\}$/m);
   for (const name of imageNames) {
-    assert.match(compose, new RegExp(`\\$\\{QM_${name}_IMAGE:[^}]+\\}`));
+    assert.match(compose, new RegExp(`image: \\$\\{QM_${name}_IMAGE:\\?[^}]+\\}`));
   }
+  assert.match(compose, /postgres-data:\s*\n\s+name: \$\{QM_POSTGRES_VOLUME:\?[^}]+\}/);
+  assert.match(compose, /core-data:\s*\n\s+name: \$\{QM_CORE_VOLUME:\?[^}]+\}/);
+  assert.match(serviceBlock(compose, "sandbox-image"), /entrypoint:[\s\S]*?\/bin\/true/);
+  assert.match(serviceBlock(compose, "core"), /sandbox-image:[\s\S]*?service_completed_successfully/);
   assert.match(compose, /^\s*edge:\s*$/m);
   assert.match(compose, /edge:[\s\S]*?ports:/);
   assert.match(serviceBlock(compose, "edge"), /QM_BIND_ADDRESS:-127\.0\.0\.1[^\n]*QM_HTTP_PORT:-8088/);
@@ -112,17 +147,92 @@ test("the production Compose stack is image-only and exposes only the edge", () 
   assert.match(compose, /group_add:[\s\S]*?DOCKER_GID/);
 });
 
+test("literal production volume names survive Compose project overrides", () => {
+  const directory = mkdtempSync("/tmp/qm-production-compose-");
+  try {
+    const envFile = join(directory, ".env.production");
+    writeFileSync(envFile, readFileSync(".env.production.example", "utf8"));
+    const rendered = JSON.parse(
+      execFileSync(
+        "docker",
+        [
+          "compose",
+          "--project-name",
+          "cli-project",
+          "--env-file",
+          envFile,
+          "--env-file",
+          "images.production.env",
+          "-f",
+          "compose.production.yaml",
+          "config",
+          "--format",
+          "json",
+        ],
+        { env: { ...process.env, COMPOSE_PROJECT_NAME: "shell-project" } },
+      ).toString(),
+    ) as { name: string; volumes: Record<string, { name: string }> };
+    assert.equal(rendered.name, "cli-project");
+    assert.equal(rendered.volumes["postgres-data"]?.name, "qm_postgres-data");
+    assert.equal(rendered.volumes["core-data"]?.name, "qm_core-data");
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
 test("production initialization replaces every fail-closed value and generates the Docker socket group", () => {
   const script = readFileSync("scripts/init-production-env.sh", "utf8");
 
-  assert.match(script, /stat -c %g \/var\/run\/docker\.sock/);
+  assert.match(script, /QM_DOCKER_SOCKET_PATH:-\/var\/run\/docker\.sock/);
   assert.match(script, /mktemp "\$target_dir\/\.env\.production\.tmp\.XXXXXX"/);
   assert.match(script, /mv "\$work_file" "\$target"/);
   assert.match(script, /openssl rand -hex 32/);
   for (const name of generatedValues) assert.match(script, new RegExp(`\\b${name}\\b`));
   assert.match(script, /AUTH_SIGNING_JWK/);
   assert.match(script, /openssl ecparam -name prime256v1 -genkey/);
+  assert.match(script, /QM_RELEASE_TAG/);
+  assert.doesNotMatch(script, /images\.production\.env|QM_[A-Z_]+_IMAGE/);
   assert.doesNotMatch(script, /\bnode\b|generateKeyPairSync/);
+});
+
+test("production initialization executes with a source tag and a rendered release template", async () => {
+  const directory = mkdtempSync("/tmp/qm-production-init-");
+  const socket = join(directory, "docker.sock");
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socket, resolve);
+  });
+  try {
+    const sourceTarget = join(directory, "source.env.production");
+    execFileSync("bash", ["scripts/init-production-env.sh", sourceTarget, "prod-v1.2.3"], {
+      env: { ...process.env, QM_DOCKER_SOCKET_PATH: socket },
+      stdio: "pipe",
+    });
+    assert.equal(statSync(sourceTarget).mode & 0o777, 0o600);
+    assert.match(readFileSync(sourceTarget, "utf8"), /^QM_RELEASE_TAG=prod-v1\.2\.3$/m);
+
+    const releaseRoot = join(directory, "release");
+    mkdirSync(join(releaseRoot, "scripts"), { recursive: true });
+    copyFileSync("scripts/init-production-env.sh", join(releaseRoot, "scripts/init-production-env.sh"));
+    writeFileSync(
+      join(releaseRoot, "default.env.production.example"),
+      readFileSync(".env.production.example", "utf8").replace(
+        "QM_RELEASE_TAG=prod-v0.0.0",
+        "QM_RELEASE_TAG=prod-v1.2.3",
+      ),
+    );
+    const releaseTarget = join(directory, "release.env.production");
+    execFileSync("bash", [join(releaseRoot, "scripts/init-production-env.sh"), releaseTarget], {
+      env: { ...process.env, QM_DOCKER_SOCKET_PATH: socket },
+      stdio: "pipe",
+    });
+    assert.equal(statSync(releaseTarget).mode & 0o777, 0o600);
+    assert.match(readFileSync(releaseTarget, "utf8"), /^QM_RELEASE_TAG=prod-v1\.2\.3$/m);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(directory, { force: true, recursive: true });
+  }
 });
 
 test("the pull-only deployment assets are all checked in", () => {
@@ -131,9 +241,20 @@ test("the pull-only deployment assets are all checked in", () => {
     "images.production.env",
     "compose.production.yaml",
     "scripts/init-production-env.sh",
+    "scripts/deploy-production-release.sh",
     "scripts/production-preflight.ts",
     "deploy/edge/Dockerfile",
   ]) {
     assert.equal(existsSync(path), true, `${path} is required for an image-only deployment`);
+  }
+});
+
+test("the documented bootstrap verifies release scripts before installing them", () => {
+  for (const path of ["README.md", "README.zh-CN.md"]) {
+    const readme = readFileSync(path, "utf8");
+    assert.match(readme, /curl -fsSLO [^\n]*\/init-production-env\.sh"/);
+    assert.match(readme, /curl -fsSLO [^\n]*\/deploy-production-release\.sh"/);
+    assert.match(readme, /sha256sum -c SHA256SUMS[\s\S]*install -m 700 init-production-env\.sh/);
+    assert.doesNotMatch(readme, /curl [^\n]*-o scripts\/(?:init|deploy)-production/);
   }
 });

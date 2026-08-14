@@ -113,13 +113,17 @@ sign-in broker, from Docker Hub images. A production host needs Docker Engine, D
 Compose v2, `curl`, `cosign`, and a TLS-terminating reverse proxy or load balancer; it
 does **not** need a source checkout, Node.js, npm, or a local image build.
 
-The release manifest [`images.production.env`](./images.production.env) defaults to the
-`lijixing` Docker Hub namespace. Every `QM_*_IMAGE` is pinned to an immutable
-`@sha256:` digest. Treat that manifest as part of the release: do not replace a digest
-with a tag or `latest`. Production images support Linux `amd64`/`x86_64` hosts only.
+The long-lived `.env.production` selects the release with one
+`QM_RELEASE_TAG=prod-vMAJOR.MINOR.PATCH` value. The deployment script treats that tag only
+as a GitHub Release selector: it verifies the signed checksum bundle and all image
+signatures, stores the exact `@sha256` image set under `.releases/<tag>/`, and gives that
+lock file to Compose. Docker never runs an unbound tag. `QM_POSTGRES_VOLUME` and
+`QM_CORE_VOLUME` are literal Docker volume names, so changing the deployment directory or
+Compose project cannot silently redirect durable data. Production images support Linux
+`amd64`/`x86_64` hosts only.
 
 The separate `release-production-images.yml` workflow publishes a production release
-from `main` when its input uses `prod-vMAJOR.MINOR.PATCH`, such as `prod-v0.6.0`; the
+from `main` when its input uses `prod-vMAJOR.MINOR.PATCH`; the
 existing Release and CLI workflows do not publish this production image set. Before
 publishing, protect Git tags matching `prod-v*` from updates and deletion, enable Docker
 Hub immutable tags for the same pattern on every target repository, and configure an
@@ -137,67 +141,80 @@ All keys in [`.env.production.example`](./.env.production.example) deliberately 
 anonymous, syntactically usable example values, including secrets and the private JWK.
 Those values are only documentation fixtures and must never be deployed. Create the real
 file with the initializer; it generates distinct replacement secrets, a private JWK, and
-the Docker socket group ID without printing secret values:
+the Docker socket group ID without printing secret values. This is a one-time installation
+step; never run the initializer over an existing production configuration.
 
 ```bash
-QM_RELEASE=prod-v0.6.0
+QM_RELEASE=prod-vX.Y.Z
 mkdir qm-production && cd qm-production
 curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/compose.production.yaml"
-curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/.env.production.example"
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/default.env.production.example"
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/release.production.tag"
 curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/images.production.env"
 curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/images.production.json"
 curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/SHA256SUMS"
 curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/SHA256SUMS.bundle"
-mkdir -p scripts
-curl -fsSL "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/init-production-env.sh" -o scripts/init-production-env.sh
-chmod 700 scripts/init-production-env.sh
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/init-production-env.sh"
+curl -fsSLO "https://github.com/xingstudy/yc-qm/releases/download/${QM_RELEASE}/deploy-production-release.sh"
 cosign verify-blob \
   --bundle SHA256SUMS.bundle \
   --certificate-identity='https://github.com/xingstudy/yc-qm/.github/workflows/release-production-images.yml@refs/heads/main' \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
   SHA256SUMS
 sha256sum -c SHA256SUMS
-docker login
-while IFS='=' read -r _ image; do
-  cosign verify "$image" \
-    --certificate-identity='https://github.com/xingstudy/yc-qm/.github/workflows/release-production-images.yml@refs/heads/main' \
-    --certificate-oidc-issuer=https://token.actions.githubusercontent.com > /dev/null
-done < images.production.env
-./scripts/init-production-env.sh
+mkdir -p scripts
+install -m 700 init-production-env.sh scripts/init-production-env.sh
+install -m 700 deploy-production-release.sh scripts/deploy-production-release.sh
+./scripts/init-production-env.sh .env.production "$QM_RELEASE"
 ```
+
+Do not substitute `prod-v0.7.1` in this procedure. That published bundle predates the
+versioned deployer and contains an inconsistent hidden-template asset name. Publish and
+use a later production release created by the updated workflow.
 
 Before the first start, edit `.env.production`. Replace the operational example values
 for the public HTTPS URL, organization ID, administrator grant, allowed email domain or
 emails, mail sender and SMTP credentials, and a model-provider credential. Keep the
 generated values backed up in a secret manager. The built-in broker also requires its
 mail transport settings; its issuer, callback, and private endpoints must remain aligned
-with the public URL and `auth` service settings in the template.
+with the public URL and `auth` service settings in the template. Public release images do
+not require `docker login`; authenticate with a deployment-only, read-only pull token only
+for a private repository, registry policy, or Docker Hub rate limit.
 
-After signature verification and configuration, validate, pull, and start only the
-pinned images:
+After signature verification and configuration, deploy the selected release. The script
+downloads the matching Compose and image manifest, verifies their signed checksums and all
+seven image digests, writes the versioned release lock atomically, and then runs Compose
+with both the long-lived configuration and verified lock. The Compose stack explicitly
+pulls the matching `sandbox-local` image before core starts.
 
 ```bash
-docker compose --env-file .env.production -f compose.production.yaml config --quiet
-docker compose --env-file .env.production -f compose.production.yaml pull
-docker compose --env-file .env.production -f compose.production.yaml up -d --wait --pull always
-docker compose --env-file .env.production -f compose.production.yaml ps
+./scripts/deploy-production-release.sh
 curl -fsS http://127.0.0.1:8088/healthz
 ```
 
 `--wait` and `/healthz` only prove service liveness. Complete a browser sign-in using the
 configured initial administrator grant, run a real non-mock Agent turn, confirm that a
 `qm-sandbox-local` container is created, and verify the model provider and required
-connectors before accepting the installation. `QM_SANDBOX_IMAGE` is also digest-pinned;
-the sandbox base image alone is not sufficient for real turns.
+connectors before accepting the installation.
 
 Back up and restore-test Postgres, `core-data`, and every `qm-home-*` volume before an
 upgrade. Preserve the generated encryption and signing values with that backup: loss of
 `CONNECTOR_SECRET_KEY` can make stored connector credentials unreadable. Never use
-`docker compose down -v` as a routine stop or upgrade command. To upgrade, obtain a
-new matching release set, review the new `.env.production.example` and
-`images.production.env`, back up, then pull and run `up -d --wait --pull always`. To
-roll back, restore the prior complete image manifest and configuration together; restore
-the database and volumes when the release is not data-compatible.
+`docker compose down -v` as a routine stop or upgrade command.
+
+For a routine release, keep the existing `.env.production`, change only
+`QM_RELEASE_TAG`, and rerun `./scripts/deploy-production-release.sh`. Do not rerun the
+initializer or replace database, encryption, signing, session, token, JWK, project, or
+volume values. The deployer downloads the release-specific Compose file and exact digest
+lock and removes services no longer present in that release, so topology and images cannot
+drift across releases. When release notes add required configuration, compare the new
+template and add only those keys before deploying. For a data-compatible rollback, restore
+the prior tag and rerun the deployer; otherwise restore the matching database and volume
+backup as well. Keep the versioned `.releases/` directories as deployment and rollback
+evidence.
+
+For migration from the source-build stack, volume reuse checks, and source-build rollback,
+follow [the Docker Compose operations guide](./docs/docker-compose.md#migrating-the-source-build-stack).
 
 This remains a single-host deployment, not a high-availability or zero-downtime
 platform. The built-in HTTP edge defaults to `QM_BIND_ADDRESS=127.0.0.1` and is only

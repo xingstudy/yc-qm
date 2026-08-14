@@ -18,6 +18,7 @@ data/
 .ci-instance/
 test/live-slack/out/
 .generated/
+.releases/
 __pycache__/
 *.pyc
 

@@ -12,6 +12,10 @@ function validEnv(): NodeJS.ProcessEnv {
     PORTAL_LOCAL_AUTH_BYPASS: "0",
     SANDBOX_BACKEND: "local",
     QM_BIND_ADDRESS: "127.0.0.1",
+    QM_COMPOSE_PROJECT: "qm",
+    QM_RELEASE_TAG: "prod-v1.2.3",
+    QM_POSTGRES_VOLUME: "qm_postgres-data",
+    QM_CORE_VOLUME: "qm_core-data",
     PORTAL_XFF_TRUSTED_HOPS: "2",
     ORG_ID: "acme",
     POSTGRES_PASSWORD: "01".repeat(32),
@@ -67,13 +71,33 @@ test("the checked-in production example fails closed without echoing secret valu
   const secret = "qm-example-secret-do-not-deploy";
   env.CORE_SIGNING_SECRET = secret;
   env.PORTAL_PUBLIC_URL = "https://qm.example.com";
-  env.QM_CORE_IMAGE = `docker.io/lijixing/qm-core@sha256:${"0".repeat(64)}`;
+  env.QM_RELEASE_TAG = "prod-v0.0.0";
   const text = productionPreflightProblems(env, 989).join(" | ");
 
   assert.match(text, /CORE_SIGNING_SECRET must be replaced/);
   assert.match(text, /PORTAL_PUBLIC_URL must not use example\.com/);
-  assert.match(text, /QM_CORE_IMAGE must not use a sentinel digest/);
+  assert.match(text, /QM_RELEASE_TAG must not use the example release/);
   assert.doesNotMatch(text, new RegExp(secret));
+});
+
+test("the central preflight validates the release tag and stable Compose project", () => {
+  const env = validEnv();
+  env.QM_RELEASE_TAG = "latest";
+  env.QM_COMPOSE_PROJECT = "QM Production";
+  const text = productionPreflightProblems(env, 989).join(" | ");
+
+  assert.match(text, /QM_RELEASE_TAG must use prod-vMAJOR\.MINOR\.PATCH/);
+  assert.match(text, /QM_COMPOSE_PROJECT must use lowercase letters/);
+});
+
+test("the central preflight validates literal volume names and the verified image lock", () => {
+  const env = validEnv();
+  env.QM_POSTGRES_VOLUME = "bad/volume";
+  env.QM_CORE_IMAGE = `docker.io/lijixing/qm-core@sha256:${"0".repeat(64)}`;
+  const text = productionPreflightProblems(env, 989).join(" | ");
+
+  assert.match(text, /QM_POSTGRES_VOLUME must be a literal Docker volume name/);
+  assert.match(text, /QM_CORE_IMAGE must not use a sentinel digest/);
 });
 
 test("the central preflight rejects reused secrets and a mismatched Docker socket group", () => {

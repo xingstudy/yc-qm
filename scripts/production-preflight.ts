@@ -62,6 +62,22 @@ export function productionPreflightProblems(
     problems.push("PORTAL_XFF_TRUSTED_HOPS must be 2 for the same-host TLS proxy and bundled edge");
   }
 
+  const composeProject = required("QM_COMPOSE_PROJECT");
+  if (composeProject && !/^[a-z0-9][a-z0-9_-]*$/.test(composeProject)) {
+    problems.push("QM_COMPOSE_PROJECT must use lowercase letters, digits, hyphens, or underscores");
+  }
+  const releaseTag = required("QM_RELEASE_TAG");
+  if (releaseTag && !/^prod-v[0-9]+\.[0-9]+\.[0-9]+$/.test(releaseTag)) {
+    problems.push("QM_RELEASE_TAG must use prod-vMAJOR.MINOR.PATCH");
+  }
+  if (releaseTag === "prod-v0.0.0") problems.push("QM_RELEASE_TAG must not use the example release");
+  for (const name of ["QM_POSTGRES_VOLUME", "QM_CORE_VOLUME"] as const) {
+    const value = required(name);
+    if (value && !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(value)) {
+      problems.push(`${name} must be a literal Docker volume name`);
+    }
+  }
+
   required("ORG_ID");
   const postgresPassword = strong("POSTGRES_PASSWORD");
   if (postgresPassword && !/^[A-Fa-f0-9]+$/.test(postgresPassword)) {

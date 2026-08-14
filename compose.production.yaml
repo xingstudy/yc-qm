@@ -1,3 +1,5 @@
+name: ${QM_COMPOSE_PROJECT:?Set QM_COMPOSE_PROJECT in .env.production}
+
 x-service-defaults: &service-defaults
   init: true
   restart: unless-stopped
@@ -17,7 +19,7 @@ x-service-defaults: &service-defaults
 
 services:
   preflight:
-    image: ${QM_CORE_IMAGE:?Set QM_CORE_IMAGE in .env.production}
+    image: ${QM_CORE_IMAGE:?Load the verified production image lock}
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       SANDBOX_BACKEND: ${SANDBOX_BACKEND:-local}
@@ -63,13 +65,17 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_TLS: ${SMTP_TLS:-implicit}
       AUTH_SIGNING_JWK: ${AUTH_SIGNING_JWK:?Set AUTH_SIGNING_JWK in .env.production}
-      QM_CORE_IMAGE: ${QM_CORE_IMAGE:?Set QM_CORE_IMAGE in .env.production}
-      QM_WEB_UI_IMAGE: ${QM_WEB_UI_IMAGE:?Set QM_WEB_UI_IMAGE in .env.production}
-      QM_ADMIN_IMAGE: ${QM_ADMIN_IMAGE:?Set QM_ADMIN_IMAGE in .env.production}
-      QM_PORTAL_IMAGE: ${QM_PORTAL_IMAGE:?Set QM_PORTAL_IMAGE in .env.production}
-      QM_AUTH_IMAGE: ${QM_AUTH_IMAGE:?Set QM_AUTH_IMAGE in .env.production}
-      QM_EDGE_IMAGE: ${QM_EDGE_IMAGE:?Set QM_EDGE_IMAGE in .env.production}
-      QM_SANDBOX_IMAGE: ${QM_SANDBOX_IMAGE:?Set QM_SANDBOX_IMAGE in .env.production}
+      QM_COMPOSE_PROJECT: ${QM_COMPOSE_PROJECT:?Set QM_COMPOSE_PROJECT in .env.production}
+      QM_RELEASE_TAG: ${QM_RELEASE_TAG:?Set QM_RELEASE_TAG in .env.production}
+      QM_POSTGRES_VOLUME: ${QM_POSTGRES_VOLUME:?Set QM_POSTGRES_VOLUME in .env.production}
+      QM_CORE_VOLUME: ${QM_CORE_VOLUME:?Set QM_CORE_VOLUME in .env.production}
+      QM_CORE_IMAGE: ${QM_CORE_IMAGE:?Load the verified production image lock}
+      QM_WEB_UI_IMAGE: ${QM_WEB_UI_IMAGE:?Load the verified production image lock}
+      QM_ADMIN_IMAGE: ${QM_ADMIN_IMAGE:?Load the verified production image lock}
+      QM_PORTAL_IMAGE: ${QM_PORTAL_IMAGE:?Load the verified production image lock}
+      QM_AUTH_IMAGE: ${QM_AUTH_IMAGE:?Load the verified production image lock}
+      QM_EDGE_IMAGE: ${QM_EDGE_IMAGE:?Load the verified production image lock}
+      QM_SANDBOX_IMAGE: ${QM_SANDBOX_IMAGE:?Load the verified production image lock}
     command:
       - node
       - scripts/production-preflight.ts
@@ -116,9 +122,16 @@ services:
         max-size: 20m
         max-file: "5"
 
+  sandbox-image:
+    <<: *service-defaults
+    image: ${QM_SANDBOX_IMAGE:?Load the verified production image lock}
+    entrypoint:
+      - /bin/true
+    restart: "no"
+
   core:
     <<: *service-defaults
-    image: ${QM_CORE_IMAGE:?Set QM_CORE_IMAGE in .env.production}
+    image: ${QM_CORE_IMAGE:?Load the verified production image lock}
     environment:
       NODE_ENV: production
       PORT: "8080"
@@ -141,7 +154,7 @@ services:
       SKILL_SIGNING_SECRET: ${SKILL_SIGNING_SECRET:?Set SKILL_SIGNING_SECRET in .env.production}
       REQUIRE_SIGNED_PORTAL_IDENTITY: "1"
       SANDBOX_BACKEND: local
-      LOCAL_SANDBOX_IMAGE: ${QM_SANDBOX_IMAGE:?Set QM_SANDBOX_IMAGE in .env.production}
+      LOCAL_SANDBOX_IMAGE: ${QM_SANDBOX_IMAGE:?Load the verified production image lock}
       AGENT_API_URL: http://host.docker.internal:8080
       PUBLIC_WEB_URL: ${PORTAL_PUBLIC_URL:?Set PORTAL_PUBLIC_URL in .env.production}
       DATA_DIR: /data
@@ -156,6 +169,8 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+      sandbox-image:
+        condition: service_completed_successfully
     network_mode: host
     group_add:
       - ${DOCKER_GID:?Set DOCKER_GID in .env.production}
@@ -176,7 +191,7 @@ services:
 
   web-ui:
     <<: *service-defaults
-    image: ${QM_WEB_UI_IMAGE:?Set QM_WEB_UI_IMAGE in .env.production}
+    image: ${QM_WEB_UI_IMAGE:?Load the verified production image lock}
     environment:
       NODE_ENV: production
       PORT: "8080"
@@ -208,7 +223,7 @@ services:
 
   admin:
     <<: *service-defaults
-    image: ${QM_ADMIN_IMAGE:?Set QM_ADMIN_IMAGE in .env.production}
+    image: ${QM_ADMIN_IMAGE:?Load the verified production image lock}
     environment:
       NODE_ENV: production
       PORT: "8080"
@@ -239,7 +254,7 @@ services:
 
   auth:
     <<: *service-defaults
-    image: ${QM_AUTH_IMAGE:?Set QM_AUTH_IMAGE in .env.production}
+    image: ${QM_AUTH_IMAGE:?Load the verified production image lock}
     environment:
       NODE_ENV: production
       PORT: "8080"
@@ -289,7 +304,7 @@ services:
 
   portal:
     <<: *service-defaults
-    image: ${QM_PORTAL_IMAGE:?Set QM_PORTAL_IMAGE in .env.production}
+    image: ${QM_PORTAL_IMAGE:?Load the verified production image lock}
     environment:
       NODE_ENV: production
       PORT: "8080"
@@ -345,7 +360,7 @@ services:
 
   edge:
     <<: *service-defaults
-    image: ${QM_EDGE_IMAGE:?Set QM_EDGE_IMAGE in .env.production}
+    image: ${QM_EDGE_IMAGE:?Load the verified production image lock}
     depends_on:
       preflight:
         condition: service_completed_successfully
@@ -371,4 +386,6 @@ services:
 
 volumes:
   postgres-data:
+    name: ${QM_POSTGRES_VOLUME:?Set QM_POSTGRES_VOLUME in .env.production}
   core-data:
+    name: ${QM_CORE_VOLUME:?Set QM_CORE_VOLUME in .env.production}
