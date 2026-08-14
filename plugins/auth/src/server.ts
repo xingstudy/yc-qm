@@ -243,9 +243,9 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
     } catch {
       return problem(res, 413, "That didn't work", "The sign-in form sent more data than we accept.");
     }
-    const opened = await signer.openLink(new URLSearchParams(raw).get("token") ?? "", now());
+    const form = new URLSearchParams(raw);
+    const opened = await signer.openLink(form.get("token") ?? "", now());
     if (!opened) return staleLink(res);
-    if (!(await claimOnce(claims, `link:${opened.jti}`, opened.expiresAtMs))) return staleLink(res);
     const { claims: link } = opened;
     if (!safeEqual(link.clientId, cfg.clientId) || !safeEqual(link.redirectUri, cfg.redirectUri)) {
       return problem(
@@ -258,6 +258,8 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
     if (!emailAllowed(cfg, link.email)) {
       return problem(res, 403, "This address can't sign in", "Your administrator has not allowed this email address.");
     }
+    if (form.get("preview") === "1") return sendJson(res, 200, { email: link.email });
+    if (!(await claimOnce(claims, `link:${opened.jti}`, opened.expiresAtMs))) return staleLink(res);
     const code = await signer.sealCode(
       {
         clientId: link.clientId,

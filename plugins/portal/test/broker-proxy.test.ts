@@ -4,6 +4,14 @@ import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 
 const seen: Array<{ url: string; method: string; headers: Record<string, unknown>; body: string }> = [];
+const STATE = "a".repeat(64);
+function verifyLocation(token: string | null): string {
+  if (token === "wrong-destination") return `https://evil.test/auth/callback?code=c&state=${STATE}`;
+  if (token === "missing-code") return `http://portal.test/auth/callback?state=${STATE}`;
+  if (token === "invalid-state") return `http://portal.test/auth/callback?code=c&state=${"A".repeat(64)}`;
+  return `http://portal.test/auth/callback?code=c&state=${STATE}`;
+}
+
 const broker = createServer((req: IncomingMessage, res) => {
   const chunks: Buffer[] = [];
   req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -15,7 +23,8 @@ const broker = createServer((req: IncomingMessage, res) => {
       body: Buffer.concat(chunks).toString("utf8"),
     });
     if (req.url?.startsWith("/verify")) {
-      res.writeHead(302, { location: "https://portal.test/auth/callback?code=c&state=s" });
+      const token = new URLSearchParams(seen.at(-1)!.body).get("token");
+      res.writeHead(302, { location: verifyLocation(token) });
       return void res.end();
     }
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -66,7 +75,8 @@ test("the broker's sign-in pages are reachable without a session", async () => {
 test("the verify redirect is relayed back to the browser", async () => {
   const redirect = await fetch(`${base}/idp/verify?token=abc`, { redirect: "manual" });
   assert.equal(redirect.status, 302);
-  assert.equal(redirect.headers.get("location"), "https://portal.test/auth/callback?code=c&state=s");
+  assert.equal(redirect.headers.get("location"), `http://portal.test/auth/callback?code=c&state=${STATE}`);
+  assert.equal(redirect.headers.get("set-cookie"), null, "opening the page must not establish callback intent");
 });
 
 test("the submit form posts through, same-origin only", async () => {
@@ -145,6 +155,9 @@ test("confirming a sign-in posts through, same-origin only", async () => {
   assert.equal(confirmed.status, 302);
   assert.equal(seen.at(-1)!.url, "/verify");
   assert.equal(seen.at(-1)!.body, "token=abc");
+  assert.match(confirmed.headers.get("set-cookie") ?? "", /portal_oidc_handoff=/);
+  assert.match(confirmed.headers.get("set-cookie") ?? "", /HttpOnly/);
+  assert.match(confirmed.headers.get("set-cookie") ?? "", /SameSite=Lax/);
 
   const scanner = await fetch(`${base}/idp/verify`, {
     method: "POST",
@@ -152,6 +165,31 @@ test("confirming a sign-in posts through, same-origin only", async () => {
     body: "token=abc",
   });
   assert.equal(scanner.status, 403, "a mail scanner replaying the form has neither Origin nor fetch metadata");
+});
+
+test("a broker redirect outside the exact portal callback cannot mint a handoff", async () => {
+  const response = await fetch(`${base}/idp/verify`, {
+    method: "POST",
+    headers: { origin: PUBLIC, "content-type": "application/x-www-form-urlencoded" },
+    body: "token=wrong-destination",
+    redirect: "manual",
+  });
+  assert.equal(response.status, 302);
+  assert.match(response.headers.get("location") ?? "", /^https:\/\/evil\.test/);
+  assert.equal(response.headers.get("set-cookie"), null);
+});
+
+test("a broker redirect without a code or lowercase 256-bit state cannot mint a handoff", async () => {
+  for (const token of ["missing-code", "invalid-state"]) {
+    const response = await fetch(`${base}/idp/verify`, {
+      method: "POST",
+      headers: { origin: PUBLIC, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token }),
+      redirect: "manual",
+    });
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.get("set-cookie"), null);
+  }
 });
 
 test("brokerRouteFor matches only the exact public routes", () => {

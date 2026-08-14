@@ -474,11 +474,24 @@ test("the sign-in link never puts its token anywhere a server or proxy logs it",
   assert.ok(!page.includes(token), "the page the server renders cannot contain a token it was never sent");
   assert.match(page, /location\.hash/, "the browser moves the token from the fragment into the form");
   assert.match(page, /history\.replaceState/, "and drops it out of the address bar and history entry");
+  assert.match(page, /sessionStorage\.removeItem/, "submitting immediately removes the browser's temporary copy");
+  assert.match(page, /once: true/, "a double click cannot submit the same confirmation twice");
+  assert.match(page, /Continue as/, "the browser shows the signed link identity before it enables confirmation");
   assert.match(confirm.headers.get("content-security-policy") ?? "", /script-src 'sha256-/);
+  assert.match(confirm.headers.get("content-security-policy") ?? "", /connect-src 'self'/);
   assert.equal(
     h.claims.calls.some((ids) => ids[0]?.startsWith("link:")),
     false,
     "and none of that spends the link",
+  );
+
+  const preview = await fetch(`${h.base}/verify`, { ...form({ token, preview: "1" }), redirect: "manual" });
+  assert.equal(preview.status, 200);
+  assert.deepEqual(await preview.json(), { email: "admin@example.com" });
+  assert.equal(
+    h.claims.calls.some((ids) => ids[0]?.startsWith("link:")),
+    false,
+    "showing the destination account must not spend the link",
   );
 
   const spent = await fetch(`${h.base}/verify`, { ...form({ token }), redirect: "manual" });

@@ -1,12 +1,16 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createHmac } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { LRUCache } from "lru-cache";
 import {
   deriveKey,
   seal,
+  open,
+  encrypt,
   openSession,
   openImpersonation,
   openTmp,
+  openEncryptedTmp,
   setCookie,
   clearCookie,
   readCookie,
@@ -38,6 +42,7 @@ import {
 } from "./proxy.ts";
 import { signedHeaders, withSourceAuthNonce } from "../../chassis/src/core-client.ts";
 import { coreClaimStore, withinRateLimit } from "../../chassis/src/claims.ts";
+import { corePortalLoginTransactions } from "../../chassis/src/portal-login-transactions.ts";
 import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { errMessage } from "../../chassis/src/errors.ts";
 import { json, escapeHtml, serveEmojiFavicon } from "../../chassis/src/http.ts";
@@ -177,19 +182,85 @@ const PRINCIPAL_RULE: PrincipalRule = {
 const DEV_SECRET = "dev-only-insecure-portal-session-secret";
 const sessionKey = deriveKey(SESSION_SECRET ?? DEV_SECRET, "portal.session.v1");
 const tmpKey = deriveKey(SESSION_SECRET ?? DEV_SECRET, "portal.tmp.v1");
+const transactionKey = deriveKey(SESSION_SECRET ?? DEV_SECRET, "portal.oidc.transaction.v1");
+const handoffKey = deriveKey(SESSION_SECRET ?? DEV_SECRET, "portal.oidc.handoff.v1");
 const impersonateKey = deriveKey(SESSION_SECRET ?? DEV_SECRET, "portal.impersonate.v1");
 const IMPERSONATE_TTL_S = Number(process.env.PORTAL_IMPERSONATE_TTL_S ?? 3600);
 
-const TMP_TTL_S = 600;
+const TMP_TTL_S = 2 * 60 * 60;
+const HANDOFF_TTL_S = 5 * 60;
+const LOGIN_ATTEMPTS_PER_IP_PER_MINUTE = 10;
+const LOGIN_ATTEMPTS_GLOBAL_PER_MINUTE = 64;
 const LOCAL_LOGOUT_COOKIE = "portal_local_logout";
-const CONSUMED_STATES_MAX = 10_000;
-export const consumedStates = new LRUCache<string, number>({ max: CONSUMED_STATES_MAX, ttl: 2 * TMP_TTL_S * 1000 });
-export function consumeState(state: string): boolean {
-  const now = Date.now();
-  const existing = consumedStates.get(state);
-  if (existing !== undefined && existing > now) return false;
-  consumedStates.set(state, now + TMP_TTL_S * 1000);
+
+const portalLoginTransactions = corePortalLoginTransactions(CORE, CORE_SIGNING_SECRET);
+const localLoginAttempts = new LRUCache<string, number>({ max: 10_000, ttl: 60_000 });
+let localLoginWindow = Number.NEGATIVE_INFINITY;
+let localGlobalLoginAttempts = 0;
+
+function allowLocalLoginAttempt(clientIp: string): boolean {
+  const window = Math.floor(Date.now() / 60_000);
+  if (window !== localLoginWindow) {
+    localLoginWindow = window;
+    localGlobalLoginAttempts = 0;
+  }
+  const bucket = mintBucketOf(clientIp);
+  const attempts = localLoginAttempts.get(bucket) ?? 0;
+  if (attempts >= LOGIN_ATTEMPTS_PER_IP_PER_MINUTE || localGlobalLoginAttempts >= LOGIN_ATTEMPTS_GLOBAL_PER_MINUTE)
+    return false;
+  localLoginAttempts.set(bucket, attempts + 1);
+  localGlobalLoginAttempts++;
   return true;
+}
+
+function loginClientBucket(clientIp: string): string {
+  return createHmac("sha256", SESSION_SECRET ?? DEV_SECRET)
+    .update(`portal-login-client.v1|${mintBucketOf(clientIp)}`, "utf8")
+    .digest("base64url");
+}
+
+function handoffState(cookie: string | undefined, nowMs: number): string | null {
+  const value = open(readCookie(cookie, "portal_oidc_handoff"), handoffKey);
+  if (!value || value.k !== "handoff" || typeof value.state !== "string" || typeof value.exp !== "number") return null;
+  return nowMs < value.exp * 1000 ? value.state : null;
+}
+
+function brokerVerifyResponseHeaders(
+  status: number,
+  headers: Record<string, string | string[]>,
+): Record<string, string | string[]> {
+  const location = headers.location;
+  if (status !== 302 || typeof location !== "string") return headers;
+  let destination: URL;
+  try {
+    destination = new URL(location);
+  } catch {
+    return headers;
+  }
+  const callback = new URL(OIDC.redirectUri);
+  const state = destination.searchParams.get("state") ?? "";
+  const code = destination.searchParams.get("code") ?? "";
+  if (
+    destination.origin !== callback.origin ||
+    destination.pathname !== callback.pathname ||
+    !code ||
+    !/^[a-f0-9]{64}$/.test(state)
+  ) {
+    return headers;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    ...headers,
+    "set-cookie": setCookie(
+      "portal_oidc_handoff",
+      seal({ k: "handoff", state, iat: now, exp: now + HANDOFF_TTL_S }, handoffKey),
+      {
+        path: "/auth",
+        maxAge: HANDOFF_TTL_S,
+        secure: SECURE_COOKIES,
+      },
+    ),
+  };
 }
 
 const ADMIN_TTL_MS = 60_000;
@@ -846,6 +917,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       clearCookie("portal_session", "/", SECURE_COOKIES, COOKIE_DOMAIN),
       ...(COOKIE_DOMAIN ? [clearCookie("portal_session", "/", SECURE_COOKIES)] : []),
       clearCookie("portal_oidc_tmp", "/auth", SECURE_COOKIES),
+      clearCookie("portal_oidc_handoff", "/auth", SECURE_COOKIES),
       ...(LOCAL_AUTH_BYPASS && isLoopbackAddress(clientIpOf(req))
         ? [setCookie(LOCAL_LOGOUT_COOKIE, "1", { path: "/", maxAge: SESSION_TTL_S, secure: SECURE_COOKIES })]
         : []),
@@ -867,6 +939,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       { baseUrl: AUTH_BROKER_UPSTREAM, path: brokerPath, search: url.search },
       FORWARD_BROKER_HEADERS,
       { "x-qm-client-ip": clientIpOf(req) },
+      method === "POST" && brokerPath === "/verify" ? brokerVerifyResponseHeaders : undefined,
     );
   }
 
@@ -1087,44 +1160,84 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   });
 }
 
-function authLogin(req: IncomingMessage, res: ServerResponse, url: URL): void {
+async function authLogin(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const returnTo = sanitizeReturnTo(url.searchParams.get("returnTo"), PUBLIC_URL, APPS_DOMAIN);
   const localSession = localDevSession(req, Date.now(), true);
   if (localSession) {
     setSession(res, [
       ...sessionCookieSet(seal(localSession, sessionKey)),
       clearCookie("portal_oidc_tmp", "/auth", SECURE_COOKIES),
+      clearCookie("portal_oidc_handoff", "/auth", SECURE_COOKIES),
       clearCookie(LOCAL_LOGOUT_COOKIE, "/", SECURE_COOKIES),
     ]);
     res.writeHead(302, { location: returnTo, "cache-control": "no-store" });
     return void res.end();
+  }
+  const clientIp = clientIpOf(req);
+  if (!allowLocalLoginAttempt(clientIp)) {
+    return sendHtml(res, 429, signInErrorHtml("too many sign-in attempts — wait a minute and try again"));
   }
   const state = randomToken();
   const nonce = randomToken();
   const { verifier, challenge } = pkcePair();
   const now = Math.floor(Date.now() / 1000);
   const tmp: TmpClaims = { k: "tmp", state, nonce, pkceVerifier: verifier, returnTo, iat: now, exp: now + TMP_TTL_S };
+  const created = await portalLoginTransactions.create(
+    state,
+    encrypt(tmp, transactionKey),
+    tmp.exp * 1000,
+    loginClientBucket(clientIp),
+  );
+  if (created !== "created") {
+    if (created === "client_limited") {
+      return sendHtml(res, 429, signInErrorHtml("too many sign-in attempts — wait a minute and try again"));
+    }
+    if (created === "global_limited") {
+      return sendHtml(res, 429, signInErrorHtml("sign-in is busy — wait a minute and try again"));
+    }
+    const detail =
+      created === "conflict" ? "sign-in state collision — please try again" : "sign-in service temporarily unavailable";
+    return sendHtml(res, 503, signInErrorHtml(detail));
+  }
   setSession(res, [
     setCookie("portal_oidc_tmp", seal(tmp, tmpKey), { path: "/auth", maxAge: TMP_TTL_S, secure: SECURE_COOKIES }),
+    clearCookie("portal_oidc_handoff", "/auth", SECURE_COOKIES),
   ]);
   res.writeHead(302, { location: buildAuthorizeUrl(OIDC, { state, nonce, challenge }), "cache-control": "no-store" });
   res.end();
 }
 
 async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-  const fail = (detail: string): void => {
-    setSession(res, [clearCookie("portal_oidc_tmp", "/auth", SECURE_COOKIES)]);
-    sendHtml(res, 400, signInErrorHtml(detail));
+  const existingSession = currentSession(req);
+  const stateParam = url.searchParams.get("state") ?? "";
+  const cookieTmp = openTmp(readCookie(req.headers.cookie, "portal_oidc_tmp"), tmpKey, Date.now());
+  const cookieMatches = Boolean(cookieTmp && stateParam && safeEqual(stateParam, cookieTmp.state));
+  const handoff = handoffState(req.headers.cookie, Date.now());
+  const handoffMatches = Boolean(handoff && stateParam && safeEqual(stateParam, handoff));
+  const fail = (detail: string, status = 400): void => {
+    const clears: string[] = [];
+    if (cookieMatches) clears.push(clearCookie("portal_oidc_tmp", "/auth", SECURE_COOKIES));
+    if (handoffMatches) clears.push(clearCookie("portal_oidc_handoff", "/auth", SECURE_COOKIES));
+    if (clears.length) setSession(res, clears);
+    console.warn(`[portal] sign-in callback failed: ${detail.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 200)}`);
+    sendHtml(res, status, signInErrorHtml(detail));
   };
 
   if (url.searchParams.get("error")) return fail(`identity provider returned: ${url.searchParams.get("error") ?? ""}`);
   const code = url.searchParams.get("code") ?? "";
-  const stateParam = url.searchParams.get("state") ?? "";
+  if (!code || !stateParam) return fail("invalid login state");
+  if (!cookieMatches && !handoffMatches) return fail("sign-in confirmation is missing or expired — please try again");
 
-  const tmp = openTmp(readCookie(req.headers.cookie, "portal_oidc_tmp"), tmpKey, Date.now());
-  if (!tmp) return fail("login session expired — please try again");
-  if (!code || !stateParam || !safeEqual(stateParam, tmp.state)) return fail("invalid login state");
-  if (!consumeState(tmp.state)) return fail("login already used — please try again");
+  const claimed = await portalLoginTransactions.claim(stateParam);
+  if (claimed.status === "unavailable") return fail("sign-in service temporarily unavailable", 503);
+  if (claimed.status === "expired") return fail("login session expired — please try again");
+  if (claimed.status !== "claimed") return fail("login already used — please try again");
+  const tmp = openEncryptedTmp(claimed.payload, transactionKey, Date.now());
+  if (!tmp || !safeEqual(tmp.state, stateParam)) {
+    await portalLoginTransactions.complete(stateParam, claimed.claimId, "failed");
+    return fail("invalid login transaction");
+  }
+  const claimId = claimed.claimId;
 
   let sub: string;
   let name = "";
@@ -1143,8 +1256,17 @@ async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL)
     const rawName = info.name ?? claims.name;
     if (typeof rawName === "string") name = rawName.trim().slice(0, 200);
   } catch (e) {
+    await portalLoginTransactions.complete(stateParam, claimId, "failed");
     return fail(errMessage(e, "sign-in failed"));
   }
+
+  if (existingSession && existingSession.sub !== sub) {
+    await portalLoginTransactions.complete(stateParam, claimId, "failed");
+    return fail("this browser is already signed in to a different account — sign out before using this link", 409);
+  }
+
+  const completed = await portalLoginTransactions.complete(stateParam, claimId, "succeeded");
+  if (completed !== "completed") console.error(`[portal] sign-in transaction completion failed: ${completed}`);
 
   const now = Math.floor(Date.now() / 1000);
   const session: SessionClaims = {
@@ -1159,6 +1281,7 @@ async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL)
   setSession(res, [
     ...sessionCookieSet(seal(session, sessionKey)),
     clearCookie("portal_oidc_tmp", "/auth", SECURE_COOKIES),
+    clearCookie("portal_oidc_handoff", "/auth", SECURE_COOKIES),
   ]);
   res.writeHead(302, {
     location: sanitizeReturnTo(tmp.returnTo, PUBLIC_URL, APPS_DOMAIN),

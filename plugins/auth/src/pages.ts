@@ -3,6 +3,13 @@ import { escapeHtml } from "../../chassis/src/http.ts";
 
 const CONFIRM_SCRIPT = `(function () {
   var key = "qm.signin.token";
+  var confirm = document.getElementById("confirm");
+  var noToken = document.getElementById("no-token");
+  var identity = document.getElementById("identity");
+  function fail() {
+    confirm.disabled = true;
+    noToken.hidden = false;
+  }
   var fragment = new URLSearchParams(location.hash.slice(1)).get("token");
   if (fragment) {
     try { sessionStorage.setItem(key, fragment); } catch (e) { void e; }
@@ -10,9 +17,29 @@ const CONFIRM_SCRIPT = `(function () {
   }
   var token = fragment;
   if (!token) { try { token = sessionStorage.getItem(key); } catch (e) { void e; } }
-  if (token) { document.getElementById("token").value = token; return; }
-  document.getElementById("confirm").disabled = true;
-  document.getElementById("no-token").hidden = false;
+  document.querySelector("form").addEventListener("submit", function () {
+    confirm.disabled = true;
+    try { sessionStorage.removeItem(key); } catch (e) { void e; }
+  }, { once: true });
+  if (!token) { fail(); return; }
+  document.getElementById("token").value = token;
+  fetch(location.pathname, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token: token, preview: "1" }),
+    credentials: "same-origin"
+  }).then(function (response) {
+    if (!response.ok) throw new Error("invalid link");
+    return response.json();
+  }).then(function (result) {
+    if (!result || typeof result.email !== "string") throw new Error("missing identity");
+    identity.textContent = "Continue as " + result.email;
+    identity.hidden = false;
+    confirm.disabled = false;
+  }).catch(function () {
+    try { sessionStorage.removeItem(key); } catch (e) { void e; }
+    fail();
+  });
 })();`;
 
 const CONFIRM_SCRIPT_HASH = `sha256-${createHash("sha256").update(CONFIRM_SCRIPT, "utf8").digest("base64")}`;
@@ -22,7 +49,7 @@ export const PAGE_CSP =
 
 export const CONFIRM_PAGE_CSP = PAGE_CSP.replace(
   "default-src 'none';",
-  `default-src 'none'; script-src '${CONFIRM_SCRIPT_HASH}';`,
+  `default-src 'none'; script-src '${CONFIRM_SCRIPT_HASH}'; connect-src 'self';`,
 );
 
 const STYLE = `<style>
@@ -142,7 +169,7 @@ export function linkSentPage(o: { brandName: string; email: string; ttlMinutes: 
     brandName: o.brandName,
     icon: SENT_ICON,
     heading: "Check your email",
-    msg: `If that address can sign in, a one-time link is on its way. Open it in this browser — it works once and expires in ${o.ttlMinutes} minutes.`,
+    msg: `If that address can sign in, a one-time link is on its way. Open it in the browser where you want to sign in — it works once and expires in ${o.ttlMinutes} minutes.`,
     body: `<p class="who">${escapeHtml(o.email)}</p>`,
     help: "Nothing after a minute or two? Check spam, then ask your administrator whether the address is allowed.",
   });
@@ -155,11 +182,12 @@ export function confirmSignInPage(o: { brandName: string; action: string }): str
     icon: LOCK_ICON,
     heading: `Finish signing in to ${o.brandName}`,
     msg: "Confirm below to complete sign-in. Your link is spent the moment you confirm, so do it in the browser you want to be signed in to.",
-    body: `<p class="reason" id="no-token" hidden><strong>Nothing to confirm</strong>This page did not receive a sign-in link. Open the link from your email directly, in a browser with JavaScript enabled, or ask for a fresh one.</p>
+    body: `<p class="reason" id="no-token" hidden><strong>Nothing to confirm</strong>This page did not receive a valid sign-in link. Open the link from your email directly, in a browser with JavaScript enabled, or ask for a fresh one.</p>
+      <p class="who" id="identity" hidden></p>
       <noscript><p class="reason"><strong>JavaScript required</strong>The last step of sign-in reads your link out of the page address so it never reaches a server log. Enable JavaScript for this page, then reopen the link.</p></noscript>
       <form method="post" action="${escapeHtml(o.action)}">
         <input type="hidden" name="token" id="token" value="">
-        <button class="btn" type="submit" id="confirm">Sign in</button>
+        <button class="btn" type="submit" id="confirm" disabled>Sign in</button>
       </form>
       <script>${CONFIRM_SCRIPT}</script>`,
     help: "Didn't ask to sign in? Close this page — nothing happens until you confirm.",

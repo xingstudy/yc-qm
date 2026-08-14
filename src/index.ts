@@ -24,6 +24,7 @@ const server = createServer(built.app, {
   ...(config.portalIdentitySecret ? { portalIdentitySecret: config.portalIdentitySecret } : {}),
   ...(config.requireSignedPortalIdentity ? { requireSignedPortalIdentity: true } : {}),
   ...(built.replayDedupe ? { replayDedupe: built.replayDedupe } : {}),
+  portalLoginTransactions: built.portalLoginTransactions,
   config: built.config,
   baseModelDefault: defaultModelForHarness(
     config.harness,

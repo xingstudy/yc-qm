@@ -2,6 +2,7 @@ import type { ModelProviderAvailability } from "../model/pi-models.ts";
 import type { ModelCredentialStore } from "../model/model-credential-store.ts";
 import type { CustomProviderStore } from "../model/custom-provider-store.ts";
 import type { ReplayDedupe } from "../auth/replay-dedupe.ts";
+import type { PortalLoginTransactionStore } from "../auth/portal-login-transactions.ts";
 import type { FetchLike, OAuthClientResolver } from "../connectors/oauth.ts";
 import type { ConsentLinkStore } from "../connectors/consent-link.ts";
 import type { ScopedConfigStore } from "../resolution/config-store.ts";
@@ -58,6 +59,7 @@ export interface ServerDeps {
   requireSignedPortalIdentity?: boolean;
   control: ControlService;
   replayDedupe?: ReplayDedupe;
+  portalLoginTransactions?: PortalLoginTransactionStore;
   connectorTokens?: ConnectorTokenStore;
   slackInstallation?: SlackInstallationStore;
   slackInstallationFetch?: typeof fetch;

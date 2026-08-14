@@ -248,6 +248,11 @@ import { createPostgresAdminGrantStore } from "./admin/postgres-admin-grant-stor
 import { createProjectStore, type Project, type ProjectStore } from "./projects/project-store.ts";
 import { createErrorLog, type ErrorLog } from "./admin/error-log.ts";
 import { createMemoryReplayDedupe, createPostgresReplayDedupe, type ReplayDedupe } from "./auth/replay-dedupe.ts";
+import {
+  createMemoryPortalLoginTransactionStore,
+  createPostgresPortalLoginTransactionStore,
+  type PortalLoginTransactionStore,
+} from "./auth/portal-login-transactions.ts";
 import { createAwsRoleBroker, type AwsRoleBroker } from "./auth/aws-role-broker.ts";
 import {
   emptyDeploymentLayer,
@@ -352,6 +357,7 @@ export interface BuiltApp {
   livenessCache: LivenessCache;
   deviceFlowCutover: DeviceFlowCutoverStore;
   replayDedupe?: ReplayDedupe;
+  portalLoginTransactions: PortalLoginTransactionStore;
   directory: DirectoryStore;
   projects: ProjectStore;
   environments: EnvironmentStore;
@@ -814,6 +820,9 @@ export function buildApp(
   }
 
   const replayDedupe = config.databaseUrl ? createPostgresReplayDedupe(config.databaseUrl) : createMemoryReplayDedupe();
+  const portalLoginTransactions = config.databaseUrl
+    ? createPostgresPortalLoginTransactionStore(config.databaseUrl)
+    : createMemoryPortalLoginTransactionStore();
   const metrics = config.databaseUrl ? createPostgresMetricsSink(config.databaseUrl) : createMetricsSink();
   const credentialUsage = config.databaseUrl
     ? createPostgresCredentialUsageSink(config.databaseUrl)
@@ -1491,6 +1500,7 @@ export function buildApp(
     livenessCache,
     deviceFlowCutover,
     ...(replayDedupe ? { replayDedupe } : {}),
+    portalLoginTransactions,
     directory,
     projects,
     environments,

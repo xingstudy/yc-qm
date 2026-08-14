@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
+import { exportJWK, SignJWT } from "jose";
 
 let whoamiProbes = 0;
 let lastConsentClicker: string | null = null;
@@ -10,8 +12,123 @@ let agentApiRequests = 0;
 const VALID_AGENT_CAPABILITY = "valid.agent.capability";
 let deploymentLayerRequests = 0;
 const VALID_SOURCE_SIGNATURE = "v0=valid-source-signature";
+const loginTransactions = new Map<
+  string,
+  {
+    payload: string | null;
+    expiresAtMs: number;
+    status: "pending" | "claimed" | "succeeded" | "failed";
+    claimId?: string;
+  }
+>();
+const oidcKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const oidcPublicJwk = { ...(await exportJWK(oidcKeys.publicKey)), alg: "RS256", kid: "router-test" };
+const OIDC_ISSUER = "https://issuer.portal.test";
+const OIDC_CLIENT_ID = "router-test-client";
+let oidcNonce = "";
+let expectedCodeVerifier = "";
+let brokerState = "";
+let tokenExchanges = 0;
+let loginTransactionUnavailable = false;
 
 const upstream = createServer((req: IncomingMessage, res) => {
+  if (req.url?.startsWith("/v1/auth/portal-login/")) {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    return void req.on("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      const state = String(body.state ?? "");
+      if (req.url?.startsWith("/v1/auth/portal-login/create")) {
+        if (loginTransactionUnavailable) {
+          res.writeHead(503, { "content-type": "application/json" });
+          return void res.end(JSON.stringify({ error: "unavailable" }));
+        }
+        if (loginTransactions.has(state)) {
+          res.writeHead(200, { "content-type": "application/json" });
+          return void res.end(JSON.stringify({ status: "conflict" }));
+        }
+        loginTransactions.set(state, {
+          payload: String(body.payload ?? ""),
+          expiresAtMs: Number(body.expiresAtMs),
+          status: "pending",
+        });
+        res.writeHead(200, { "content-type": "application/json" });
+        return void res.end(JSON.stringify({ status: "created" }));
+      }
+      const transaction = loginTransactions.get(state);
+      if (req.url?.startsWith("/v1/auth/portal-login/claim")) {
+        if (!transaction) {
+          res.writeHead(200, { "content-type": "application/json" });
+          return void res.end(JSON.stringify({ status: "missing" }));
+        }
+        if (transaction.expiresAtMs <= Date.now()) {
+          res.writeHead(200, { "content-type": "application/json" });
+          return void res.end(JSON.stringify({ status: "expired" }));
+        }
+        if (transaction.status !== "pending" || transaction.payload === null) {
+          res.writeHead(200, { "content-type": "application/json" });
+          return void res.end(JSON.stringify({ status: "used" }));
+        }
+        transaction.status = "claimed";
+        transaction.claimId = randomUUID();
+        res.writeHead(200, { "content-type": "application/json" });
+        return void res.end(
+          JSON.stringify({ status: "claimed", payload: transaction.payload, claimId: transaction.claimId }),
+        );
+      }
+      if (
+        req.url?.startsWith("/v1/auth/portal-login/complete") &&
+        transaction?.status === "claimed" &&
+        transaction.claimId === body.claimId &&
+        (body.outcome === "succeeded" || body.outcome === "failed")
+      ) {
+        transaction.status = body.outcome;
+        transaction.payload = null;
+        res.writeHead(200, { "content-type": "application/json" });
+        return void res.end(JSON.stringify({ status: "completed" }));
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      return void res.end(JSON.stringify({ status: "missing" }));
+    });
+  }
+  if (req.url === "/verify" && req.method === "POST") {
+    res.writeHead(302, { location: `${PUBLIC}/auth/callback?code=router-code&state=${brokerState}` });
+    return void res.end();
+  }
+  if (req.url === "/oidc/jwks") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(JSON.stringify({ keys: [oidcPublicJwk] }));
+  }
+  if (req.url === "/oidc/userinfo") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(
+      JSON.stringify({ sub: "router-user", email: "user@example.com", email_verified: true, name: "Router User" }),
+    );
+  }
+  if (req.url === "/oidc/token" && req.method === "POST") {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    return void req.on("end", () => {
+      const body = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+      if (body.get("code") !== "router-code" || body.get("code_verifier") !== expectedCodeVerifier) {
+        res.writeHead(400, { "content-type": "application/json" });
+        return void res.end(JSON.stringify({ error: "invalid_grant" }));
+      }
+      tokenExchanges++;
+      void new SignJWT({ nonce: oidcNonce, email: "user@example.com", email_verified: true })
+        .setProtectedHeader({ alg: "RS256", kid: "router-test" })
+        .setIssuer(OIDC_ISSUER)
+        .setAudience(OIDC_CLIENT_ID)
+        .setSubject("router-user")
+        .setIssuedAt()
+        .setExpirationTime("5m")
+        .sign(oidcKeys.privateKey)
+        .then((idToken) => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ access_token: "router-access", id_token: idToken }));
+        });
+    });
+  }
   if (req.url?.startsWith("/v1/deployment-layer")) {
     deploymentLayerRequests++;
     if (req.headers["x-timestamp"] !== "123" || req.headers["x-signature"] !== VALID_SOURCE_SIGNATURE) {
@@ -81,13 +198,22 @@ process.env.CORE_SIGNING_SECRET = "router-test-core-secret";
 process.env.WEB_UI_UPSTREAM = upstreamUrl;
 process.env.ADMIN_UPSTREAM = upstreamUrl;
 process.env.CORE_API_URL = upstreamUrl;
+process.env.AUTH_BROKER_UPSTREAM = upstreamUrl;
+process.env.OIDC_TOKEN_ENDPOINT = `${upstreamUrl}/oidc/token`;
+process.env.OIDC_USERINFO_ENDPOINT = `${upstreamUrl}/oidc/userinfo`;
+process.env.OIDC_ISSUER = OIDC_ISSUER;
+process.env.OIDC_JWKS_URI = `${upstreamUrl}/oidc/jwks`;
+process.env.OIDC_CLIENT_ID = OIDC_CLIENT_ID;
+process.env.OIDC_CLIENT_SECRET = "router-test-client-secret";
 
 const { server } = await import("../src/index.ts");
-const { deriveKey, seal, open } = await import("../src/session.ts");
+const { deriveKey, seal, open, openEncryptedTmp } = await import("../src/session.ts");
 await new Promise<void>((r) => server.listen(0, r));
 const base = `http://localhost:${(server.address() as AddressInfo).port}`;
 
 const sessionKey = deriveKey("router-test-portal-secret", "portal.session.v1");
+const tmpKey = deriveKey("router-test-portal-secret", "portal.tmp.v1");
+const transactionKey = deriveKey("router-test-portal-secret", "portal.oidc.transaction.v1");
 function sessionCookie(sub: string, ageS = 0): string {
   const now = Math.floor(Date.now() / 1000);
   const iat = now - ageS;
@@ -314,7 +440,7 @@ test("deployments are OFF by default (404 even with a session)", async () => {
   assert.equal(r.status, 404);
 });
 
-test("auth/login sets the tmp cookie and 302s to the IdP with PKCE+state+nonce", async () => {
+test("auth/login durably stores the flow, keeps the rollout cookie, and redirects with PKCE", async () => {
   const r = await fetch(`${base}/auth/login?returnTo=/web-ui/`, { redirect: "manual" });
   assert.equal(r.status, 302);
   const loc = r.headers.get("location") ?? "";
@@ -324,6 +450,128 @@ test("auth/login sets the tmp cookie and 302s to the IdP with PKCE+state+nonce",
   assert.ok(u.searchParams.get("nonce"));
   assert.equal(u.searchParams.get("code_challenge_method"), "S256");
   assert.match(r.headers.get("set-cookie") ?? "", /portal_oidc_tmp=/);
+  const stored = loginTransactions.get(u.searchParams.get("state") ?? "");
+  assert.ok(stored?.payload);
+  assert.match(stored?.payload ?? "", /^v1\./);
+  assert.equal(
+    open(stored?.payload ?? null, tmpKey),
+    null,
+    "the database payload cannot be replayed as a browser cookie",
+  );
+  assert.ok((stored?.expiresAtMs ?? 0) > Date.now());
+});
+
+test("auth/login fails closed before redirecting when durable transaction storage is unavailable", async () => {
+  loginTransactionUnavailable = true;
+  const response = await fetch(`${base}/auth/login`, { redirect: "manual" });
+  loginTransactionUnavailable = false;
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("location"), null);
+  assert.doesNotMatch(response.headers.get("set-cookie") ?? "", /portal_oidc_tmp=/);
+});
+
+test("the browser that confirms the emailed link can complete login without the starting browser cookie", async () => {
+  const exchangesBefore = tokenExchanges;
+  const login = await fetch(`${base}/auth/login?returnTo=/after-link`, { redirect: "manual" });
+  const authorization = new URL(login.headers.get("location") ?? "");
+  brokerState = authorization.searchParams.get("state") ?? "";
+  oidcNonce = authorization.searchParams.get("nonce") ?? "";
+  const stored = loginTransactions.get(brokerState);
+  const payload = openEncryptedTmp(stored?.payload ?? null, transactionKey, Date.now());
+  assert.equal(typeof payload?.pkceVerifier, "string");
+  expectedCodeVerifier = payload?.pkceVerifier ?? "";
+
+  const confirmation = await fetch(`${base}/idp/verify`, {
+    method: "POST",
+    headers: { origin: PUBLIC, "content-type": "application/x-www-form-urlencoded" },
+    body: "token=email-link-token",
+    redirect: "manual",
+  });
+  assert.equal(confirmation.status, 302);
+  const handoff = (confirmation.headers.get("set-cookie") ?? "").split(";", 1)[0] ?? "";
+  assert.match(handoff, /^portal_oidc_handoff=/);
+
+  const callback = new URL(confirmation.headers.get("location") ?? "");
+  const completed = await fetch(`${base}${callback.pathname}${callback.search}`, {
+    headers: { cookie: handoff },
+    redirect: "manual",
+  });
+  assert.equal(completed.status, 302);
+  assert.equal(completed.headers.get("location"), "/after-link");
+  assert.match(completed.headers.get("set-cookie") ?? "", /portal_session=/);
+  assert.equal(tokenExchanges, exchangesBefore + 1);
+  assert.equal(loginTransactions.get(brokerState)?.status, "succeeded");
+  assert.equal(loginTransactions.get(brokerState)?.payload, null);
+
+  const replay = await fetch(`${base}${callback.pathname}${callback.search}`, {
+    headers: { cookie: handoff },
+    redirect: "manual",
+  });
+  assert.equal(replay.status, 400);
+  assert.equal(tokenExchanges, exchangesBefore + 1);
+});
+
+test("an emailed link cannot replace a different account already signed in to the browser", async () => {
+  const exchangesBefore = tokenExchanges;
+  const login = await fetch(`${base}/auth/login`, { redirect: "manual" });
+  const authorization = new URL(login.headers.get("location") ?? "");
+  brokerState = authorization.searchParams.get("state") ?? "";
+  oidcNonce = authorization.searchParams.get("nonce") ?? "";
+  const payload = openEncryptedTmp(loginTransactions.get(brokerState)?.payload ?? null, transactionKey, Date.now());
+  expectedCodeVerifier = payload?.pkceVerifier ?? "";
+
+  const confirmation = await fetch(`${base}/idp/verify`, {
+    method: "POST",
+    headers: { origin: PUBLIC, "content-type": "application/x-www-form-urlencoded" },
+    body: "token=forwarded-link",
+    redirect: "manual",
+  });
+  const handoff = (confirmation.headers.get("set-cookie") ?? "").split(";", 1)[0] ?? "";
+  const callback = new URL(confirmation.headers.get("location") ?? "");
+  const refused = await fetch(`${base}${callback.pathname}${callback.search}`, {
+    headers: { cookie: `${handoff}; ${sessionCookie("victim@example.com")}` },
+    redirect: "manual",
+  });
+  assert.equal(refused.status, 409);
+  assert.match(await refused.text(), /already signed in to a different account/);
+  assert.doesNotMatch(refused.headers.get("set-cookie") ?? "", /portal_session=[^;]/);
+  assert.equal(loginTransactions.get(brokerState)?.status, "failed");
+  assert.equal(tokenExchanges, exchangesBefore + 1);
+});
+
+test("a missing durable transaction never falls back to the starting browser cookie", async () => {
+  const exchangesBefore = tokenExchanges;
+  const login = await fetch(`${base}/auth/login`, { redirect: "manual" });
+  const authorization = new URL(login.headers.get("location") ?? "");
+  brokerState = authorization.searchParams.get("state") ?? "";
+  const tmpValue = /portal_oidc_tmp=([^;]+)/.exec(login.headers.get("set-cookie") ?? "")?.[1] ?? "";
+  const confirmation = await fetch(`${base}/idp/verify`, {
+    method: "POST",
+    headers: { origin: PUBLIC, "content-type": "application/x-www-form-urlencoded" },
+    body: "token=missing-transaction",
+    redirect: "manual",
+  });
+  const handoff = (confirmation.headers.get("set-cookie") ?? "").split(";", 1)[0] ?? "";
+  loginTransactions.delete(brokerState);
+  const callback = new URL(confirmation.headers.get("location") ?? "");
+  const refused = await fetch(`${base}${callback.pathname}${callback.search}`, {
+    headers: { cookie: `${handoff}; portal_oidc_tmp=${tmpValue}` },
+    redirect: "manual",
+  });
+  assert.equal(refused.status, 400);
+  assert.equal(tokenExchanges, exchangesBefore);
+});
+
+test("the public login entry point is bounded per client before it writes more transactions", async () => {
+  const transactionsBefore = loginTransactions.size;
+  let response: Response | null = null;
+  for (let attempt = 0; attempt <= 10; attempt++) {
+    response = await fetch(`${base}/auth/login`, { redirect: "manual" });
+    if (response.status === 429) break;
+    assert.equal(response.status, 302);
+  }
+  assert.equal(response?.status, 429);
+  assert.ok(loginTransactions.size - transactionsBefore <= 10);
 });
 
 test("auth/callback with no tmp cookie fails closed (400, no token exchange)", async () => {

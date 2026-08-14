@@ -35,7 +35,14 @@ export function requestPort(upstream: URL): string | undefined {
 function relay(
   req: IncomingMessage,
   res: ServerResponse,
-  target: { protocol: string; hostname: string; port?: string; path: string; headers: Record<string, string> },
+  target: {
+    protocol: string;
+    hostname: string;
+    port?: string;
+    path: string;
+    headers: Record<string, string>;
+    responseHeaders?: (status: number, headers: Record<string, string | string[]>) => Record<string, string | string[]>;
+  },
 ): void {
   const up = httpRequest(
     {
@@ -53,7 +60,8 @@ function relay(
         if (DROP_RESPONSE_HEADERS.has(k.toLowerCase())) continue;
         out[k] = v;
       }
-      res.writeHead(upRes.statusCode ?? 502, out);
+      const status = upRes.statusCode ?? 502;
+      res.writeHead(status, target.responseHeaders?.(status, out) ?? out);
       upRes.on("error", () => res.destroy());
       upRes.pipe(res);
     },
@@ -179,6 +187,7 @@ export function proxyToUpstream(
   t: UpstreamTarget,
   forwardHeaders: readonly string[],
   extraHeaders: Record<string, string> = {},
+  responseHeaders?: (status: number, headers: Record<string, string | string[]>) => Record<string, string | string[]>,
 ): void {
   const upstream = new URL(t.baseUrl);
   const headers: Record<string, string> = { host: upstream.host };
@@ -193,6 +202,7 @@ export function proxyToUpstream(
     port: requestPort(upstream),
     path: `${t.path}${t.search}`,
     headers,
+    ...(responseHeaders ? { responseHeaders } : {}),
   });
 }
 

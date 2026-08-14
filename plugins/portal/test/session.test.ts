@@ -4,6 +4,8 @@ import {
   deriveKey,
   seal,
   open,
+  encrypt,
+  decrypt,
   openSession,
   openImpersonation,
   openTmp,
@@ -21,6 +23,7 @@ const secret = "portal-test-secret";
 const sessionKey = deriveKey(secret, "portal.session.v1");
 const tmpKey = deriveKey(secret, "portal.tmp.v1");
 const impersonateKey = deriveKey(secret, "portal.impersonate.v1");
+const transactionKey = deriveKey(secret, "portal.oidc.transaction.v1");
 
 test("seal/open round-trips a payload and rejects tampering", () => {
   const token = seal({ hello: "world", n: 1 }, sessionKey);
@@ -33,6 +36,20 @@ test("seal/open round-trips a payload and rejects tampering", () => {
   assert.equal(open(token, deriveKey("other-secret", "portal.session.v1")), null);
   assert.equal(open("not-a-token", sessionKey), null);
   assert.equal(open(null, sessionKey), null);
+});
+
+test("encrypt/decrypt protects a persisted login transaction and rejects tampering", () => {
+  const token = encrypt({ state: "secret-state", verifier: "secret-verifier" }, transactionKey);
+  assert.deepEqual(decrypt(token, transactionKey), { state: "secret-state", verifier: "secret-verifier" });
+  assert.doesNotMatch(token, /secret-state|secret-verifier/);
+  const [version, iv, ciphertext, tag] = token.split(".");
+  const tampered = `${version}.${iv}.${ciphertext?.startsWith("A") ? "B" : "A"}${ciphertext?.slice(1)}.${tag}`;
+  assert.equal(decrypt(tampered, transactionKey), null);
+  assert.equal(decrypt(token, tmpKey), null);
+  assert.equal(decrypt(token.replace(/^v1\./, "v2."), transactionKey), null);
+  assert.equal(decrypt(`${token}.extra`, transactionKey), null);
+  assert.equal(decrypt(`v1.AA.${ciphertext}.${tag}`, transactionKey), null);
+  assert.equal(decrypt(`${version}.${iv}.${ciphertext}.AA`, transactionKey), null);
 });
 
 test("domain-separated keys make session and tmp tokens non-interchangeable", () => {

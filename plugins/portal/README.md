@@ -19,8 +19,15 @@ surfaces, and it does **not** import the core.
 ## How a request flows
 
 1. **Sign in** — `GET /auth/login` starts an OIDC Authorization-Code flow with PKCE(S256) +
-   `state` + `nonce`, all sealed into a short-lived signed `portal_oidc_tmp` cookie.
-2. **Callback** — `GET /auth/callback` exchanges the code over the TLS back-channel
+   `state` + `nonce`. The portal encrypts the short-lived transaction with a dedicated AEAD key and
+   stores it through the core in Postgres; the database sees only the state hash and ciphertext.
+   A temporary signed cookie proves intent in the original browser, but it is not the authoritative
+   store. The core deletes expired records every minute and also prunes during authentication traffic.
+2. **Confirmation and callback** — the broker consumes the one-time link only after its explicit
+   confirmation form is submitted. The portal then gives that browser a short-lived, signed handoff
+   cookie, so the link may be opened in Chrome, Edge, Firefox, or a different device without relying
+   on a cookie from the browser that requested the email. `GET /auth/callback` atomically claims the
+   Postgres transaction and exchanges the code over the TLS back-channel
    (confidential client, `client_secret_basic` + the PKCE verifier), then binds the id_token
    signature and payload (`nonce`/`aud`/`iss`/`sub`/timestamps and, for Slack, the `team_id`
    workspace pin) against the configured HTTPS JWKS, then reads
@@ -54,12 +61,27 @@ surfaces, and it does **not** import the core.
   verified member is a valid user (`WEB_UI_PRINCIPALS` empty = any verified principal).
 - **CSRF / open-redirect.** Every non-GET requires a same-origin `Origin`; `returnTo` is reduced
   to a same-origin path (rejects `//evil`, `/\evil`, `https:/evil`, `%2f%2f`/`%5c`).
+- **One-time cross-browser login.** The core hashes `state` and atomically changes its Postgres
+  transaction from pending to claimed before token exchange. Only the browser that submitted the
+  link confirmation receives the signed handoff cookie; a callback URL copied from an access log
+  cannot finish login by itself. The confirmation page resolves the signed link and shows the target
+  email before enabling the button, and a link cannot replace an existing session for a different
+  account. Successful completion leaves a payload-free tombstone until expiry, so replay and
+  concurrent callbacks fail closed across portal instances.
+- **Bounded anonymous entry.** Before `/auth/login` reaches the core, each portal process applies
+  local global and per-client prefilters. The core then uses the Postgres clock to check the durable
+  global and per-client counters and create the transaction in one fixed-cost database transaction.
+  At most 64 new transactions per fixed minute window can enter the two-hour TTL window, and one
+  client can start at most 10 per window.
 - **Secret hygiene.** In production the portal refuses to boot unless `PORTAL_SESSION_SECRET`,
   `PORTAL_IDENTITY_SECRET`, and `OIDC_CLIENT_SECRET` are set and distinct from core ingress auth.
   Public and OIDC endpoints must use HTTPS. Session and temporary cookies use domain-separated keys.
 
 ### Documented trade-offs & residual risks (v1)
 
+- **Rolling deployment.** Deploy the additive core schema and routes before the portal; roll back
+  the portal before the core. A new portal paired with an old core fails closed with `503` before
+  redirecting to the broker.
 - **Surface isolation.** The private surface hop carries a signed portal identity; core verifies
   it independently, so a synthesized cookie alone confers no user authority. User deployments
   stay on a dedicated apps hostname and are never proxied through the portal or admin origin.

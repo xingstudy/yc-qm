@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 export function deriveKey(secret: string, label: string): Buffer {
   return createHmac("sha256", secret).update(label).digest();
@@ -20,6 +20,44 @@ export function open(token: string | null | undefined, key: Buffer): Record<stri
   if (got.length !== expected.length || !timingSafeEqual(got, expected)) return null;
   try {
     const parsed = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as unknown;
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function encrypt(payload: unknown, key: Buffer): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(payload), "utf8"), cipher.final()]);
+  return [
+    "v1",
+    iv.toString("base64url"),
+    ciphertext.toString("base64url"),
+    cipher.getAuthTag().toString("base64url"),
+  ].join(".");
+}
+
+export function decrypt(token: string | null | undefined, key: Buffer): Record<string, unknown> | null {
+  if (!token) return null;
+  const [version, iv, ciphertext, tag, extra] = token.split(".");
+  if (version !== "v1" || !iv || !ciphertext || !tag || extra !== undefined) return null;
+  try {
+    const ivBytes = Buffer.from(iv, "base64url");
+    const ciphertextBytes = Buffer.from(ciphertext, "base64url");
+    const tagBytes = Buffer.from(tag, "base64url");
+    if (
+      ivBytes.length !== 12 ||
+      tagBytes.length !== 16 ||
+      ivBytes.toString("base64url") !== iv ||
+      ciphertextBytes.toString("base64url") !== ciphertext ||
+      tagBytes.toString("base64url") !== tag
+    )
+      return null;
+    const decipher = createDecipheriv("aes-256-gcm", key, ivBytes);
+    decipher.setAuthTag(tagBytes);
+    const plaintext = Buffer.concat([decipher.update(ciphertextBytes), decipher.final()]).toString("utf8");
+    const parsed = JSON.parse(plaintext) as unknown;
     return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
   } catch {
     return null;
@@ -91,18 +129,27 @@ export function openImpersonation(token: string | null, key: Buffer, now: number
   return p as unknown as ImpersonationClaims;
 }
 
-export function openTmp(token: string | null, key: Buffer, now: number): TmpClaims | null {
-  const p = open(token, key);
+function readTmp(p: Record<string, unknown> | null, now: number): TmpClaims | null {
   if (!p || p.k !== "tmp") return null;
   if (
     typeof p.state !== "string" ||
     typeof p.nonce !== "string" ||
     typeof p.pkceVerifier !== "string" ||
+    typeof p.returnTo !== "string" ||
+    typeof p.iat !== "number" ||
     typeof p.exp !== "number"
   )
     return null;
   if (now >= p.exp * 1000) return null;
   return p as unknown as TmpClaims;
+}
+
+export function openTmp(token: string | null, key: Buffer, now: number): TmpClaims | null {
+  return readTmp(open(token, key), now);
+}
+
+export function openEncryptedTmp(token: string | null, key: Buffer, now: number): TmpClaims | null {
+  return readTmp(decrypt(token, key), now);
 }
 
 export interface CookieOpts {

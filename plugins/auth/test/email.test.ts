@@ -17,6 +17,9 @@ test("the sign-in email carries the link once in both alternatives and never a b
   assert.match(message.text, /https:\/\/agent\.example\.test\/idp\/verify\?token=abc\.def\.ghi/);
   assert.match(message.html, /href="https:\/\/agent\.example\.test\/idp\/verify\?token=abc\.def\.ghi"/);
   assert.match(message.text, /works once and expires in 15 minutes/);
+  assert.match(message.text, /browser where you want to sign in/);
+  assert.match(message.html, /browser where you want to sign in/);
+  assert.doesNotMatch(`${message.text}${message.html}`, /browser you started from/);
 });
 
 test("the link is HTML-escaped so a crafted token cannot break out of the anchor", () => {
