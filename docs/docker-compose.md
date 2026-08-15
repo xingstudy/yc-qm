@@ -22,7 +22,86 @@ deployment.
 verifies that release and its seven image signatures, stores the exact `@sha256` lock
 under `.releases/<tag>/`, and makes Compose run those digests rather than mutable tags.
 `QM_POSTGRES_VOLUME` and `QM_CORE_VOLUME` are literal Docker volume names; they preserve
-data routing even when the working directory or Compose project changes.
+data routing even when the working directory or Compose project changes. The deployer
+requires Docker Compose 2.20 or newer because the external-database topology uses optional
+long-form dependencies.
+
+### Production database modes
+
+`QM_DATABASE_MODE=bundled` starts the packaged PostgreSQL service. It requires
+`POSTGRES_PASSWORD` with at least eight characters. The core percent-encodes the user and
+password when it constructs the connection URL, so the password does not need to be
+hexadecimal. Quote a password containing `$`, `#`, or whitespace according to Compose
+env-file syntax so interpolation preserves it. `POSTGRES_DB` is limited to letters,
+digits, dots, underscores, and hyphens. Preserve `POSTGRES_USER`, `POSTGRES_DB`,
+`POSTGRES_PASSWORD`, and `QM_POSTGRES_VOLUME` when reusing an existing volume. Changing
+the environment file does not rotate the role password inside an initialized volume.
+Keep `DATABASE_URL` empty in this mode so the declared topology cannot drift.
+
+`QM_DATABASE_MODE=external` does not start the packaged PostgreSQL service and does not
+use `QM_POSTGRES_VOLUME` or inspect a separate `POSTGRES_PASSWORD`. Set the complete
+provider connection string instead:
+
+```dotenv
+QM_DATABASE_MODE=external
+QM_DATABASE_TRANSPORT=tls
+DATABASE_URL=postgresql://qm:p%40ssword@db.internal.example.net:5432/qm?sslmode=require
+```
+
+Use the provider-issued URL and percent-encode reserved characters in its username and
+password. Set `QM_DATABASE_TRANSPORT=tls` when the connection must use TLS; preflight
+checks the live session through `pg_stat_ssl`. Set it to `private-network` only when the
+entire database path is protected by a private network, VPN, or tunnel. The database endpoint must
+provide direct or session-pooled connections: transaction pooling is unsupported because
+QM uses session-level advisory locks and `LISTEN`/`NOTIFY`. The role must be able to
+create and alter QM tables, indexes, and the pg-boss schema. Preflight retries the final
+connection URL, runs a query, verifies that a random session-level advisory lock can be
+acquired and released, and checks `LISTEN`/`UNLISTEN` before core starts. It reports a generic failure so credentials are not written
+to logs; use provider diagnostics for the detailed cause.
+
+Switching modes changes the durable database target. Treat it as a data migration: take
+and restore-test a logical backup, run `prepare`, schedule downtime, stop every old core
+writer, take the final consistent dump, restore it to the target, then run `apply` and
+complete the browser, administrator, Agent, sandbox, model, and
+connector checks. After the external stack passes its wait gate, the deployer stops and
+removes the old packaged PostgreSQL container without deleting its volume. Rollback must
+restore the matching database and volume backup. Never use `docker compose down -v`
+during the switch.
+
+### Production deployer upgrades
+
+The signed deployer is part of every release lock. A deployer containing this contract
+downloads and verifies the target release's `deploy-production-release.sh`; when it
+differs from the currently running file, it re-executes the verified release copy before
+any Compose command. This keeps profile, validation, and cleanup behavior aligned with
+the selected release.
+
+An installed deployer from `prod-v0.7.2` or earlier does not know that contract. Upgrade
+it once from the first later release before changing `QM_RELEASE_TAG`:
+
+```bash
+qm_release=prod-vX.Y.Z
+qm_deployer_stage="$(mktemp -d)"
+qm_release_url="https://github.com/xingstudy/yc-qm/releases/download/${qm_release}"
+curl -fsSL "${qm_release_url}/SHA256SUMS" -o "${qm_deployer_stage}/SHA256SUMS"
+curl -fsSL "${qm_release_url}/SHA256SUMS.bundle" -o "${qm_deployer_stage}/SHA256SUMS.bundle"
+curl -fsSL "${qm_release_url}/deploy-production-release.sh" -o "${qm_deployer_stage}/deploy-production-release.sh"
+cosign verify-blob \
+  --bundle "${qm_deployer_stage}/SHA256SUMS.bundle" \
+  --certificate-identity='https://github.com/xingstudy/yc-qm/.github/workflows/release-production-images.yml@refs/heads/main' \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+  "${qm_deployer_stage}/SHA256SUMS"
+awk '$2 == "deploy-production-release.sh"' "${qm_deployer_stage}/SHA256SUMS" > "${qm_deployer_stage}/deployer.SHA256SUMS"
+test "$(wc -l < "${qm_deployer_stage}/deployer.SHA256SUMS")" -eq 1
+(cd "${qm_deployer_stage}" && sha256sum -c deployer.SHA256SUMS)
+install -m 700 "${qm_deployer_stage}/deploy-production-release.sh" scripts/.deploy-production-release.sh.new
+mv -f scripts/.deploy-production-release.sh.new scripts/deploy-production-release.sh
+```
+
+Keep the current deployment directory as the working directory for those commands. The
+temporary directory contains public release assets only and may be removed after the
+checksum succeeds. A production tag is immutable; this fix requires a release newer than
+`prod-v0.7.2` and cannot change that existing bundle in place.
 
 Download the Compose file, initializer, deployer, configuration template, image manifests,
 `SHA256SUMS`, and its Sigstore bundle from the same GitHub Release. Verify the bundle and
@@ -100,9 +179,9 @@ Preserve the old `POSTGRES_USER`, `POSTGRES_DB`, database role password, `ORG_ID
 token, client, and JWK values. PostgreSQL initialization variables do not rotate the role
 password in an existing volume, and new encryption keys cannot read existing connector
 credentials. Add the production-only HTTPS, auth, SMTP, administrator, and model settings
-without replacing these durable values. If the existing database role password is not
-hexadecimal, rotate the actual role in a controlled maintenance window and update both
-environments; changing the file alone is not a password rotation.
+without replacing these durable values. The bundled production stack accepts an existing
+role password of at least eight characters and percent-encodes it for the connection URL;
+changing the file alone is still not a password rotation.
 
 Create and restore-test a PostgreSQL logical backup plus backups of `core-data` and every
 global `qm-home-*` sandbox volume. An older PostgreSQL major version or a different data
@@ -117,10 +196,14 @@ action, then start source with the same project, environment, and profiles using
 `up -d --wait --no-build --remove-orphans`. Restore the coordinated data backup before
 the source start when the production version wrote an incompatible schema or file format.
 
-The pull-only stack is still single-host. Its HTTP edge defaults to
-`QM_BIND_ADDRESS=127.0.0.1` and is only for a same-host TLS reverse proxy, never direct
-Internet exposure; direct service ports and Postgres stay private.
-`PORTAL_XFF_TRUSTED_HOPS=2` represents the external TLS proxy plus the built-in edge.
+The pull-only stack is still single-host. `QM_EDGE_PROXY_MODE=same-host` requires its HTTP
+edge to use `QM_BIND_ADDRESS=127.0.0.1`. For a TLS proxy on another trusted host, use
+`QM_EDGE_PROXY_MODE=remote-proxy` and an address reachable by that proxy. Binding
+`0.0.0.0` is supported only when the firewall or security group admits the edge port from
+the proxy alone. Keep that HTTP hop on a private network, VPN, or tunnel, and configure
+the proxy to overwrite incoming forwarded-address headers. Never expose the edge directly
+to the Internet. Set `PORTAL_XFF_TRUSTED_HOPS` to the real chain; one external TLS proxy
+plus the built-in edge is two trusted hops. Direct service ports and Postgres stay private.
 Firewall core's host-networked 8080 port, and never run the host Docker socket mount on a
 shared or untrusted host. The socket gives core near-root
 host control. Add firewall policy, secret management, restore drills, monitoring,

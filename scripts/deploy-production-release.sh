@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
+if (( $# > 3 )); then
+  echo "usage: deploy-production-release.sh [env-file] [deploy|prepare|apply|down]" >&2
+  exit 1
+fi
+script_path="$(readlink -f "$0")"
+root="${3:-$(cd "$(dirname "$0")/.." && pwd)}"
+root="$(cd "$root" && pwd)"
 env_file="${1:-$root/.env.production}"
 action="${2:-deploy}"
 if [[ "$action" != "deploy" ]] && [[ "$action" != "prepare" ]] && [[ "$action" != "apply" ]] && [[ "$action" != "down" ]]; then
@@ -31,8 +37,25 @@ env_value() {
   sed -n "s/^${name}=//p" "$env_file"
 }
 
+env_value_or_default() {
+  local name="$1"
+  local default_value="$2"
+  local count
+  count="$(awk -F= -v key="$name" '$1 == key { count++ } END { print count + 0 }' "$env_file")"
+  if (( count > 1 )); then
+    echo "$env_file must contain at most one $name value" >&2
+    exit 1
+  fi
+  if [[ "$count" == "0" ]]; then
+    printf '%s\n' "$default_value"
+  else
+    sed -n "s/^${name}=//p" "$env_file"
+  fi
+}
+
 release_tag="$(env_value QM_RELEASE_TAG)"
 compose_project="$(env_value QM_COMPOSE_PROJECT)"
+database_mode="$(env_value_or_default QM_DATABASE_MODE bundled)"
 if [[ ! "$release_tag" =~ ^prod-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "$release_tag" == "prod-v0.0.0" ]]; then
   echo "QM_RELEASE_TAG must use prod-vMAJOR.MINOR.PATCH and must not be prod-v0.0.0" >&2
   exit 1
@@ -41,6 +64,28 @@ if [[ ! "$compose_project" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
   echo "QM_COMPOSE_PROJECT must use lowercase letters, digits, hyphens, or underscores" >&2
   exit 1
 fi
+if [[ "$database_mode" != "bundled" && "$database_mode" != "external" ]]; then
+  echo "QM_DATABASE_MODE must be bundled or external" >&2
+  exit 1
+fi
+if [[ "$database_mode" == "bundled" ]]; then
+  postgres_volume="$(env_value QM_POSTGRES_VOLUME)"
+  if [[ ! "$postgres_volume" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+    echo "QM_POSTGRES_VOLUME must be a non-empty literal Docker volume name in bundled mode" >&2
+    exit 1
+  fi
+  postgres_password="$(env_value POSTGRES_PASSWORD)"
+  if (( ${#postgres_password} < 8 )) || [[ "$postgres_password" =~ ^[[:space:]]*$ ]]; then
+    echo "POSTGRES_PASSWORD must be at least 8 characters in bundled mode" >&2
+    exit 1
+  fi
+  postgres_password=""
+  postgres_database="$(env_value_or_default POSTGRES_DB qm)"
+  if [[ ! "$postgres_database" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+    echo "POSTGRES_DB must use letters, digits, dots, underscores, or hyphens in bundled mode" >&2
+    exit 1
+  fi
+fi
 
 for command_name in sha256sum docker; do
   if ! command -v "$command_name" > /dev/null; then
@@ -48,8 +93,16 @@ for command_name in sha256sum docker; do
     exit 1
   fi
 done
-if ! docker compose version > /dev/null; then
-  echo "Docker Compose v2 is required" >&2
+compose_version="$(docker compose version --short 2>/dev/null || true)"
+compose_version="${compose_version#v}"
+if [[ ! "$compose_version" =~ ^([0-9]+)\.([0-9]+)(\.|$) ]]; then
+  echo "Docker Compose 2.20 or newer is required" >&2
+  exit 1
+fi
+compose_major="${BASH_REMATCH[1]}"
+compose_minor="${BASH_REMATCH[2]}"
+if (( compose_major < 2 || (compose_major == 2 && compose_minor < 20) )); then
+  echo "Docker Compose 2.20 or newer is required" >&2
   exit 1
 fi
 docker_bin="$(command -v docker)"
@@ -59,13 +112,20 @@ release_dir="$release_root/$release_tag"
 mkdir -p "$release_root"
 assets=(
   compose.production.yaml
+  deploy-production-release.sh
   release.production.tag
   images.production.env
   images.production.json
   SHA256SUMS
   SHA256SUMS.bundle
 )
-runtime_assets=(compose.production.yaml release.production.tag images.production.env images.production.json)
+runtime_assets=(
+  compose.production.yaml
+  deploy-production-release.sh
+  release.production.tag
+  images.production.env
+  images.production.json
+)
 identity="https://github.com/xingstudy/yc-qm/.github/workflows/release-production-images.yml@refs/heads/main"
 issuer="https://token.actions.githubusercontent.com"
 stage=""
@@ -181,6 +241,11 @@ else
   validate_release "$release_dir" 0
 fi
 
+chmod 700 "$release_dir/deploy-production-release.sh"
+if ! cmp -s "$script_path" "$release_dir/deploy-production-release.sh"; then
+  exec "$release_dir/deploy-production-release.sh" "$env_file" "$action" "$root"
+fi
+
 compose=(
   "$docker_bin" compose
   --project-name "$compose_project"
@@ -188,6 +253,10 @@ compose=(
   --env-file "$release_dir/images.production.env"
   -f "$release_dir/compose.production.yaml"
 )
+bundled_compose=("${compose[@]}" --profile bundled-postgres)
+if [[ "$database_mode" == "bundled" ]]; then
+  compose=("${bundled_compose[@]}")
+fi
 mapfile -t interpolation_names < <(
   {
     grep -oE '\$\{[A-Z][A-Z0-9_]*' "$release_dir/compose.production.yaml" | sed 's/^\${//' || true
@@ -209,7 +278,7 @@ for name in "${interpolation_names[@]}"; do
 done
 "${clean_environment[@]}" "${compose[@]}" config --quiet
 if [[ "$action" == "down" ]]; then
-  "${clean_environment[@]}" "${compose[@]}" down --remove-orphans
+  "${clean_environment[@]}" "${bundled_compose[@]}" down --remove-orphans
   exit 0
 fi
 if [[ "$action" == "deploy" || "$action" == "prepare" ]]; then
@@ -220,4 +289,8 @@ if [[ "$action" == "prepare" ]]; then
   exit 0
 fi
 "${clean_environment[@]}" "${compose[@]}" up -d --wait --pull never --remove-orphans
+if [[ "$database_mode" == "external" ]]; then
+  "${clean_environment[@]}" "${bundled_compose[@]}" stop postgres
+  "${clean_environment[@]}" "${bundled_compose[@]}" rm -f postgres
+fi
 "${clean_environment[@]}" "${compose[@]}" ps

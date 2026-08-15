@@ -78,7 +78,7 @@ QM 的方式与 OpenCode、Codex 和 Claude Code 等本地编程 Agent 类似：
 
 [`compose.production.yaml`](./compose.production.yaml) 是单机生产部署包。它从 Docker Hub
 运行 QM 服务，并内置必需的 `auth` 邮件登录代理。生产主机只需要 Docker Engine、Docker
-Compose v2、`curl`、`cosign` 和负责 TLS 终止的反向代理或负载均衡器；**不需要**源码工作树、
+Compose 2.20 或更高版本、`curl`、`cosign` 和负责 TLS 终止的反向代理或负载均衡器；**不需要**源码工作树、
 Node.js、npm 或本地构建镜像。
 
 长期保存的 `.env.production` 只用
@@ -131,6 +131,15 @@ install -m 700 deploy-production-release.sh scripts/deploy-production-release.sh
 
 首次启动前编辑 `.env.production`，替换公开 HTTPS 地址、组织 ID、初始管理员授权、允许登录的邮箱域或邮箱、发件人和 SMTP 凭据、模型供应商凭据等运营样例值。将脚本生成的密钥安全保存到密钥管理系统。使用内置登录代理还必须填写邮件传输配置；Issuer、回调地址和私有端点必须始终与模板中的公开 URL 及 `auth` 服务配置一致。公开生产镜像不需要 `docker login`；只有私有仓库、企业策略或 Docker Hub 匿名限流场景才使用部署专用、只读的拉取凭据。
 
+生产栈支持 `QM_DATABASE_MODE=bundled` 和 `external`。内置模式会启动随包提供的
+PostgreSQL，`POSTGRES_PASSWORD` 只要求至少 8 个字符，普通密码字符均可使用；包含 `$`、`#` 或
+空白的值必须按 Compose env-file 语法加引号。外部模式不会启动
+该服务，改为要求供应商提供的完整、已百分号编码的 `DATABASE_URL`，不会另外限制供应商密码的
+长度或格式。运维方必须声明 `QM_DATABASE_TRANSPORT=tls` 或 `private-network`；TLS 模式会根据实际
+PostgreSQL 会话校验。预检会等待所选数据库可用，并在 core 启动前验证会话级 advisory lock 和
+`LISTEN`/`UNLISTEN`。已有部署切换
+模式前请先阅读 [Docker Compose 运维文档](./docs/docker-compose.md#production-database-modes)。
+
 完成签名校验和配置后，运行部署脚本。它会下载对应版本的 Compose 和镜像清单，验证签名校验和
 七个镜像 digest，原子写入版本化发布锁，再同时加载长期配置和已验证锁启动 Compose。生产 Compose
 还会在 core 启动前显式拉取 `sandbox-local` 镜像：
@@ -146,18 +155,23 @@ curl -fsS http://127.0.0.1:8088/healthz
 
 日常升级保留现有 `.env.production`，只修改 `QM_RELEASE_TAG`，然后重新运行
 `./scripts/deploy-production-release.sh`。不能重新运行初始化脚本，也不能替换数据库、加密、签名、
-会话、Token、JWK、project 或卷名。部署脚本会按版本下载 Compose 和精确 digest 锁，避免服务拓扑与
+会话、Token、JWK、project 或卷名。部署脚本会先下载并校验目标 release 自带的 deployer，切换到该
+版本后再加载 Compose 和精确 digest 锁，避免服务拓扑与
 镜像集合漂移，并移除新版本已不存在的同 project 旧服务。如果发布说明新增必需配置，先对比新模板，只补充新增项。数据向后兼容时改回旧 tag
 并重新运行部署脚本即可回滚；否则还必须恢复匹配的数据库和卷备份。保留 `.releases/` 下的版本目录，
-作为部署审计和回滚证据。
+作为部署审计和回滚证据。从 `prod-v0.7.2` 或更早版本安装的旧 deployer 在选择新 tag 前，必须先按
+[Docker Compose 运维文档](./docs/docker-compose.md#production-deployer-upgrades)执行一次签名校验后的升级。
 
 从源码构建栈迁移、确认数据卷复用和回滚源码版本的详细步骤，请参阅
 [Docker Compose 运维文档](./docs/docker-compose.md#migrating-the-source-build-stack)。
 
-这仍是单机部署，不提供高可用或零停机发布。内置 HTTP edge 默认使用
-`QM_BIND_ADDRESS=127.0.0.1`，只允许同机 TLS 反代访问，不能直接对外暴露；保持 Postgres
-和所有应用直连端口私有。`PORTAL_XFF_TRUSTED_HOPS=2` 表示外部 TLS 代理加内置 edge
-两跳受信任代理；同时必须通过主机防火墙阻断使用 host network 的 core `8080` 端口。core
+这仍是单机部署，不提供高可用或零停机发布。`QM_EDGE_PROXY_MODE=same-host` 会要求内置 HTTP
+edge 使用 `QM_BIND_ADDRESS=127.0.0.1`。TLS 反代位于另一台可信服务器时，设置
+`QM_EDGE_PROXY_MODE=remote-proxy`，并绑定该反代可达的地址；可以使用 `0.0.0.0`，但防火墙或
+安全组必须只允许反代源地址访问 edge 端口。反代到 edge 是 HTTP，只能经过私网、VPN 或隧道，
+并且反代必须覆盖客户端传入的转发地址请求头。绝不能把 edge 直接暴露到公网。
+`PORTAL_XFF_TRUSTED_HOPS` 必须与真实受信任代理链一致；一个外部反代加内置 edge 为两跳。
+保持 Postgres 和所有应用直连端口私有，同时通过主机防火墙阻断使用 host network 的 core `8080` 端口。core
 挂载 `/var/run/docker.sock` 后能够创建容器，等价于接近宿主机 root 的权限；只能运行在
 可信、单租户 Linux 主机上，不能用于共享机器。对公网服务前还必须配置主机防火墙、备份恢复演练、
 监控告警、日志轮换、资源限制和隔离沙箱边界。

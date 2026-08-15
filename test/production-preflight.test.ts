@@ -11,6 +11,7 @@ function validEnv(): NodeJS.ProcessEnv {
     NODE_ENV: "production",
     PORTAL_LOCAL_AUTH_BYPASS: "0",
     SANDBOX_BACKEND: "local",
+    QM_EDGE_PROXY_MODE: "same-host",
     QM_BIND_ADDRESS: "127.0.0.1",
     QM_COMPOSE_PROJECT: "qm",
     QM_RELEASE_TAG: "prod-v1.2.3",
@@ -18,6 +19,7 @@ function validEnv(): NodeJS.ProcessEnv {
     QM_CORE_VOLUME: "qm_core-data",
     PORTAL_XFF_TRUSTED_HOPS: "2",
     ORG_ID: "acme",
+    QM_DATABASE_MODE: "bundled",
     POSTGRES_PASSWORD: "01".repeat(32),
     CORE_SIGNING_SECRET: "02".repeat(32),
     CAPABILITY_SECRET: "03".repeat(32),
@@ -109,16 +111,69 @@ test("the central preflight rejects reused secrets and a mismatched Docker socke
   assert.match(text, /DOCKER_GID must match/);
 });
 
-test("the central preflight keeps the HTTP edge loopback-only and validates admin grants", () => {
+test("the central preflight accepts a remote proxy binding and validates admin grants", () => {
   const env = validEnv();
+  env.QM_EDGE_PROXY_MODE = "remote-proxy";
   env.QM_BIND_ADDRESS = "0.0.0.0";
-  env.PORTAL_XFF_TRUSTED_HOPS = "3";
   env.ADMIN_GRANTS = "admin@example.test:not_admin";
   const text = productionPreflightProblems(env, 989).join(" | ");
 
-  assert.match(text, /QM_BIND_ADDRESS must be 127\.0\.0\.1/);
-  assert.match(text, /PORTAL_XFF_TRUSTED_HOPS must be 2/);
+  assert.doesNotMatch(text, /QM_BIND_ADDRESS/);
+  assert.doesNotMatch(text, /PORTAL_XFF_TRUSTED_HOPS/);
   assert.match(text, /ADMIN_GRANTS must contain at least one principal:org_admin entry/);
+});
+
+test("the central preflight rejects loopback remote bindings and proxy hop drift", () => {
+  const env = validEnv();
+  env.QM_EDGE_PROXY_MODE = "remote-proxy";
+  env.QM_BIND_ADDRESS = "127.0.0.2";
+  env.PORTAL_XFF_TRUSTED_HOPS = "3";
+  const text = productionPreflightProblems(env, 989).join(" | ");
+
+  assert.match(text, /non-loopback IPv4/);
+  assert.match(text, /PORTAL_XFF_TRUSTED_HOPS must be 2/);
+});
+
+test("the central preflight keeps same-host edge binding on loopback", () => {
+  const env = validEnv();
+  env.QM_BIND_ADDRESS = "0.0.0.0";
+  const text = productionPreflightProblems(env, 989).join(" | ");
+
+  assert.match(text, /QM_BIND_ADDRESS must be 127\.0\.0\.1 in same-host proxy mode/);
+});
+
+test("bundled PostgreSQL accepts provider-style passwords with an eight-character minimum", () => {
+  const env = validEnv();
+  env.POSTGRES_PASSWORD = "p@ssword";
+  assert.deepEqual(productionPreflightProblems(env, 989), []);
+
+  env.POSTGRES_PASSWORD = "short7";
+  assert.match(productionPreflightProblems(env, 989).join(" | "), /at least 8 characters/);
+
+  env.POSTGRES_PASSWORD = "p@ssword";
+  env.DATABASE_URL = "postgresql://external.db.test/qm";
+  assert.match(productionPreflightProblems(env, 989).join(" | "), /DATABASE_URL must be empty/);
+
+  delete env.DATABASE_URL;
+  env.POSTGRES_DB = "qm/data";
+  assert.match(productionPreflightProblems(env, 989).join(" | "), /POSTGRES_DB must use/);
+});
+
+test("external PostgreSQL uses its URL without inspecting the provider password", () => {
+  const env = validEnv();
+  env.QM_DATABASE_MODE = "external";
+  env.QM_DATABASE_TRANSPORT = "private-network";
+  env.DATABASE_URL = "postgresql://vendor:p%40ss@db.provider.example.test:5432/qm?sslmode=require";
+  delete env.POSTGRES_PASSWORD;
+  delete env.QM_POSTGRES_VOLUME;
+  assert.deepEqual(productionPreflightProblems(env, 989), []);
+
+  env.DATABASE_URL = "https://db.provider.example.test/qm";
+  assert.match(productionPreflightProblems(env, 989).join(" | "), /DATABASE_URL must use postgres or postgresql/);
+
+  env.DATABASE_URL = "postgresql://vendor:p%40ss@db.provider.example.test:5432/qm";
+  delete env.QM_DATABASE_TRANSPORT;
+  assert.match(productionPreflightProblems(env, 989).join(" | "), /QM_DATABASE_TRANSPORT must be/);
 });
 
 test("the central preflight rejects example subdomains and malformed private JWKs", () => {

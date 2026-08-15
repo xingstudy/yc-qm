@@ -23,10 +23,17 @@ services:
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       SANDBOX_BACKEND: ${SANDBOX_BACKEND:-local}
+      QM_EDGE_PROXY_MODE: ${QM_EDGE_PROXY_MODE:-same-host}
       QM_BIND_ADDRESS: ${QM_BIND_ADDRESS:-127.0.0.1}
       PORTAL_XFF_TRUSTED_HOPS: ${PORTAL_XFF_TRUSTED_HOPS:-2}
       ORG_ID: ${ORG_ID:?Set ORG_ID in .env.production}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+      QM_DATABASE_MODE: ${QM_DATABASE_MODE:-bundled}
+      QM_DATABASE_TRANSPORT: ${QM_DATABASE_TRANSPORT:-}
+      DATABASE_URL: ${DATABASE_URL:-}
+      POSTGRES_USER: ${POSTGRES_USER:-qm}
+      POSTGRES_DB: ${POSTGRES_DB:-qm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      QM_POSTGRES_PORT: ${QM_POSTGRES_PORT:-5432}
       DOCKER_GID: ${DOCKER_GID:?Set DOCKER_GID in .env.production}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET in .env.production}
       CAPABILITY_SECRET: ${CAPABILITY_SECRET:?Set CAPABILITY_SECRET in .env.production}
@@ -67,7 +74,7 @@ services:
       AUTH_SIGNING_JWK: ${AUTH_SIGNING_JWK:?Set AUTH_SIGNING_JWK in .env.production}
       QM_COMPOSE_PROJECT: ${QM_COMPOSE_PROJECT:?Set QM_COMPOSE_PROJECT in .env.production}
       QM_RELEASE_TAG: ${QM_RELEASE_TAG:?Set QM_RELEASE_TAG in .env.production}
-      QM_POSTGRES_VOLUME: ${QM_POSTGRES_VOLUME:?Set QM_POSTGRES_VOLUME in .env.production}
+      QM_POSTGRES_VOLUME: ${QM_POSTGRES_VOLUME:-qm_postgres-data}
       QM_CORE_VOLUME: ${QM_CORE_VOLUME:?Set QM_CORE_VOLUME in .env.production}
       QM_CORE_IMAGE: ${QM_CORE_IMAGE:?Load the verified production image lock}
       QM_WEB_UI_IMAGE: ${QM_WEB_UI_IMAGE:?Load the verified production image lock}
@@ -81,6 +88,11 @@ services:
       - scripts/production-preflight.ts
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -90,10 +102,12 @@ services:
 
   postgres:
     image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    profiles:
+      - bundled-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-qm}
       POSTGRES_DB: ${POSTGRES_DB:-qm}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
     volumes:
       - postgres-data:/var/lib/postgresql
     ports:
@@ -146,7 +160,12 @@ services:
       SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
       SESSION_STORE: postgres
       RUN_STORE: postgres
-      DATABASE_URL: postgresql://${POSTGRES_USER:-qm}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}@127.0.0.1:${QM_POSTGRES_PORT:-5432}/${POSTGRES_DB:-qm}
+      QM_DATABASE_MODE: ${QM_DATABASE_MODE:-bundled}
+      DATABASE_URL: ${DATABASE_URL:-}
+      POSTGRES_USER: ${POSTGRES_USER:-qm}
+      POSTGRES_DB: ${POSTGRES_DB:-qm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      QM_POSTGRES_PORT: ${QM_POSTGRES_PORT:-5432}
       CONNECTOR_SECRET_KEY: ${CONNECTOR_SECRET_KEY:?Set CONNECTOR_SECRET_KEY in .env.production}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET in .env.production}
       CAPABILITY_SECRET: ${CAPABILITY_SECRET:?Set CAPABILITY_SECRET in .env.production}
@@ -169,6 +188,7 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+        required: false
       sandbox-image:
         condition: service_completed_successfully
     network_mode: host
@@ -386,6 +406,6 @@ services:
 
 volumes:
   postgres-data:
-    name: ${QM_POSTGRES_VOLUME:?Set QM_POSTGRES_VOLUME in .env.production}
+    name: ${QM_POSTGRES_VOLUME:-qm_postgres-data}
   core-data:
     name: ${QM_CORE_VOLUME:?Set QM_CORE_VOLUME in .env.production}

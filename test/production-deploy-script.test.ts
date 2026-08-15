@@ -39,13 +39,21 @@ test("the production deployer verifies a versioned digest lock before running Co
     mkdirSync(release);
     mkdirSync(bin);
     copyFileSync("scripts/deploy-production-release.sh", join(scripts, "deploy-production-release.sh"));
+    writeFileSync(
+      join(scripts, "deploy-production-release.sh"),
+      `${readFileSync(join(scripts, "deploy-production-release.sh"), "utf8")}\n`,
+    );
     const envFile = join(deployment, ".env.production");
-    writeFileSync(envFile, "QM_RELEASE_TAG=prod-v1.2.3\nQM_COMPOSE_PROJECT=qm\nQM_POSTGRES_VOLUME=qm_postgres-data\n");
+    writeFileSync(
+      envFile,
+      "QM_RELEASE_TAG=prod-v1.2.3\nQM_COMPOSE_PROJECT=qm\nQM_POSTGRES_VOLUME=qm_postgres-data\nPOSTGRES_PASSWORD=production-password\n",
+    );
     chmodSync(envFile, 0o600);
     writeFileSync(
       join(release, "compose.production.yaml"),
       "name: ${QM_COMPOSE_PROJECT}\nservices:\n  core:\n    image: ${QM_CORE_IMAGE}\nvolumes:\n  postgres-data:\n    name: ${QM_POSTGRES_VOLUME}\n",
     );
+    copyFileSync("scripts/deploy-production-release.sh", join(release, "deploy-production-release.sh"));
     writeFileSync(join(release, "release.production.tag"), "prod-v1.2.3\n");
     const manifest = imageEntries
       .map(([name, repository, digit]) => `${name}=docker.io/lijixing/${repository}@sha256:${digit.repeat(64)}`)
@@ -56,7 +64,13 @@ test("the production deployer verifies a versioned digest lock before running Co
       join(release, "SHA256SUMS"),
       execFileSync(
         "sha256sum",
-        ["compose.production.yaml", "release.production.tag", "images.production.env", "images.production.json"],
+        [
+          "compose.production.yaml",
+          "deploy-production-release.sh",
+          "release.production.tag",
+          "images.production.env",
+          "images.production.json",
+        ],
         { cwd: release },
       ),
     );
@@ -98,11 +112,15 @@ printf '%s\n' "$*" >> "$QM_TEST_COSIGN_LOG"
       join(bin, "docker"),
       `#!/usr/bin/env bash
 set -euo pipefail
-if [[ "$*" == "compose version" ]]; then
+if [[ "$*" == "compose version --short" ]]; then
+  printf '%s\n' "\${QM_TEST_COMPOSE_VERSION:-2.36.2}"
   exit 0
 fi
 printf 'QM_CORE_IMAGE=%s QM_POSTGRES_VOLUME=%s QM_RELEASE_TAG=%s\n' "\${QM_CORE_IMAGE-unset}" "\${QM_POSTGRES_VOLUME-unset}" "\${QM_RELEASE_TAG-unset}" >> "$QM_TEST_DOCKER_LOG"
 printf '%s\n' "$*" >> "$QM_TEST_DOCKER_LOG"
+if [[ "\${QM_TEST_FAIL_UP:-0}" == "1" && "$*" == *" up -d "* ]]; then
+  exit 42
+fi
 `,
     );
     execFileSync("bash", [join(scripts, "deploy-production-release.sh"), envFile], {
@@ -126,11 +144,12 @@ printf '%s\n' "$*" >> "$QM_TEST_DOCKER_LOG"
     assert.equal(readFileSync(lockFile, "utf8"), `${manifest}\n`);
     const cosignCalls = readFileSync(cosignLog, "utf8");
     assert.match(cosignCalls, /^verify-blob /m);
-    assert.equal(cosignCalls.match(/^verify docker\.io\/lijixing\//gm)?.length, 7);
+    assert.equal(cosignCalls.match(/^verify docker\.io\/lijixing\//gm)?.length, 14);
     const dockerCalls = readFileSync(dockerLog, "utf8");
     assert.doesNotMatch(dockerCalls, /attacker|prod-v9\.9\.9/);
     assert.equal(dockerCalls.match(/^QM_CORE_IMAGE=unset QM_POSTGRES_VOLUME=unset QM_RELEASE_TAG=unset$/gm)?.length, 4);
     assert.match(dockerCalls, new RegExp(`--env-file ${envFile} --env-file ${lockFile}`));
+    assert.match(dockerCalls, /--profile bundled-postgres/);
     assert.match(dockerCalls, / config --quiet$/m);
     assert.match(dockerCalls, / pull$/m);
     assert.match(dockerCalls, / up -d --wait --pull never --remove-orphans$/m);
@@ -167,6 +186,102 @@ printf '%s\n' "$*" >> "$QM_TEST_DOCKER_LOG"
     assert.doesNotMatch(applyCalls, / pull$/m);
     assert.match(applyCalls, / up -d --wait --pull never --remove-orphans$/m);
 
+    const externalEnv = join(deployment, ".env.external.production");
+    writeFileSync(
+      externalEnv,
+      "QM_RELEASE_TAG=prod-v1.2.3\nQM_COMPOSE_PROJECT=qm-external\nQM_DATABASE_MODE=external\n",
+    );
+    chmodSync(externalEnv, 0o600);
+    const beforeExternalApply = readFileSync(dockerLog, "utf8").length;
+    execFileSync("bash", [join(scripts, "deploy-production-release.sh"), externalEnv, "apply"], {
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        QM_TEST_DOCKER_LOG: dockerLog,
+      },
+      stdio: "pipe",
+    });
+    const externalApplyCalls = readFileSync(dockerLog, "utf8").slice(beforeExternalApply);
+    assert.doesNotMatch(externalApplyCalls, /--profile bundled-postgres[^\n]* up -d/);
+    assert.match(externalApplyCalls, / up -d --wait --pull never --remove-orphans$/m);
+    assert.match(externalApplyCalls, /--profile bundled-postgres stop postgres$/m);
+    assert.match(externalApplyCalls, /--profile bundled-postgres rm -f postgres$/m);
+    assert.ok(externalApplyCalls.indexOf(" up -d ") < externalApplyCalls.indexOf(" stop postgres"));
+
+    const beforeFailedExternalApply = readFileSync(dockerLog, "utf8").length;
+    assert.throws(() =>
+      execFileSync("bash", [join(scripts, "deploy-production-release.sh"), externalEnv, "apply"], {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          QM_TEST_DOCKER_LOG: dockerLog,
+          QM_TEST_FAIL_UP: "1",
+        },
+        stdio: "pipe",
+      }),
+    );
+    const failedExternalApplyCalls = readFileSync(dockerLog, "utf8").slice(beforeFailedExternalApply);
+    assert.match(failedExternalApplyCalls, / up -d --wait --pull never --remove-orphans$/m);
+    assert.doesNotMatch(failedExternalApplyCalls, / stop postgres| rm -f postgres/);
+
+    for (const [name, content, expected] of [
+      ["missing", "", /exactly one QM_POSTGRES_VOLUME/],
+      ["empty", "QM_POSTGRES_VOLUME=\n", /non-empty literal Docker volume name/],
+      ["duplicate", "QM_POSTGRES_VOLUME=qm-a\nQM_POSTGRES_VOLUME=qm-b\n", /exactly one QM_POSTGRES_VOLUME/],
+    ] as const) {
+      const invalidEnv = join(deployment, `.env.${name}.production`);
+      writeFileSync(
+        invalidEnv,
+        `QM_RELEASE_TAG=prod-v1.2.3\nQM_COMPOSE_PROJECT=qm\nPOSTGRES_PASSWORD=production-password\n${content}`,
+      );
+      chmodSync(invalidEnv, 0o600);
+      assert.throws(
+        () =>
+          execFileSync("bash", [join(scripts, "deploy-production-release.sh"), invalidEnv, "apply"], {
+            env: {
+              ...process.env,
+              PATH: `${bin}:${process.env.PATH}`,
+              QM_TEST_DOCKER_LOG: dockerLog,
+            },
+            stdio: "pipe",
+          }),
+        expected,
+      );
+    }
+
+    const shortPasswordEnv = join(deployment, ".env.short-password.production");
+    writeFileSync(
+      shortPasswordEnv,
+      "QM_RELEASE_TAG=prod-v1.2.3\nQM_COMPOSE_PROJECT=qm\nQM_POSTGRES_VOLUME=qm-postgres\nPOSTGRES_PASSWORD=short7\n",
+    );
+    chmodSync(shortPasswordEnv, 0o600);
+    assert.throws(
+      () =>
+        execFileSync("bash", [join(scripts, "deploy-production-release.sh"), shortPasswordEnv, "apply"], {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            QM_TEST_DOCKER_LOG: dockerLog,
+          },
+          stdio: "pipe",
+        }),
+      /POSTGRES_PASSWORD must be at least 8 characters/,
+    );
+
+    assert.throws(
+      () =>
+        execFileSync("bash", [join(scripts, "deploy-production-release.sh"), envFile, "apply"], {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            QM_TEST_COMPOSE_VERSION: "2.19.9",
+            QM_TEST_DOCKER_LOG: dockerLog,
+          },
+          stdio: "pipe",
+        }),
+      /Docker Compose 2\.20 or newer is required/,
+    );
+
     execFileSync("bash", [join(scripts, "deploy-production-release.sh"), envFile, "down"], {
       env: {
         ...process.env,
@@ -178,7 +293,7 @@ printf '%s\n' "$*" >> "$QM_TEST_DOCKER_LOG"
       },
       stdio: "pipe",
     });
-    assert.match(readFileSync(dockerLog, "utf8"), / down --remove-orphans$/m);
+    assert.match(readFileSync(dockerLog, "utf8"), /--profile bundled-postgres down --remove-orphans$/m);
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }

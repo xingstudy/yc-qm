@@ -29,6 +29,9 @@ const requiredProductionValues = [
   "QM_RELEASE_TAG",
   "QM_POSTGRES_VOLUME",
   "QM_CORE_VOLUME",
+  "QM_DATABASE_MODE",
+  "QM_DATABASE_TRANSPORT",
+  "QM_EDGE_PROXY_MODE",
   "POSTGRES_PASSWORD",
   "DOCKER_GID",
   "CORE_SIGNING_SECRET",
@@ -68,9 +71,9 @@ function envValues(path: string): Map<string, string> {
 }
 
 function serviceBlock(compose: string, service: string): string {
-  const start = compose.indexOf(`  ${service}:\n`);
-  assert.notEqual(start, -1, `${service} must be declared`);
-  const afterStart = start + `  ${service}:\n`.length;
+  const header = new RegExp(`^  ${service}:\\n`, "m").exec(compose);
+  assert.ok(header, `${service} must be declared`);
+  const afterStart = header.index + header[0].length;
   const nextService = compose.slice(afterStart).search(/^ {2}[a-z][a-z-]*:\n/m);
   return nextService === -1 ? compose.slice(afterStart) : compose.slice(afterStart, afterStart + nextService);
 }
@@ -91,6 +94,9 @@ test("the production example is a complete fail-closed template without organiza
   assert.equal(values.get("QM_RELEASE_TAG"), "prod-v0.0.0");
   assert.equal(values.get("QM_POSTGRES_VOLUME"), "qm_postgres-data");
   assert.equal(values.get("QM_CORE_VOLUME"), "qm_core-data");
+  assert.equal(values.get("QM_DATABASE_MODE"), "bundled");
+  assert.equal(values.get("QM_DATABASE_TRANSPORT"), "private-network");
+  assert.equal(values.get("QM_EDGE_PROXY_MODE"), "same-host");
   assert.equal(values.get("QM_BIND_ADDRESS"), "127.0.0.1");
   assert.equal(values.get("PORTAL_PUBLIC_URL"), "https://qm.example.com");
   assert.equal(values.get("OIDC_ALLOWED_EMAIL_DOMAIN"), "example.com");
@@ -130,10 +136,13 @@ test("the production Compose stack is image-only and exposes only the edge", () 
   for (const name of imageNames) {
     assert.match(compose, new RegExp(`image: \\$\\{QM_${name}_IMAGE:\\?[^}]+\\}`));
   }
-  assert.match(compose, /postgres-data:\s*\n\s+name: \$\{QM_POSTGRES_VOLUME:\?[^}]+\}/);
+  assert.match(compose, /postgres-data:\s*\n\s+name: \$\{QM_POSTGRES_VOLUME:-qm_postgres-data\}/);
   assert.match(compose, /core-data:\s*\n\s+name: \$\{QM_CORE_VOLUME:\?[^}]+\}/);
   assert.match(serviceBlock(compose, "sandbox-image"), /entrypoint:[\s\S]*?\/bin\/true/);
   assert.match(serviceBlock(compose, "core"), /sandbox-image:[\s\S]*?service_completed_successfully/);
+  assert.match(serviceBlock(compose, "postgres"), /profiles:[\s\S]*?bundled-postgres/);
+  assert.match(serviceBlock(compose, "core"), /postgres:[\s\S]*?required: false/);
+  assert.match(serviceBlock(compose, "core"), /DATABASE_URL: \$\{DATABASE_URL:-\}/);
   assert.match(compose, /^\s*edge:\s*$/m);
   assert.match(compose, /edge:[\s\S]*?ports:/);
   assert.match(serviceBlock(compose, "edge"), /QM_BIND_ADDRESS:-127\.0\.0\.1[^\n]*QM_HTTP_PORT:-8088/);
@@ -163,6 +172,8 @@ test("literal production volume names survive Compose project overrides", () => 
           envFile,
           "--env-file",
           "images.production.env",
+          "--profile",
+          "bundled-postgres",
           "-f",
           "compose.production.yaml",
           "config",
@@ -178,6 +189,87 @@ test("literal production volume names survive Compose project overrides", () => 
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
+});
+
+test("external production database mode excludes bundled PostgreSQL and preserves the provider URL", () => {
+  const directory = mkdtempSync("/tmp/qm-production-external-db-");
+  try {
+    const envFile = join(directory, ".env.production");
+    const databaseUrl = "postgresql://vendor:p%40ss@db.provider.test:5432/qm?sslmode=require";
+    writeFileSync(
+      envFile,
+      readFileSync(".env.production.example", "utf8")
+        .replace("QM_DATABASE_MODE=bundled", "QM_DATABASE_MODE=external")
+        .replace("DATABASE_URL=", `DATABASE_URL=${databaseUrl}`),
+    );
+    const rendered = JSON.parse(
+      execFileSync("docker", [
+        "compose",
+        "--project-name",
+        "external-db",
+        "--env-file",
+        envFile,
+        "--env-file",
+        "images.production.env",
+        "-f",
+        "compose.production.yaml",
+        "config",
+        "--format",
+        "json",
+      ]).toString(),
+    ) as { services: Record<string, { environment?: Record<string, string> }> };
+    assert.equal(rendered.services.postgres, undefined);
+    assert.equal(rendered.services.core?.environment?.DATABASE_URL, databaseUrl);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("a quoted bundled password survives Compose interpolation as a literal value", () => {
+  const directory = mkdtempSync("/tmp/qm-production-password-");
+  try {
+    const envFile = join(directory, ".env.production");
+    const password = "p$word#1@";
+    writeFileSync(
+      envFile,
+      readFileSync(".env.production.example", "utf8").replace(
+        /^POSTGRES_PASSWORD=.*$/m,
+        `POSTGRES_PASSWORD='${password}'`,
+      ),
+    );
+    const rendered = JSON.parse(
+      execFileSync("docker", [
+        "compose",
+        "--project-name",
+        "quoted-password",
+        "--env-file",
+        envFile,
+        "--env-file",
+        "images.production.env",
+        "--profile",
+        "bundled-postgres",
+        "-f",
+        "compose.production.yaml",
+        "config",
+        "--format",
+        "json",
+      ]).toString(),
+    ) as { services: Record<string, { environment?: Record<string, string> }> };
+    const canonicalPassword = password.replaceAll("$", () => "$$");
+    assert.equal(rendered.services.postgres?.environment?.POSTGRES_PASSWORD, canonicalPassword);
+    assert.equal(rendered.services.core?.environment?.POSTGRES_PASSWORD, canonicalPassword);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("the source-build stack delegates bundled database URL construction to core", () => {
+  const compose = readFileSync("docker-compose.yaml", "utf8");
+  const core = serviceBlock(compose, "core");
+
+  assert.doesNotMatch(core, /DATABASE_URL:\s*postgresql:/);
+  assert.match(core, /QM_DATABASE_MODE: bundled/);
+  assert.match(core, /POSTGRES_PASSWORD: \$\{POSTGRES_PASSWORD:\?/);
 });
 
 test("production initialization replaces every fail-closed value and generates the Docker socket group", () => {

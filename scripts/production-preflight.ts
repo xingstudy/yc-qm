@@ -1,5 +1,6 @@
-import { createECDH, createPrivateKey, type JsonWebKey } from "node:crypto";
+import { createECDH, createPrivateKey, randomBytes, type JsonWebKey } from "node:crypto";
 import { statSync } from "node:fs";
+import { isIP } from "node:net";
 import { pathToFileURL } from "node:url";
 import {
   isExampleDomain,
@@ -7,6 +8,8 @@ import {
   isExampleJwk,
   isProductionPlaceholder,
 } from "../plugins/chassis/src/production-placeholders.ts";
+import { sleep } from "../src/util/async.ts";
+import { databaseUrlFromEnv } from "../src/util/postgres-url.ts";
 
 const imageNames = [
   "QM_CORE_IMAGE",
@@ -55,11 +58,17 @@ export function productionPreflightProblems(
   if (env.NODE_ENV !== "production") problems.push("NODE_ENV must be production");
   if (env.PORTAL_LOCAL_AUTH_BYPASS !== "0") problems.push("PORTAL_LOCAL_AUTH_BYPASS must be 0");
   if (env.SANDBOX_BACKEND !== "local") problems.push("SANDBOX_BACKEND must be local for this Compose stack");
-  if (env.QM_BIND_ADDRESS !== "127.0.0.1") {
-    problems.push("QM_BIND_ADDRESS must be 127.0.0.1 because the bundled edge serves HTTP without TLS");
+  const edgeProxyMode = required("QM_EDGE_PROXY_MODE") || "same-host";
+  const bindAddress = required("QM_BIND_ADDRESS") || "127.0.0.1";
+  if (edgeProxyMode !== "same-host" && edgeProxyMode !== "remote-proxy") {
+    problems.push("QM_EDGE_PROXY_MODE must be same-host or remote-proxy");
+  } else if (edgeProxyMode === "same-host" && bindAddress !== "127.0.0.1") {
+    problems.push("QM_BIND_ADDRESS must be 127.0.0.1 in same-host proxy mode");
+  } else if (edgeProxyMode === "remote-proxy" && (isIP(bindAddress) !== 4 || bindAddress.startsWith("127."))) {
+    problems.push("QM_BIND_ADDRESS must be a non-loopback IPv4 address in remote-proxy mode");
   }
-  if (env.PORTAL_XFF_TRUSTED_HOPS !== "2") {
-    problems.push("PORTAL_XFF_TRUSTED_HOPS must be 2 for the same-host TLS proxy and bundled edge");
+  if (required("PORTAL_XFF_TRUSTED_HOPS") !== "2") {
+    problems.push("PORTAL_XFF_TRUSTED_HOPS must be 2 for one external TLS proxy and the bundled edge");
   }
 
   const composeProject = required("QM_COMPOSE_PROJECT");
@@ -71,7 +80,12 @@ export function productionPreflightProblems(
     problems.push("QM_RELEASE_TAG must use prod-vMAJOR.MINOR.PATCH");
   }
   if (releaseTag === "prod-v0.0.0") problems.push("QM_RELEASE_TAG must not use the example release");
-  for (const name of ["QM_POSTGRES_VOLUME", "QM_CORE_VOLUME"] as const) {
+  const databaseMode = required("QM_DATABASE_MODE") || "bundled";
+  if (databaseMode !== "bundled" && databaseMode !== "external") {
+    problems.push("QM_DATABASE_MODE must be bundled or external");
+  }
+  const volumeNames = databaseMode === "bundled" ? ["QM_POSTGRES_VOLUME", "QM_CORE_VOLUME"] : ["QM_CORE_VOLUME"];
+  for (const name of volumeNames) {
     const value = required(name);
     if (value && !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(value)) {
       problems.push(`${name} must be a literal Docker volume name`);
@@ -79,9 +93,28 @@ export function productionPreflightProblems(
   }
 
   required("ORG_ID");
-  const postgresPassword = strong("POSTGRES_PASSWORD");
-  if (postgresPassword && !/^[A-Fa-f0-9]+$/.test(postgresPassword)) {
-    problems.push("POSTGRES_PASSWORD must be hexadecimal so DATABASE_URL remains unambiguous");
+  if (databaseMode === "bundled") {
+    if (env.DATABASE_URL?.trim()) problems.push("DATABASE_URL must be empty for bundled PostgreSQL");
+    const postgresPassword = required("POSTGRES_PASSWORD");
+    if (postgresPassword && postgresPassword.length < 8) {
+      problems.push("POSTGRES_PASSWORD must be at least 8 characters for bundled PostgreSQL");
+    }
+    if (postgresPassword && !databaseUrlFromEnv(env)) {
+      problems.push("bundled PostgreSQL settings must form a valid DATABASE_URL");
+    }
+    const postgresDatabase = env.POSTGRES_DB?.trim() || "qm";
+    if (!/^[A-Za-z0-9_.-]+$/.test(postgresDatabase)) {
+      problems.push("POSTGRES_DB must use letters, digits, dots, underscores, or hyphens for bundled PostgreSQL");
+    }
+  } else if (databaseMode === "external") {
+    const databaseTransport = required("QM_DATABASE_TRANSPORT");
+    if (databaseTransport !== "tls" && databaseTransport !== "private-network") {
+      problems.push("QM_DATABASE_TRANSPORT must be tls or private-network for external PostgreSQL");
+    }
+    const databaseUrl = absoluteUrl("DATABASE_URL", false);
+    if (databaseUrl && databaseUrl.protocol !== "postgres:" && databaseUrl.protocol !== "postgresql:") {
+      problems.push("DATABASE_URL must use postgres or postgresql");
+    }
   }
 
   const independentSecrets = [
@@ -264,8 +297,60 @@ function dockerSocketGid(): number | undefined {
   }
 }
 
-function runProductionPreflight(env: NodeJS.ProcessEnv = process.env): void {
+export async function productionDatabaseProblem(env: NodeJS.ProcessEnv): Promise<string | undefined> {
+  const databaseUrl = databaseUrlFromEnv(env);
+  if (!databaseUrl) return "database configuration did not produce a connection URL";
+  const pg = (await import("pg")).default;
+  for (const delay of [0, 1000, 2000, 4000, 8000]) {
+    if (delay) await sleep(delay);
+    const client = new pg.Client({
+      application_name: "qm-production-preflight",
+      connectionString: databaseUrl,
+      connectionTimeoutMillis: 5000,
+      query_timeout: 5000,
+      statement_timeout: 5000,
+    });
+    let lockKey = "";
+    let lockAcquired = false;
+    try {
+      await client.connect();
+      await client.query("SELECT 1");
+      lockKey = randomBytes(8).readBigInt64BE().toString();
+      const acquired = await client.query<{ acquired: boolean }>(
+        "SELECT pg_try_advisory_lock($1::bigint) AS acquired",
+        [lockKey],
+      );
+      if (acquired.rows[0]?.acquired !== true) return "database does not provide required session features";
+      lockAcquired = true;
+      const released = await client.query<{ released: boolean }>("SELECT pg_advisory_unlock($1::bigint) AS released", [
+        lockKey,
+      ]);
+      if (released.rows[0]?.released !== true) return "database does not provide required session features";
+      lockAcquired = false;
+      const channel = `qm_preflight_${randomBytes(8).toString("hex")}`;
+      await client.query(`LISTEN ${channel}`);
+      await client.query(`UNLISTEN ${channel}`);
+      if (env.QM_DATABASE_MODE === "external" && env.QM_DATABASE_TRANSPORT === "tls") {
+        const tls = await client.query<{ ssl: boolean }>("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()");
+        if (tls.rows[0]?.ssl !== true) return "database connection did not establish required TLS";
+      }
+      return undefined;
+    } catch {
+      if (lockAcquired) return "database does not provide required session features";
+    } finally {
+      if (lockAcquired) await client.query("SELECT pg_advisory_unlock($1::bigint)", [lockKey]).catch(() => undefined);
+      await client.end().catch(() => undefined);
+    }
+  }
+  return "database is unreachable or rejected the configured credentials";
+}
+
+async function runProductionPreflight(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const problems = productionPreflightProblems(env);
+  if (!problems.length) {
+    const databaseProblem = await productionDatabaseProblem(env);
+    if (databaseProblem) problems.push(databaseProblem);
+  }
   if (problems.length) {
     for (const problem of problems) console.error(`[production-preflight] ${problem}`);
     process.exitCode = 1;
@@ -274,4 +359,9 @@ function runProductionPreflight(env: NodeJS.ProcessEnv = process.env): void {
   console.log("[production-preflight] configuration accepted");
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) runProductionPreflight();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void runProductionPreflight().catch(() => {
+    console.error("[production-preflight] database verification failed");
+    process.exitCode = 1;
+  });
+}

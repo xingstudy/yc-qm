@@ -20,6 +20,7 @@ import {
   type ModelProvider,
   type ModelProviderAvailability,
 } from "./model/pi-models.ts";
+import { databaseUrlFromEnv } from "./util/postgres-url.ts";
 
 export interface Config {
   production: boolean;
@@ -684,6 +685,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     numEnvStrict("RUN_MAX_AGE_MS", env.RUN_MAX_AGE_MS) ??
     (turnWallClockMs > 0 ? 2 * turnWallClockMs : CONFIG_DEFAULTS.runMaxAgeMs);
   const slack = slackPluginConfigFromEnv(env);
+  const databaseUrl = databaseUrlFromEnv(env);
   return {
     production: env.NODE_ENV === "production",
     allowUnauthenticatedCore: boolEnvStrict("ALLOW_UNAUTHENTICATED_CORE", env.ALLOW_UNAUTHENTICATED_CORE) ?? false,
@@ -691,7 +693,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dataDir,
     orgId: env.ORG_ID ?? DEFAULT_ORG_ID,
     sessionStore: env.SESSION_STORE === "postgres" ? "postgres" : "memory",
-    ...(env.DATABASE_URL ? { databaseUrl: env.DATABASE_URL } : {}),
+    ...(databaseUrl ? { databaseUrl } : {}),
     harness: harnessEnvStrict(env.HARNESS),
     securityPosture: securityPostureEnvStrict(env.HARNESS_SECURITY_POSTURE),
     securityScreenBackend,

@@ -110,7 +110,7 @@ known limitations.
 [`compose.production.yaml`](./compose.production.yaml) is the single-host production
 package. It runs the same QM services, including the required built-in `auth` email
 sign-in broker, from Docker Hub images. A production host needs Docker Engine, Docker
-Compose v2, `curl`, `cosign`, and a TLS-terminating reverse proxy or load balancer; it
+Compose 2.20 or newer, `curl`, `cosign`, and a TLS-terminating reverse proxy or load balancer; it
 does **not** need a source checkout, Node.js, npm, or a local image build.
 
 The long-lived `.env.production` selects the release with one
@@ -181,6 +181,19 @@ with the public URL and `auth` service settings in the template. Public release 
 not require `docker login`; authenticate with a deployment-only, read-only pull token only
 for a private repository, registry policy, or Docker Hub rate limit.
 
+The production stack supports `QM_DATABASE_MODE=bundled` and `external`. Bundled mode
+starts the packaged PostgreSQL service and requires a `POSTGRES_PASSWORD` of at least
+eight characters; ordinary password characters are supported. Quote values containing
+`$`, `#`, or whitespace according to Compose env-file syntax. External mode does not
+start that service and instead requires the provider's complete, percent-encoded
+`DATABASE_URL`. It does not impose a separate password length or format policy. The
+operator must declare `QM_DATABASE_TRANSPORT=tls` or `private-network`; TLS mode is
+verified against the live PostgreSQL session. The preflight waits for the selected
+database and verifies session-level advisory locks plus `LISTEN`/`UNLISTEN` before core
+starts. See the
+[Docker Compose operations guide](./docs/docker-compose.md#production-database-modes)
+before switching an existing deployment between modes.
+
 After signature verification and configuration, deploy the selected release. The script
 downloads the matching Compose and image manifest, verifies their signed checksums and all
 seven image digests, writes the versioned release lock atomically, and then runs Compose
@@ -205,22 +218,31 @@ upgrade. Preserve the generated encryption and signing values with that backup: 
 For a routine release, keep the existing `.env.production`, change only
 `QM_RELEASE_TAG`, and rerun `./scripts/deploy-production-release.sh`. Do not rerun the
 initializer or replace database, encryption, signing, session, token, JWK, project, or
-volume values. The deployer downloads the release-specific Compose file and exact digest
+volume values. The deployer downloads and verifies the release-specific deployer before
+re-executing it, then loads that release's Compose file and exact digest
 lock and removes services no longer present in that release, so topology and images cannot
 drift across releases. When release notes add required configuration, compare the new
 template and add only those keys before deploying. For a data-compatible rollback, restore
 the prior tag and rerun the deployer; otherwise restore the matching database and volume
 backup as well. Keep the versioned `.releases/` directories as deployment and rollback
-evidence.
+evidence. Deployers installed from `prod-v0.7.2` or earlier need the one-time signed
+upgrade procedure in the
+[Docker Compose operations guide](./docs/docker-compose.md#production-deployer-upgrades)
+before selecting a newer tag.
 
 For migration from the source-build stack, volume reuse checks, and source-build rollback,
 follow [the Docker Compose operations guide](./docs/docker-compose.md#migrating-the-source-build-stack).
 
 This remains a single-host deployment, not a high-availability or zero-downtime
-platform. The built-in HTTP edge defaults to `QM_BIND_ADDRESS=127.0.0.1` and is only
-for the same-host TLS reverse proxy; do not expose it directly. Keep Postgres and all
-direct application ports private. `PORTAL_XFF_TRUSTED_HOPS=2` represents the external
-TLS proxy plus the built-in edge. Firewall core's host-networked port 8080. Core mounts
+platform. `QM_EDGE_PROXY_MODE=same-host` keeps the built-in HTTP edge on
+`QM_BIND_ADDRESS=127.0.0.1`. When the TLS proxy is on another trusted machine, use
+`QM_EDGE_PROXY_MODE=remote-proxy` and bind an address reachable from that proxy;
+`0.0.0.0` is accepted, but the firewall or security group must admit the edge port only
+from the proxy. The proxy-to-edge hop is HTTP, so keep it on a private network, VPN, or
+tunnel, and make the proxy overwrite forwarded-address headers. Never expose the edge
+directly to the Internet. Set `PORTAL_XFF_TRUSTED_HOPS` to the real trusted proxy chain;
+one external proxy plus the built-in edge is two hops. Keep Postgres and all direct
+application ports private. Firewall core's host-networked port 8080. Core mounts
 `/var/run/docker.sock` and can create containers,
 which is near-root control of the host: use a trusted, single-tenant Linux host, not a
 shared machine. Configure host firewall rules, backups with restore drills, monitoring,
