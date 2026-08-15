@@ -269,7 +269,7 @@ function editorPane() {
       <div class="skill-form-heading">
         <div>
           <h1 class="pane-title">Edit /${e.name}</h1>
-          <p>Available to ${editAudience(e.scopeId)}</p>
+          <p>${t("Available to")} ${editAudience(e.scopeId)}</p>
         </div>
         <span class="badge">Editing</span>
       </div>
@@ -624,8 +624,8 @@ function closeArchiveDialog(): void {
 function archiveDialog(skill: SkillItem): TemplateResult {
   const audience =
     skill.scope === "personal"
-      ? "you"
-      : `everyone in ${skill.scopeId ? scopeTitle(skill.scopeId) : `this ${skill.scope}`}`;
+      ? t("you")
+      : `${t("everyone in")} ${skill.scopeId ? scopeTitle(skill.scopeId) : `${t("this")} ${scopeLabel(skill.scope)}`}`;
   return html`<div
     class="project-dialog-backdrop"
     @click=${(event: MouseEvent) => event.target === event.currentTarget && closeArchiveDialog()}
@@ -642,8 +642,9 @@ function archiveDialog(skill: SkillItem): TemplateResult {
         <div><h2 id="skill-archive-title">Archive /${skill.name}?</h2></div>
       </div>
       <p id="skill-archive-impact">
-        This version will stop being available to ${audience}. If it overrides a broader /${skill.name}, that version
-        becomes effective. Its history and assets are kept, and you can restore it later.
+        ${t("This version will stop being available to")} ${audience}. ${t("If it overrides a broader version of")}
+        /${skill.name},
+        ${t("that version becomes effective. Its history and assets are kept, and you can restore it later.")}
       </p>
       <div class="project-dialog-actions actions">
         <button
@@ -829,7 +830,7 @@ export async function renderSkills(): Promise<void> {
     skillRows = (r.skills ?? []).slice().sort((a, b) => a.name.localeCompare(b.name));
     const personal = appState.me ? `personal:${appState.me.user}` : "";
     createScopes = [
-      { scopeId: personal, name: "Personal — only you" },
+      { scopeId: personal, name: t("Personal — only you") },
       ...(contexts.contexts ?? [])
         .filter(
           (context) =>

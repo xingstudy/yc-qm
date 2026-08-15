@@ -15,6 +15,36 @@ test("locale resolution prefers the saved choice and otherwise follows the brows
 
 test("Chinese translations cover exact UI copy and dynamic counters", () => {
   assert.equal(translateText("New chat", "zh-CN"), "新建对话");
+  assert.equal(translateText("New project", "zh-CN"), "新建项目");
+  assert.equal(translateText("Search projects…", "zh-CN"), "搜索项目…");
+  assert.equal(translateText("Active only", "zh-CN"), "仅显示使用中");
+  assert.equal(translateText("Everything", "zh-CN"), "全部");
+  assert.equal(translateText("launch cohort", "zh-CN"), "发布批次");
+  assert.equal(translateText("Conversations", "zh-CN"), "对话");
+  assert.equal(
+    translateText("The model every conversation here starts on.", "zh-CN"),
+    "此处的每个对话都会以该模型开始。",
+  );
+  assert.equal(translateText("Add people", "zh-CN"), "添加人员");
+  assert.equal(translateText("You", "zh-CN"), "你");
+  assert.equal(translateText("Owner", "zh-CN"), "所有者");
+  assert.equal(translateText("Agent behavior", "zh-CN"), "智能体行为");
+  assert.equal(translateText("Files created, uploaded, or shared with you", "zh-CN"), "由你创建、上传或与你共享的文件");
+  assert.equal(translateText("Search file names and types…", "zh-CN"), "搜索文件名和类型…");
+  assert.equal(translateText("Ask the agent to set it up", "zh-CN"), "让智能体帮我设置");
+  assert.equal(
+    translateText("Accounts and credentials your agent may use on your behalf.", "zh-CN"),
+    "智能体可代表你使用的账户和凭据。",
+  );
+  assert.equal(
+    translateText("Secrets stay encrypted and every use or shared grant is audited.", "zh-CN"),
+    "密钥始终加密存储，每次使用或共享授权都会被审计。",
+  );
+  assert.equal(translateText("Facts the agent carries into your conversations.", "zh-CN"), "智能体会带入对话的事实。");
+  assert.equal(
+    translateText("Create a reusable procedure for yourself or a shared context.", "zh-CN"),
+    "为自己或共享上下文创建可复用的流程。",
+  );
   assert.equal(translateText("  3 tool calls  ", "zh-CN"), "  3 次工具调用  ");
   assert.equal(translateText("New chat in Research", "zh-CN"), "在 Research 中新建对话");
   assert.equal(translateText("Uploading 3 files…", "zh-CN"), "正在上传 3 个文件…");
@@ -32,7 +62,42 @@ test("Chinese translations cover exact UI copy and dynamic counters", () => {
   assert.equal(translateText("pinned", "zh-CN"), "已置顶");
   assert.equal(translateText("Open here", "zh-CN"), "在此打开");
   assert.equal(translateText("New chat", "en"), "New chat");
+  assert.equal(translateText("New project", "en"), "New project");
   assert.equal(translateText("User supplied content", "zh-CN"), "User supplied content");
+});
+
+test("Chinese translations cover the project management, resource, and skill page copy", () => {
+  const copy: Array<[string, string]> = [
+    ["Choose what this project should notice and act on.", "选择此项目中智能体应关注并采取行动的内容。"],
+    ["Ambient behavior", "环境行为"],
+    [
+      "When off, the agent never acts on overheard messages here — it only responds to direct @mentions. Default: on only when standing orders (or an action-mode bot) are set below — otherwise mention-only.",
+      "关闭后，智能体不会对这里偶然听到的消息采取行动，只响应直接 @提及。默认仅在下方设置长期指令（或行动模式机器人）时启用；否则仅响应提及。",
+    ],
+    ["Standing orders", "长期指令"],
+    [
+      "Plain-language guidance for proactive work. Leave empty to respond only when addressed.",
+      "用自然语言说明主动工作的指引。留空时仅在被直接提及时响应。",
+    ],
+    ["Automated posters", "自动发布者"],
+    ["Control how messages from bots and integrations wake the agent.", "控制机器人和集成消息如何唤醒智能体。"],
+    ["No bots added. All bot posts are treated as activity.", "尚未添加机器人。所有机器人发布的消息都会视为活动。"],
+    [
+      "Describe what you want scheduled — what to do, how often, and where the result should go. The agent sets it up and confirms in chat; it will ask if anything is unclear. It should give the cron a short, distinctive title naming what it is for, like Gmail unread digest or GitLab CI watch.",
+      "描述你希望安排的任务：做什么、多久执行一次，以及将结果发送到哪里。智能体会进行设置并在对话中确认；如有不清楚之处会询问你。它会为定时任务设置简短且易识别的标题来说明用途，例如 Gmail 未读摘要或 GitLab CI 监控。",
+    ],
+    ["No accounts available", "暂无可用账户"],
+    ["Your workspace has not configured any account providers yet.", "你的工作区尚未配置任何账户提供商。"],
+    [
+      "Edit the notebook directly. Switch to Facts view to search or remove individual facts. Saves are protected if the agent remembers something new while this page is open.",
+      "直接编辑笔记本。切换到事实视图可搜索或删除单条事实。如果该页面打开期间智能体记住了新内容，保存操作会受到保护。",
+    ],
+    ["Everyone in a shared context can invoke and edit this skill.", "共享上下文中的所有人都可以调用和编辑此技能。"],
+    ["Instructions", "指令"],
+    ["scope", "范围"],
+    ["source", "来源"],
+  ];
+  for (const [source, translated] of copy) assert.equal(translateText(source, "zh-CN"), translated);
 });
 
 test("template localization translates authored UI copy and preserves every dynamic value", () => {
@@ -89,6 +154,14 @@ test("conditional interface labels pass through the translator", () => {
   assert.doesNotMatch(source("files.ts"), /t\(status\)/);
   assert.match(source("connectors.ts"), /t\(status === "connected" \? "connected\." : "connection failed\."\)/);
   assert.match(source("contexts.ts"), /aria-label=\$\{`\$\{t\("Remove"\)\} \$\{label\}`\}/);
+  assert.match(source("contexts.ts"), /if \(principalId === appState\.me\?\.user\) return t\("You"\)/);
+  assert.match(source("contexts.ts"), /title === "Personal" \? t\(title\) : title \|\| t\("Personal"\)/);
+  assert.match(source("session-list.ts"), /name: t\("Personal"\)/);
+  assert.match(source("sessions.ts"), /\?\? t\("Personal"\)/);
+  assert.match(source("context-model.ts"), /\$\{t\("Org default"\)\}/);
+  assert.match(source("connectors.ts"), /\$\{t\(meta\.hosts\)\}/);
+  assert.match(source("connectors.ts"), /\$\{t\(meta\.desc\)\}/);
+  assert.match(source("skills.ts"), /name: t\("Personal — only you"\)/);
   assert.match(source("chat.ts"), /return t\(work\.status === "working" \? `Working for \$\{secs\}s`/);
   assert.match(source("chat.ts"), /return t\("Needs your approval"\)/);
   assert.match(source("chat.ts"), /t\(`\$\{result\.count\} result/);

@@ -236,8 +236,10 @@ function credentialCard(c: KeychainCredential): TemplateResult {
                 (grant) =>
                   html` <div class="kc-access-row">
                     <div>
-                      <strong>${scopeName(grant.audienceScopeId)}</strong> · ${grant.mode}
-                      <div>${grant.purpose}${grant.expiresAt ? ` · expires ${fmtDate(grant.expiresAt)}` : ""}</div>
+                      <strong>${scopeName(grant.audienceScopeId)}</strong> · ${t(grant.mode)}
+                      <div>
+                        ${grant.purpose}${grant.expiresAt ? ` · ${t("expires")} ${fmtDate(grant.expiresAt)}` : ""}
+                      </div>
                     </div>
                     <button
                       class="kc-text-action"
@@ -471,11 +473,11 @@ function drawConnectors(loading = false): void {
               <h3>${meta.name}</h3>
               ${connectionState}
             </div>
-            ${meta.hosts ? html`<div class="kc-resource-meta">${meta.hosts}</div>` : ""}
+            ${meta.hosts ? html`<div class="kc-resource-meta">${t(meta.hosts)}</div>` : ""}
           </div>
         </div>
-        ${meta.desc ? html`<p class="kc-resource-description">${meta.desc}</p>` : ""}
-        ${needsReconnect && p.refreshError ? html`<div class="kc-inline-warning" role="status">Refresh failed: ${p.refreshError}</div>` : ""}
+        ${meta.desc ? html`<p class="kc-resource-description">${t(meta.desc)}</p>` : ""}
+        ${needsReconnect && p.refreshError ? html`<div class="kc-inline-warning" role="status">${t("Refresh failed:")} ${p.refreshError}</div>` : ""}
         ${
           grants.length
             ? html`<div class="kc-access-block">
@@ -484,8 +486,10 @@ function drawConnectors(loading = false): void {
                   (grant) =>
                     html` <div class="kc-access-row">
                       <div>
-                        <strong>${scopeName(grant.audienceScopeId)}</strong> · ${grant.mode}
-                        <div>${grant.purpose}${grant.expiresAt ? ` · expires ${fmtDate(grant.expiresAt)}` : ""}</div>
+                        <strong>${scopeName(grant.audienceScopeId)}</strong> · ${t(grant.mode)}
+                        <div>
+                          ${grant.purpose}${grant.expiresAt ? ` · ${t("expires")} ${fmtDate(grant.expiresAt)}` : ""}
+                        </div>
                       </div>
                       <button
                         class="kc-text-action"

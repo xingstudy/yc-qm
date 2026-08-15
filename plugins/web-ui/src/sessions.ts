@@ -543,7 +543,7 @@ export function drawChatsPage(): void {
 }
 
 function chatMatches(s: CoreSession, q: string): boolean {
-  const context = sharedContextLabel(s.scopeId, s.channelName ?? null) ?? "Personal";
+  const context = sharedContextLabel(s.scopeId, s.channelName ?? null) ?? t("Personal");
   return [sessionTitle(s), s.channelName ?? "", context].join(" ").toLowerCase().includes(q);
 }
 

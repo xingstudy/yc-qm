@@ -253,7 +253,8 @@ function metaForScope(scopeId: string | null, fallbackName?: string | null): { t
   if (shared) return { title: shared, glyph: scopeId?.startsWith("group:") ? Users : Hash };
   if (scopeId?.startsWith("personal:") && scopeId !== personalScopeId())
     return { title: t("Shared personal space"), glyph: User };
-  return { title: fallbackName?.trim() || t("Personal"), glyph: User };
+  const title = fallbackName?.trim();
+  return { title: title === "Personal" ? t(title) : title || t("Personal"), glyph: User };
 }
 
 export function scopeTitle(scopeId: string | null, fallbackName?: string | null): string {
@@ -515,7 +516,7 @@ function isProjectOwner(context: CoreContext): boolean {
 }
 
 function memberLabel(context: CoreContext, principalId: string): string {
-  if (principalId === appState.me?.user) return "You";
+  if (principalId === appState.me?.user) return t("You");
   return context.project?.members.find((member) => member.principalId === principalId)?.displayName || principalId;
 }
 
@@ -629,7 +630,7 @@ function memberPicker(context: CoreContext): TemplateResult {
           `,
         )}
       </div>
-      <div class="project-member-status" aria-live="polite">${memberStatus}</div>
+      <div class="project-member-status" aria-live="polite">${t(memberStatus)}</div>
     </form>
   `;
 }

@@ -132,12 +132,12 @@ export function contextModelSection(scopeId: string): TemplateResult | typeof no
         value: selected,
         onChange: (value) => void choose(scopeId, value),
         options: [
-          html`<option value=${INHERIT}>Org default (${labelForRuntime(config, config.orgDefault)})</option>`,
+          html`<option value=${INHERIT}>${t("Org default")} (${labelForRuntime(config, config.orgDefault)})</option>`,
           ...options.map((o) => html`<option value=${o.value}>${optionLabel(o, multiHarness)}</option>`),
           ...(stalePin
             ? [
                 html`<option value=${selected}>
-                  ${labelForRuntime(config, config.scopeOverride!)} — no longer offered
+                  ${labelForRuntime(config, config.scopeOverride!)} — ${t("no longer offered")}
                 </option>`,
               ]
             : []),
