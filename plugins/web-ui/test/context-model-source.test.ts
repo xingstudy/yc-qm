@@ -14,9 +14,9 @@ test("the scope's model panel writes through the same endpoint the composer's de
 });
 
 test("the panel offers inheriting the org default and names what is serving now", () => {
-  assert.match(panel, /Org default \(\$\{labelForRuntime\(config, config\.orgDefault\)\}\)/);
+  assert.match(panel, /\$\{t\("Org default"\)\} \(\$\{labelForRuntime\(config, config\.orgDefault\)\}\)/);
   assert.match(panel, /!options\.some\(\(o\) => o\.value === selected\)/);
-  assert.match(panel, /no longer offered/);
+  assert.match(panel, /\$\{t\("no longer offered"\)\}/);
   assert.match(panel, /Saved — new conversations here run on/);
   assert.match(panel, /The channel description in Slack names this model\./);
 });
