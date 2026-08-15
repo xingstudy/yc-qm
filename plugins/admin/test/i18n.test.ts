@@ -89,6 +89,14 @@ test("admin exposes a bilingual control and translates only explicit UI sinks", 
   assert.match(html, /badge\(`\$\{adminTr\("asked by"\)\} \$\{j\.askedBy\}`/);
   assert.match(html, /\$\("egress-enforcement"\)\.textContent = adminTr\(enforcementLabel\)/);
   assert.match(html, /adminTr\(provider\.hasKey \? "set \(write-only\)" : "No key"\)/);
+  assert.match(html, /label\.append\(\s*adminTr\("Upload to "\)/);
+  assert.match(html, /return scopeKind\(id\) === "org" \? adminTr\("All scopes"\)/);
+  assert.match(html, /b\.textContent = adminTr\(k\)/);
+  assert.match(html, /\.filter\(Boolean\)\s*\.map\(\(part\) => adminTr\(part\)\)/);
+  assert.match(html, /p\.textContent = adminTr\(emptyMsg\)/);
+  assert.match(html, /else th\.textContent = adminTr\(h\)/);
+  assert.match(html, /mutedText\(\s*e\.action \|\| adminTr\("event"\)/);
+  assert.match(html, /root\.querySelector\("\.detail"\)\.textContent = adminTr\(detail\)/);
 });
 
 test("admin locale also controls date and number formatting", () => {
@@ -96,12 +104,18 @@ test("admin locale also controls date and number formatting", () => {
   assert.match(html, /new Date\(ts\)\.toLocaleString\(adminLocaleCode\(\)\)/);
   assert.match(html, /Number\(background\)\.toLocaleString\(adminLocaleCode\(\)\)/);
   assert.match(html, /\^\(\[\\d,\.\]\+\[kKmM\]\?\) turns\?/);
-  assert.match(html, /return adminTr\(\(n \/ 1000\)/);
+  assert.match(html, /return adminTr\(fmtTokensSource\(n\)\);/);
   const body = html.match(/const adminTranslatePattern = \(value\) => \{([\s\S]*?)\n {6}\};\n {6}const adminTr/)?.[1];
   assert.ok(body);
   const translatePattern = new Function("value", body) as (value: string) => string | null;
   const dictionary = adminDictionary();
-  const adminTr = (value: string) => dictionary[value] ?? translatePattern(value) ?? value;
+  const adminTr = (value: string) => {
+    const leading = value.match(/^\s*/)?.[0] || "";
+    const trailing = value.match(/\s*$/)?.[0] || "";
+    const normalized = value.trim().replace(/\s+/g, " ");
+    const translated = dictionary[normalized] ?? translatePattern(normalized);
+    return translated == null ? value : `${leading}${translated}${trailing}`;
+  };
   assert.equal(translatePattern("1,234 turns"), "1,234 个轮次");
   assert.equal(translatePattern("1.2k tokens"), "1.2k 个令牌");
   assert.equal(translatePattern("4 errors"), "4 个错误");
@@ -122,6 +136,14 @@ test("admin locale also controls date and number formatting", () => {
   assert.equal(adminTr("asked by"), "提问者");
   assert.equal(adminTr("Open outbound access"), "开放出站访问");
   assert.equal(adminTr("set (write-only)"), "已设置（只写）");
+  assert.equal(adminTr("All scopes"), "所有范围");
+  assert.equal(adminTr("Upload to "), "上传至 ");
+  assert.equal(adminTr("Grant org admin"), "授予组织管理员");
+  assert.equal(adminTr("Effective security posture"), "当前生效的安全策略");
+  assert.equal(adminTr("No packs yet — register one above."), "尚无技能包——请在上方注册一个。");
+  assert.equal(translatePattern("67.9% prompt-cache hit ratio"), "67.9% 提示词缓存命中率");
+  assert.equal(translatePattern("4.6m tokens read"), "已读取 4.6m 个令牌");
+  assert.equal(translatePattern("0 tokens written"), "已写入 0 个令牌");
 });
 
 test("admin localization preserves identity, secrets, and authored content", () => {
@@ -132,6 +154,19 @@ test("admin localization preserves identity, secrets, and authored content", () 
   );
   assert.match(html, /id="who-name" data-i18n-skip/);
   assert.match(html, /id="na-sub" data-i18n-skip/);
+  assert.match(html, /<textarea\s+id="soul"\s+data-i18n-skip\s+maxlength="100000"/);
+  assert.match(
+    html,
+    /System instruction text remains in its authored language\. Changing the interface language does not translate or rewrite it\. Saving affects future conversations\./,
+  );
+  const dictionary = adminDictionary();
+  assert.equal(
+    dictionary[
+      "You are a helpful internal assistant for this organization. Be concise, accurate, and respect data boundaries: never reveal information to people who are not party to the current conversation."
+    ],
+    undefined,
+  );
+  assert.doesNotMatch(html, /soul"\)\.value\s*=\s*adminTr/);
   assert.match(html, /loading\.textContent = adminTr\("Loading"\) \+ " " \+ \(rep\.name \|\| rep\.id\) \+ "…"/);
   assert.match(
     html,

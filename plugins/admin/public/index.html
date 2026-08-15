@@ -4135,7 +4135,16 @@
                   </div>
                   <div class="body soul-workbench">
                     <label for="soul">Standing instructions</label>
-                    <textarea id="soul" maxlength="100000" placeholder="No scope-specific instructions"></textarea>
+                    <textarea
+                      id="soul"
+                      data-i18n-skip
+                      maxlength="100000"
+                      placeholder="No scope-specific instructions"
+                    ></textarea>
+                    <p class="hint">
+                      System instruction text remains in its authored language. Changing the interface language does not
+                      translate or rewrite it. Saving affects future conversations.
+                    </p>
                     <div class="soul-meta">
                       <span id="soul-ver"></span><span id="soul-size"></span><span id="soul-validation"></span>
                     </div>
@@ -4877,7 +4886,6 @@
         "API key": "API 密钥",
         "Validate and save": "验证并保存",
         "Disable this provider": "禁用此提供商",
-        "Custom providers": "自定义提供商",
         Protocol: "协议",
         Endpoint: "端点",
         Models: "模型",
@@ -5498,6 +5506,121 @@
         "Nothing mirrored for this window.": "此时间窗口内无镜像内容。",
         "No ack-emoji picks recorded for this filter yet.": "此筛选条件下尚无确认表情选择记录。",
         "(candidate slate not recorded)": "（未记录候选列表）",
+        "Upload to": "上传至",
+        "All scopes": "所有范围",
+        "Uploading 1 file...": "正在上传 1 个文件…",
+        "Uploaded 1 file.": "已上传 1 个文件。",
+        "Upload failed.": "上传失败。",
+        "No scope-specific instructions": "无范围专属指令",
+        "Custom providers": "自定义提供商",
+        "Point QM at any OpenAI- or Anthropic-compatible endpoint — a vendor like DeepSeek, or a gateway like LiteLLM fronting many models. Keys are validated, stored write-only, and the models join the picker.":
+          "可将 QM 指向任意兼容 OpenAI 或 Anthropic 的端点，例如 DeepSeek 等供应商，或管理多个模型的 LiteLLM 网关。密钥会被验证并以只写方式存储，模型将加入选择器。",
+        "Write-only; blank on edit keeps the stored key": "只写；编辑时留空将保留已存储的密钥",
+        "How much autonomy the harness gets in this scope. The org setting is a minimum; narrower scopes may tighten it but cannot weaken it. Identity, tenant isolation, credential scope, revocation, and audit always remain enforced.":
+          "此范围内调度器可拥有的自主程度。组织设置是最低限制；更窄的范围可以收紧但不能放宽。身份、租户隔离、凭据范围、撤销和审计始终强制执行。",
+        "Effective security posture": "当前生效的安全策略",
+        'Which standing options an approval card offers besides "Allow once". Composes tighten-only with the org value; disabling a mode also suspends existing grants of that mode until it is re-enabled. Predeclared command approvals and strict-posture tool approvals both honor this.':
+          "审批卡除“允许一次”外可提供的持续选项。与组织设置组合时只能收紧；禁用某种模式也会暂停该模式的现有授权，直至重新启用。预声明的命令审批和严格策略下的工具审批均遵循此设置。",
+        "The model driving the browser agent in the browse skill, org-wide. Leave on the default to follow the deployment's base model. Fast mode applies only on Opus models; other models run at standard speed.":
+          "组织范围内浏览技能所用浏览器智能体的模型。保留默认值即可跟随部署的基础模型。快速模式仅适用于 Opus 模型；其他模型以标准速度运行。",
+        "Each connector needs its own OAuth app's client ID and secret before anyone can link it. A connector stays hidden in everyone's web UI until you set its client here. The secret is write-only and never displayed. Applies org-wide.":
+          "每个连接器都需要其专属 OAuth 应用的客户端 ID 和密钥，用户才能连接。未在此处配置客户端前，连接器会在所有人的 Web UI 中隐藏。密钥为只写且绝不显示。此设置适用于整个组织。",
+        "Grant org admin": "授予组织管理员",
+        "Promote a principal to org admin. Org admins only.": "将主体提升为组织管理员。仅组织管理员可操作。",
+        "Impersonate a user": "模拟用户身份",
+        "Open the assistant Web UI as any principal — for support, debugging, or onboarding tests. Time-boxed and audited.":
+          "以任意主体身份打开助手 Web UI，用于支持、调试或引导测试。操作有时间限制并会被审计。",
+        "Who can govern this org. Revoking removes their admin rights immediately.":
+          "可治理此组织的人员。撤销后会立即移除其管理员权限。",
+        "Everyone who has used the agent — click a row for their activity, artifacts, and config.":
+          "所有使用过智能体的人员——点击一行可查看其活动、资源和配置。",
+        "Everyone known through sessions, admin grants, keychain records, grants, or asks.":
+          "通过会话、管理员授权、密钥链记录、授权或请求所知的全部人员。",
+        "Metadata only. Secret material and encrypted values are never returned to admin.":
+          "仅显示元数据。密钥材料和加密值绝不会返回给管理员。",
+        "No egress in this scope yet.": "此范围内尚无出站记录。",
+        Distribution: "分布",
+        "Where the samples land.": "样本的分布位置。",
+        "By day": "按天",
+        "Daily percentiles (UTC).": "每日百分位数（UTC）。",
+        "Worst recent turns": "最近最慢轮次",
+        "The slowest samples — each opens the turn's transcript.": "最慢的样本——点击即可打开该轮次的记录。",
+        "The slowest samples.": "最慢的样本。",
+        "No daily samples.": "暂无每日样本。",
+        "No packs yet — register one above.": "尚无技能包——请在上方注册一个。",
+        "Search all skills…": "搜索所有技能…",
+        "Search skills…": "搜索技能…",
+        "Search all files…": "搜索所有文件…",
+        "Search files…": "搜索文件…",
+        "Search all crons…": "搜索所有定时任务…",
+        "Search crons…": "搜索定时任务…",
+        "Search all deployments…": "搜索所有部署…",
+        "Search deployments…": "搜索部署…",
+        "Register a pack — paste a git repo URL of SKILL.md files, then Browse it into scopes":
+          "注册技能包——粘贴包含 SKILL.md 文件的 Git 仓库 URL，然后将其浏览并导入范围",
+        "No deployments yet.": "尚无部署。",
+        "No deployments in this scope.": "此范围内尚无部署。",
+        "No crons yet.": "尚无定时任务。",
+        "No crons in this scope.": "此范围内尚无定时任务。",
+        "No skills yet.": "尚无技能。",
+        "No skills in this scope.": "此范围内尚无技能。",
+        "No documents saved yet.": "尚未保存文档。",
+        "No people match.": "没有匹配的人员。",
+        "No keychain credentials match.": "没有匹配的密钥链凭据。",
+        "No keychain grants match.": "没有匹配的密钥链授权。",
+        "No keychain asks match.": "没有匹配的密钥链请求。",
+        "Keychain unavailable": "密钥链不可用",
+        "Stable key material is required before the core can store keychain records.":
+          "核心服务需要稳定的密钥材料才能存储密钥链记录。",
+        "person, service, audience, purpose": "人员、服务、受众或用途",
+        "Purpose-bound keychain grants from an owner to an audience scope.":
+          "从所有者授予受众范围、与用途绑定的密钥链授权。",
+        "Outstanding and resolved cross-conversation consent requests.": "待处理或已解决的跨对话同意请求。",
+        "No admins match.": "没有匹配的管理员。",
+        "No users match.": "没有匹配的用户。",
+        "principal, role, or scope": "主体、角色或范围",
+        Pack: "技能包",
+        Trust: "信任",
+        Grants: "授权",
+        Asks: "请求",
+        Admins: "管理员",
+        "No turn metrics in this scope yet.": "此范围内尚无轮次指标。",
+        Conversations: "对话",
+        Background: "后台任务",
+        event: "事件",
+        Calls: "调用次数",
+        Denied: "已拒绝",
+        Hosts: "主机",
+        Broker: "代理",
+        Firewall: "防火墙",
+        People: "人员",
+        "Active grants": "生效授权",
+        "Pending asks": "待处理请求",
+        Turns: "轮次",
+        "First seen": "首次出现",
+        "Last seen": "最近出现",
+        Person: "人员",
+        Owner: "所有者",
+        Audience: "受众",
+        Account: "账户",
+        Expiry: "到期时间",
+        Purpose: "用途",
+        Principal: "主体",
+        Role: "角色",
+        "Granted by": "授权人",
+        "Last used": "最近使用",
+        Status: "状态",
+        "Created by": "创建者",
+        Phase: "阶段",
+        Trend: "趋势",
+        Day: "日期",
+        Time: "时间",
+        Action: "操作",
+        Resource: "资源",
+        Source: "来源",
+        Detail: "详情",
+        "System instruction text remains in its authored language. Changing the interface language does not translate or rewrite it. Saving affects future conversations.":
+          "系统指令文本保持其编写时的语言。切换界面语言不会翻译或改写它。保存后会影响后续对话。",
         Artifacts: "资源",
         System: "系统",
         Insights: "洞察",
@@ -5581,6 +5704,26 @@
         if (match) return `${match[1]} 次成功使用`;
         match = value.match(/^([\d,.]+[kKmM]?) configured$/);
         if (match) return `已配置 ${match[1]} 个`;
+        match = value.match(/^(.+) prompt-cache hit ratio$/);
+        if (match) return `${match[1]} 提示词缓存命中率`;
+        match = value.match(/^(.+) token-weighted$/);
+        if (match) return `${match[1]} 按令牌加权`;
+        match = value.match(/^(.+) stable-prefix miss rate$/);
+        if (match) return `${match[1]} 稳定前缀未命中率`;
+        match = value.match(/^([\d,.]+[kKmM]?) miss turns$/);
+        if (match) return `${match[1]} 个未命中轮次`;
+        match = value.match(/^([\d,.]+[kKmM]?) turns with cache data$/);
+        if (match) return `${match[1]} 个含缓存数据的轮次`;
+        match = value.match(/^(.+) tokens read$/);
+        if (match) return `已读取 ${match[1]} 个令牌`;
+        match = value.match(/^(.+) tokens written$/);
+        if (match) return `已写入 ${match[1]} 个令牌`;
+        match = value.match(/^Uploading ([\d,.]+) files?\.\.\.$/);
+        if (match) return `正在上传 ${match[1]} 个文件…`;
+        match = value.match(/^Uploaded ([\d,.]+) files?\.$/);
+        if (match) return `已上传 ${match[1]} 个文件。`;
+        match = value.match(/^Uploaded ([\d,.]+) of ([\d,.]+) before failure\. ?$/);
+        if (match) return `失败前已上传 ${match[1]} / ${match[2]} 个文件。`;
         match = value.match(/^([\d,.]+[kKmM]?) mirrored · ([\d,.]+[kKmM]?) members$/);
         if (match) return `${match[1]} 条已镜像 · ${match[2]} 位成员`;
         match = value.match(/^Signed in as (.+)$/);
@@ -6102,7 +6245,7 @@
         glyph.textContent = "⇧";
         const label = document.createElement("span");
         label.append(
-          "Upload to ",
+          adminTr("Upload to "),
           (() => {
             const s = document.createElement("strong");
             s.textContent = scopeTitle(scope);
@@ -6129,7 +6272,7 @@
           button.disabled = true;
           uploadStatusMessage(
             status,
-            "Uploading " + picked.length + " " + (picked.length === 1 ? "file" : "files") + "...",
+            adminTr("Uploading " + picked.length + " " + (picked.length === 1 ? "file" : "files") + "..."),
             "saving",
           );
           let uploaded = 0;
@@ -6144,19 +6287,26 @@
                 },
                 body: file,
               });
-              if (!r.ok) throw new Error(uploadErrorMessage(await r.text(), "Upload failed (" + r.status + ")."));
+              if (!r.ok)
+                throw new Error(uploadErrorMessage(await r.text(), adminTr("Upload failed (" + r.status + ").")));
               uploaded += 1;
             }
             uploadStatusMessage(
               status,
-              "Uploaded " + picked.length + " " + (picked.length === 1 ? "file" : "files") + ".",
+              adminTr("Uploaded " + picked.length + " " + (picked.length === 1 ? "file" : "files") + "."),
               "ok",
             );
             dataCache.clear();
             await renderData();
           } catch (err) {
-            const partial = uploaded ? "Uploaded " + uploaded + " of " + picked.length + " before failure. " : "";
-            uploadStatusMessage(status, partial + (err instanceof Error ? err.message : "Upload failed."), "err");
+            const partial = uploaded
+              ? adminTr("Uploaded " + uploaded + " of " + picked.length + " before failure. ")
+              : "";
+            uploadStatusMessage(
+              status,
+              partial + (err instanceof Error ? err.message : adminTr("Upload failed.")),
+              "err",
+            );
             if (uploaded) {
               dataCache.clear();
               await renderData();
@@ -6612,7 +6762,7 @@
       }
 
       function scopeTitle(id) {
-        return scopeKind(id) === "org" ? "All scopes" : dirLabel(id) || id;
+        return scopeKind(id) === "org" ? adminTr("All scopes") : dirLabel(id) || id;
       }
 
       function shortName(scopeId) {
@@ -6749,7 +6899,7 @@
       function navLink(label, target) {
         const a = document.createElement("a");
         a.className = "link";
-        a.textContent = label;
+        a.textContent = adminTr(label);
         a.href = stateToUrl(target);
         a.onclick = (e) => {
           if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -7022,7 +7172,7 @@
         const root = $(id);
         root.dataset.tone = tone || "neutral";
         root.querySelector(".v").textContent = value;
-        root.querySelector(".detail").textContent = detail;
+        root.querySelector(".detail").textContent = adminTr(detail);
       }
       function renderGovernanceOverview(data) {
         governanceOverviewData = { ...data };
@@ -9266,7 +9416,7 @@
           a.textContent = n;
           const b = document.createElement("div");
           b.className = "k";
-          b.textContent = k;
+          b.textContent = adminTr(k);
           d.append(a, b);
           wrap.appendChild(d);
         });
@@ -9275,7 +9425,10 @@
       function statline(parts) {
         const d = document.createElement("div");
         d.className = "statline";
-        d.textContent = parts.filter(Boolean).join(" · ");
+        d.textContent = parts
+          .filter(Boolean)
+          .map((part) => adminTr(part))
+          .join(" · ");
         return d;
       }
 
@@ -9381,8 +9534,8 @@
             (c.missRate == null ? "—" : fmtPct(c.missRate)) + " stable-prefix miss rate",
             (c.missTurns || 0) + " miss turns",
             (c.samples || 0) + " turns with cache data",
-            fmtTokens(c.cacheReadTotal || 0) + " read",
-            fmtTokens(c.cacheWriteTotal || 0) + " written",
+            fmtTokensSource(c.cacheReadTotal || 0) + " read",
+            fmtTokensSource(c.cacheWriteTotal || 0) + " written",
           ]),
         );
       }
@@ -9556,7 +9709,12 @@
         defaultShell({ count: plural(events.length, "event") });
         const rows = events.map((e) => [
           { text: e.principalId, cls: "mono" },
-          nodeCell(mutedText(e.action || "event", /revoke|delete|deny|fail/.test(String(e.action || "")) ? "err" : "")),
+          nodeCell(
+            mutedText(
+              e.action || adminTr("event"),
+              /revoke|delete|deny|fail/.test(String(e.action || "")) ? "err" : "",
+            ),
+          ),
           { text: e.status ? e.resource + " (" + e.status + ")" : e.resource || "", cls: "mono" },
           ...(all ? [{ text: shortName(e.scopeLabel) }] : []),
           timeCell(e.ts),
@@ -10028,7 +10186,7 @@
           if (v == null || v === "") return;
           const fk = document.createElement("div");
           fk.className = "fk";
-          fk.textContent = k;
+          fk.textContent = adminTr(k);
           const fv = document.createElement("div");
           fv.className = "fv";
           if (v.nodeType) fv.appendChild(v);
@@ -11534,7 +11692,7 @@
         if (!items.length) {
           const p = document.createElement("p");
           p.className = "empty";
-          p.textContent = emptyMsg;
+          p.textContent = adminTr(emptyMsg);
           return p;
         }
         const t = document.createElement("table");
@@ -11543,7 +11701,7 @@
         headers.forEach((h) => {
           const th = document.createElement("th");
           if (h && h.nodeType) th.appendChild(h);
-          else th.textContent = h;
+          else th.textContent = adminTr(h);
           htr.appendChild(th);
         });
         thead.appendChild(htr);
@@ -12425,7 +12583,7 @@
         if (!items.length) {
           const p = document.createElement("p");
           p.className = "empty";
-          p.textContent = emptyMsg;
+          p.textContent = adminTr(emptyMsg);
           return p;
         }
         const t = document.createElement("table");
@@ -12444,7 +12602,7 @@
         headers.forEach((h) => {
           const th = document.createElement("th");
           if (h && h.nodeType) th.appendChild(h);
-          else th.textContent = h;
+          else th.textContent = adminTr(h);
           htr.appendChild(th);
         });
         thead.appendChild(htr);
@@ -14911,12 +15069,15 @@
         const n = (text || "").length;
         return n ? Math.max(1, Math.round(n / 4)) : 0;
       }
+      function fmtTokensSource(n) {
+        if (!n) return "0 tokens";
+        if (n < 20) return "< 20 tokens";
+        if (n < 1000) return n.toLocaleString(adminLocaleCode()) + " tokens";
+        if (n < 1000000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k tokens";
+        return (n / 1000000).toFixed(1) + "m tokens";
+      }
       function fmtTokens(n) {
-        if (!n) return adminTr("0 tokens");
-        if (n < 20) return adminLocale === "zh-CN" ? "< 20 个令牌" : "< 20 tokens";
-        if (n < 1000) return adminTr(n.toLocaleString(adminLocaleCode()) + " tokens");
-        if (n < 1000000) return adminTr((n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k tokens");
-        return adminTr((n / 1000000).toFixed(1) + "m tokens");
+        return adminTr(fmtTokensSource(n));
       }
 
       function blockText(o) {
