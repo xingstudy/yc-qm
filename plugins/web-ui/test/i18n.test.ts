@@ -94,6 +94,16 @@ test("Chinese translations cover the project management, resource, and skill pag
     ],
     ["Everyone in a shared context can invoke and edit this skill.", "共享上下文中的所有人都可以调用和编辑此技能。"],
     ["Instructions", "指令"],
+    ["Details", "详情"],
+    ["Capabilities", "能力"],
+    ["Edit /", "编辑 /"],
+    ["Editing", "编辑中"],
+    ["Review again", "重新审查"],
+    ["Narrower scope takes precedence where both apply", "当多个范围同时适用时，较窄的范围优先"],
+    ["Expired", "已过期"],
+    ["Pending requests", "待处理请求"],
+    ["requested", "请求了"],
+    ["access", "访问权限"],
     ["scope", "范围"],
     ["source", "来源"],
   ];
@@ -155,12 +165,14 @@ test("conditional interface labels pass through the translator", () => {
   assert.match(source("connectors.ts"), /t\(status === "connected" \? "connected\." : "connection failed\."\)/);
   assert.match(source("contexts.ts"), /aria-label=\$\{`\$\{t\("Remove"\)\} \$\{label\}`\}/);
   assert.match(source("contexts.ts"), /if \(principalId === appState\.me\?\.user\) return t\("You"\)/);
-  assert.match(source("contexts.ts"), /title === "Personal" \? t\(title\) : title \|\| t\("Personal"\)/);
+  assert.match(source("contexts.ts"), /fallbackName\?\.trim\(\) \|\| t\("Personal"\)/);
+  assert.doesNotMatch(source("contexts.ts"), /fallbackName[^\n]*=== "Personal"/);
   assert.match(source("session-list.ts"), /name: t\("Personal"\)/);
   assert.match(source("sessions.ts"), /\?\? t\("Personal"\)/);
   assert.match(source("context-model.ts"), /\$\{t\("Org default"\)\}/);
   assert.match(source("connectors.ts"), /\$\{t\(meta\.hosts\)\}/);
   assert.match(source("connectors.ts"), /\$\{t\(meta\.desc\)\}/);
+  assert.match(source("connectors.ts"), /\$\{t\(ask\.requestedMode \?\? "one-time"\)\}/);
   assert.match(source("skills.ts"), /name: t\("Personal — only you"\)/);
   assert.match(source("chat.ts"), /return t\(work\.status === "working" \? `Working for \$\{secs\}s`/);
   assert.match(source("chat.ts"), /return t\("Needs your approval"\)/);

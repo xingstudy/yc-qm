@@ -153,6 +153,7 @@ test("keychain rows reserve success badges for actionable states", () => {
   assert.doesNotMatch(connectorsSource, />Connected<\/span>/);
   assert.match(connectorsSource, /expired \? html`<span class="kc-state warning">Expired<\/span>` : ""/);
   assert.match(connectorsSource, /<span class="kc-state warning">Reconnect needed<\/span>/);
+  assert.match(connectorsSource, /\$\{t\(ask\.requestedMode \?\? "one-time"\)\}/);
 });
 
 test("keychain actions keep secondary weight and compact mobile sizing", () => {

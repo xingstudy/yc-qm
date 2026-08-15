@@ -219,8 +219,8 @@ function credentialCard(c: KeychainCredential): TemplateResult {
                 (ask) =>
                   html`<div class="kc-access-row">
                     <div>
-                      <strong>${scopeName(ask.requesterScopeId)}</strong> requested ${ask.requestedMode ?? "one-time"}
-                      access
+                      <strong>${scopeName(ask.requesterScopeId)}</strong> requested
+                      ${t(ask.requestedMode ?? "one-time")} access
                       <div>${ask.purpose} · expires ${fmtDate(ask.expiresAt)}</div>
                     </div>
                   </div>`,

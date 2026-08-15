@@ -253,8 +253,7 @@ function metaForScope(scopeId: string | null, fallbackName?: string | null): { t
   if (shared) return { title: shared, glyph: scopeId?.startsWith("group:") ? Users : Hash };
   if (scopeId?.startsWith("personal:") && scopeId !== personalScopeId())
     return { title: t("Shared personal space"), glyph: User };
-  const title = fallbackName?.trim();
-  return { title: title === "Personal" ? t(title) : title || t("Personal"), glyph: User };
+  return { title: fallbackName?.trim() || t("Personal"), glyph: User };
 }
 
 export function scopeTitle(scopeId: string | null, fallbackName?: string | null): string {

@@ -97,6 +97,14 @@ test("admin exposes a bilingual control and translates only explicit UI sinks", 
   assert.match(html, /else th\.textContent = adminTr\(h\)/);
   assert.match(html, /mutedText\(\s*e\.action \|\| adminTr\("event"\)/);
   assert.match(html, /root\.querySelector\("\.detail"\)\.textContent = adminTr\(detail\)/);
+  assert.match(html, /\$\("soul"\)\.placeholder = adminTr\("No scope-specific instructions"\)/);
+  assert.match(html, /function navLink\(label, target\)[^]*?a\.textContent = label;/);
+  assert.match(html, /navLink\(adminTr\("Governance →"\)/);
+  assert.match(
+    html,
+    /adminTr\(enforcement\.active \? titleCase\(enforcement\.fidelity\) \+ " enforced" : "Open egress"\)/,
+  );
+  assert.match(html, /capability\.querySelector\("span"\)\.textContent = adminTr\(enforcementSummary\)/);
 });
 
 test("admin locale also controls date and number formatting", () => {
@@ -140,10 +148,22 @@ test("admin locale also controls date and number formatting", () => {
   assert.equal(adminTr("Upload to "), "上传至 ");
   assert.equal(adminTr("Grant org admin"), "授予组织管理员");
   assert.equal(adminTr("Effective security posture"), "当前生效的安全策略");
+  assert.equal(adminTr("Open egress"), "开放出站访问");
+  assert.equal(adminTr("External enabled"), "允许外部参与者");
+  assert.equal(adminTr("Deployment default"), "部署默认值");
   assert.equal(adminTr("No packs yet — register one above."), "尚无技能包——请在上方注册一个。");
   assert.equal(translatePattern("67.9% prompt-cache hit ratio"), "67.9% 提示词缓存命中率");
   assert.equal(translatePattern("4.6m tokens read"), "已读取 4.6m 个令牌");
   assert.equal(translatePattern("0 tokens written"), "已写入 0 个令牌");
+  assert.equal(translatePattern("Upload failed (503)."), "上传失败（503）。");
+  assert.equal(translatePattern("2 effective rules"), "2 条生效规则");
+  assert.equal(translatePattern("Domain enforced"), "Domain 已强制执行");
+  assert.equal(
+    translatePattern(
+      "Firecracker supports domain fidelity, which cannot enforce outbound host policy. Agents still have open outbound access.",
+    ),
+    "Firecracker 支持 domain 级执行精度，但无法执行出站主机策略。智能体仍可自由访问外部网络。",
+  );
 });
 
 test("admin localization preserves identity, secrets, and authored content", () => {
@@ -157,7 +177,7 @@ test("admin localization preserves identity, secrets, and authored content", () 
   assert.match(html, /<textarea\s+id="soul"\s+data-i18n-skip\s+maxlength="100000"/);
   assert.match(
     html,
-    /System instruction text remains in its authored language\. Changing the interface language does not translate or rewrite it\. Saving affects future conversations\./,
+    /System instruction text remains in its authored language\. Changing the interface language does not translate or rewrite it\. Saving affects future turns, including existing conversations\./,
   );
   const dictionary = adminDictionary();
   assert.equal(

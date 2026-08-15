@@ -4143,7 +4143,7 @@
                     ></textarea>
                     <p class="hint">
                       System instruction text remains in its authored language. Changing the interface language does not
-                      translate or rewrite it. Saving affects future conversations.
+                      translate or rewrite it. Saving affects future turns, including existing conversations.
                     </p>
                     <div class="soul-meta">
                       <span id="soul-ver"></span><span id="soul-size"></span><span id="soul-validation"></span>
@@ -5539,6 +5539,27 @@
         "Metadata only. Secret material and encrypted values are never returned to admin.":
           "仅显示元数据。密钥材料和加密值绝不会返回给管理员。",
         "No egress in this scope yet.": "此范围内尚无出站记录。",
+        Dangerous: "危险",
+        Auto: "自动",
+        Strict: "严格",
+        "Open egress": "开放出站访问",
+        "External enabled": "允许外部参与者",
+        "Internal only": "仅限内部成员",
+        Inherited: "继承",
+        "Deployment default": "部署默认值",
+        "Backend supports policy; control plane inactive": "后端支持策略，但控制平面尚未启用",
+        "Backend cannot enforce host policy": "后端无法执行主机策略",
+        "Policy is enforced": "策略已强制执行",
+        "Enforcement is not activated": "策略执行尚未启用",
+        "Guests may see agent output": "访客可能看到智能体输出",
+        "Organization boundary": "组织边界",
+        "Resolved at organization scope": "已按组织范围解析",
+        "Local override": "本地覆盖值",
+        "Effective default": "当前生效的默认值",
+        "View in Slack mirror ↗": "在 Slack 镜像中查看 ↗",
+        "Judgments →": "判定 →",
+        "Governance →": "治理 →",
+        "Ack emoji →": "确认表情 →",
         Distribution: "分布",
         "Where the samples land.": "样本的分布位置。",
         "By day": "按天",
@@ -5619,8 +5640,8 @@
         Resource: "资源",
         Source: "来源",
         Detail: "详情",
-        "System instruction text remains in its authored language. Changing the interface language does not translate or rewrite it. Saving affects future conversations.":
-          "系统指令文本保持其编写时的语言。切换界面语言不会翻译或改写它。保存后会影响后续对话。",
+        "System instruction text remains in its authored language. Changing the interface language does not translate or rewrite it. Saving affects future turns, including existing conversations.":
+          "系统指令文本保持其编写时的语言。切换界面语言不会翻译或改写它。保存后会立即影响后续轮次，包括现有会话。",
         Artifacts: "资源",
         System: "系统",
         Insights: "洞察",
@@ -5724,6 +5745,27 @@
         if (match) return `已上传 ${match[1]} 个文件。`;
         match = value.match(/^Uploaded ([\d,.]+) of ([\d,.]+) before failure\. ?$/);
         if (match) return `失败前已上传 ${match[1]} / ${match[2]} 个文件。`;
+        match = value.match(/^Upload failed \(([\d,.]+)\)\.$/);
+        if (match) return `上传失败（${match[1]}）。`;
+        match = value.match(/^([\d,.]+) effective rules?$/);
+        if (match) return `${match[1]} 条生效规则`;
+        match = value.match(/^([\d,.]+) draft rules?$/);
+        if (match) return `${match[1]} 条草案规则`;
+        match = value.match(/^(.+) enforced$/);
+        if (match) return `${match[1]} 已强制执行`;
+        match = value.match(/^Policy enforced by (.+)$/);
+        if (match) return `策略由 ${match[1]} 强制执行`;
+        match = value.match(
+          /^(.+) supports (.+) fidelity, which cannot enforce outbound host policy\. Agents still have open outbound access\.$/,
+        );
+        if (match)
+          return `${match[1]} 支持 ${match[2]} 级执行精度，但无法执行出站主机策略。智能体仍可自由访问外部网络。`;
+        match = value.match(/^(.+) enforces this policy at (.+) fidelity\.$/);
+        if (match) return `${match[1]} 以 ${match[2]} 级执行精度强制执行此策略。`;
+        match = value.match(
+          /^(.+) supports domain policy, but the control plane cannot mint a reachable proxy token\. Agents still have open outbound access\.$/,
+        );
+        if (match) return `${match[1]} 支持域名策略，但控制平面无法签发可访问的代理令牌。智能体仍可自由访问外部网络。`;
         match = value.match(/^([\d,.]+[kKmM]?) mirrored · ([\d,.]+[kKmM]?) members$/);
         if (match) return `${match[1]} 条已镜像 · ${match[2]} 位成员`;
         match = value.match(/^Signed in as (.+)$/);
@@ -5821,6 +5863,7 @@
       if (adminLocale === "zh-CN") {
         translateAdminNode(document.body);
       }
+      $("soul").placeholder = adminTr("No scope-specific instructions");
       const EFFECTS = ["allow", "deny", "require_approval"];
       const EFFECT_LABELS = { allow: "Allow", deny: "Deny", require_approval: "Require approval" };
       const SECTIONS = [
@@ -6899,7 +6942,7 @@
       function navLink(label, target) {
         const a = document.createElement("a");
         a.className = "link";
-        a.textContent = adminTr(label);
+        a.textContent = label;
         a.href = stateToUrl(target);
         a.onclick = (e) => {
           if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -7181,7 +7224,12 @@
         let postureTone = "ok";
         if (posture === "dangerous") postureTone = "danger";
         else if (posture === "auto") postureTone = "warn";
-        setGovernanceStatus("governance-status-posture", titleCase(posture), "Effective security posture", postureTone);
+        setGovernanceStatus(
+          "governance-status-posture",
+          adminTr(titleCase(posture)),
+          "Effective security posture",
+          postureTone,
+        );
         const allowCount = (data.egress?.allowedHosts || []).length;
         const denyCount = (data.egress?.deniedHosts || []).length;
         const enforcement = data.egressEnforcement || {
@@ -7205,7 +7253,7 @@
         }
         setGovernanceStatus(
           "governance-status-egress",
-          enforcement.active ? titleCase(enforcement.fidelity) + " enforced" : "Open egress",
+          adminTr(enforcement.active ? titleCase(enforcement.fidelity) + " enforced" : "Open egress"),
           egressDetail,
           enforcement.active ? "ok" : "warn",
         );
@@ -7214,7 +7262,7 @@
         let enforcementTitle = "Policy is draft only";
         if (enforcement.active) enforcementTitle = "Policy is enforced";
         else if (enforcement.reason === "control_plane_unconfigured") enforcementTitle = "Enforcement is not activated";
-        capability.querySelector("strong").textContent = enforcementTitle;
+        capability.querySelector("strong").textContent = adminTr(enforcementTitle);
         let enforcementSummary =
           titleCase(enforcement.backend) +
           " supports " +
@@ -7231,24 +7279,29 @@
             titleCase(enforcement.backend) +
             " supports domain policy, but the control plane cannot mint a reachable proxy token. Agents still have open outbound access.";
         }
-        capability.querySelector("span").textContent = enforcementSummary;
+        capability.querySelector("span").textContent = adminTr(enforcementSummary);
         sectionButton("egress").textContent = adminTr(enforcement.active ? "Save policy" : "Save draft");
         if ("externalSlackParticipants" in data) {
           const external = !!data.externalSlackParticipants;
           setGovernanceStatus(
             "governance-status-audience",
-            external ? "External enabled" : "Internal only",
+            adminTr(external ? "External enabled" : "Internal only"),
             external ? "Guests may see agent output" : "Organization boundary",
             external ? "danger" : "ok",
           );
         } else {
-          setGovernanceStatus("governance-status-audience", "Inherited", "Resolved at organization scope", "neutral");
+          setGovernanceStatus(
+            "governance-status-audience",
+            adminTr("Inherited"),
+            "Resolved at organization scope",
+            "neutral",
+          );
         }
         const model = data.baseModel || data.baseModelDefault || "Deployment default";
         const option = (data.baseModelOptions || []).find((candidate) => candidate.id === model);
         setGovernanceStatus(
           "governance-status-model",
-          option?.name || model,
+          option?.name || (model === "Deployment default" ? adminTr(model) : model),
           data.baseModel ? "Local override" : "Effective default",
           "neutral",
         );
@@ -12556,7 +12609,11 @@
           drow.appendChild(localizedBadge(delivery.destination?.type === "principal" ? "Slack DM" : "Slack", "info"));
           const mirror = slackMirrorRef(delivery);
           if (mirror) {
-            const ml = navLink("View in Slack mirror ↗", { view: "slack", container: mirror.container, ts: mirror.ts });
+            const ml = navLink(adminTr("View in Slack mirror ↗"), {
+              view: "slack",
+              container: mirror.container,
+              ts: mirror.ts,
+            });
             ml.title = adminTr("Jump to this message in the mirrored Slack channel") + " " + mirror.container;
             drow.appendChild(ml);
           }
@@ -13749,8 +13806,10 @@
           context: container,
           search: slackSearchBox(container),
           actions: [
-            navLink("Judgments →", { view: "judgments", container }),
-            ...(scopeGo ? [navLink("Governance →", { view: "governance", scope: scopeGo, session: null })] : []),
+            navLink(adminTr("Judgments →"), { view: "judgments", container }),
+            ...(scopeGo
+              ? [navLink(adminTr("Governance →"), { view: "governance", scope: scopeGo, session: null })]
+              : []),
           ],
         });
         const loading = document.createElement("div");
@@ -13925,7 +13984,7 @@
                   contextGo: { view: "slack", container: st.container },
                 }
               : {}),
-            actions: [navLink("Ack emoji →", { view: "ackemoji" })],
+            actions: [navLink(adminTr("Ack emoji →"), { view: "ackemoji" })],
             ...extra,
           });
         shell({});
@@ -14120,7 +14179,9 @@
           titleI18n: true,
           context: slackContainerLabel(j.container),
           contextGo: { view: "slack", container: j.container, ts: j.tsFrom },
-          actions: scopeGo ? [navLink("Governance →", { view: "governance", scope: scopeGo, session: null })] : [],
+          actions: scopeGo
+            ? [navLink(adminTr("Governance →"), { view: "governance", scope: scopeGo, session: null })]
+            : [],
         });
         const split = document.createElement("div");
         split.className = "judg-split";
@@ -14824,7 +14885,7 @@
             if (originLink) who.appendChild(originLink);
             const mirror = slackMirrorRef(event);
             if (mirror) {
-              const ml = navLink("View in Slack mirror ↗", {
+              const ml = navLink(adminTr("View in Slack mirror ↗"), {
                 view: "slack",
                 container: mirror.container,
                 ts: mirror.ts,
