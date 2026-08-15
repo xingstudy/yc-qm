@@ -443,7 +443,11 @@ function detailTpl(c: CoreContext): TemplateResult {
             ${c.isPrivate ? html`<span class="context-lock" title="Private channel">${icon(Lock, 14)}</span>` : nothing}
           </h1>
           <div class="context-sub">
-            ${c.project ? sub : `${sub} The agent's files and memory here are separate from your other contexts.`}
+            ${
+              c.project
+                ? sub
+                : html`${sub} ${t("The agent's files and memory here are separate from your other contexts.")}`
+            }
           </div>
         </div>
         <div class="context-detail-actions">

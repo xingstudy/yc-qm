@@ -82,10 +82,20 @@ test("Chinese translations cover the project management, resource, and skill pag
     ["Automated posters", "自动发布者"],
     ["Control how messages from bots and integrations wake the agent.", "控制机器人和集成消息如何唤醒智能体。"],
     ["No bots added. All bot posts are treated as activity.", "尚未添加机器人。所有机器人发布的消息都会视为活动。"],
+    ["Navigation", "导航"],
+    ["Refresh", "刷新"],
+    ["Refresh keychain", "刷新密钥链"],
     [
       "Describe what you want scheduled — what to do, how often, and where the result should go. The agent sets it up and confirms in chat; it will ask if anything is unclear. It should give the cron a short, distinctive title naming what it is for, like Gmail unread digest or GitLab CI watch.",
       "描述你希望安排的任务：做什么、多久执行一次，以及将结果发送到哪里。智能体会进行设置并在对话中确认；如有不清楚之处会询问你。它会为定时任务设置简短且易识别的标题来说明用途，例如 Gmail 未读摘要或 GitLab CI 监控。",
     ],
+    [
+      "Describe what you want scheduled — what to do, how often, and where the result should go. The agent sets it up and confirms in chat; it will ask if anything is unclear. It should give the cron a short, distinctive title naming what it is for, like",
+      "描述你希望安排的任务：做什么、多久执行一次，以及将结果发送到哪里。智能体会进行设置并在对话中确认；如有不清楚之处会询问你。它会为定时任务设置简短且易识别的标题来说明用途，例如",
+    ],
+    ["Gmail unread digest", "Gmail 未读摘要"],
+    ["GitLab CI watch", "GitLab CI 监控"],
+    ["or", "或"],
     ["No accounts available", "暂无可用账户"],
     ["Your workspace has not configured any account providers yet.", "你的工作区尚未配置任何账户提供商。"],
     [
@@ -167,6 +177,10 @@ test("conditional interface labels pass through the translator", () => {
   assert.match(source("contexts.ts"), /if \(principalId === appState\.me\?\.user\) return t\("You"\)/);
   assert.match(source("contexts.ts"), /fallbackName\?\.trim\(\) \|\| t\("Personal"\)/);
   assert.doesNotMatch(source("contexts.ts"), /fallbackName[^\n]*=== "Personal"/);
+  assert.match(
+    source("contexts.ts"),
+    /t\("The agent's files and memory here are separate from your other contexts\."\)/,
+  );
   assert.match(source("session-list.ts"), /name: t\("Personal"\)/);
   assert.match(source("sessions.ts"), /\?\? t\("Personal"\)/);
   assert.match(source("context-model.ts"), /\$\{t\("Org default"\)\}/);
@@ -176,12 +190,15 @@ test("conditional interface labels pass through the translator", () => {
   assert.match(source("skills.ts"), /name: t\("Personal — only you"\)/);
   assert.match(source("chat.ts"), /return t\(work\.status === "working" \? `Working for \$\{secs\}s`/);
   assert.match(source("chat.ts"), /return t\("Needs your approval"\)/);
+  assert.match(source("chat.ts"), /t\("Hi — I'm your AI teammate 👋"\)/);
   assert.match(source("chat.ts"), /t\(`\$\{result\.count\} result/);
   assert.match(source("memory.ts"), /memoryNotice = t\("Saved ✓"\)/);
   assert.match(source("memory.ts"), /memoryNotice \|\| t\("Loading…"\)/);
   assert.match(source("contexts.ts"), /contextsNotice \|\| \(contextsLoading[^]*t\("Loading projects…"\)/);
   assert.match(source("skills.ts"), /skillsNotice = t\("Loading skill instructions…"\)/);
   assert.match(source("crons.ts"), /cronActionNotice = t\("Run started\./);
+  assert.match(source("crons.ts"), /Describe what you want scheduled[^]*t\("Gmail unread digest"\)/);
+  assert.match(source("crons.ts"), /\$\{t\("or"\)\}[^]*t\("GitLab CI watch"\)/);
   assert.match(source("connectors.ts"), /`\$\{t\("a Slack channel"\)\} \(\$\{ref\}\)`/);
   assert.match(source("connectors.ts"), /return message === fallback \? t\(fallback\) : message/);
   assert.doesNotMatch(source("connectors.ts"), /t\(connectorNotice\)/);

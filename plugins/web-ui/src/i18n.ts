@@ -156,6 +156,10 @@ const ZH: Record<string, string> = {
   "Google Workspace": "Google Workspace",
   "Group DM": "群组私信",
   "Hi — I'm your AI teammate 👋": "你好——我是你的 AI 队友 👋",
+  "I run tasks on a computer of my own and work across your connected tools — Slack, Google Workspace, GitHub, Linear, and the open web — and I remember what we work on together.":
+    "我会在自己的计算机上执行任务，并使用你已连接的工具——Slack、Google Workspace、GitHub、Linear 和开放网络；我也会记住我们共同完成的工作。",
+  "Want to get set up? Tell me your name and what you're working on, and I'll take it from there — or just ask me anything to dive straight in.":
+    "想先完成设置？告诉我你的名字和正在处理的工作，我会接着协助你；也可以直接提问，马上开始。",
   "Instructions unavailable.": "指令不可用。",
   "Just you — your web chats and DMs with the agent live here.": "仅你可见——你与智能体的 Web 对话和私信保存在此。",
   "Hide background activity": "隐藏后台活动",
@@ -226,6 +230,7 @@ const ZH: Record<string, string> = {
   "No files match these filters.": "没有匹配筛选条件的文件。",
   "No files yet. Upload one here or ask the agent to create one.": "暂无文件。可在此上传，或让智能体创建。",
   "No bots added. All bot posts are treated as activity.": "尚未添加机器人。所有机器人发布的消息都会视为活动。",
+  Navigation: "导航",
   "No accounts available": "暂无可用账户",
   "No projects match your search.": "没有匹配搜索条件的项目。",
   "No projects yet.": "暂无项目。",
@@ -555,6 +560,12 @@ const ZH: Record<string, string> = {
   "no longer offered": "不再提供",
   "Describe what you want scheduled — what to do, how often, and where the result should go. The agent sets it up and confirms in chat; it will ask if anything is unclear. It should give the cron a short, distinctive title naming what it is for, like Gmail unread digest or GitLab CI watch.":
     "描述你希望安排的任务：做什么、多久执行一次，以及将结果发送到哪里。智能体会进行设置并在对话中确认；如有不清楚之处会询问你。它会为定时任务设置简短且易识别的标题来说明用途，例如 Gmail 未读摘要或 GitLab CI 监控。",
+  "Describe what you want scheduled — what to do, how often, and where the result should go. The agent sets it up and confirms in chat; it will ask if anything is unclear. It should give the cron a short, distinctive title naming what it is for, like":
+    "描述你希望安排的任务：做什么、多久执行一次，以及将结果发送到哪里。智能体会进行设置并在对话中确认；如有不清楚之处会询问你。它会为定时任务设置简短且易识别的标题来说明用途，例如",
+  "Gmail unread digest": "Gmail 未读摘要",
+  "GitLab CI watch": "GitLab CI 监控",
+  ".": "。",
+  or: "或",
   "Every weekday at 9am, summarize my unread email and DM me the highlights.":
     "每个工作日上午 9 点，汇总我的未读邮件，并通过私信发送重点内容。",
   History: "历史记录",
@@ -570,6 +581,9 @@ const ZH: Record<string, string> = {
   "Add bot": "添加机器人",
   "Not connected": "未连接",
   "Reconnect needed": "需要重新连接",
+  Refresh: "刷新",
+  "Refresh keychain": "刷新密钥链",
+  "Refresh memory": "刷新记忆",
   "Refresh failed:": "刷新失败：",
   expires: "到期时间",
   requested: "请求了",

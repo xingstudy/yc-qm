@@ -4910,7 +4910,7 @@
         "Resolved for this scope now": "已按当前范围解析",
         Autonomy: "自主性",
         Loading: "正在加载",
-        "Security posture": "安全策略",
+        "Security posture": "安全姿态",
         Network: "网络",
         "Outbound enforcement": "出站策略执行",
         "Slack audience": "Slack 受众",
@@ -5378,12 +5378,41 @@
         exec: "执行",
         "Raw JSON": "原始 JSON",
         "(empty)": "（空）",
+        active: "有效",
+        revoked: "已撤销",
+        used: "已使用",
+        unknown: "未知",
+        expired: "已过期",
+        "No expiry": "永不过期",
+        Expired: "已过期",
+        Expires: "到期时间",
+        "one-time": "单次",
+        standing: "长期",
+        "used by": "使用者",
+        ask: "请求",
         "unattributed context": "未归属上下文",
         turn: "轮次",
         "Failed to load context": "无法加载上下文",
         Slack: "Slack",
         Judgment: "判定",
         Conversation: "对话",
+        Volume: "数量",
+        "Last activity": "最近活动",
+        "(no messages yet)": "（暂无消息）",
+        "No config.": "暂无配置。",
+        "Author unavailable": "操作者不可用",
+        "Time unavailable": "时间不可用",
+        "Restore SOUL version": "恢复 SOUL 版本",
+        "The saved instructions from this revision will replace the current SOUL.":
+          "此修订版中保存的指令将替换当前 SOUL。",
+        "Restore version": "恢复版本",
+        "This does not erase history. A new revision will be created, and future turns will use it immediately.":
+          "此操作不会清除历史记录。系统会创建一个新修订版，后续轮次将立即使用它。",
+        "restored as a new revision": "已恢复为新修订版",
+        "Restoring…": "正在恢复…",
+        "SOUL changed; latest revision loaded and your draft was preserved.":
+          "SOUL 已更改；已加载最新修订版，并保留了你的草稿。",
+        "Restore failed.": "恢复失败。",
         "Org-wide": "组织范围",
         "No saved revision": "尚无已保存修订版",
         "Save policy": "保存策略",
@@ -5445,6 +5474,8 @@
         "Add a key below first": "请先在下方添加密钥",
         "Custom providers could not be loaded. Try again.": "无法加载自定义提供商。请重试。",
         "Choose a base model.": "请选择基础模型。",
+        "Enter the provider API key.": "请输入提供商 API 密钥。",
+        "The provider rejected this key.": "提供商拒绝了此密钥。",
         "Add this provider's API key below before selecting its model.":
           "请先在下方添加此提供商的 API 密钥，再选择其模型。",
         "Saving base model…": "正在保存基础模型…",
@@ -5454,11 +5485,26 @@
         "Key saved, but the base model and setup status could not be refreshed.":
           "密钥已保存，但无法更改基础模型或刷新设置状态。",
         "Base model saved.": "基础模型已保存。",
+        "Key and base model saved.": "密钥和基础模型已保存。",
+        "Key saved, but the base model could not be changed.": "密钥已保存，但无法更改基础模型。",
         "The base model could not be changed.": "无法更改基础模型。",
+        "Could not disable this provider.": "无法禁用此提供商。",
+        "Provider disabled.": "提供商已禁用。",
         "Provider disabled, but setup status could not be refreshed.": "提供商已禁用，但无法刷新设置状态。",
         "Provider removed, but the list could not be refreshed.": "提供商已移除，但无法刷新列表。",
+        "Provider removed.": "提供商已移除。",
+        "Provider id, name, base URL, and at least one model are required.":
+          "必须填写提供商 ID、名称、基础 URL，并至少配置一个模型。",
         "API key is required for a new provider.": "新提供商必须填写 API 密钥。",
         "Provider saved, but setup status could not be refreshed.": "提供商已保存，但无法刷新设置状态。",
+        "Provider saved. Its models are now in the picker.": "提供商已保存，其模型现已加入选择器。",
+        "Setup status could not be loaded. Try again.": "无法加载设置状态，请重试。",
+        "Failed to load.": "加载失败。",
+        "Save failed.": "保存失败。",
+        Saved: "已保存",
+        Deleted: "已删除",
+        Removed: "已移除",
+        "Saving...": "正在保存…",
         "None — rules are drafts": "无——规则仅为草稿",
         "Domain-aware firewall": "域名感知防火墙",
         "IP and port firewall": "IP 和端口防火墙",
@@ -5560,6 +5606,161 @@
         "Judgments →": "判定 →",
         "Governance →": "治理 →",
         "Ack emoji →": "确认表情 →",
+        Allow: "允许",
+        Deny: "拒绝",
+        "Require approval": "需要审批",
+        "Command pattern": "命令模式",
+        "Move rule up": "上移规则",
+        "Move rule down": "下移规则",
+        "Remove command policy rule": "移除命令策略规则",
+        "Org-wide, default off. When on, internal members may chat with the agent in Slack rooms whose audience includes an external user (Connect member or guest) — its replies, and anything it reads there, are visible to those externals. Externals themselves still can't interact.":
+          "组织级设置，默认关闭。开启后，内部成员可在含外部用户（Connect 成员或访客）的 Slack 聊天室中与智能体对话；智能体的回复以及它在其中读取的内容对这些外部用户可见。外部用户自身仍无法与智能体交互。",
+        "Restrict which models the web UI offers and accepts, org-wide. Add the models to allow and pick which is pre-selected by default. Remove every chip to allow the deployment's full model set.":
+          "在组织范围内限制 Web UI 可提供和接受的模型。添加允许的模型并选择默认预选项。移除所有模型标签即可允许部署提供的全部模型。",
+        "How this org's surfaces look. Accent is the highlight color across the web UI, admin, and portal; mark is the 1–2 character badge in the web UI; label is the assistant's name in transcripts. Leave a field blank to use the deployment default.":
+          "设置此组织各界面的外观。强调色用于 Web UI、管理端和门户中的高亮；品牌标记是 Web UI 中的 1–2 字符徽标；助手名称显示在对话记录中。留空字段即可使用部署默认值。",
+        "Server-side credentials vended through the broker. Review the complete effective capability—destination, authentication, methods, paths, and principals—before saving. Secrets never reach a sandbox.":
+          "由代理提供的服务端凭据。保存前请检查完整的生效能力，包括目标、认证、方法、路径和主体。密钥绝不会进入沙箱。",
+        "+ Add model": "+ 添加模型",
+        "Credential display name": "凭据显示名称",
+        "Default: Authorization": "默认：Authorization",
+        "Default: Bearer": "默认：Bearer",
+        "(write-only)": "（只写）",
+        "Total turn": "总轮次",
+        "End-to-end wall time, request to reply": "端到端总耗时（从请求到回复）",
+        "First token": "首个令牌",
+        "Time until the first streamed token": "首个流式令牌到达前的耗时",
+        "Slack pickup": "Slack 接收",
+        "Socket receive to submit — how long the message sat in the Slack plugin":
+          "从套接字接收到提交——消息在 Slack 插件中的等待时间",
+        "Intake preamble": "接入预处理",
+        "Surface-side work before the request left for core": "请求离开界面层进入核心服务前的处理耗时",
+        "Queue wait": "队列等待",
+        "Waiting for a worker to claim the run": "等待工作进程领取运行任务",
+        Dispatch: "分派",
+        "Surface receive to core hand-off": "界面层接收到交给核心服务的耗时",
+        Ingress: "入口处理",
+        "Core receive to model start: parse, resolve, prepare": "核心服务收到请求到模型启动：解析、求解和准备",
+        "Reply decision": "回复决策",
+        "Deciding whether to speak in a channel": "判断是否应在频道中发言",
+        "History compaction": "历史压缩",
+        "Compacting a long transcript before the model call": "调用模型前压缩较长的对话记录",
+        "Machine provision": "机器准备",
+        "Booting or resuming the sandbox machine": "启动或恢复沙箱机器",
+        "Skills materialize": "技能装载",
+        "Copying resolved skills onto the machine": "将已解析的技能复制到机器",
+        "Credentials restore": "凭据恢复",
+        "Restoring keychain credentials onto the machine": "将密钥链凭据恢复到机器",
+        "Workspace layers": "工作区层",
+        "Restoring workspace layers at provision time": "准备机器时恢复工作区层",
+        "Prompt compile": "提示词编译",
+        "Assembling the system prompt": "组装系统提示词",
+        "Memory recall": "记忆召回",
+        "Injecting durable memory into the prompt": "将持久记忆注入提示词",
+        "Session lease": "会话租约",
+        "Loading the session and acquiring the writer lease": "加载会话并获取写入租约",
+        "Command exec": "命令执行",
+        "Commands the agent ran in the machine": "智能体在机器中执行的命令",
+        "Stream + append": "流式输出与追加",
+        "Streaming tokens out and appending the turn": "流式输出令牌并追加本轮记录",
+        "Slack deliver": "Slack 交付",
+        "The final Slack post/update round-trip": "最终 Slack 发布或更新的往返耗时",
+        "Memory capture": "记忆捕获",
+        "Post-turn fact extraction, off the critical path": "轮次结束后的事实提取，不在关键路径上",
+        "cold machine boot": "冷启动机器",
+        "warm machine": "热机",
+        "no machine": "未使用机器",
+        "Turns that never touched a machine": "未使用机器的轮次",
+        "pure conversation, no tools": "纯对话，未使用工具",
+        "Turns that used a machine": "使用机器的轮次",
+        "All turns": "全部轮次",
+        "the blended average": "综合平均值",
+        "Turn mix": "轮次构成",
+        "How often turns provision a machine, and what each kind of turn costs.":
+          "轮次使用机器的频率，以及各类轮次的耗时。",
+        "Kind of turn": "轮次类型",
+        Share: "占比",
+        Median: "中位数",
+        "Model calls": "模型调用",
+        "Tool calls": "工具调用",
+        "No turns sampled.": "尚无轮次样本。",
+        Published: "已发布",
+        Unknown: "未知",
+        granted: "已授予",
+        "not granted": "未授予",
+        "built-in": "内置",
+        never: "从未使用",
+        "imported at": "导入于",
+        from: "来源",
+        pack: "技能包",
+        Scopes: "范围",
+        Capabilities: "能力",
+        Approvals: "审批",
+        Instructions: "指令",
+        Version: "版本",
+        Capability: "能力",
+        Reviewer: "审查者",
+        "Every scope this skill is installed in. Remove takes it out of that scope only.":
+          "此技能安装到的所有范围。移除操作只会将其从对应范围中删除。",
+        "What the skill is allowed to reach. Granted at review time.": "此技能获准访问的内容，授权在审查时授予。",
+        "Requires no capabilities.": "无需任何能力。",
+        "Reviewers who signed off on this skill.": "批准此技能的审查者。",
+        "The SKILL.md the agent reads when this skill is in play.": "此技能生效时智能体读取的 SKILL.md。",
+        "Principal id": "主体 ID",
+        "Principal id or name": "主体 ID 或名称",
+        Revoke: "撤销",
+        "Impersonate ↗": "模拟身份 ↗",
+        "Make admin": "设为管理员",
+        member: "成员",
+        "org admin": "组织管理员",
+        ", newest shown": "，仅显示最新项",
+        cron: "定时表达式",
+        daily: "每天",
+        weekdays: "工作日",
+        Sundays: "每周日",
+        Mondays: "每周一",
+        Tuesdays: "每周二",
+        Wednesdays: "每周三",
+        Thursdays: "每周四",
+        Fridays: "每周五",
+        Saturdays: "每周六",
+        Sun: "周日",
+        Mon: "周一",
+        Tue: "周二",
+        Wed: "周三",
+        Thu: "周四",
+        Fri: "周五",
+        Sat: "周六",
+        hourly: "每小时",
+        "hourly at": "每小时的",
+        every: "每",
+        once: "一次",
+        "once at": "单次执行于",
+        "default timezone": "默认时区",
+        None: "无",
+        "No delivery destination": "无交付目的地",
+        destination: "目的地",
+        principal: "主体",
+        "on behalf of": "代表",
+        "principal id": "主体 ID",
+        "Slack channel/thread id": "Slack 频道或线程 ID",
+        archived: "已归档",
+        disabled: "已禁用",
+        enabled: "已启用",
+        "never fired": "从未触发",
+        Prompt: "提示词",
+        "Re-run as a fresh prompt at every fire.": "每次触发时都作为新的提示词重新运行。",
+        "Delivered as-is at every fire.": "每次触发时均按原样交付。",
+        "Loading fires...": "正在加载触发记录…",
+        silent: "未交付",
+        "(no messages)": "（无消息）",
+        Schedule: "计划",
+        Destination: "目的地",
+        Created: "创建时间",
+        "Last fired": "上次触发",
+        "Recent fires": "最近触发记录",
+        "Each fire is a session — click one to read its transcript. Dimmed fires delivered nothing.":
+          "每次触发都会创建一个会话；点击即可查看对话记录。变灰的触发记录没有交付任何内容。",
         Distribution: "分布",
         "Where the samples land.": "样本的分布位置。",
         "By day": "按天",
@@ -5660,6 +5861,126 @@
         Deployments: "部署",
         Retention: "保留策略",
         Judgments: "判定",
+        Show: "显示",
+        thinking: "思考过程",
+        "tool results": "工具结果",
+        Domain: "域名",
+        Kernel: "内核",
+        "Default — the deployment's base model": "默认——部署的基础模型",
+        "ignore — never wakes the judge": "忽略——永不唤醒判定器",
+        "rollup — batch, judge periodically": "汇总——批量处理并定期判定",
+        "action — posts are triggers": "行动——发布内容会触发智能体",
+        "user — read like a person": "用户——像读取真人消息一样处理",
+        "Remove bot ledger entry": "移除机器人台账条目",
+        "Close browse": "关闭浏览",
+        "Selected governance scope": "已选择的治理范围",
+        "Governance sections": "治理分区",
+        "SOUL version history": "SOUL 版本历史",
+        "(none — the agent stays silent here unless addressed)": "（无——除非被直接提及，否则智能体会保持静默）",
+        "Organization and selected-scope rules; audience-specific policies may narrow this further":
+          "组织与所选范围的规则；受众特定策略可能进一步收紧限制",
+        "Blank value semantics": "空值含义",
+        "OAuth client ID": "OAuth 客户端 ID",
+        "ref (branch or SHA)": "引用（分支或 SHA）",
+        "Pin to a branch or full 40-hex commit SHA. Blank = the repo's default branch.":
+          "固定到某个分支或完整的 40 位十六进制提交 SHA。留空则使用仓库默认分支。",
+        "exclude globs, comma-separated": "排除 glob，以逗号分隔",
+        "e.g. trusted/*": "例如 trusted/*",
+        "deploy-token slug": "部署令牌标识",
+        "Private-repo deploy-token credential slug. Blank = your connected GitHub account.":
+          "私有仓库部署令牌凭据的标识。留空则使用你已连接的 GitHub 账户。",
+        "The last org admin cannot be revoked.": "不能撤销最后一位组织管理员。",
+        none: "无",
+        Browse: "浏览",
+        "DM/personal exact; channel approximate (entries carry no author principal).":
+          "私信/个人范围精确；频道为近似值（记录不包含作者主体）。",
+        "Monitor wake": "监控唤醒",
+        "Webhook wake": "Webhook 唤醒",
+        "Background wake": "后台唤醒",
+        "first fired": "首次触发",
+        "isn't in the loaded window — it may be older than what's shown (use “Load earlier messages”) or was never mirrored.":
+          "不在已加载的窗口中——它可能早于当前显示的内容（请使用“加载更早的消息”），或者从未被镜像。",
+        "Couldn't start impersonation:": "无法开始模拟身份：",
+        "everyone in the organization": "组织中的所有人",
+        "Recent users in the retained window:": "保留窗口内的近期用户：",
+        "No successful use appears in the retained window.": "保留窗口内没有成功使用记录。",
+        "This credential currently grants broker access to": "此凭据当前通过代理向以下主体授予访问权限：",
+        "Deletion immediately revokes every grant and removes the stored secret. Existing agent work that depends on":
+          "删除会立即撤销所有授权并移除已存储的密钥。依赖以下凭据的现有智能体工作：",
+        "will fail. This cannot be undone.": "将失败。此操作无法撤销。",
+        "Open web UI as this person ↗": "以此人员身份打开 Web UI ↗",
+        "Recent conversations": "最近对话",
+        "Every conversation this person took part in — click a row to read the transcript.":
+          "此人员参与的所有对话——点击一行即可查看对话记录。",
+        "No conversations yet.": "暂无对话。",
+        "Documents in this person's personal workspace — saved by the agent or uploaded.":
+          "此人员个人工作区中的文档——由智能体保存或由用户上传。",
+        "No files in their personal workspace.": "其个人工作区中没有文件。",
+        "Apps this person published from their personal workspace.": "此人员从个人工作区发布的应用。",
+        "No deployments.": "暂无部署。",
+        "Scheduled prompts and reminders this person owns.": "此人员拥有的定时提示词和提醒。",
+        "No crons.": "暂无定时任务。",
+        "Personal-DM onboarding state — reset to re-trigger the flow on this person's next DM, or wipe their DMs to replay the full new-user experience.":
+          "个人私信引导状态——重置后会在此人员下次私信时重新触发流程；也可清除其私信以重新体验完整的新用户流程。",
+        Configuration: "配置",
+        "Policy and connectors for this person's personal scope.": "此人员个人范围内的策略和连接器。",
+        Setting: "设置项",
+        Value: "值",
+        "Custom soul": "自定义 SOUL",
+        "Egress overrides": "出站覆盖项",
+        "Connectors linked": "已连接的连接器",
+        default: "默认",
+        set: "已设置",
+        auto: "自动",
+        "org default": "组织默认值",
+        denylist: "拒绝列表",
+        allow: "允许",
+        deny: "拒绝",
+        created: "创建于",
+        upload: "上传",
+        "Every bot ledger row needs a bot name.": "机器人台账中的每一行都必须填写机器人名称。",
+        "Fix the highlighted regular expression before saving:": "请先修正突出显示的正则表达式，再保存：",
+        "Enable Dangerous autonomy?": "启用危险级自主模式？",
+        "Change security posture?": "更改安全姿态？",
+        "Review the proposed change below before it is applied.": "应用前请检查以下即将生效的变更。",
+        Proposed: "拟议值",
+        "Dangerous removes content screening; nothing pauses between tool calls. Predeclared command approvals, hard denials, identity, authorization, credential scope, revocation, and audit remain enforced.":
+          "危险级模式会移除内容筛查，工具调用之间不会暂停。预声明命令审批、硬性拒绝、身份、授权、凭据范围、撤销和审计仍会强制执行。",
+        "This changes the effective tools and approval behavior for future turns in this scope.":
+          "这会更改此范围后续轮次中实际可用的工具和审批行为。",
+        "Enable Dangerous": "启用危险级模式",
+        "Apply posture": "应用安全姿态",
+        "Allow external Slack audiences?": "允许外部 Slack 受众？",
+        "Return Slack to internal-only?": "将 Slack 恢复为仅限内部？",
+        "This organization-wide audience boundary applies to future Slack turns.":
+          "此组织级受众边界适用于后续 Slack 轮次。",
+        "External audiences enabled": "已启用外部受众",
+        "Agent replies and anything read in a mixed Slack room can be visible to guests or Slack Connect participants. External users still cannot drive the agent.":
+          "智能体回复以及它在混合 Slack 房间中读取的内容可能对访客或 Slack Connect 参与者可见。外部用户仍无法驱动智能体。",
+        "Mixed-audience Slack rooms will stop receiving agent replies after this change.":
+          "更改后，混合受众 Slack 房间将不再收到智能体回复。",
+        "Allow external audiences": "允许外部受众",
+        "Require internal audiences": "要求仅限内部受众",
+        "sorted by size (this backend keeps no edit history)": "按大小排序（此后端不保留编辑历史）",
+        empty: "空",
+        "Failed to load connector setup.": "无法加载连接器设置。",
+        "Only an org admin can manage connectors.": "只有组织管理员可以管理连接器。",
+        "Failed to load Slack status.": "无法加载 Slack 状态。",
+        "Both Slack tokens are required.": "必须同时填写两个 Slack 令牌。",
+        "Validating with Slack…": "正在通过 Slack 验证…",
+        "Slack validation failed.": "Slack 验证失败。",
+        "Saved. Slack is activating.": "已保存，Slack 正在激活。",
+        "Remove the Slack bot connection? Slack chat will stop until new tokens are saved.":
+          "移除 Slack 机器人连接？保存新令牌之前，Slack 对话将停止工作。",
+        "Remove failed.": "移除失败。",
+        "Choose a connector.": "请选择连接器。",
+        "Client ID is required.": "必须填写客户端 ID。",
+        "Client secret is required.": "必须填写客户端密钥。",
+        "Delete failed.": "删除失败。",
+        "Principal id required.": "必须填写主体 ID。",
+        "Principal id or name required.": "必须填写主体 ID 或名称。",
+        "Matches several people — pick one from the suggestions.": "匹配到多个人员——请从建议中选择一个。",
+        Impersonate: "模拟身份",
         "Ack emoji": "确认表情",
       };
       const normalizeAdminLocale = (value) => {
@@ -5689,6 +6010,12 @@
         if (match) return `${match[1]} 个尚无对话的已知范围`;
         match = value.match(/^([\d,.]+[kKmM]?) conversations?$/);
         if (match) return `${match[1]} 个对话`;
+        match = value.match(/^([\d,.]+[kKmM]?) users?$/);
+        if (match) return `${match[1]} 位用户`;
+        match = value.match(/^([\d,.]+[kKmM]?) sessions?$/);
+        if (match) return `${match[1]} 个会话`;
+        match = value.match(/^([\d,.]+[kKmM]?) people$/);
+        if (match) return `${match[1]} 人`;
         match = value.match(/^([\d,.]+[kKmM]?) skills?$/);
         if (match) return `${match[1]} 个技能`;
         match = value.match(/^([\d,.]+[kKmM]?) scopes?$/);
@@ -5699,10 +6026,32 @@
         if (match) return `${match[1]} 个工具`;
         match = value.match(/^([\d,.]+[kKmM]?) fields?$/);
         if (match) return `${match[1]} 个字段`;
+        match = value.match(/^([\d,.]+[kKmM]?) rules?$/);
+        if (match) return `${match[1]} 条规则`;
         match = value.match(/^([\d,.]+[kKmM]?) steps?$/);
         if (match) return `${match[1]} 个步骤`;
         match = value.match(/^([\d,.]+[kKmM]?) errors?$/);
         if (match) return `${match[1]} 个错误`;
+        match = value.match(/^([\d,.]+[kKmM]?) events?$/);
+        if (match) return `${match[1]} 个事件`;
+        match = value.match(/^([\d,.]+[kKmM]?) files?$/);
+        if (match) return `${match[1]} 个文件`;
+        match = value.match(/^([\d,.]+[kKmM]?) crons?$/);
+        if (match) return `${match[1]} 个定时任务`;
+        match = value.match(/^([\d,.]+[kKmM]?) deployments?$/);
+        if (match) return `${match[1]} 个部署`;
+        match = value.match(/^([\d,.]+[kKmM]?) entries?$/);
+        if (match) return `${match[1]} 条记录`;
+        match = value.match(/^([\d,.]+[kKmM]?) versions?$/);
+        if (match) return `${match[1]} 个版本`;
+        match = value.match(/^([\d,.]+[kKmM]?) runs?$/);
+        if (match) return `${match[1]} 次运行`;
+        match = value.match(/^([\d,.]+[kKmM]?) done$/);
+        if (match) return `已完成 ${match[1]} 次`;
+        match = value.match(/^([\d,.]+[kKmM]?) failed$/);
+        if (match) return `失败 ${match[1]} 次`;
+        match = value.match(/^(.+) failure rate$/);
+        if (match) return `${match[1]} 失败率`;
         match = value.match(/^([\d,.]+[kKmM]?) turns?$/);
         if (match) return `${match[1]} 个轮次`;
         match = value.match(/^([\d,.]+[kKmM]?) delivered$/);
@@ -5739,6 +6088,21 @@
         if (match) return `已读取 ${match[1]} 个令牌`;
         match = value.match(/^(.+) tokens written$/);
         if (match) return `已写入 ${match[1]} 个令牌`;
+        match = value.match(/^([\d,.]+) characters · about ([\d,.]+) tokens$/);
+        if (match) return `${match[1]} 个字符 · 约 ${match[2]} 个令牌`;
+        match = value.match(/^([\d,.]+) scope\(s\) could not be removed\.$/);
+        if (match) return `${match[1]} 个范围无法移除。`;
+        match = value.match(/^Remove '(.+)' from (.+)\? It stops being available to agents \(kept for audit\)\.$/);
+        if (match) {
+          const allScopes = match[2].match(/^all ([\d,.]+) scopes$/);
+          const where = allScopes ? `全部 ${allScopes[1]} 个范围` : match[2];
+          return `确认从${where}移除“${match[1]}”吗？移除后智能体将无法使用它，但会保留以供审计。`;
+        }
+        match = value.match(
+          /^Remove '(.+)' from (.+)\? It stops being available to agents in that scope \(kept for audit\)\.$/,
+        );
+        if (match)
+          return `确认从${match[2]}移除“${match[1]}”吗？移除后该范围内的智能体将无法使用它，但会保留以供审计。`;
         match = value.match(/^Uploading ([\d,.]+) files?\.\.\.$/);
         if (match) return `正在上传 ${match[1]} 个文件…`;
         match = value.match(/^Uploaded ([\d,.]+) files?\.$/);
@@ -5752,20 +6116,43 @@
         match = value.match(/^([\d,.]+) draft rules?$/);
         if (match) return `${match[1]} 条草案规则`;
         match = value.match(/^(.+) enforced$/);
-        if (match) return `${match[1]} 已强制执行`;
+        if (match) return `${match[1]}已强制执行`;
         match = value.match(/^Policy enforced by (.+)$/);
         if (match) return `策略由 ${match[1]} 强制执行`;
         match = value.match(
           /^(.+) supports (.+) fidelity, which cannot enforce outbound host policy\. Agents still have open outbound access\.$/,
         );
-        if (match)
-          return `${match[1]} 支持 ${match[2]} 级执行精度，但无法执行出站主机策略。智能体仍可自由访问外部网络。`;
+        if (match) return `${match[1]} 支持${match[2]}级执行精度，但无法执行出站主机策略。智能体仍可自由访问外部网络。`;
         match = value.match(/^(.+) enforces this policy at (.+) fidelity\.$/);
-        if (match) return `${match[1]} 以 ${match[2]} 级执行精度强制执行此策略。`;
+        if (match) return `${match[1]} 以${match[2]}级执行精度强制执行此策略。`;
+        match = value.match(
+          /^([\d,.]+) on a warm machine \((.+) median resume\) · ([\d,.]+) booted cold \((.+) median boot\)$/,
+        );
+        if (match)
+          return `${match[1]} 次使用热机（恢复耗时中位数 ${match[2]}） · ${match[3]} 次冷启动（启动耗时中位数 ${match[4]}）`;
         match = value.match(
           /^(.+) supports domain policy, but the control plane cannot mint a reachable proxy token\. Agents still have open outbound access\.$/,
         );
         if (match) return `${match[1]} 支持域名策略，但控制平面无法签发可访问的代理令牌。智能体仍可自由访问外部网络。`;
+        match = value.match(/^Duplicate bot "(.+)" — the ledger matches names case-insensitively\.$/);
+        if (match) return `机器人“${match[1]}”重复——台账中的名称不区分大小写。`;
+        match = value.match(/^Bot "(.+)": rollup hours must be a positive number\.$/);
+        if (match) return `机器人“${match[1]}”：汇总小时数必须为正数。`;
+        match = value.match(/^Rule ([\d,.]+) is unreachable because rule ([\d,.]+) has the same pattern\.$/);
+        if (match) return `规则 ${match[1]} 无法触达，因为规则 ${match[2]} 使用了相同的模式。`;
+        match = value.match(/^Rule ([\d,.]+) is shadowed by catch-all rule ([\d,.]+)\.$/);
+        if (match) return `规则 ${match[1]} 被全匹配规则 ${match[2]} 遮蔽。`;
+        match = value.match(/^Disable the (.+) model key\? Models from this provider will stop working\.$/);
+        if (match) return `禁用 ${match[1]} 模型密钥？此提供商的模型将停止工作。`;
+        match = value.match(
+          /^Delete the OAuth client for (.+)\? This hides the connector in everyone's web UI; existing links stop working\.$/,
+        );
+        if (match)
+          return `删除 ${match[1]} 的 OAuth 客户端？这会在所有人的 Web UI 中隐藏该连接器，现有连接也将停止工作。`;
+        match = value.match(/^Validating with (.+)…$/);
+        if (match) return `正在通过 ${match[1]} 验证…`;
+        match = value.match(/^Couldn't resolve that \((.+)\)\.$/);
+        if (match) return `无法解析该主体（${match[1]}）。`;
         match = value.match(/^([\d,.]+[kKmM]?) mirrored · ([\d,.]+[kKmM]?) members$/);
         if (match) return `${match[1]} 条已镜像 · ${match[2]} 位成员`;
         match = value.match(/^Signed in as (.+)$/);
@@ -5968,11 +6355,11 @@
               const j = await res.json();
               if (j && j.message) msg = j.message;
             } catch {}
-            alert("Couldn't start impersonation: " + msg);
+            alert(adminTr("Couldn't start impersonation:") + " " + msg);
             return;
           }
         } catch (e) {
-          alert("Couldn't start impersonation: " + (e && e.message ? e.message : e));
+          alert(adminTr("Couldn't start impersonation:") + " " + (e && e.message ? e.message : e));
           return;
         }
         window.open("/web-ui/", "_blank", "noopener");
@@ -6225,7 +6612,7 @@
           .replace(/[_-]/g, " ")
           .replace(/\b\w/g, (m) => m.toUpperCase());
       function labelRole(role) {
-        return String(role || "").replace(/_/g, " ");
+        return adminTr(String(role || "").replace(/_/g, " "));
       }
       function scopeKind(scopeId) {
         return String(scopeId || "").split(":")[0] || "scope";
@@ -6421,17 +6808,17 @@
         t.appendChild(tb);
         return tableWrap(t);
       }
-      function dataCard(title, desc, node) {
+      function dataCard(title, desc, node, options = {}) {
         const sec = document.createElement("section");
         sec.className = "card";
         const head = document.createElement("div");
         head.className = "head";
         const h = document.createElement("h2");
-        h.textContent = adminTr(title);
+        h.textContent = options.titleI18n === false ? title : adminTr(title);
         head.appendChild(h);
         if (desc) {
           const p = document.createElement("p");
-          p.textContent = adminTr(desc);
+          p.textContent = options.descI18n === false ? desc : adminTr(desc);
           head.appendChild(p);
         }
         const body = document.createElement("div");
@@ -6673,7 +7060,7 @@
       }
       function governanceScopeName(scopeId = scope) {
         return scopeKind(scopeId) === "org"
-          ? "Organization · " + scopeId.split(":").slice(1).join(":")
+          ? adminTr("Organization") + " · " + scopeId.split(":").slice(1).join(":")
           : shortName(scopeId);
       }
       function commitGo(st) {
@@ -6917,7 +7304,7 @@
           const input = document.createElement("input");
           input.type = "checkbox";
           input.checked = transcriptVisibility[key];
-          input.setAttribute("aria-label", "Show " + label);
+          input.setAttribute("aria-label", adminTr("Show") + " " + adminTr(label));
           input.onchange = () => {
             transcriptVisibility[key] = input.checked;
             onChange();
@@ -6925,7 +7312,7 @@
           const prefix = document.createElement("span");
           prefix.className = "header-check-prefix";
           prefix.textContent = adminTr("Show ");
-          wrap.append(input, prefix, document.createTextNode(label));
+          wrap.append(input, prefix, document.createTextNode(adminTr(label)));
           return wrap;
         };
         controls.append(checkbox("thinking", "thinking"), checkbox("tool results", "toolResults"));
@@ -7132,11 +7519,12 @@
         $("soul-saved").textContent = soulSaved || adminTr("No saved instructions");
         $("soul-draft").textContent =
           draft === soulSaved ? adminTr("No draft changes") : draft || adminTr("Instructions will be cleared");
-        $("soul-size").textContent =
+        $("soul-size").textContent = adminTr(
           draft.length.toLocaleString(adminLocaleCode()) +
-          " characters · about " +
-          Math.ceil(draft.length / 4).toLocaleString(adminLocaleCode()) +
-          " tokens";
+            " characters · about " +
+            Math.ceil(draft.length / 4).toLocaleString(adminLocaleCode()) +
+            " tokens",
+        );
         $("soul-validation").textContent = adminTr(draft.length >= 100000 ? "Maximum length reached" : "Draft valid");
       }
       function renderSoulHistory() {
@@ -7156,12 +7544,12 @@
           const row = document.createElement("div");
           row.className = "soul-revision";
           const meta = document.createElement("p");
-          meta.textContent = adminTr("Version " + revision.version);
+          meta.textContent = adminTr("Version") + " " + revision.version;
           const detail = document.createElement("small");
           detail.textContent =
-            (revision.updatedBy || "Author unavailable") +
+            (revision.updatedBy || adminTr("Author unavailable")) +
             " · " +
-            (revision.updatedAt ? fmtTime(revision.updatedAt) : "Time unavailable");
+            (revision.updatedAt ? fmtTime(revision.updatedAt) : adminTr("Time unavailable"));
           meta.appendChild(detail);
           const restore = document.createElement("button");
           restore.type = "button";
@@ -7172,16 +7560,16 @@
             const targetScope = scope;
             const expectedVersion = soulVersion;
             const confirmed = await reviewGovernanceChange({
-              title: "Restore SOUL version " + immutable.version + "?",
+              title: adminTr("Restore SOUL version") + " " + immutable.version + "?",
               subtitle: "The saved instructions from this revision will replace the current SOUL.",
               facts: [
                 ["Scope", governanceScopeName(targetScope)],
-                ["Current", "Version " + expectedVersion],
-                ["Restore", "Version " + immutable.version],
+                ["Current", adminTr("Version") + " " + expectedVersion],
+                ["Restore", adminTr("Version") + " " + immutable.version],
               ],
               warning:
                 "This does not erase history. A new revision will be created, and future turns will use it immediately.",
-              confirmLabel: "Restore version " + immutable.version,
+              confirmLabel: adminTr("Restore version") + " " + immutable.version,
               danger: true,
             });
             if (!confirmed) return;
@@ -7205,7 +7593,12 @@
               );
             }
             await loadScope();
-            setStatus("st-soul", "Version " + immutable.version + " restored as a new revision", "ok", true);
+            setStatus(
+              "st-soul",
+              adminTr("Version") + " " + immutable.version + " " + adminTr("restored as a new revision"),
+              "ok",
+              true,
+            );
           };
           row.append(meta, restore);
           root.appendChild(row);
@@ -7253,7 +7646,7 @@
         }
         setGovernanceStatus(
           "governance-status-egress",
-          adminTr(enforcement.active ? titleCase(enforcement.fidelity) + " enforced" : "Open egress"),
+          adminTr(enforcement.active ? adminTr(titleCase(enforcement.fidelity)) + " enforced" : "Open egress"),
           egressDetail,
           enforcement.active ? "ok" : "warn",
         );
@@ -7266,13 +7659,13 @@
         let enforcementSummary =
           titleCase(enforcement.backend) +
           " supports " +
-          (enforcement.declaredFidelity || enforcement.fidelity).replace("_", "-") +
+          adminTr((enforcement.declaredFidelity || enforcement.fidelity).replace("_", "-")) +
           " fidelity, which cannot enforce outbound host policy. Agents still have open outbound access.";
         if (enforcement.active) {
           enforcementSummary =
             titleCase(enforcement.backend) +
             " enforces this policy at " +
-            enforcement.fidelity.replace("_", "-") +
+            adminTr(enforcement.fidelity.replace("_", "-")) +
             " fidelity.";
         } else if (enforcement.reason === "control_plane_unconfigured") {
           enforcementSummary =
@@ -7497,7 +7890,7 @@
               const x = document.createElement("button");
               x.type = "button";
               x.textContent = "×";
-              x.setAttribute("aria-label", "Remove " + id);
+              x.setAttribute("aria-label", adminTr("Remove") + " " + id);
               x.style.cssText = "border:0;background:none;cursor:pointer;padding:0;font-size:14px;line-height:1";
               x.onclick = () => {
                 webuiModelIds = webuiModelIds.filter((v) => v !== id);
@@ -7573,8 +7966,8 @@
           add(
             "",
             browseDefault
-              ? "Default — " + browseDefault.name + " (" + browseDefault.id + ")"
-              : "Default — the deployment's base model",
+              ? adminTr("Default") + " — " + browseDefault.name + " (" + browseDefault.id + ")"
+              : adminTr("Default — the deployment's base model"),
           );
           browseOpts.forEach((m) => add(m.id, m.name + " (" + m.id + ")"));
           if (r.data.browseModel && !browseOpts.some((m) => m.id === r.data.browseModel))
@@ -7691,7 +8084,7 @@
           del.className = "rowbtn danger";
           del.textContent = adminTr("Delete");
           del.title = adminTr("Delete credential");
-          del.setAttribute("aria-label", "Delete " + (c.name || c.slug));
+          del.setAttribute("aria-label", adminTr("Delete") + " " + (c.name || c.slug));
           del.onclick = () => deleteSc(c);
           actions.appendChild(edit);
           actions.appendChild(del);
@@ -7968,25 +8361,31 @@
         };
         const targetScope = scope;
         const principals = c.grantees.some((g) => g.startsWith("org:"))
-          ? "everyone in the organization"
+          ? adminTr("everyone in the organization")
           : c.grantees.map(serviceCredentialPrincipalLabel).join(", ");
         const recent = c.recentUsagePrincipals.length
-          ? " Recent users in the retained window: " +
+          ? " " +
+            adminTr("Recent users in the retained window:") +
+            " " +
             c.recentUsagePrincipals.map((id) => serviceCredentialPrincipalLabel("personal:" + id)).join(", ") +
             "."
-          : " No successful use appears in the retained window.";
+          : " " + adminTr("No successful use appears in the retained window.");
         const confirmed = await reviewGovernanceChange({
-          title: "Delete “" + (c.name || c.slug) + "”?",
-          subtitle: "This credential currently grants broker access to " + principals + "." + recent,
+          title: adminTr("Delete credential") + " “" + (c.name || c.slug) + "”?",
+          subtitle: adminTr("This credential currently grants broker access to") + " " + principals + "." + recent,
           facts: [
             ["Scope", governanceScopeName(targetScope)],
             ["Credential", c.name || c.slug],
             ["Slug", c.slug],
           ],
           warning:
-            "Deletion immediately revokes every grant and removes the stored secret. Existing agent work that depends on “" +
+            adminTr(
+              "Deletion immediately revokes every grant and removes the stored secret. Existing agent work that depends on",
+            ) +
+            " “" +
             c.slug +
-            "” will fail. This cannot be undone.",
+            "” " +
+            adminTr("will fail. This cannot be undone."),
           confirmLabel: "Delete credential",
           danger: true,
         });
@@ -8299,7 +8698,9 @@
         const provider = $("onboarding-model-provider").value;
         if (
           !confirm(
-            "Disable the " + connectorName(provider) + " model key? Models from this provider will stop working.",
+            adminTr(
+              "Disable the " + connectorName(provider) + " model key? Models from this provider will stop working.",
+            ),
           )
         )
           return;
@@ -8699,7 +9100,8 @@
         setStatus("st-slack-installation", "Saved. Slack is activating.", "ok");
       };
       $("slack-installation-delete").onclick = async () => {
-        if (!confirm("Remove the Slack bot connection? Slack chat will stop until new tokens are saved.")) return;
+        if (!confirm(adminTr("Remove the Slack bot connection? Slack chat will stop until new tokens are saved.")))
+          return;
         const r = await api("DELETE", "/api/slack-installation");
         if (!r.ok) {
           setApiStatus("st-slack-installation", r.data?.message, "Remove failed.", "err");
@@ -8712,9 +9114,11 @@
       async function deleteConn(provider) {
         if (
           !confirm(
-            "Delete the OAuth client for " +
-              connectorName(provider) +
-              "? This hides the connector in everyone's web UI; existing links stop working.",
+            adminTr(
+              "Delete the OAuth client for " +
+                connectorName(provider) +
+                "? This hides the connector in everyone's web UI; existing links stop working.",
+            ),
           )
         )
           return;
@@ -8786,13 +9190,13 @@
           const duplicate = patterns.slice(0, i).findIndex((p) => p === pattern);
           if (duplicate >= 0)
             warnings.push(
-              "Rule " + (i + 1) + " is unreachable because rule " + (duplicate + 1) + " has the same pattern.",
+              adminTr("Rule " + (i + 1) + " is unreachable because rule " + (duplicate + 1) + " has the same pattern."),
             );
           const catchAll = patterns
             .slice(0, i)
             .findIndex((p) => [".*", "^.*$", "[\\s\\S]*", "^[\\s\\S]*$"].includes(p));
           if (catchAll >= 0)
-            warnings.push("Rule " + (i + 1) + " is shadowed by catch-all rule " + (catchAll + 1) + ".");
+            warnings.push(adminTr("Rule " + (i + 1) + " is shadowed by catch-all rule " + (catchAll + 1) + "."));
         });
         const root = $("policy-warnings");
         root.textContent = "";
@@ -8825,7 +9229,7 @@
         pat.value = rule?.pattern || "";
         pat.placeholder = adminTr("regex");
         pat.spellcheck = false;
-        pat.setAttribute("aria-label", "Command pattern");
+        pat.setAttribute("aria-label", adminTr("Command pattern"));
         pat.addEventListener("input", () => {
           validatePatternInput(pat);
           syncRuleWorkbench();
@@ -8835,7 +9239,7 @@
         EFFECTS.forEach((e) => {
           const o = document.createElement("option");
           o.value = e;
-          o.textContent = EFFECT_LABELS[e] || e;
+          o.textContent = adminTr(EFFECT_LABELS[e] || e);
           sel.appendChild(o);
         });
         sel.value = rule?.decision || "deny";
@@ -8856,24 +9260,24 @@
           else tr.parentElement.insertBefore(sibling, tr);
           syncRuleWorkbench();
           updateSectionDirty("command-policy");
-          tr.querySelector('button[aria-label^="Move"]')?.focus();
+          order.children[direction < 0 ? 0 : 1]?.focus();
         };
         const up = document.createElement("button");
         up.type = "button";
         up.textContent = "↑";
-        up.setAttribute("aria-label", "Move rule up");
+        up.setAttribute("aria-label", adminTr("Move rule up"));
         up.onclick = () => move(-1);
         const down = document.createElement("button");
         down.type = "button";
         down.textContent = "↓";
-        down.setAttribute("aria-label", "Move rule down");
+        down.setAttribute("aria-label", adminTr("Move rule down"));
         down.onclick = () => move(1);
         const del = document.createElement("button");
         del.type = "button";
         del.className = "rowbtn danger";
         del.textContent = "×";
         del.title = adminTr("Remove this command policy rule");
-        del.setAttribute("aria-label", "Remove command policy rule");
+        del.setAttribute("aria-label", adminTr("Remove command policy rule"));
         del.onclick = () => {
           tr.remove();
           syncRuleWorkbench();
@@ -8915,7 +9319,7 @@
         BOT_MODES.forEach((m) => {
           const o = document.createElement("option");
           o.value = m;
-          o.textContent = BOT_MODE_LABELS[m] || m;
+          o.textContent = adminTr(BOT_MODE_LABELS[m] || m);
           sel.appendChild(o);
         });
         sel.value = policy?.mode || "ignore";
@@ -8935,7 +9339,7 @@
         del.className = "rowbtn danger";
         del.textContent = adminTr("Remove");
         del.title = adminTr("Remove this bot from the ledger");
-        del.setAttribute("aria-label", "Remove bot ledger entry");
+        del.setAttribute("aria-label", adminTr("Remove bot ledger entry"));
         del.onclick = () => {
           tr.remove();
           syncBotsEmpty();
@@ -8974,15 +9378,15 @@
         for (const tr of $("ambient-bots").children) {
           const [nm, sel, hrs] = tr.querySelectorAll("input, select");
           const name = nm.value.trim();
-          if (!name) throw new Error("Every bot ledger row needs a bot name.");
+          if (!name) throw new Error(adminTr("Every bot ledger row needs a bot name."));
           if (seen.has(name.toLowerCase()))
-            throw new Error('Duplicate bot "' + name + '" — the ledger matches names case-insensitively.');
+            throw new Error(adminTr('Duplicate bot "' + name + '" — the ledger matches names case-insensitively.'));
           seen.add(name.toLowerCase());
           const entry = { mode: sel.value };
           if (entry.mode === "rollup" && hrs.value.trim()) {
             const hours = Number(hrs.value);
             if (!Number.isFinite(hours) || hours <= 0)
-              throw new Error('Bot "' + name + '": rollup hours must be a positive number.');
+              throw new Error(adminTr('Bot "' + name + '": rollup hours must be a positive number.'));
             entry.rollupHours = hours;
           }
           bots[name] = entry;
@@ -9092,7 +9496,7 @@
         if (firstInvalid) {
           firstInvalid.focus();
           firstInvalid.reportValidity?.();
-          throw new Error("Fix the highlighted regular expression before saving: " + firstMessage);
+          throw new Error(adminTr("Fix the highlighted regular expression before saving:") + " " + firstMessage);
         }
         return { mode: $("mode").value, rules };
       }
@@ -9268,11 +9672,11 @@
           const dangerous = body.posture === "dangerous";
           return reviewGovernanceChange({
             title: dangerous ? "Enable Dangerous autonomy?" : "Change security posture?",
-            subtitle: "Review the immutable change below before it is applied.",
+            subtitle: "Review the proposed change below before it is applied.",
             facts: [
               ["Scope", governanceScopeName()],
-              ["Current", titleCase(before)],
-              ["Proposed", titleCase(body.posture)],
+              ["Current", adminTr(titleCase(before))],
+              ["Proposed", adminTr(titleCase(body.posture))],
             ],
             warning: dangerous
               ? "Dangerous removes content screening; nothing pauses between tool calls. Predeclared command approvals, hard denials, identity, authorization, credential scope, revocation, and audit remain enforced."
@@ -9288,8 +9692,8 @@
             subtitle: "This organization-wide audience boundary applies to future Slack turns.",
             facts: [
               ["Scope", governanceScopeName()],
-              ["Current", before ? "External audiences enabled" : "Internal only"],
-              ["Proposed", body.on ? "External audiences enabled" : "Internal only"],
+              ["Current", adminTr(before ? "External audiences enabled" : "Internal only")],
+              ["Proposed", adminTr(body.on ? "External audiences enabled" : "Internal only")],
             ],
             warning: body.on
               ? "Agent replies and anything read in a mixed Slack room can be visible to guests or Slack Connect participants. External users still cannot drive the agent."
@@ -9507,11 +9911,17 @@
         deliver: ["Slack deliver", "The final Slack post/update round-trip"],
         capture: ["Memory capture", "Post-turn fact extraction, off the critical path"],
       };
-      const phaseLabel = (key) => (PHASE_META[key] || [titleCase(key)])[0];
-      const phaseDesc = (key) => (PHASE_META[key] || [])[1] || "";
+      const phaseLabel = (key) => {
+        const meta = PHASE_META[key];
+        return meta ? adminTr(meta[0]) : titleCase(key);
+      };
+      const phaseDesc = (key) => {
+        const meta = PHASE_META[key];
+        return meta ? adminTr(meta[1]) : "";
+      };
       function turnKindWords(s) {
-        if (s.provisioned === true) return s.coldStart === true ? "cold machine boot" : "warm machine";
-        if (s.provisioned === false) return "no machine";
+        if (s.provisioned === true) return adminTr(s.coldStart === true ? "cold machine boot" : "warm machine");
+        if (s.provisioned === false) return adminTr("no machine");
         return "";
       }
       function sparkline(daily) {
@@ -9603,7 +10013,7 @@
         const share = (n) => (c.totalTurns ? fmtPct((n || 0) / c.totalTurns) : "—");
         const rows = [
           [
-            nodeCell(stacked("Turns that never touched a machine", "pure conversation, no tools")),
+            nodeCell(stacked(adminTr("Turns that never touched a machine"), adminTr("pure conversation, no tools"))),
             { text: share(a.samples), cls: "num" },
             { text: String(a.samples || 0), cls: "num" },
             { text: fmtMs(a.total && a.total.p50), cls: "num" },
@@ -9613,15 +10023,17 @@
           [
             nodeCell(
               stacked(
-                "Turns that used a machine",
-                (b.warm || 0) +
-                  " on a warm machine (" +
-                  fmtMs(b.provisionWarm && b.provisionWarm.p50) +
-                  " median resume) · " +
-                  (b.cold || 0) +
-                  " booted cold (" +
-                  fmtMs(b.provisionCold && b.provisionCold.p50) +
-                  " median boot)",
+                adminTr("Turns that used a machine"),
+                adminTr(
+                  (b.warm || 0) +
+                    " on a warm machine (" +
+                    fmtMs(b.provisionWarm && b.provisionWarm.p50) +
+                    " median resume) · " +
+                    (b.cold || 0) +
+                    " booted cold (" +
+                    fmtMs(b.provisionCold && b.provisionCold.p50) +
+                    " median boot)",
+                ),
               ),
             ),
             { text: share(b.samples), cls: "num" },
@@ -9631,7 +10043,7 @@
             { text: fmtX(b.toolCalls && b.toolCalls.avg), cls: "num" },
           ],
           [
-            nodeCell(stacked("All turns", "the blended average")),
+            nodeCell(stacked(adminTr("All turns"), adminTr("the blended average"))),
             { text: "100%", cls: "num" },
             { text: String(c.totalTurns || 0), cls: "num" },
             { text: fmtMs(c.total && c.total.p50), cls: "num" },
@@ -9892,21 +10304,21 @@
         );
       }
       function cronName(c, previewAction = false) {
-        if (!c) return "Cron";
+        if (!c) return adminTr("Cron");
         if (c.title || c.message) return c.title || c.message;
         if (previewAction && c.action) return firstLine(c.action, 96);
-        return "Cron " + shortId(c.id);
+        return adminTr("Cron") + " " + shortId(c.id);
       }
       function wakeOriginLabel(trigger) {
         switch (String(trigger || "").toLowerCase()) {
           case "cron":
-            return "Cron";
+            return adminTr("Cron");
           case "monitor":
-            return "Monitor wake";
+            return adminTr("Monitor wake");
           case "webhook":
-            return "Webhook wake";
+            return adminTr("Webhook wake");
           default:
-            return "Background wake";
+            return adminTr("Background wake");
         }
       }
       function plural(n, one, many = one + "s") {
@@ -9973,17 +10385,24 @@
         const hour = hours.values.length === 1 ? hours.values[0] : null;
         if (minute != null && hour != null && dom.any && months.any) {
           const suffix = hour < 12 ? "AM" : "PM";
-          const time = (hour % 12 || 12) + ":" + String(minute).padStart(2, "0") + " " + suffix;
+          const time =
+            adminLocale === "zh-CN"
+              ? String(hour).padStart(2, "0") + ":" + String(minute).padStart(2, "0")
+              : (hour % 12 || 12) + ":" + String(minute).padStart(2, "0") + " " + suffix;
           const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
           const full = ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"];
-          if (dow.any) return "daily " + time;
-          if (dow.values.join(",") === "1,2,3,4,5") return "weekdays " + time;
+          if (dow.any) return adminTr("daily") + " " + time;
+          if (dow.values.join(",") === "1,2,3,4,5") return adminTr("weekdays") + " " + time;
           return (
-            (dow.values.length === 1 ? full[dow.values[0]] : dow.values.map((d) => days[d]).join(", ")) + " " + time
+            (dow.values.length === 1
+              ? adminTr(full[dow.values[0]])
+              : dow.values.map((d) => adminTr(days[d])).join(", ")) +
+            " " +
+            time
           );
         }
         if (minute != null && hours.any && dom.any && months.any && dow.any)
-          return minute === 0 ? "hourly" : "hourly at :" + String(minute).padStart(2, "0");
+          return minute === 0 ? adminTr("hourly") : adminTr("hourly at") + " :" + String(minute).padStart(2, "0");
         return "cron " + clean;
       }
       function fmtSchedule(sch) {
@@ -9992,12 +10411,12 @@
           const label = humanCron(sch.cron);
           return (
             label +
-            (sch.timezone ? " (" + sch.timezone + ")" : " (default timezone)") +
+            (sch.timezone ? " (" + sch.timezone + ")" : " (" + adminTr("default timezone") + ")") +
             (label === "cron " + sch.cron ? "" : " · " + sch.cron)
           );
         }
         if (sch.everyMs != null) return shortSchedule(sch);
-        return sch.firstFireAt ? "once at " + fmtTime(sch.firstFireAt) : "—";
+        return sch.firstFireAt ? adminTr("once at") + " " + fmtTime(sch.firstFireAt) : "—";
       }
 
       function shortSchedule(sch) {
@@ -10014,20 +10433,20 @@
             [1000, "s"],
           ];
           for (const [n, u] of units)
-            if (sch.everyMs >= n && sch.everyMs % n === 0) return "every " + sch.everyMs / n + u;
-          return "every " + sch.everyMs + " ms";
+            if (sch.everyMs >= n && sch.everyMs % n === 0) return adminTr("every") + " " + sch.everyMs / n + u;
+          return adminTr("every") + " " + sch.everyMs + " ms";
         }
-        return sch.firstFireAt ? "once" : "—";
+        return sch.firstFireAt ? adminTr("once") : "—";
       }
       function destinationSummary(dest) {
-        if (!dest) return "None";
-        return (dest.type || "destination") + " -> " + (dest.target || "-");
+        if (!dest) return adminTr("None");
+        return adminTr(dest.type || "destination") + (adminLocale === "zh-CN" ? " → " : " -> ") + (dest.target || "-");
       }
       function destinationDetails(dest) {
-        if (!dest) return "No delivery destination";
+        if (!dest) return adminTr("No delivery destination");
         const bits = [];
         if (dest.audienceScopeId) bits.push(dest.audienceScopeId);
-        if (dest.onBehalfOf) bits.push("on behalf of " + dest.onBehalfOf);
+        if (dest.onBehalfOf) bits.push(adminTr("on behalf of") + " " + dest.onBehalfOf);
         return bits.join(" / ");
       }
       async function saveCronDestination(id, destination) {
@@ -10077,7 +10496,7 @@
         for (const value of ["slack", "principal"]) {
           const opt = document.createElement("option");
           opt.value = value;
-          opt.textContent = value;
+          opt.textContent = adminTr(value);
           type.appendChild(opt);
         }
         type.value = c.destination?.type === "principal" ? "principal" : "slack";
@@ -10101,7 +10520,7 @@
         onBehalfOf.value = c.destination?.onBehalfOf || "";
         oboWrap.appendChild(onBehalfOf);
         function syncPlaceholders() {
-          target.placeholder = type.value === "principal" ? "principal id" : "Slack channel/thread id";
+          target.placeholder = adminTr(type.value === "principal" ? "principal id" : "Slack channel/thread id");
           audienceScopeId.placeholder = type.value === "principal" ? "personal:U123" : "channel:C123";
           onBehalfOf.disabled = type.value !== "principal";
         }
@@ -10119,7 +10538,7 @@
           const nextTarget = target.value.trim();
           if (!nextTarget) {
             target.focus();
-            alert("Target is required.");
+            alert(adminTr("Target is required."));
             return;
           }
           const destination = {
@@ -10141,7 +10560,9 @@
         };
         foot.append(save, cancel);
         body.appendChild(foot);
-        return dataCard(adminTr("Edit cron destination"), c.title || c.action || c.message || c.id, body);
+        return dataCard("Edit cron destination", c.title || c.action || c.message || c.id, body, {
+          descI18n: false,
+        });
       }
       const cronStatusText = (c) => {
         if (c.archived) return "archived";
@@ -10173,13 +10594,13 @@
           else if (c.action && c.message) promptSource = c.action;
           const prompt = firstLine(promptSource, 200);
           const status = cronStatusText(c);
-          const preview = [index ? shortName(c.ownerScopeId) : "", status === "enabled" ? "" : status, prompt]
+          const preview = [index ? shortName(c.ownerScopeId) : "", status === "enabled" ? "" : adminTr(status), prompt]
             .filter(Boolean)
             .join(" · ");
           return {
             name,
             preview,
-            time: shortSchedule(c.schedule) + " · " + (c.lastFiredAt ? relTime(c.lastFiredAt) : "never fired"),
+            time: shortSchedule(c.schedule) + " · " + (c.lastFiredAt ? relTime(c.lastFiredAt) : adminTr("never fired")),
             cls: status === "enabled" ? "" : "dim",
             href: stateToUrl({ view: "crons", scope, cron: c.id }),
           };
@@ -10223,6 +10644,7 @@
                   },
                   title: shortName(scope),
                 }),
+            titleI18n: index,
             count: plural(crons.length, "cron"),
             stats: [...(disabled ? [[disabled, "disabled"]] : []), ...(archived ? [[archived, "archived"]] : [])],
           },
@@ -10276,7 +10698,7 @@
             label: "← " + VIEW_TITLE.crons,
             onClick: () => go({ view: "crons", scope, session: null, cron: null, page: 1 }),
           },
-          title: c ? firstLine(cronName(c, true), 90) : "Cron",
+          title: c ? firstLine(cronName(c, true), 90) : adminTr("Cron"),
           context: c ? shortName(c.ownerScopeId) : "",
         });
         if (!c) {
@@ -10296,9 +10718,9 @@
             ["Schedule", fmtSchedule(c.schedule)],
             ["Destination", dest],
             ["Owner", c.owner || c.createdBy || "—"],
-            ["Status", cronStatusText(c)],
+            ["Status", adminTr(cronStatusText(c))],
             ["Created", fmtTime(c.createdAt)],
-            ["Last fired", c.lastFiredAt ? relTime(c.lastFiredAt) : "never fired"],
+            ["Last fired", c.lastFiredAt ? relTime(c.lastFiredAt) : adminTr("never fired")],
             ["Id", c.id],
           ]),
         );
@@ -10316,7 +10738,10 @@
           );
         const firesWrap = document.createElement("div");
         firesWrap.appendChild(
-          Object.assign(document.createElement("div"), { className: "loadingline", textContent: "Loading fires..." }),
+          Object.assign(document.createElement("div"), {
+            className: "loadingline",
+            textContent: adminTr("Loading fires..."),
+          }),
         );
         root.appendChild(
           dataCard(
@@ -10348,12 +10773,16 @@
           (s) => {
             let delivery = "";
             if (typeof s.delivered === "number") {
-              delivery = "silent";
-              if (s.delivered) delivery = "delivered" + (s.delivered > 1 ? " ×" + s.delivered : "");
+              delivery = adminTr("silent");
+              if (s.delivered) delivery = adminTr("delivered") + (s.delivered > 1 ? " ×" + s.delivered : "");
             }
             return {
               name: relTime(s.createdAt || s.lastActivity),
-              preview: [delivery, plural(s.turns || 0, "turn"), s.lastMessage || s.firstMessage || "(no messages)"]
+              preview: [
+                delivery,
+                plural(s.turns || 0, "turn"),
+                s.lastMessage || s.firstMessage || adminTr("(no messages)"),
+              ]
                 .filter(Boolean)
                 .join(" · "),
               time: plural(s.messages || 0, "entry", "entries"),
@@ -10385,7 +10814,7 @@
         const count = deployments.length ? plural(deployments.length, "deployment") : "";
         const previewOf = (dep) =>
           [
-            titleCase(dep.status || "unknown"),
+            adminTr(titleCase(dep.status || "unknown")),
             dep.currentVersion || "",
             index ? shortName(dep.ownerScopeId) : "",
             dep.createdBy || "",
@@ -10446,6 +10875,7 @@
                   },
                 }),
             title: index ? VIEW_TITLE.deployments : shortName(scope),
+            titleI18n: index,
             count,
           },
           placeholder: index ? "Search all deployments…" : "Search deployments…",
@@ -10473,7 +10903,7 @@
       }
       function createdByCell(s) {
         if (s.pack) return { text: packRepoLabel(s.pack.url) || "pack " + shortId(s.pack.id, 8), cls: "mono" };
-        if (s.createdBy && s.createdBy.indexOf("system:") === 0) return { text: "built-in", cls: "subline" };
+        if (s.createdBy && s.createdBy.indexOf("system:") === 0) return { text: adminTr("built-in"), cls: "subline" };
         return { text: s.createdBy || "—", cls: "mono" };
       }
 
@@ -10522,7 +10952,11 @@
             live.length === 1
               ? "from " + (dirLabel(live[0].ownerScopeId) || live[0].ownerScopeId)
               : "from all " + live.length + " scopes";
-          if (!confirm("Remove '" + name + "' " + where + "? It stops being available to agents (kept for audit)."))
+          if (
+            !confirm(
+              adminTr("Remove '" + name + "' " + where + "? It stops being available to agents (kept for audit)."),
+            )
+          )
             return;
           rm.disabled = true;
           let failed = 0;
@@ -10535,7 +10969,7 @@
           }
           dataCache.clear();
           renderData();
-          if (failed) alert(failed + " scope(s) could not be removed.");
+          if (failed) alert(adminTr(failed + " scope(s) could not be removed."));
         };
         return rm;
       }
@@ -10563,8 +10997,15 @@
         const names = skills.map((s) => ((s.name || s.id) + " " + (s.description || "")).toLowerCase());
         const lastUsedText = (s) => {
           if (s.lastUsedAt) return fmtHistoryTime(s.lastUsedAt);
-          if (lastUse(s)) return "never · imported " + fmtHistoryTime(lastUse(s));
-          return "never";
+          if (lastUse(s))
+            return (
+              adminTr("never") +
+              " · " +
+              (adminLocale === "zh-CN" ? adminTr("imported at") : "imported") +
+              " " +
+              fmtHistoryTime(lastUse(s))
+            );
+          return adminTr("never");
         };
 
         let scopeWrap = null;
@@ -10584,7 +11025,7 @@
           (s) => [
             nodeCell(stacked(s.name || s.id, s.description || shortId(s.id))),
             ...(index ? [{ text: shortName(s.ownerScopeId), cls: "mono" }] : []),
-            { text: titleCase(s.status || "unknown"), cls: "subline" },
+            { text: adminTr(titleCase(s.status || "unknown")), cls: "subline" },
             createdByCell(s),
             {
               text: lastUsedText(s),
@@ -10619,6 +11060,7 @@
                   },
                 }),
             title: index ? VIEW_TITLE.skills : shortName(scope),
+            titleI18n: index,
             count,
           },
           placeholder: index ? "Search all skills…" : "Search skills…",
@@ -10652,9 +11094,13 @@
         }
         const k = r.data;
         const box = document.createElement("div");
-        let byFact = ["by " + (k.createdBy || "—"), "muted"];
-        if (k.pack) byFact = ["from " + (packRepoLabel(k.pack.url) || "pack " + shortId(k.pack.id, 8)), "muted"];
-        else if (k.createdBy && k.createdBy.indexOf("system:") === 0) byFact = ["built-in", "muted"];
+        let byFact = [adminTr("by") + " " + (k.createdBy || "—"), "muted"];
+        if (k.pack)
+          byFact = [
+            adminTr("from") + " " + (packRepoLabel(k.pack.url) || adminTr("pack") + " " + shortId(k.pack.id, 8)),
+            "muted",
+          ];
+        else if (k.createdBy && k.createdBy.indexOf("system:") === 0) byFact = [adminTr("built-in"), "muted"];
         const facts = [
           { node: statusBadge(k.status) },
           ["v" + k.version, "muted"],
@@ -10684,7 +11130,7 @@
           ]);
         box.appendChild(
           dataCard(
-            "Scopes (" + group.length + ")",
+            adminTr("Scopes") + " (" + group.length + ")",
             "Every scope this skill is installed in. Remove takes it out of that scope only.",
             table(["Scope", "Status", "Version", ""], detailScopeRows, "—"),
           ),
@@ -10717,13 +11163,13 @@
           );
         const pre = document.createElement("pre");
         pre.className = "skillbody";
-        pre.textContent = k.body || "(empty)";
+        pre.textContent = k.body || adminTr("(empty)");
         pre.style.whiteSpace = "pre-wrap";
         pre.style.fontFamily = "ui-monospace, SFMono-Regular, Menlo, monospace";
         pre.style.fontSize = "12px";
         pre.style.margin = "0";
         box.appendChild(dataCard("Instructions", "The SKILL.md the agent reads when this skill is in play.", pre));
-        holder.appendChild(dataCard(k.name || k.id, "", box));
+        holder.appendChild(dataCard(k.name || k.id, "", box, { titleI18n: false }));
         holder.scrollIntoView({ behavior: "smooth", block: "nearest" });
       }
 
@@ -10736,11 +11182,13 @@
         rm.onclick = async () => {
           if (
             !confirm(
-              "Remove '" +
-                (g.name || g.id) +
-                "' from " +
-                (dirLabel(g.ownerScopeId) || g.ownerScopeId) +
-                "? It stops being available to agents in that scope (kept for audit).",
+              adminTr(
+                "Remove '" +
+                  (g.name || g.id) +
+                  "' from " +
+                  (dirLabel(g.ownerScopeId) || g.ownerScopeId) +
+                  "? It stops being available to agents in that scope (kept for audit).",
+              ),
             )
           )
             return;
@@ -11091,7 +11539,7 @@
             const x = document.createElement("button");
             x.type = "button";
             x.textContent = "✕";
-            x.setAttribute("aria-label", "Remove " + labelOf(id));
+            x.setAttribute("aria-label", adminTr("Remove") + " " + labelOf(id));
             x.style.cssText =
               "border:none; background:transparent; cursor:pointer; color:var(--muted); font-size:11px; line-height:1; padding:0 1px;";
             x.onclick = (e) => {
@@ -11542,9 +11990,10 @@
         box.appendChild(bottomImport);
         recompute();
         const card = dataCard(
-          "Browse — " + s.url,
+          adminTr("Browse") + " — " + s.url,
           "Choose target scopes, then import. Eligible skills are added to every selected scope; excluded skills show why. They appear on the Skills page once imported.",
           box,
+          { titleI18n: false },
         );
 
         card.style.position = "relative";
@@ -11552,7 +12001,7 @@
         close.type = "button";
         close.textContent = "✕";
         close.title = adminTr("Close");
-        close.setAttribute("aria-label", "Close browse");
+        close.setAttribute("aria-label", adminTr("Close browse"));
         close.style.cssText =
           "position:absolute;top:10px;right:12px;border:none;background:transparent;cursor:pointer;font-size:18px;line-height:1;color:var(--text);opacity:0.55;padding:4px;";
         close.onmouseenter = () => {
@@ -11646,12 +12095,13 @@
           titleI18n: true,
           count: written.length ? plural(written.length, "notebook") : "",
           context: written.length && !hasTimestamps ? "sorted by size (this backend keeps no edit history)" : "",
+          contextI18n: true,
         });
         const t = denseList(
           scopes,
           (s) => ({
             name: scopeKind(s.scopeId) === "org" ? "org" : s.label || shortName(s.scopeId),
-            preview: s.hasMemory ? fmtBytes(s.bytes || 0) : "empty",
+            preview: s.hasMemory ? fmtBytes(s.bytes || 0) : adminTr("empty"),
             time: s.updatedAt ? relTime(s.updatedAt) : "—",
             href: stateToUrl(
               scopeKind(s.scopeId) === "org"
@@ -11736,8 +12186,9 @@
         root.appendChild(
           dataCard(
             "Per-user distribution",
-            `${d.totals?.users ?? 0} users · ${d.totals?.sessions ?? 0} sessions. ${d.attribution || ""}`,
+            `${adminTr(plural(d.totals?.users ?? 0, "user"))} · ${adminTr(plural(d.totals?.sessions ?? 0, "session"))}. ${d.attribution || ""}`,
             dist,
+            { descI18n: false },
           ),
         );
       }
@@ -11801,17 +12252,17 @@
       }
       function keychainGrantStatus(g) {
         const expired = g.expiresAt && g.expiresAt <= Date.now();
-        if (expired && g.status === "active") return ["expired", "warn"];
+        if (expired && g.status === "active") return [adminTr("expired"), "warn"];
         let kind = "muted";
         if (g.status === "active") kind = "ok";
         else if (g.status === "revoked") kind = "err";
         else if (g.status === "used") kind = "info";
-        return [g.status || "unknown", kind];
+        return [adminTr(g.status || "unknown"), kind];
       }
       function keychainExpiry(ts) {
-        if (!ts) return "No expiry";
-        const prefix = ts <= Date.now() ? "Expired " : "Expires ";
-        return prefix + fmtTime(ts);
+        if (!ts) return adminTr("No expiry");
+        const prefix = adminTr(ts <= Date.now() ? "Expired" : "Expires");
+        return prefix + " " + fmtTime(ts);
       }
       function keychainPersonLabel(p) {
         return p.displayName ? `${p.displayName} (${p.principalId})` : p.principalId;
@@ -11932,7 +12383,9 @@
                   nodeCell(stacked(c.service, c.id), "mono"),
                   nodeCell(
                     mutedText(
-                      [c.kind || "unknown", c.envKey, ...(c.targets || []).slice(0, 2)].filter(Boolean).join(" · "),
+                      [adminTr(c.kind || "unknown"), c.envKey, ...(c.targets || []).slice(0, 2)]
+                        .filter(Boolean)
+                        .join(" · "),
                     ),
                   ),
                   c.accountLabel || c.host || "-",
@@ -11955,13 +12408,13 @@
                   if (kind === "err") labelKind = "err";
                   else if (kind === "warn") labelKind = "warn";
                   let purposeDetail = "";
-                  if (g.usedBy) purposeDetail = "used by " + g.usedBy;
-                  else if (g.askId) purposeDetail = "ask " + g.askId;
+                  if (g.usedBy) purposeDetail = adminTr("used by") + " " + g.usedBy;
+                  else if (g.askId) purposeDetail = adminTr("ask") + " " + g.askId;
                   return [
                     nodeCell(stacked(personName(g.ownerId), g.ownerId), "mono"),
                     nodeCell(stacked(credName(g.credentialId), g.credentialId), "mono"),
                     nodeCell(stacked(g.audienceScopeId, scopeKind(g.audienceScopeId)), "mono"),
-                    nodeCell(mutedText(g.mode || "unknown")),
+                    nodeCell(mutedText(adminTr(g.mode || "unknown"))),
                     nodeCell(mutedText(label, labelKind)),
                     nodeCell(stacked(g.purpose || "-", purposeDetail)),
                   ];
@@ -11982,7 +12435,7 @@
                   nodeCell(stacked(personName(a.requesterId), a.requesterId), "mono"),
                   nodeCell(stacked(credName(a.credentialId), a.credentialId), "mono"),
                   nodeCell(stacked(a.requesterScopeId, scopeKind(a.requesterScopeId)), "mono"),
-                  nodeCell(mutedText(a.status || "unknown", a.status === "pending" ? "warn" : "")),
+                  nodeCell(mutedText(adminTr(a.status || "unknown"), a.status === "pending" ? "warn" : "")),
                   nodeCell(stacked(a.purpose || "-", a.expiresAt ? keychainExpiry(a.expiresAt) : "")),
                 ]),
                 "No keychain asks match.",
@@ -12016,7 +12469,7 @@
           const f = document.createElement("div");
           f.className = "f" + (cls ? " " + cls : "");
           const l = document.createElement("label");
-          l.textContent = labelText;
+          l.textContent = adminTr(labelText);
           f.append(l, control);
           return f;
         };
@@ -12144,7 +12597,7 @@
             filteredGrants,
             (g) => [
               { text: g.principalId, cls: "mono" },
-              nodeCell(mutedText(g.role ? labelRole(g.role) : "member")),
+              nodeCell(mutedText(g.role ? labelRole(g.role) : adminTr("member"))),
               nodeCell(stacked(g.scopeId, scopeKind(g.scopeId)), "mono"),
               g.grantedBy || "-",
               {
@@ -12168,7 +12621,7 @@
             filteredUsers,
             (u) => [
               { text: u.principalId, cls: "mono" },
-              nodeCell(mutedText(u.admin?.isAdmin ? labelRole(u.admin.role) : "member")),
+              nodeCell(mutedText(u.admin?.isAdmin ? labelRole(u.admin.role) : adminTr("member"))),
               u.lastSeenAt ? timeCell(u.lastSeenAt) : { text: "-", cls: "num" },
               { text: String(u.sessionCount), cls: "num" },
               { text: String(u.turnCount), cls: "num" },
@@ -12815,7 +13268,7 @@
         }
         const typeLabel = (k) => {
           if (k === "dm") return "DM";
-          if (k === "cron_monologue" || k === "cron_wake" || k === "cron") return "Cron";
+          if (k === "cron_monologue" || k === "cron_wake" || k === "cron") return adminTr("Cron");
           return titleCase(String(k).replaceAll("_", " "));
         };
         const modeLabel = historyModeLabel(historyKind);
@@ -12830,7 +13283,7 @@
         if (cronSel) {
           pageShell({
             back: {
-              label: "← Crons",
+              label: "← " + adminTr("Crons"),
               onClick: () => go({ view: "history", scope, session: null, page: 1, historyKind }),
             },
             title: cronName(d.cron?.cron || sessions[0]?.origin?.cron, true),
@@ -12842,7 +13295,7 @@
             back:
               scopeKind(scope) !== "org"
                 ? {
-                    label: "← Sessions",
+                    label: "← " + adminTr("Sessions"),
                     onClick: () => go({ view: "history", scope: "org:" + orgId, session: null, page: 1, historyKind }),
                   }
                 : undefined,
@@ -12854,7 +13307,7 @@
           if (!delivered) return null;
           const chip = document.createElement("span");
           chip.className = "delivery-chip";
-          chip.textContent = label || "\u2713 delivered";
+          chip.textContent = label || "\u2713 " + adminTr("delivered");
           return chip;
         };
         if (historyKind === "cron" && !cronSel) {
@@ -12867,9 +13320,11 @@
                 document.createTextNode(
                   plural(c.sessions || 0, "fire") +
                     (typeof c.deliveredRuns === "number"
-                      ? ` \u00b7 ${Number(c.deliveredRuns).toLocaleString(adminLocaleCode())} delivered`
+                      ? ` \u00b7 ${Number(c.deliveredRuns).toLocaleString(adminLocaleCode())} ${adminTr("delivered")}`
                       : "") +
-                    " \u00b7 first fired " +
+                    " \u00b7 " +
+                    adminTr("first fired") +
+                    " " +
                     fmtHistoryCreated(c.createdAt, c.lastActivity),
                 ),
               );
@@ -12893,7 +13348,7 @@
             const originCron = s.origin?.kind === "cron" ? s.origin.cron : null;
             const isBackground = s.category === "background";
             const background = isBackground && !cronSel;
-            let name = s.firstMessage || s.lastMessage || "(no messages yet)";
+            let name = s.firstMessage || s.lastMessage || adminTr("(no messages yet)");
             if (background)
               name = originCron ? cronName(originCron, true) : s.origin?.label || typeLabel(s.kind || s.type);
             const preview = document.createElement("span");
@@ -12903,7 +13358,7 @@
             if (isBackground && typeof s.delivered === "number") {
               const autoChip = cronDeliveryChip(
                 s.delivered > 0,
-                s.delivered > 1 ? `\u2713 delivered \u00d7${s.delivered}` : undefined,
+                s.delivered > 1 ? `\u2713 ${adminTr("delivered")} \u00d7${s.delivered}` : undefined,
               );
               if (autoChip) preview.appendChild(autoChip);
             }
@@ -12982,7 +13437,10 @@
       async function showUserDetail(principalId) {
         const root = $("view-data");
         root.textContent = "";
-        pageShell({ back: { label: "← Users", onClick: () => history.back() }, title: principalId || "User" });
+        pageShell({
+          back: { label: "← " + adminTr("Users"), onClick: () => history.back() },
+          title: principalId || adminTr("User"),
+        });
         const detail = document.createElement("div");
         detail.className = "detail";
         detail.textContent = adminTr("Loading…");
@@ -12999,9 +13457,11 @@
         const d = r.data || {};
 
         pageShell({
-          back: { label: "← Users", onClick: () => history.back() },
+          back: { label: "← " + adminTr("Users"), onClick: () => history.back() },
           title: d.displayName || d.principalId || principalId,
-          context: [d.admin?.isAdmin ? labelRole(d.admin.role) : "member", d.scopeId || ""].filter(Boolean).join(" · "),
+          context: [d.admin?.isAdmin ? labelRole(d.admin.role) : adminTr("member"), d.scopeId || ""]
+            .filter(Boolean)
+            .join(" · "),
         });
         const userActions = document.createElement("div");
         userActions.style.margin = "0 0 14px";
@@ -13023,11 +13483,11 @@
           ["Conversation", "Scope", "Volume", "Last activity"],
           convs,
           (s) => {
-            const latest = s.lastMessage || s.firstMessage || "(no messages yet)";
+            const latest = s.lastMessage || s.firstMessage || adminTr("(no messages yet)");
             const started =
               s.firstMessage && s.firstMessage !== latest
                 ? "> " + s.firstMessage
-                : "created " + fmtHistoryCreated(s.createdAt, s.lastActivity);
+                : adminTr("created") + " " + fmtHistoryCreated(s.createdAt, s.lastActivity);
             return [
               nodeCell(stacked(latest, started, "history-conversation"), "history-conversation-cell"),
               historyScopeCell(s.scopeId),
@@ -13038,7 +13498,7 @@
               nodeCell(
                 stacked(
                   fmtHistoryTime(s.lastActivity),
-                  "created " + fmtHistoryCreated(s.createdAt, s.lastActivity),
+                  adminTr("created") + " " + fmtHistoryCreated(s.createdAt, s.lastActivity),
                   "history-activity",
                 ),
                 "history-activity-cell",
@@ -13062,7 +13522,7 @@
           nodeCell(stacked(f.name || fileName(f.path), f.path || "")),
           { text: fileKind(f.path || f.name), cls: "mono" },
           { text: fmtBytes(f.size || 0), cls: "num" },
-          nodeCell(mutedText(f.direction === "out" ? "agent" : "upload")),
+          nodeCell(mutedText(adminTr(f.direction === "out" ? "agent" : "upload"))),
           { text: f.createdAt ? fmtTime(f.createdAt) : "—", cls: "num" },
           f.openable
             ? { action: { label: "Download", run: () => downloadFile({ ...f, openable: true }) } }
@@ -13084,9 +13544,7 @@
               : stacked(dep.name || dep.id, dep.name ? dep.id : ""),
           ),
           nodeCell(statusBadge(dep.status)),
-          nodeCell(
-            stacked(dep.currentVersion || "—", (dep.versions || 0) + " version" + (dep.versions === 1 ? "" : "s")),
-          ),
+          nodeCell(stacked(dep.currentVersion || "—", plural(dep.versions || 0, "version"))),
           { text: dep.lastAccessAt ? fmtTime(dep.lastAccessAt) : "—", cls: "num" },
         ]);
         detail.appendChild(
@@ -13101,13 +13559,13 @@
         const cronRows = crons.map((c) => [
           nodeCell(
             stacked(
-              c.title || c.action || c.message || "(empty)",
+              c.title || c.action || c.message || adminTr("(empty)"),
               c.title ? c.action || c.message || shortId(c.id) : shortId(c.id),
             ),
           ),
           { text: fmtSchedule(c.schedule), cls: "num" },
-          { text: c.lastFiredAt ? fmtTime(c.lastFiredAt) : "never", cls: "num" },
-          nodeCell(mutedText(cronStatusText(c))),
+          { text: c.lastFiredAt ? fmtTime(c.lastFiredAt) : adminTr("never"), cls: "num" },
+          nodeCell(mutedText(adminTr(cronStatusText(c)))),
         ]);
         detail.appendChild(
           dataCard(
@@ -13134,17 +13592,29 @@
             table(
               ["Setting", "Value"],
               [
-                ["Custom soul", { node: mutedText(cfg.hasSoul ? "set · v" + (cfg.soulVersion || 1) : "default") }],
                 [
-                  "Command policy",
-                  cfg.commandPolicy
-                    ? ruleN + " rule" + (ruleN === 1 ? "" : "s") + " · " + (cfg.commandPolicy.mode || "denylist")
-                    : "default",
+                  adminTr("Custom soul"),
+                  {
+                    node: mutedText(
+                      cfg.hasSoul ? adminTr("set") + " · v" + (cfg.soulVersion || 1) : adminTr("default"),
+                    ),
+                  },
                 ],
-                ["Security posture", cfg.securityPosture || "auto"],
-                ["Egress overrides", allowN || denyN ? allowN + " allow · " + denyN + " deny" : "none"],
-                ["Base model", cfg.baseModel || "org default"],
-                ["Connectors linked", String((cfg.connectors || []).length)],
+                [
+                  adminTr("Command policy"),
+                  cfg.commandPolicy
+                    ? plural(ruleN, "rule") + " · " + adminTr(cfg.commandPolicy.mode || "denylist")
+                    : adminTr("default"),
+                ],
+                [adminTr("Security posture"), adminTr(cfg.securityPosture || "auto")],
+                [
+                  adminTr("Egress overrides"),
+                  allowN || denyN
+                    ? allowN + " " + adminTr("allow") + " · " + denyN + " " + adminTr("deny")
+                    : adminTr("none"),
+                ],
+                [adminTr("Base model"), cfg.baseModel || adminTr("org default")],
+                [adminTr("Connectors linked"), String((cfg.connectors || []).length)],
               ],
               "No config.",
             ),
@@ -13349,7 +13819,7 @@
         if (kind === "channel") return { icon: "#", name: nm || id, label: "#" + (nm || id) };
         if (kind === "dm") return { icon: "@", name: nm || id, label: nm || id };
         if (kind === "group") {
-          const g = nm || ((c.members || []).length ? c.members.length + " people" : id);
+          const g = nm || ((c.members || []).length ? adminTr(c.members.length + " people") : id);
           return { icon: "@", name: g, label: g };
         }
         return nm ? { icon: "#", name: nm, label: "#" + nm } : { icon: "#", name: id, label: id };
@@ -13785,7 +14255,9 @@
                 return {
                   icon: meta.icon,
                   name: meta.name,
-                  preview: `${Number(c.messageCount).toLocaleString(adminLocaleCode())} mirrored · ${(c.members || []).length} members`,
+                  preview: adminTr(
+                    `${Number(c.messageCount).toLocaleString(adminLocaleCode())} mirrored · ${(c.members || []).length} members`,
+                  ),
                   time: relTime(c.updatedAt),
                   href: stateToUrl({ view: "slack", container: c.container }),
                 };
@@ -13801,7 +14273,7 @@
         const container = st.container;
         const scopeGo = slackContainerScope(container);
         pageShell({
-          back: { label: "← Slack", onClick: () => go({ view: "slack", container: null, ts: null }) },
+          back: { label: "← " + adminTr("Slack"), onClick: () => go({ view: "slack", container: null, ts: null }) },
           title: slackContainerLabel(container),
           context: container,
           search: slackSearchBox(container),
@@ -13939,9 +14411,13 @@
             const note = document.createElement("div");
             note.className = "sm-day";
             note.textContent =
-              "Message " +
+              adminTr("Message") +
+              " " +
               st.ts +
-              " isn't in the loaded window — it may be older than what's shown (use “Load earlier messages”) or was never mirrored.";
+              " " +
+              adminTr(
+                "isn't in the loaded window — it may be older than what's shown (use “Load earlier messages”) or was never mirrored.",
+              );
             root.insertBefore(note, root.firstChild);
           }
         } else {
@@ -15567,7 +16043,8 @@
                   },
                 }),
             title: index ? VIEW_TITLE.files : shortName(scope),
-            count: files.length ? plural(files.length, "file") + (capped ? ", newest shown" : "") : "",
+            titleI18n: index,
+            count: files.length ? plural(files.length, "file") + (capped ? adminTr(", newest shown") : "") : "",
           },
           placeholder: index ? "Search all files…" : "Search files…",
         });

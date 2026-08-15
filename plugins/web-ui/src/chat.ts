@@ -872,9 +872,15 @@ export function createChatSurface(
         <div class="assistant-body">
           <div class="streaming-text">
             ${markdown(
-              "Hi — I'm your AI teammate 👋\n\n" +
-                "I run tasks on a computer of my own and work across your connected tools — Slack, Google Workspace, GitHub, Linear, and the open web — and I remember what we work on together.\n\n" +
-                "Want to get set up? Tell me your name and what you're working on, and I'll take it from there — or just ask me anything to dive straight in.",
+              t("Hi — I'm your AI teammate 👋") +
+                "\n\n" +
+                t(
+                  "I run tasks on a computer of my own and work across your connected tools — Slack, Google Workspace, GitHub, Linear, and the open web — and I remember what we work on together.",
+                ) +
+                "\n\n" +
+                t(
+                  "Want to get set up? Tell me your name and what you're working on, and I'll take it from there — or just ask me anything to dive straight in.",
+                ),
             )}
           </div>
         </div>

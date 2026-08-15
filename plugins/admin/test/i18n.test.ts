@@ -100,11 +100,35 @@ test("admin exposes a bilingual control and translates only explicit UI sinks", 
   assert.match(html, /\$\("soul"\)\.placeholder = adminTr\("No scope-specific instructions"\)/);
   assert.match(html, /function navLink\(label, target\)[^]*?a\.textContent = label;/);
   assert.match(html, /navLink\(adminTr\("Governance →"\)/);
-  assert.match(
-    html,
-    /adminTr\(enforcement\.active \? titleCase\(enforcement\.fidelity\) \+ " enforced" : "Open egress"\)/,
-  );
+  assert.match(html, /enforcement\.active \? adminTr\(titleCase\(enforcement\.fidelity\)\) \+ " enforced"/);
   assert.match(html, /capability\.querySelector\("span"\)\.textContent = adminTr\(enforcementSummary\)/);
+  assert.match(html, /o\.textContent = adminTr\(EFFECT_LABELS\[e\] \|\| e\)/);
+  assert.match(html, /return meta \? adminTr\(meta\[0\]\) : titleCase\(key\)/);
+  assert.match(html, /return meta \? adminTr\(meta\[1\]\) : ""/);
+  assert.match(html, /adminTr\("Turns that never touched a machine"\)/);
+  assert.match(html, /adminTr\("Turns that used a machine"\)/);
+  assert.match(html, /adminTr\("Organization"\) \+ " · "/);
+  assert.match(html, /input\.setAttribute\("aria-label", adminTr\("Show"\) \+ " " \+ adminTr\(label\)\)/);
+  assert.match(html, /o\.textContent = adminTr\(BOT_MODE_LABELS\[m\] \|\| m\)/);
+  assert.match(html, /l\.textContent = adminTr\(labelText\)/);
+  assert.match(html, /adminTr\(before \? "External audiences enabled" : "Internal only"\)/);
+  assert.match(html, /options\.titleI18n === false \? title : adminTr\(title\)/);
+  assert.match(html, /options\.descI18n === false \? desc : adminTr\(desc\)/);
+  assert.match(html, /dataCard\(k\.name \|\| k\.id, "", box, \{ titleI18n: false \}\)/);
+  assert.match(html, /adminTr\("Browse"\) \+ " — " \+ s\.url/);
+  assert.match(html, /adminTr\("first fired"\)/);
+  assert.match(html, /adminTr\(c\.members\.length \+ " people"\)/);
+  assert.match(html, /alert\(adminTr\("Couldn't start impersonation:"\) \+ " " \+ msg\)/);
+  assert.match(html, /adminTr\("This credential currently grants broker access to"\)/);
+  assert.match(html, /s\.firstMessage \|\| s\.lastMessage \|\| adminTr\("\(no messages yet\)"\)/);
+  assert.match(html, /principalId \|\| adminTr\("User"\)/);
+  assert.match(html, /c\.title \|\| c\.action \|\| c\.message \|\| adminTr\("\(empty\)"\)/);
+  assert.match(html, /revision\.updatedBy \|\| adminTr\("Author unavailable"\)/);
+  assert.match(html, /adminTr\("Restore SOUL version"\) \+ " " \+ immutable\.version/);
+  assert.match(html, /adminTr\("Version"\) \+ " " \+ immutable\.version/);
+  assert.match(html, /adminTr\("restored as a new revision"\)/);
+  assert.match(html, /adminTr\(plural\(d\.totals\?\.users/);
+  assert.doesNotMatch(html, /adminTr\(d\.attribution/);
 });
 
 test("admin locale also controls date and number formatting", () => {
@@ -125,8 +149,16 @@ test("admin locale also controls date and number formatting", () => {
     return translated == null ? value : `${leading}${translated}${trailing}`;
   };
   assert.equal(translatePattern("1,234 turns"), "1,234 个轮次");
+  assert.equal(translatePattern("12 users"), "12 位用户");
+  assert.equal(translatePattern("9 sessions"), "9 个会话");
+  assert.equal(translatePattern("3 people"), "3 人");
   assert.equal(translatePattern("1.2k tokens"), "1.2k 个令牌");
   assert.equal(translatePattern("4 errors"), "4 个错误");
+  assert.equal(translatePattern("98 events"), "98 个事件");
+  assert.equal(translatePattern("41 runs"), "41 次运行");
+  assert.equal(translatePattern("39 done"), "已完成 39 次");
+  assert.equal(translatePattern("2 failed"), "失败 2 次");
+  assert.equal(translatePattern("4.9% failure rate"), "4.9% 失败率");
   assert.equal(translatePattern("Loading Research…"), "正在加载Research…");
   assert.equal(translatePattern("Loading Research..."), "正在加载Research…");
   assert.equal(translatePattern("2 allowed hosts"), "2 个允许的主机");
@@ -150,19 +182,53 @@ test("admin locale also controls date and number formatting", () => {
   assert.equal(adminTr("Effective security posture"), "当前生效的安全策略");
   assert.equal(adminTr("Open egress"), "开放出站访问");
   assert.equal(adminTr("External enabled"), "允许外部参与者");
+  assert.equal(adminTr("Volume"), "数量");
+  assert.equal(adminTr("Last activity"), "最近活动");
+  assert.equal(adminTr("(no messages yet)"), "（暂无消息）");
+  assert.equal(adminTr("No config."), "暂无配置。");
+  assert.equal(adminTr("Author unavailable"), "操作者不可用");
+  assert.equal(adminTr("Time unavailable"), "时间不可用");
+  assert.equal(adminTr("Restore SOUL version"), "恢复 SOUL 版本");
+  assert.equal(adminTr("Restore version"), "恢复版本");
+  assert.equal(adminTr("restored as a new revision"), "已恢复为新修订版");
+  assert.equal(adminTr("Restoring…"), "正在恢复…");
+  assert.equal(
+    adminTr("SOUL changed; latest revision loaded and your draft was preserved."),
+    "SOUL 已更改；已加载最新修订版，并保留了你的草稿。",
+  );
+  assert.equal(adminTr("Restore failed."), "恢复失败。");
   assert.equal(adminTr("Deployment default"), "部署默认值");
+  assert.equal(adminTr("Require approval"), "需要审批");
+  assert.equal(adminTr("Total turn"), "总轮次");
+  assert.equal(adminTr("End-to-end wall time, request to reply"), "端到端总耗时（从请求到回复）");
+  assert.equal(adminTr("Memory capture"), "记忆捕获");
+  assert.equal(adminTr("Post-turn fact extraction, off the critical path"), "轮次结束后的事实提取，不在关键路径上");
+  assert.equal(adminTr("Organization"), "组织");
   assert.equal(adminTr("No packs yet — register one above."), "尚无技能包——请在上方注册一个。");
   assert.equal(translatePattern("67.9% prompt-cache hit ratio"), "67.9% 提示词缓存命中率");
   assert.equal(translatePattern("4.6m tokens read"), "已读取 4.6m 个令牌");
   assert.equal(translatePattern("0 tokens written"), "已写入 0 个令牌");
   assert.equal(translatePattern("Upload failed (503)."), "上传失败（503）。");
   assert.equal(translatePattern("2 effective rules"), "2 条生效规则");
-  assert.equal(translatePattern("Domain enforced"), "Domain 已强制执行");
+  assert.equal(
+    translatePattern("3 on a warm machine (420ms median resume) · 2 booted cold (1.4s median boot)"),
+    "3 次使用热机（恢复耗时中位数 420ms） · 2 次冷启动（启动耗时中位数 1.4s）",
+  );
+  assert.equal(translatePattern("Domain enforced"), "Domain已强制执行");
+  assert.equal(
+    translatePattern('Duplicate bot "Build Bot" — the ledger matches names case-insensitively.'),
+    "机器人“Build Bot”重复——台账中的名称不区分大小写。",
+  );
+  assert.equal(translatePattern("Rule 3 is shadowed by catch-all rule 1."), "规则 3 被全匹配规则 1 遮蔽。");
+  assert.equal(
+    translatePattern("Disable the OpenAI model key? Models from this provider will stop working."),
+    "禁用 OpenAI 模型密钥？此提供商的模型将停止工作。",
+  );
   assert.equal(
     translatePattern(
       "Firecracker supports domain fidelity, which cannot enforce outbound host policy. Agents still have open outbound access.",
     ),
-    "Firecracker 支持 domain 级执行精度，但无法执行出站主机策略。智能体仍可自由访问外部网络。",
+    "Firecracker 支持domain级执行精度，但无法执行出站主机策略。智能体仍可自由访问外部网络。",
   );
 });
 

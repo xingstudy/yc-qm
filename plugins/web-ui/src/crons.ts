@@ -798,9 +798,10 @@ function cronForm() {
       ${listBackLink("Crons", drawCronsPage)}
       <h2>New cron</h2>
       <p class="hint">
-        Describe what you want scheduled — what to do, how often, and where the result should go. The agent sets it up
-        and confirms in chat; it will ask if anything is unclear. It should give the cron a short, distinctive title
-        naming what it is for, like <code>Gmail unread digest</code> or <code>GitLab CI watch</code>.
+        ${t(
+          "Describe what you want scheduled — what to do, how often, and where the result should go. The agent sets it up and confirms in chat; it will ask if anything is unclear. It should give the cron a short, distinctive title naming what it is for, like",
+        )}
+        <code>${t("Gmail unread digest")}</code> ${t("or")} <code>${t("GitLab CI watch")}</code>${t(".")}
       </p>
       <label>
         <textarea

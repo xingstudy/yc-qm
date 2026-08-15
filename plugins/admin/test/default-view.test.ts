@@ -76,7 +76,7 @@ test("mobile admin navigation keeps the active section visible and controls touc
 });
 
 test("admin history previews quote the first message instead of saying started", () => {
-  assert.equal((html.match(/\?\s*"> "\s*\+\s*s\.firstMessage\s*:\s*"created "/g) || []).length, 1);
+  assert.equal((html.match(/\?\s*"> "\s*\+\s*s\.firstMessage\s*:\s*adminTr\("created"\)\s*\+\s*" "/g) || []).length, 1);
   assert.doesNotMatch(html, /\? "started " \+ s\.firstMessage : "created "/);
 });
 
@@ -173,10 +173,10 @@ test("governance reviews high-impact changes in product and preserves drafts", (
   assert.match(html, /<dialog class="review-dialog" id="governance-review"/);
   assert.match(html, /key === "security-posture"/);
   assert.match(html, /key === "external-slack-participants"/);
-  assert.match(html, /Review the immutable change below/);
+  assert.match(html, /Review the proposed change below/);
   assert.match(html, /function hasGovernanceDraft\(\)/);
   assert.match(html, /function governanceScopeName\(scopeId = scope\)/);
-  assert.match(html, /"Organization · " \+ scopeId/);
+  assert.match(html, /adminTr\("Organization"\) \+ " · " \+ scopeId/);
   assert.match(html, /window\.addEventListener\("beforeunload"/);
   assert.match(html, /function governanceSaveInFlight\(\)/);
   assert.match(html, /The change may already be committing and cannot be safely discarded/);
