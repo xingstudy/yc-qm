@@ -37,6 +37,16 @@ test("store kinds default to memory and accept postgres", () => {
     loadConfig({ SESSION_STORE: "postgres", RUN_STORE: "memory", DATABASE_URL: "postgres://test" }).runStore,
     "memory",
   );
+  assert.equal(
+    loadConfig({
+      SESSION_STORE: "postgres",
+      QM_DATABASE_MODE: "bundled",
+      POSTGRES_USER: "qm",
+      POSTGRES_PASSWORD: "p@ssword",
+      POSTGRES_DB: "qm",
+    }).databaseUrl,
+    "postgresql://qm:p%40ssword@127.0.0.1:5432/qm",
+  );
   assert.throws(
     () => loadConfig({ SESSION_STORE: "postgres" }),
     /missing or insecure required core secrets: DATABASE_URL/,

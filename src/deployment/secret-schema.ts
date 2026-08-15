@@ -1,5 +1,6 @@
 import { isStrongSigningSecret } from "../auth/source-auth.ts";
 import { isProductionPlaceholder } from "../../plugins/chassis/src/production-placeholders.ts";
+import { databaseUrlFromEnv } from "../util/postgres-url.ts";
 
 type SecretGate =
   | "production"
@@ -61,9 +62,15 @@ export function validateCoreSecretEnv(env: NodeJS.ProcessEnv): string[] {
     const gates = typeof spec.requiredWhen === "string" ? [spec.requiredWhen] : spec.requiredWhen;
     return gates.some((gate) => GATE_PREDICATES[gate](env));
   };
-  return CORE_SECRET_SPECS.filter((spec) => enabled(spec) && isInvalidSecret(spec.name, env[spec.name])).map(
-    (spec) => spec.name,
-  );
+  return CORE_SECRET_SPECS.filter(
+    (spec) => enabled(spec) && isInvalidSecret(spec.name, secretValue(spec.name, env)),
+  ).map((spec) => spec.name);
+}
+
+function secretValue(name: string, env: NodeJS.ProcessEnv): string | undefined {
+  if (name !== "DATABASE_URL" || env.QM_DATABASE_MODE?.trim() !== "bundled") return env[name];
+  if (isProductionPlaceholder(env.POSTGRES_PASSWORD)) return undefined;
+  return databaseUrlFromEnv(env);
 }
 
 function isInvalidSecret(name: string, value: string | undefined): boolean {

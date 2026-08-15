@@ -64,6 +64,23 @@ test("an OpenAI base model on the Codex harness reports its one missing key once
   );
 });
 
+test("bundled PostgreSQL satisfies the database gate only with deployable credentials", () => {
+  const bundled = {
+    SESSION_STORE: "postgres",
+    QM_DATABASE_MODE: "bundled",
+    POSTGRES_USER: "qm",
+    POSTGRES_DB: "qm",
+  } as NodeJS.ProcessEnv;
+  assert.deepEqual(validateCoreSecretEnv({ ...bundled, POSTGRES_PASSWORD: "p@ssword" }), []);
+  for (const password of ["replace-me", "placeholder", "changeme", "todo"]) {
+    assert.deepEqual(validateCoreSecretEnv({ ...bundled, POSTGRES_PASSWORD: password }), ["DATABASE_URL"]);
+  }
+  assert.deepEqual(
+    validateCoreSecretEnv({ SESSION_STORE: "postgres", QM_DATABASE_MODE: "external" } as NodeJS.ProcessEnv),
+    ["DATABASE_URL"],
+  );
+});
+
 test("each core secret is named by exactly one spec, so boot failures never repeat a name", () => {
   const names = CORE_SECRET_SPECS.map((spec) => spec.name);
   assert.deepEqual(
