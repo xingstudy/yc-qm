@@ -89,6 +89,7 @@ export interface SurfaceTarget {
   principal: string;
   displayName?: string;
   impersonator?: string;
+  sessionVersion?: number;
   identitySecret?: string;
   nowMs?: number;
 }
@@ -107,6 +108,9 @@ export function proxyToSurface(req: IncomingMessage, res: ServerResponse, t: Sur
         p: t.principal,
         ...(t.displayName ? { n: t.displayName } : {}),
         ...(t.impersonator ? { imp: t.impersonator } : {}),
+        ...(typeof t.sessionVersion === "number" && Number.isFinite(t.sessionVersion)
+          ? { sv: t.sessionVersion }
+          : {}),
         exp: now + IDENTITY_TTL_MS,
       },
       t.identitySecret,

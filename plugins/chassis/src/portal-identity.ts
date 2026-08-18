@@ -4,6 +4,7 @@ export interface PortalIdentity {
   p: string;
   n?: string;
   imp?: string;
+  sv?: number;
   exp: number;
 }
 
