@@ -268,6 +268,24 @@ test("suspending a user via PATCH denies subsequent logins; unknown users are 40
     assert.deepEqual(await denied.json(), { status: "denied", reason: "suspended" });
     const missing = await adminFetch(srv.base, "PATCH", `${INVITE_PATH}/U-ghost`, "admin-alice", { status: "active" });
     assert.equal(missing.status, 404);
+    await adminFetch(srv.base, "POST", INVITE_PATH, "admin-alice", {
+      principalId: "U-erin",
+      email: "erin@example.com",
+      displayName: "Erin",
+    });
+    const suspendInvited = await adminFetch(srv.base, "PATCH", `${INVITE_PATH}/U-erin`, "admin-alice", {
+      status: "suspended",
+    });
+    assert.equal(suspendInvited.status, 200);
+    const firstLogin = await login(
+      srv.base,
+      loginBody({ principalId: "U-erin", subject: "sub-erin", email: "erin@example.com", displayName: "Erin" }),
+    );
+    assert.deepEqual(
+      await firstLogin.json(),
+      { status: "denied", reason: "suspended" },
+      "an invited user with no bound identity is still matched by email and denied",
+    );
   } finally {
     await srv.close();
   }
