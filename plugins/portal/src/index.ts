@@ -1156,7 +1156,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     principal,
     ...(!impersonator && session.name ? { displayName: session.name } : {}),
     ...(impersonator ? { impersonator } : {}),
-    ...(typeof session.sv === "number" ? { sessionVersion: session.sv } : {}),
+    ...(!impersonator && typeof session.sv === "number" ? { sessionVersion: session.sv } : {}),
     ...(PORTAL_IDENTITY_SECRET ? { identitySecret: PORTAL_IDENTITY_SECRET } : {}),
   });
 }

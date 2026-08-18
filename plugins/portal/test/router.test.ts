@@ -249,10 +249,17 @@ const base = `http://localhost:${(server.address() as AddressInfo).port}`;
 const sessionKey = deriveKey("router-test-portal-secret", "portal.session.v1");
 const tmpKey = deriveKey("router-test-portal-secret", "portal.tmp.v1");
 const transactionKey = deriveKey("router-test-portal-secret", "portal.oidc.transaction.v1");
-function sessionCookie(sub: string, ageS = 0): string {
+function sessionCookie(sub: string, ageS = 0, sv?: number): string {
   const now = Math.floor(Date.now() / 1000);
   const iat = now - ageS;
-  return `portal_session=${encodeURIComponent(seal({ k: "session", sub, org: "acme", iat, exp: iat + 28800 }, sessionKey))}`;
+  const claims = { k: "session", sub, org: "acme", ...(sv !== undefined ? { sv } : {}), iat, exp: iat + 28800 };
+  return `portal_session=${encodeURIComponent(seal(claims, sessionKey))}`;
+}
+
+function portalIdentityClaims(body: unknown): Record<string, unknown> {
+  const token = (body as { headers: Record<string, string> }).headers["x-portal-identity"];
+  assert.ok(token, "the hop carries a signed portal identity");
+  return JSON.parse(Buffer.from(token.slice(0, token.lastIndexOf(".")), "base64url").toString("utf8")) as Record<string, unknown>;
 }
 
 test.after(() => {
@@ -926,4 +933,31 @@ test("impersonate: an admin starts it; the web-ui hop carries target + impersona
   });
   assert.equal(stop.status, 200);
   assert.match(stop.headers.get("set-cookie") ?? "", /portal_impersonate=;[^,]*Max-Age=0/);
+});
+
+test("impersonate: the minted identity targets the impersonated user without the admin's session version", async () => {
+  const start = await fetch(`${base}/auth/impersonate?target=alice@acme`, {
+    method: "POST",
+    headers: { cookie: sessionCookie("U-admin", 0, 7), origin: PUBLIC, accept: "application/json" },
+  });
+  assert.equal(start.status, 200);
+  const m = (start.headers.get("set-cookie") ?? "").match(/portal_impersonate=([^;]+)/);
+  assert.ok(m, "the impersonation cookie is set");
+  const impCookie = `portal_impersonate=${m![1]}`;
+
+  const plain = await fetch(`${base}/web-ui/api/x`, { headers: { cookie: sessionCookie("U-admin", 0, 7) } });
+  assert.equal(portalIdentityClaims(await plain.json()).sv, 7, "a direct hop forwards the session version");
+
+  const web = await fetch(`${base}/web-ui/api/x`, {
+    headers: { cookie: `${sessionCookie("U-admin", 0, 7)}; ${impCookie}` },
+  });
+  const claims = portalIdentityClaims(await web.json());
+  assert.equal(claims.p, "alice@acme");
+  assert.equal(claims.imp, "U-admin");
+  assert.equal("sv" in claims, false, "impersonation never forwards the admin's session version");
+
+  await fetch(`${base}/auth/impersonate/stop`, {
+    method: "POST",
+    headers: { cookie: `${sessionCookie("U-admin")}; ${impCookie}`, origin: PUBLIC },
+  });
 });
