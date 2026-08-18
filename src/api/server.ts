@@ -260,6 +260,11 @@ async function gate(
       await deps.identity.refresh();
       if (deps.identity.classify(actor.p).type !== "internal") actor = null;
     }
+    if (actor && deps.organization) {
+      const u = await deps.organization.checkActive(actor.p);
+      if (!u || u.status !== "active" || (typeof actor.sv === "number" && actor.sv !== u.sessionVersion))
+        actor = null;
+    }
     if (!isPublicRoute && requirePortalIdentity) {
       const webTurn =
         method === "POST" &&

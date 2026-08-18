@@ -33,7 +33,14 @@ function start(overrides: Partial<Config> = {}): { built: BuiltApp; base: string
   return { built, base, close: () => new Promise<void>((r) => server.close(() => r())) };
 }
 
-function startAdmin(overrides: Partial<Config> = {}): { built: BuiltApp; base: string; close: () => Promise<void> } {
+async function seedActive(built: BuiltApp, principalId: string): Promise<void> {
+  await built.organization.invite({ principalId, email: null, displayName: principalId, actor: "test" });
+  await built.organization.setStatus({ principalId, status: "active", actor: "test" });
+}
+
+async function startAdmin(
+  overrides: Partial<Config> = {},
+): Promise<{ built: BuiltApp; base: string; close: () => Promise<void> }> {
   const built = buildApp(
     testConfig({
       dataDir: mkdtempSync(join(tmpdir(), "org-admin-")),
@@ -51,6 +58,7 @@ function startAdmin(overrides: Partial<Config> = {}): { built: BuiltApp; base: s
   });
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
+  await seedActive(built, "admin-alice");
   return { built, base, close: () => new Promise<void>((r) => server.close(() => r())) };
 }
 
@@ -180,7 +188,7 @@ test("unknown user is denied not_invited under invite_only admission", async () 
 });
 
 test("admin invite creates an invited user with the exact response shape", async () => {
-  const srv = startAdmin();
+  const srv = await startAdmin();
   try {
     const res = await adminFetch(srv.base, "POST", INVITE_PATH, "admin-alice", {
       principalId: "U-bob",
@@ -218,7 +226,7 @@ test("admin invite creates an invited user with the exact response shape", async
 });
 
 test("an invited user activates through the login endpoint under invite_only admission", async () => {
-  const srv = startAdmin({ orgAdmission: "invite_only" });
+  const srv = await startAdmin({ orgAdmission: "invite_only" });
   try {
     const invited = await adminFetch(srv.base, "POST", INVITE_PATH, "admin-alice", {
       principalId: "U-bob",
@@ -241,7 +249,7 @@ test("an invited user activates through the login endpoint under invite_only adm
 });
 
 test("invite lowercases the stored email so case-variant login emails still match", async () => {
-  const srv = startAdmin({ orgAdmission: "invite_only" });
+  const srv = await startAdmin({ orgAdmission: "invite_only" });
   try {
     const invited = await adminFetch(srv.base, "POST", INVITE_PATH, "admin-alice", {
       principalId: "U-case",
@@ -263,7 +271,7 @@ test("invite lowercases the stored email so case-variant login emails still matc
 });
 
 test("suspending a user via PATCH denies subsequent logins; unknown users are 404", async () => {
-  const srv = startAdmin();
+  const srv = await startAdmin();
   try {
     await adminFetch(srv.base, "POST", INVITE_PATH, "admin-alice", {
       principalId: "U-carol",
@@ -314,7 +322,7 @@ test("suspending a user via PATCH denies subsequent logins; unknown users are 40
 });
 
 test("deprovisioning a UUID-keyed user via PATCH denies subsequent logins", async () => {
-  const srv = startAdmin();
+  const srv = await startAdmin();
   const uuid = "550e8400-e29b-41d4-a716-446655440000";
   try {
     const invited = await adminFetch(srv.base, "POST", INVITE_PATH, "admin-alice", {
@@ -346,8 +354,9 @@ test("deprovisioning a UUID-keyed user via PATCH denies subsequent logins", asyn
 });
 
 test("non-admin actors are forbidden (403); a missing portal identity is unauthorized (401)", async () => {
-  const srv = startAdmin();
+  const srv = await startAdmin();
   try {
+    await seedActive(srv.built, "U-nobody");
     const forbidden = await adminFetch(srv.base, "POST", INVITE_PATH, "U-nobody", {
       principalId: "U-dave",
       email: "dave@example.com",
@@ -392,7 +401,7 @@ test("non-admin actors are forbidden (403); a missing portal identity is unautho
 });
 
 test("non-personal capability tokens are denied admin content reads (audit, errors, egress)", async () => {
-  const srv = startAdmin();
+  const srv = await startAdmin();
   try {
     const cap = await mintCapabilityToken(
       {
@@ -414,7 +423,7 @@ test("non-personal capability tokens are denied admin content reads (audit, erro
 });
 
 test("invalid invite and status input is rejected 400", async () => {
-  const srv = startAdmin();
+  const srv = await startAdmin();
   try {
     const badInvites: Array<Record<string, unknown>> = [
       {},
