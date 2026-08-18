@@ -94,6 +94,7 @@ const SYSTEM: Rule[] = [
   pat("POST", "/v1/auth/portal-login/create"),
   pat("POST", "/v1/auth/portal-login/claim"),
   pat("POST", "/v1/auth/portal-login/complete"),
+  pat("POST", "/v1/internal/auth/users/login"),
   pat("PUT", "/v1/deployment-layer"),
   pat("POST", "/v1/session-cap"),
   pat("POST", "/v1/keychain/drops/:id"),
