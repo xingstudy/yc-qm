@@ -9,6 +9,7 @@ import type { AddressInfo } from "node:net";
 import { createServer } from "../src/api/server.ts";
 import { signRequest } from "../src/auth/source-auth.ts";
 import { mintSignedPayload } from "../src/auth/signed-token.ts";
+import { CONTROL_PLANE_AUD, mintCapabilityToken } from "../src/auth/capability-token.ts";
 import { buildApp, type BuiltApp } from "../src/wiring.ts";
 import type { Config } from "../src/config.ts";
 import { testConfig } from "./support/test-config.ts";
@@ -178,7 +179,7 @@ test("unknown user is denied not_invited under invite_only admission", async () 
   }
 });
 
-test("admin invite creates an invited user with the full serialized profile", async () => {
+test("admin invite creates an invited user with the exact response shape", async () => {
   const srv = startAdmin();
   try {
     const res = await adminFetch(srv.base, "POST", INVITE_PATH, "admin-alice", {
@@ -188,6 +189,7 @@ test("admin invite creates an invited user with the full serialized profile", as
     });
     assert.equal(res.status, 200);
     const body: any = await res.json();
+    assert.deepEqual(Object.keys(body), ["user"]);
     assert.deepEqual(Object.keys(body.user).sort(), [
       "createdAt",
       "createdBy",
@@ -274,13 +276,38 @@ test("suspending a user via PATCH denies subsequent logins; unknown users are 40
 test("non-admin actors are forbidden (403); a missing portal identity is unauthorized (401)", async () => {
   const srv = startAdmin();
   try {
-    const forbidden = await adminFetch(srv.base, "POST", INVITE_PATH, "U-nobody", { principalId: "U-dave" });
+    const forbidden = await adminFetch(srv.base, "POST", INVITE_PATH, "U-nobody", {
+      principalId: "U-dave",
+      email: "dave@example.com",
+    });
     assert.equal(forbidden.status, 403);
     const forbiddenPatch = await adminFetch(srv.base, "PATCH", `${INVITE_PATH}/U-dave`, "U-nobody", {
       status: "active",
     });
     assert.equal(forbiddenPatch.status, 403);
-    const raw = JSON.stringify({ principalId: "U-dave" });
+    const cap = await mintCapabilityToken(
+      {
+        actorId: "admin-alice",
+        scopeId: "personal:admin-alice",
+        aud: CONTROL_PLANE_AUD,
+        liveActor: true,
+        exp: Date.now() + 60_000,
+      },
+      CAP,
+    );
+    const capInvite = await fetch(`${srv.base}${INVITE_PATH}`, {
+      method: "POST",
+      headers: { "x-agent-capability": cap, "content-type": "application/json" },
+      body: JSON.stringify({ principalId: "U-dave", email: "dave@example.com" }),
+    });
+    assert.equal(capInvite.status, 403, "capability tokens must not reach org user mutations");
+    const capPatch = await fetch(`${srv.base}${INVITE_PATH}/U-dave`, {
+      method: "PATCH",
+      headers: { "x-agent-capability": cap, "content-type": "application/json" },
+      body: JSON.stringify({ status: "active" }),
+    });
+    assert.equal(capPatch.status, 403, "capability tokens must not reach org user mutations");
+    const raw = JSON.stringify({ principalId: "U-dave", email: "dave@example.com" });
     const noIdentity = await fetch(`${srv.base}${INVITE_PATH}`, {
       method: "POST",
       headers: sign("POST", INVITE_PATH, raw),
