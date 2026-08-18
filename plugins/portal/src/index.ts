@@ -1156,6 +1156,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     principal,
     ...(!impersonator && session.name ? { displayName: session.name } : {}),
     ...(impersonator ? { impersonator } : {}),
+    ...(typeof session.sv === "number" ? { sessionVersion: session.sv } : {}),
     ...(PORTAL_IDENTITY_SECRET ? { identitySecret: PORTAL_IDENTITY_SECRET } : {}),
   });
 }
@@ -1207,6 +1208,12 @@ async function authLogin(req: IncomingMessage, res: ServerResponse, url: URL): P
   res.end();
 }
 
+const LOGIN_DENIAL_MESSAGES: Record<string, string> = {
+  suspended: "account suspended",
+  deprovisioned: "account deactivated",
+  not_invited: "account not invited",
+};
+
 async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const existingSession = currentSession(req);
   const stateParam = url.searchParams.get("state") ?? "";
@@ -1241,6 +1248,10 @@ async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL)
 
   let sub: string;
   let name = "";
+  let infoSub: string;
+  let email: string;
+  let emailVerified: boolean;
+  let issuer = OIDC.issuer;
   try {
     const { accessToken, idToken } = await exchangeCode(OIDC, { code, codeVerifier: tmp.pkceVerifier });
     const claims = await verifyIdToken(OIDC, idToken, tmp.nonce);
@@ -1249,12 +1260,15 @@ async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL)
       if (team !== OIDC.expectedTeamId) throw new Error("workspace not permitted");
     }
     const info = await fetchUserinfo(OIDC, accessToken);
-    const infoSub = typeof info.sub === "string" ? info.sub : "";
+    infoSub = typeof info.sub === "string" ? info.sub : "";
     if (!infoSub) throw new Error("userinfo missing sub");
     if (typeof claims.sub === "string" && claims.sub !== infoSub) throw new Error("subject mismatch");
     sub = resolvePrincipal(PRINCIPAL_RULE, { sub: infoSub, claims, userinfo: info });
     const rawName = info.name ?? claims.name;
     if (typeof rawName === "string") name = rawName.trim().slice(0, 200);
+    email = typeof info.email === "string" ? info.email.trim().toLowerCase() : "";
+    emailVerified = info.email_verified === true || info.email_verified === "true";
+    if (typeof claims.iss === "string" && claims.iss) issuer = claims.iss;
   } catch (e) {
     await portalLoginTransactions.complete(stateParam, claimId, "failed");
     return fail(errMessage(e, "sign-in failed"));
@@ -1263,6 +1277,52 @@ async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL)
   if (existingSession && existingSession.sub !== sub) {
     await portalLoginTransactions.complete(stateParam, claimId, "failed");
     return fail("this browser is already signed in to a different account — sign out before using this link", 409);
+  }
+
+  const loginBody = JSON.stringify({
+    principalId: sub,
+    issuer,
+    subject: infoSub,
+    email: email || undefined,
+    emailVerified,
+    displayName: name || undefined,
+  });
+  const loginPath = withSourceAuthNonce("/v1/internal/auth/users/login", CORE_SIGNING_SECRET);
+  let loginRes: Response;
+  try {
+    loginRes = await fetch(`${CORE}${loginPath}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...signedHeaders(CORE_SIGNING_SECRET, "POST", loginPath, loginBody),
+      },
+      body: loginBody,
+      signal: AbortSignal.timeout(4_000),
+    });
+  } catch {
+    await portalLoginTransactions.complete(stateParam, claimId, "failed");
+    return fail("sign-in service temporarily unavailable", 503);
+  }
+  if (!loginRes.ok) {
+    await portalLoginTransactions.complete(stateParam, claimId, "failed");
+    return fail("sign-in service temporarily unavailable", 503);
+  }
+  const loginData = (await loginRes.json().catch(() => ({}))) as {
+    status?: string;
+    reason?: string;
+    user?: { sessionVersion?: unknown; displayName?: unknown };
+  };
+  if (loginData.status === "denied") {
+    await portalLoginTransactions.complete(stateParam, claimId, "failed");
+    return fail(LOGIN_DENIAL_MESSAGES[loginData.reason ?? ""] ?? "sign-in is not permitted for this account", 403);
+  }
+  const sessionVersion = loginData.user?.sessionVersion;
+  if (loginData.status !== "ok" || typeof sessionVersion !== "number" || !Number.isFinite(sessionVersion)) {
+    await portalLoginTransactions.complete(stateParam, claimId, "failed");
+    return fail("sign-in service temporarily unavailable", 503);
+  }
+  if (typeof loginData.user?.displayName === "string" && loginData.user.displayName.trim()) {
+    name = loginData.user.displayName.trim().slice(0, 200);
   }
 
   const completed = await portalLoginTransactions.complete(stateParam, claimId, "succeeded");
@@ -1276,6 +1336,7 @@ async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL)
     auth: now,
     iat: now,
     exp: now + SESSION_TTL_S,
+    sv: sessionVersion,
     ...(name ? { name } : {}),
   };
   setSession(res, [

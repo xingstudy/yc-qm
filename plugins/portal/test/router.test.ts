@@ -30,6 +30,9 @@ let expectedCodeVerifier = "";
 let brokerState = "";
 let tokenExchanges = 0;
 let loginTransactionUnavailable = false;
+let userLoginMode: "ok" | "denied" | "down" = "ok";
+let userLoginDenyReason = "not_invited";
+let lastUserLoginBody: Record<string, unknown> | null = null;
 
 const upstream = createServer((req: IncomingMessage, res) => {
   const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
@@ -94,6 +97,33 @@ const upstream = createServer((req: IncomingMessage, res) => {
       }
       res.writeHead(200, { "content-type": "application/json" });
       return void res.end(JSON.stringify({ status: "missing" }));
+    });
+  }
+  if (pathname === "/v1/internal/auth/users/login" && req.method === "POST") {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    return void req.on("end", () => {
+      lastUserLoginBody = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      if (userLoginMode === "down") {
+        res.writeHead(503, { "content-type": "application/json" });
+        return void res.end(JSON.stringify({ error: "unavailable" }));
+      }
+      if (userLoginMode === "denied") {
+        res.writeHead(200, { "content-type": "application/json" });
+        return void res.end(JSON.stringify({ status: "denied", reason: userLoginDenyReason }));
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          user: {
+            principalId: lastUserLoginBody.principalId,
+            status: "active",
+            sessionVersion: 7,
+            displayName: "Core User Name",
+          },
+        }),
+      );
     });
   }
   if (req.url === "/verify" && req.method === "POST") {
@@ -507,6 +537,23 @@ test("the browser that confirms the emailed link can complete login without the 
   assert.equal(tokenExchanges, exchangesBefore + 1);
   assert.equal(loginTransactions.get(brokerState)?.status, "succeeded");
   assert.equal(loginTransactions.get(brokerState)?.payload, null);
+  assert.deepEqual(lastUserLoginBody, {
+    principalId: "user@example.com",
+    issuer: OIDC_ISSUER,
+    subject: "router-user",
+    email: "user@example.com",
+    emailVerified: true,
+    displayName: "Router User",
+  });
+  const issued = /portal_session=([^;]+)/.exec(completed.headers.get("set-cookie") ?? "")?.[1] ?? "";
+  const issuedClaims = open(decodeURIComponent(issued), sessionKey) as {
+    sub: string;
+    sv?: number;
+    name?: string;
+  } | null;
+  assert.equal(issuedClaims?.sub, "user@example.com");
+  assert.equal(issuedClaims?.sv, 7, "the session cookie carries the core-issued session version");
+  assert.equal(issuedClaims?.name, "Core User Name", "the core-resolved display name wins over the OIDC name");
 
   const replay = await fetch(`${base}${callback.pathname}${callback.search}`, {
     headers: { cookie: handoff },
@@ -565,6 +612,57 @@ test("a missing durable transaction never falls back to the starting browser coo
   });
   assert.equal(refused.status, 400);
   assert.equal(tokenExchanges, exchangesBefore);
+});
+
+async function runCookieLoginCallback(): Promise<{ response: Response; state: string }> {
+  const login = await fetch(`${base}/auth/login`, { redirect: "manual" });
+  const authorization = new URL(login.headers.get("location") ?? "");
+  const state = authorization.searchParams.get("state") ?? "";
+  oidcNonce = authorization.searchParams.get("nonce") ?? "";
+  const payload = openEncryptedTmp(loginTransactions.get(state)?.payload ?? null, transactionKey, Date.now());
+  expectedCodeVerifier = payload?.pkceVerifier ?? "";
+  const tmpValue = /portal_oidc_tmp=([^;]+)/.exec(login.headers.get("set-cookie") ?? "")?.[1] ?? "";
+  const response = await fetch(`${base}/auth/callback?code=router-code&state=${state}`, {
+    headers: { cookie: `portal_oidc_tmp=${tmpValue}` },
+    redirect: "manual",
+  });
+  return { response, state };
+}
+
+test("auth/callback issues no session when core denies the organization user", async () => {
+  const exchangesBefore = tokenExchanges;
+  userLoginMode = "denied";
+  try {
+    userLoginDenyReason = "not_invited";
+    const denied = await runCookieLoginCallback();
+    assert.equal(denied.response.status, 403);
+    assert.match(await denied.response.text(), /account not invited/);
+    assert.doesNotMatch(denied.response.headers.get("set-cookie") ?? "", /portal_session=[^;]/);
+    assert.equal(loginTransactions.get(denied.state)?.status, "failed");
+
+    userLoginDenyReason = "unknown";
+    const unknown = await runCookieLoginCallback();
+    assert.equal(unknown.response.status, 403);
+    assert.match(await unknown.response.text(), /sign-in is not permitted for this account/);
+    assert.doesNotMatch(unknown.response.headers.get("set-cookie") ?? "", /portal_session=[^;]/);
+    assert.equal(loginTransactions.get(unknown.state)?.status, "failed");
+  } finally {
+    userLoginMode = "ok";
+  }
+  assert.equal(tokenExchanges, exchangesBefore + 2, "OIDC verification still ran; only the core upsert denied");
+});
+
+test("auth/callback fails closed when the core organization login is unavailable", async () => {
+  userLoginMode = "down";
+  try {
+    const { response, state } = await runCookieLoginCallback();
+    assert.equal(response.status, 503);
+    assert.match(await response.text(), /sign-in service temporarily unavailable/);
+    assert.doesNotMatch(response.headers.get("set-cookie") ?? "", /portal_session=[^;]/);
+    assert.equal(loginTransactions.get(state)?.status, "failed");
+  } finally {
+    userLoginMode = "ok";
+  }
 });
 
 test("the public login entry point is bounded per client before it writes more transactions", async () => {

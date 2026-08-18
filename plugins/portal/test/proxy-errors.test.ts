@@ -76,6 +76,32 @@ test("no display name on the session means no name cookie is forwarded", async (
   assert.doesNotMatch(body.cookie ?? "", /webuiuser_name=/);
 });
 
+test("the session's sv claim rides the signed portal identity to the web surface", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const cookie = `portal_session=${encodeURIComponent(
+    seal({ k: "session", sub: "U1", org: "acme", iat: now, exp: now + 3600, sv: 42 }, sessionKey),
+  )}`;
+  const r = await fetch(`${base}/web-ui/api/x`, { headers: { cookie } });
+  assert.equal(r.status, 200);
+  const body = (await r.json()) as { headers: Record<string, string> };
+  const identity = verifyPortalIdentity(
+    body.headers["x-portal-identity"] ?? "",
+    "proxy-errors-test-identity-secret",
+    Date.now(),
+  );
+  assert.equal(identity?.p, "U1");
+  assert.equal(identity?.sv, 42);
+
+  const withoutSv = await fetch(`${base}/web-ui/api/x`, { headers: { cookie: sessionCookie("U1") } });
+  const plainBody = (await withoutSv.json()) as { headers: Record<string, string> };
+  const plainIdentity = verifyPortalIdentity(
+    plainBody.headers["x-portal-identity"] ?? "",
+    "proxy-errors-test-identity-secret",
+    Date.now(),
+  );
+  assert.equal(plainIdentity?.sv, undefined);
+});
+
 test("deployment proxy binds source auth and portal identity to the signed-in principal", async () => {
   const r = await fetch(`${base}/d/app/hello?x=1`, { headers: { cookie: sessionCookie("U1") } });
   const body = (await r.json()) as { url: string; headers: Record<string, string> };
