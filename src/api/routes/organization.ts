@@ -110,16 +110,16 @@ async function inviteUser(ctx: ApiCtx): Promise<void> {
       message: "system: principal ids cannot be invited as organization users",
     });
   }
-  const email = body.email === undefined ? null : trimmedString(body.email);
-  if (body.email !== undefined && email === null) {
-    return sendJson(ctx.res, 400, { error: "bad_request", message: "email must be a non-empty string" });
+  const email = trimmedString(body.email);
+  if (!email || !email.includes("@")) {
+    return sendJson(ctx.res, 400, { error: "bad_request", message: "email must be a string containing @" });
   }
   if (body.displayName !== undefined && typeof body.displayName !== "string") {
     return sendJson(ctx.res, 400, { error: "bad_request", message: "displayName must be a string" });
   }
   const user = await authz.organization.invite({
     principalId,
-    email: email ? email.toLowerCase() : null,
+    email: email.toLowerCase(),
     displayName: typeof body.displayName === "string" ? body.displayName : "",
     actor: authz.actorId,
   });

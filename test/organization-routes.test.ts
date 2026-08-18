@@ -300,9 +300,11 @@ test("invalid invite and status input is rejected 400", async () => {
       { principalId: "  " },
       { principalId: 42 },
       { principalId: "system:plugin-skills" },
+      { principalId: "U-x" },
       { principalId: "U-x", email: 5 },
       { principalId: "U-x", email: "" },
-      { principalId: "U-x", displayName: 7 },
+      { principalId: "U-x", email: "not-an-email" },
+      { principalId: "U-x", email: "bob@example.com", displayName: 7 },
     ];
     for (const body of badInvites) {
       const res = await adminFetch(srv.base, "POST", INVITE_PATH, "admin-alice", body);
