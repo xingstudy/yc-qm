@@ -145,11 +145,16 @@ export function createOrganizationService(deps: {
       return { status: "denied", reason: user.status };
     }
     if (input.email !== null && input.emailVerified) {
-      const invitedUser = await store.findUserByEmail(orgId, input.email);
-      if (invitedUser && invitedUser.status === "invited") {
-        await linkIdentity(input, invitedUser.principalId);
-        const next = await activate(invitedUser, input);
-        return { status: "ok", user: next };
+      const matched = await store.findUserByEmail(orgId, input.email);
+      if (matched) {
+        if (matched.status === "invited") {
+          await linkIdentity(input, matched.principalId);
+          const next = await activate(matched, input);
+          return { status: "ok", user: next };
+        }
+        const reason = matched.status === "active" ? "unknown" : matched.status;
+        record("org.user.login_denied", matched.principalId, reason);
+        return { status: "denied", reason };
       }
     }
     if (autoJoinAdmits(input) && input.emailVerified) {
@@ -200,6 +205,7 @@ export function createOrganizationService(deps: {
       updatedBy: input.actor,
     };
     await persistUser(user);
+    record("org.user.invite", user.principalId);
     return user;
   }
 

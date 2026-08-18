@@ -151,6 +151,26 @@ test("login: identity without a user row is denied unknown", async () => {
   assert.deepEqual(result, { status: "denied", reason: "unknown" });
 });
 
+test("login: email match on a non-invited user fails closed and never recreates the row", async () => {
+  const active = setup({ admission: "domain_auto_join", autoJoinDomains: ["acme.com"] });
+  await active.store.putUser(orgUser({ status: "active", sessionVersion: 5 }));
+  const activeResult = await active.service.login(loginInput({ subject: "sub-new" }));
+  assert.deepEqual(activeResult, { status: "denied", reason: "unknown" });
+  assert.equal((await active.store.getUser(ORG, "alice@acme.com"))?.sessionVersion, 5, "active user row untouched");
+
+  const suspended = setup({ admission: "domain_auto_join", autoJoinDomains: ["acme.com"] });
+  await suspended.store.putUser(orgUser({ status: "suspended", sessionVersion: 3 }));
+  const suspendedResult = await suspended.service.login(loginInput({ subject: "sub-new" }));
+  assert.deepEqual(suspendedResult, { status: "denied", reason: "suspended" });
+  assert.equal((await suspended.store.getUser(ORG, "alice@acme.com"))?.sessionVersion, 3, "suspended user row untouched");
+
+  const fresh = setup({ admission: "domain_auto_join", autoJoinDomains: ["acme.com"] });
+  const freshResult = await fresh.service.login(loginInput({ principalId: "new@acme.com", email: "new@acme.com", subject: "sub-new" }));
+  assert.equal(freshResult.status, "ok");
+  if (freshResult.status !== "ok") return;
+  assert.equal(freshResult.user.sessionVersion, 1, "genuinely new email still auto-joins");
+});
+
 test("setStatus: bumps sessionVersion, drives identity deactivation, and is idempotent", async () => {
   const { service, identity, auditLog } = setup();
   await service.invite({ principalId: "alice@acme.com", email: "alice@acme.com", displayName: "Alice", actor: "admin@acme.com" });
@@ -195,6 +215,7 @@ test("audit: login, denial, activation, auto-join, and status changes are record
   assert.ok(events.every((e) => e.scopeLabel === SCOPE));
   const actions = events.map((e) => `${e.action}:${e.status ?? ""}`);
   assert.deepEqual(actions, [
+    "org.user.invite:",
     "org.user.activate:",
     "org.user.login:",
     "org.user.status:suspended",
@@ -203,6 +224,9 @@ test("audit: login, denial, activation, auto-join, and status changes are record
   ]);
   const deniedStranger = events.find((e) => e.principalId === "stranger@acme.com");
   assert.equal(deniedStranger?.resource, "stranger@acme.com");
+  const reinvite = await service.invite({ principalId: "alice@acme.com", email: "alice@acme.com", displayName: "Alice", actor: "admin@acme.com" });
+  assert.equal(reinvite.status, "suspended", "re-invite returns the stored row unchanged");
+  assert.equal((await auditLog.events()).length, events.length, "re-invite no-op records no event");
 
   const autoJoin = setup({ admission: "domain_auto_join", autoJoinDomains: ["acme.com"] });
   await autoJoin.service.login(loginInput({ principalId: "carol@acme.com", email: "carol@acme.com", subject: "sub-3" }));
