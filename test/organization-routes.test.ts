@@ -273,6 +273,38 @@ test("suspending a user via PATCH denies subsequent logins; unknown users are 40
   }
 });
 
+test("deprovisioning a UUID-keyed user via PATCH denies subsequent logins", async () => {
+  const srv = startAdmin();
+  const uuid = "550e8400-e29b-41d4-a716-446655440000";
+  try {
+    const invited = await adminFetch(srv.base, "POST", INVITE_PATH, "admin-alice", {
+      principalId: uuid,
+      email: "uuid@example.com",
+      displayName: "Uuid User",
+    });
+    assert.equal(invited.status, 200);
+    const first = await login(
+      srv.base,
+      loginBody({ principalId: uuid, subject: "sub-uuid", email: "uuid@example.com", displayName: "Uuid User" }),
+    );
+    assert.equal(((await first.json()) as any).status, "ok");
+    const patch = await adminFetch(srv.base, "PATCH", `${INVITE_PATH}/${uuid}`, "admin-alice", {
+      status: "deprovisioned",
+    });
+    assert.equal(patch.status, 200);
+    const patched: any = ((await patch.json()) as any).user;
+    assert.equal(patched.principalId, uuid);
+    assert.equal(patched.status, "deprovisioned");
+    const denied = await login(
+      srv.base,
+      loginBody({ principalId: uuid, subject: "sub-uuid", email: "uuid@example.com", displayName: "Uuid User D" }),
+    );
+    assert.deepEqual(await denied.json(), { status: "denied", reason: "deprovisioned" });
+  } finally {
+    await srv.close();
+  }
+});
+
 test("non-admin actors are forbidden (403); a missing portal identity is unauthorized (401)", async () => {
   const srv = startAdmin();
   try {
