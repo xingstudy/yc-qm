@@ -240,6 +240,28 @@ test("an invited user activates through the login endpoint under invite_only adm
   }
 });
 
+test("invite lowercases the stored email so case-variant login emails still match", async () => {
+  const srv = startAdmin({ orgAdmission: "invite_only" });
+  try {
+    const invited = await adminFetch(srv.base, "POST", INVITE_PATH, "admin-alice", {
+      principalId: "U-case",
+      email: "MixedCase@Example.COM",
+      displayName: "Case",
+    });
+    assert.equal(((await invited.json()) as any).user.email, "mixedcase@example.com");
+    const res = await login(
+      srv.base,
+      loginBody({ principalId: "U-case", subject: "sub-case", email: "mixedcase@example.com", displayName: "Case" }),
+    );
+    assert.deepEqual(await res.json(), {
+      status: "ok",
+      user: { principalId: "U-case", status: "active", sessionVersion: 2, displayName: "Case" },
+    });
+  } finally {
+    await srv.close();
+  }
+});
+
 test("suspending a user via PATCH denies subsequent logins; unknown users are 404", async () => {
   const srv = startAdmin();
   try {
