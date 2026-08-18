@@ -369,6 +369,28 @@ test("non-admin actors are forbidden (403); a missing portal identity is unautho
   }
 });
 
+test("non-personal capability tokens are denied admin content reads (audit, errors, egress)", async () => {
+  const srv = startAdmin();
+  try {
+    const cap = await mintCapabilityToken(
+      {
+        actorId: "admin-alice",
+        scopeId: "channel:C1",
+        aud: CONTROL_PLANE_AUD,
+        liveActor: true,
+        exp: Date.now() + 60_000,
+      },
+      CAP,
+    );
+    for (const path of ["/v1/admin/audit", "/v1/admin/errors", "/v1/admin/egress"]) {
+      const res = await fetch(`${srv.base}${path}`, { headers: { "x-agent-capability": cap } });
+      assert.equal(res.status, 403, `GET ${path} with a non-personal capability token`);
+    }
+  } finally {
+    await srv.close();
+  }
+});
+
 test("invalid invite and status input is rejected 400", async () => {
   const srv = startAdmin();
   try {
