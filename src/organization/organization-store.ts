@@ -1,5 +1,12 @@
 export type OrganizationUserStatus = "invited" | "active" | "suspended" | "deprovisioned";
 
+export const ORGANIZATION_USER_STATUSES: ReadonlyArray<OrganizationUserStatus> = [
+  "invited",
+  "active",
+  "suspended",
+  "deprovisioned",
+];
+
 export interface OrganizationUser {
   orgId: string;
   principalId: string;

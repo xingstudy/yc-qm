@@ -2,14 +2,11 @@ import { sendJson } from "../http.ts";
 import { authorizeAdmin, isObj, orgScope } from "./shared.ts";
 import { type ApiCtx, type Route } from "./route.ts";
 import type { OrganizationService } from "../../organization/organization-service.ts";
-import type { OrganizationUser, OrganizationUserStatus } from "../../organization/organization-store.ts";
-
-const ORGANIZATION_USER_STATUSES: ReadonlyArray<OrganizationUserStatus> = [
-  "invited",
-  "active",
-  "suspended",
-  "deprovisioned",
-];
+import {
+  ORGANIZATION_USER_STATUSES,
+  type OrganizationUser,
+  type OrganizationUserStatus,
+} from "../../organization/organization-store.ts";
 
 function trimmedString(value: unknown): string | null {
   if (typeof value !== "string") return null;
