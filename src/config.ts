@@ -21,6 +21,7 @@ import {
   type ModelProviderAvailability,
 } from "./model/pi-models.ts";
 import { databaseUrlFromEnv } from "./util/postgres-url.ts";
+import type { OrgAdmission } from "./organization/organization-service.ts";
 
 export interface Config {
   production: boolean;
@@ -28,6 +29,9 @@ export interface Config {
   port: number;
   dataDir: string;
   orgId: string;
+  orgAdmission: OrgAdmission;
+  orgAutoJoinDomains: string[];
+  orgBootstrapUsers: string[];
   sessionStore: "memory" | "postgres";
   databaseUrl?: string;
   harness: "mock" | "pi" | "opencode" | "codex" | "claude";
@@ -686,12 +690,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     (turnWallClockMs > 0 ? 2 * turnWallClockMs : CONFIG_DEFAULTS.runMaxAgeMs);
   const slack = slackPluginConfigFromEnv(env);
   const databaseUrl = databaseUrlFromEnv(env);
+  const orgAdmission = env.ORG_ADMISSION ?? "domain_auto_join";
+  if (orgAdmission !== "invite_only" && orgAdmission !== "domain_auto_join") {
+    throw new Error("ORG_ADMISSION must be invite_only or domain_auto_join");
+  }
+  const orgAutoJoinDomains = (env.ORG_AUTO_JOIN_DOMAINS ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const orgBootstrapUsers = (env.ORG_BOOTSTRAP_USERS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   return {
     production: env.NODE_ENV === "production",
     allowUnauthenticatedCore: boolEnvStrict("ALLOW_UNAUTHENTICATED_CORE", env.ALLOW_UNAUTHENTICATED_CORE) ?? false,
     port: numEnvStrict("PORT", env.PORT) ?? CONFIG_DEFAULTS.port,
     dataDir,
     orgId: env.ORG_ID ?? DEFAULT_ORG_ID,
+    orgAdmission,
+    orgAutoJoinDomains,
+    orgBootstrapUsers,
     sessionStore: env.SESSION_STORE === "postgres" ? "postgres" : "memory",
     ...(databaseUrl ? { databaseUrl } : {}),
     harness: harnessEnvStrict(env.HARNESS),

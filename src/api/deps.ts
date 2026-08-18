@@ -25,6 +25,7 @@ import type { EgressEnforcement, Sandbox } from "../sandbox/sandbox.ts";
 import type { EnvironmentStore } from "../environments/environment-store.ts";
 import type { Scheduler } from "../cron/scheduler.ts";
 import type { IdentityService } from "../identity/identity-service.ts";
+import type { OrganizationService } from "../organization/organization-service.ts";
 import type { DeviceFlowCutoverStore } from "../credentials/device-flow-cutover.ts";
 import type {
   ConnectorTokenStore,
@@ -121,6 +122,7 @@ export interface ServerDeps {
   deployAppsLoginUrl?: string;
   scheduler?: Scheduler;
   identity?: IdentityService;
+  organization?: OrganizationService;
   keychain?: Keychain;
   serviceCreds?: ServiceCredentialStore;
   deliveries?: DeliveryStore;

@@ -67,6 +67,7 @@ const server = createServer(built.app, {
   ...(config.deployAppsLoginUrl ? { deployAppsLoginUrl: config.deployAppsLoginUrl } : {}),
   scheduler: built.scheduler,
   identity: built.identity,
+  ...(built.organization ? { organization: built.organization } : {}),
   ...(built.keychain ? { keychain: built.keychain } : {}),
   serviceCreds: built.serviceCreds,
   deliveries: built.deliveries,

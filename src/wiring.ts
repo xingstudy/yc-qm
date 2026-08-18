@@ -3,6 +3,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { baseModelProviders, configuredModelForHarness, providerKeysPresent, type Config } from "./config.ts";
 import { createIdentityService, type DeactivationRecord, type IdentityService } from "./identity/identity-service.ts";
+import { createOrganizationService, type OrganizationService } from "./organization/organization-service.ts";
+import { createMemoryOrganizationStore } from "./organization/organization-store.ts";
+import { createPostgresOrganizationStore } from "./organization/postgres-organization-store.ts";
 import {
   createMemoryConfigStore,
   type ScopedConfigStore,
@@ -342,6 +345,7 @@ export interface BuiltApp {
   credentialUsage: CredentialUsageSink;
   egressAudit: EgressAuditSink;
   identity: IdentityService;
+  organization: OrganizationService;
   keychain?: Keychain;
   serviceCreds: ServiceCredentialStore;
   deliveries: DeliveryStore;
@@ -471,6 +475,28 @@ export function buildApp(
   const brokeredTools = deploymentLayer.brokeredTools;
   const orgScope = scopeId("org", config.orgId);
   const auditLog = config.databaseUrl ? createPostgresAuditLog(config.databaseUrl) : createAuditLog();
+  const organizationStore = config.databaseUrl
+    ? createPostgresOrganizationStore(config.databaseUrl)
+    : createMemoryOrganizationStore();
+  const organization = createOrganizationService({
+    store: organizationStore,
+    orgId: config.orgId,
+    admission: config.orgAdmission,
+    autoJoinDomains: config.orgAutoJoinDomains,
+    auditLog,
+    identity,
+  });
+  void organization.hydrate();
+  for (const principalId of config.orgBootstrapUsers) {
+    void organization
+      .invite({
+        principalId,
+        email: principalId.includes("@") ? principalId : null,
+        displayName: principalId,
+        actor: "system:bootstrap",
+      })
+      .then((u) => organization.setStatus({ principalId: u.principalId, status: "active", actor: "system:bootstrap" }));
+  }
   const deploymentLayerStore = createDeploymentLayerStore({
     backing: artifactMap<StoredDeploymentLayer>("deployment_layer"),
     runtime: deploymentLayer,
@@ -1485,6 +1511,7 @@ export function buildApp(
     credentialUsage,
     egressAudit,
     identity,
+    organization,
     workspace,
     memory,
     ...(keychain ? { keychain } : {}),
