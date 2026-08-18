@@ -101,7 +101,7 @@ export function createOrganizationService(deps: {
     const at = now();
     return {
       ...user,
-      displayName: sanitizeDisplayName(input.displayName),
+      displayName: input.displayName ? sanitizeDisplayName(input.displayName) : user.displayName,
       email: input.email ?? user.email,
       lastLoginAt: at,
       updatedAt: at,
@@ -112,14 +112,15 @@ export function createOrganizationService(deps: {
   async function activate(user: OrganizationUser, input: LoginInput): Promise<OrganizationUser> {
     const next = withLoginProfile({ ...user, status: "active", sessionVersion: user.sessionVersion + 1 }, input);
     await persistUser(next);
+    await identity.reactivate(next.principalId);
     record("org.user.activate", next.principalId);
     return next;
   }
 
   function autoJoinAdmits(input: LoginInput): boolean {
     if (admission !== "domain_auto_join") return false;
-    if (autoJoinDomains.length === 0) return true;
-    return input.email !== null && autoJoinDomains.includes(emailDomain(input.email));
+    if (input.email === null) return false;
+    return autoJoinDomains.length === 0 || autoJoinDomains.includes(emailDomain(input.email));
   }
 
   async function login(input: LoginInput): Promise<LoginResult> {

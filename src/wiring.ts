@@ -376,6 +376,23 @@ export interface BuiltApp {
   slackCore: SlackCoreClient;
 }
 
+export async function activateBootstrapUsers(
+  organization: OrganizationService,
+  principalIds: readonly string[],
+): Promise<void> {
+  for (const principalId of principalIds) {
+    const user = await organization.invite({
+      principalId,
+      email: principalId.includes("@") ? principalId : null,
+      displayName: principalId,
+      actor: "system:bootstrap",
+    });
+    if (user.status === "invited") {
+      await organization.setStatus({ principalId: user.principalId, status: "active", actor: "system:bootstrap" });
+    }
+  }
+}
+
 export function buildApp(
   config: Config,
   overrides: {
@@ -487,16 +504,7 @@ export function buildApp(
     identity,
   });
   void organization.hydrate();
-  for (const principalId of config.orgBootstrapUsers) {
-    void organization
-      .invite({
-        principalId,
-        email: principalId.includes("@") ? principalId : null,
-        displayName: principalId,
-        actor: "system:bootstrap",
-      })
-      .then((u) => organization.setStatus({ principalId: u.principalId, status: "active", actor: "system:bootstrap" }));
-  }
+  void activateBootstrapUsers(organization, config.orgBootstrapUsers);
   const deploymentLayerStore = createDeploymentLayerStore({
     backing: artifactMap<StoredDeploymentLayer>("deployment_layer"),
     runtime: deploymentLayer,

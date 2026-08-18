@@ -8,6 +8,7 @@ import {
   type OrganizationStore,
   type OrganizationUser,
 } from "../src/organization/organization-store.ts";
+import { activateBootstrapUsers } from "../src/wiring.ts";
 
 const ORG = "default-org";
 const ISSUER = "https://idp.example.com";
@@ -106,6 +107,28 @@ test("login: domain_auto_join denies an unverified email as email_unverified", a
   assert.deepEqual(result, { status: "denied", reason: "email_unverified" });
 });
 
+test("login: domain_auto_join with no configured domains still requires an email", async () => {
+  const { service, store } = setup({ admission: "domain_auto_join", autoJoinDomains: [] });
+  const result = await service.login(loginInput({ email: null, emailVerified: true }));
+  assert.deepEqual(result, { status: "denied", reason: "not_invited" });
+  assert.equal(await store.getUser(ORG, "alice@acme.com"), null, "an email-less login never creates a user");
+});
+
+test("login: an absent display name preserves the stored one", async () => {
+  const { service } = setup();
+  await service.invite({ principalId: "alice@acme.com", email: "alice@acme.com", displayName: "Alice", actor: "admin@acme.com" });
+  const first = await service.login(loginInput());
+  assert.equal(first.status, "ok");
+  const second = await service.login(loginInput({ displayName: "" }));
+  assert.equal(second.status, "ok");
+  if (second.status !== "ok") return;
+  assert.equal(second.user.displayName, "Alice", "an absent display name never erases the stored one");
+  const renamed = await service.login(loginInput({ displayName: "Alice Cooper" }));
+  assert.equal(renamed.status, "ok");
+  if (renamed.status !== "ok") return;
+  assert.equal(renamed.user.displayName, "Alice Cooper", "a present display name still updates");
+});
+
 test("login: invited user matched by email activates and binds the identity", async () => {
   const { service, store } = setup();
   await service.invite({ principalId: "alice@acme.com", email: "Alice@Acme.com", displayName: "Alice", actor: "admin@acme.com" });
@@ -186,6 +209,28 @@ test("setStatus: bumps sessionVersion, drives identity deactivation, and is idem
   assert.equal(unchanged?.sessionVersion, 3, "same status is a no-op");
   assert.equal((await auditLog.events()).length, eventsBefore, "no audit event for a no-op");
   assert.equal(await service.setStatus({ principalId: "nobody@acme.com", status: "suspended", actor: "admin@acme.com" }), null);
+});
+
+test("login: activation reactivates the legacy identity after a suspend-then-invited detour", async () => {
+  const { service, identity } = setup();
+  await service.invite({ principalId: "alice@acme.com", email: "alice@acme.com", displayName: "Alice", actor: "admin@acme.com" });
+  await service.login(loginInput());
+  await service.setStatus({ principalId: "alice@acme.com", status: "suspended", actor: "admin@acme.com" });
+  assert.equal(identity.classify("alice@acme.com").type, "guest");
+  await service.setStatus({ principalId: "alice@acme.com", status: "invited", actor: "admin@acme.com" });
+  assert.equal(identity.classify("alice@acme.com").type, "guest", "invited never touches the legacy identity");
+  const result = await service.login(loginInput());
+  assert.equal(result.status, "ok");
+  assert.equal(identity.classify("alice@acme.com").type, "internal", "activation reactivates the legacy identity");
+});
+
+test("bootstrap: the first run activates a listed user; later runs never resurrect a manual suspension", async () => {
+  const { service } = setup();
+  await activateBootstrapUsers(service, ["ops@acme.com"]);
+  assert.deepEqual(await service.checkActive("ops@acme.com"), { status: "active", sessionVersion: 2 });
+  await service.setStatus({ principalId: "ops@acme.com", status: "suspended", actor: "admin@acme.com" });
+  await activateBootstrapUsers(service, ["ops@acme.com"]);
+  assert.deepEqual(await service.checkActive("ops@acme.com"), { status: "suspended", sessionVersion: 3 });
 });
 
 test("checkActive: reflects local writes immediately and converges across instances after refresh", async () => {
