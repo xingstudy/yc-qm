@@ -47,8 +47,8 @@ function capabilityAdminDenied(method: string, pathname: string, url: URL, claim
   if (pathname.startsWith("/v1/admin/impersonate")) {
     return "impersonating a user is portal-only — the agent cannot act as another person";
   }
-  if (pathname.startsWith("/v1/admin/org/users")) {
-    return "organization user invites and status changes are portal-only — the agent cannot manage who belongs to the org";
+  if (pathname.startsWith("/v1/admin/org/")) {
+    return "organization management is portal-only — the agent cannot manage who belongs to the org or how it is structured";
   }
   if (
     method === "PUT" &&

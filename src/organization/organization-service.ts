@@ -82,6 +82,9 @@ export interface OrganizationService {
   removeGroupMember(input: { groupId: string; principalId: string; actor: string }): Promise<RemoveGroupMemberResult>;
   unitImpact(orgId: string, unitId: string): Promise<UnitImpact>;
   listManagedSubtreeUnitIds(principalId: string): Promise<string[]>;
+  getUnit(unitId: string): Promise<OrgUnit | null>;
+  listUnits(): Promise<OrgUnit[]>;
+  listUnitMembers(unitId: string): Promise<OrgUnitMember[]>;
   refresh(): Promise<void>;
   hydrate(): Promise<void>;
 }
@@ -601,6 +604,9 @@ export function createOrganizationService(deps: {
     removeGroupMember,
     unitImpact: (scopeOrgId, unitId) => store.unitImpact(scopeOrgId, unitId),
     listManagedSubtreeUnitIds: (principalId) => store.listManagedSubtreeUnitIds(orgId, principalId),
+    getUnit: (unitId) => store.getUnit(orgId, unitId),
+    listUnits: () => store.listUnits(orgId),
+    listUnitMembers: (unitId) => store.listUnitMembers(orgId, unitId),
     async checkActive(principalId: string): Promise<ActiveCheck | null> {
       await refresh();
       return cache.get(personKey(principalId)) ?? null;

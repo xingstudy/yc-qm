@@ -19,6 +19,7 @@ const PATH = "/v1/internal/auth/users/login";
 const PID = "portal-identity-secret-for-org-tests-01";
 const CAP = "capability-secret-for-org-tests-000001";
 const INVITE_PATH = "/v1/admin/org/users";
+const UNITS_PATH = "/v1/admin/org/units";
 
 function start(overrides: Partial<Config> = {}): { built: BuiltApp; base: string; close: () => Promise<void> } {
   const built = buildApp(
@@ -450,6 +451,440 @@ test("invalid invite and status input is rejected 400", async () => {
       const res = await adminFetch(srv.base, "PATCH", `${INVITE_PATH}/U-bob`, "admin-alice", body);
       assert.equal(res.status, 400, JSON.stringify(body));
     }
+  } finally {
+    await srv.close();
+  }
+});
+
+async function adminGet(base: string, path: string, portalUser: string): Promise<Response> {
+  return fetch(`${base}${path}`, {
+    headers: {
+      ...sign("GET", path, ""),
+      "x-portal-identity": await mintSignedPayload({ p: portalUser, exp: Date.now() + 60_000 }, PID),
+    },
+  });
+}
+
+async function createUnitAsAdmin(base: string, body: Record<string, unknown>): Promise<any> {
+  const res = await adminFetch(base, "POST", UNITS_PATH, "admin-alice", body);
+  const payload: any = await res.json();
+  assert.equal(res.status, 200, JSON.stringify(payload));
+  return payload.unit;
+}
+
+test("admin creates, lists, and reads units with members", async () => {
+  const srv = await startAdmin();
+  try {
+    const unit = await createUnitAsAdmin(srv.base, {
+      parentId: "root",
+      name: "Engineering",
+      kind: "department",
+      sortOrder: 3,
+    });
+    assert.ok(unit.id.startsWith("unit-"));
+    assert.equal(unit.parentId, "root");
+    assert.equal(unit.name, "Engineering");
+    assert.equal(unit.kind, "department");
+    assert.equal(unit.status, "active");
+    assert.equal(unit.sortOrder, 3);
+    assert.equal(unit.createdBy, "admin-alice");
+    assert.equal(unit.updatedBy, "admin-alice");
+    assert.equal(typeof unit.createdAt, "number");
+    const list = await adminGet(srv.base, UNITS_PATH, "admin-alice");
+    assert.equal(list.status, 200);
+    const listed: any = await list.json();
+    const ids = listed.units.map((u: any) => u.id);
+    assert.ok(ids.includes("root"));
+    assert.ok(ids.includes(unit.id));
+    await seedActive(srv.built, "U-member-1");
+    const added = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${unit.id}/members`, "admin-alice", {
+      principalId: "U-member-1",
+      role: "member",
+    });
+    assert.equal(added.status, 200);
+    const addedBody: any = await added.json();
+    assert.equal(addedBody.unit.id, unit.id);
+    assert.equal(addedBody.members.length, 1);
+    assert.equal(addedBody.members[0].unitId, unit.id);
+    assert.equal(addedBody.members[0].principalId, "U-member-1");
+    assert.equal(addedBody.members[0].role, "member");
+    assert.equal(addedBody.members[0].createdBy, "admin-alice");
+    const detail = await adminGet(srv.base, `${UNITS_PATH}/${unit.id}`, "admin-alice");
+    assert.equal(detail.status, 200);
+    const detailBody: any = await detail.json();
+    assert.equal(detailBody.unit.id, unit.id);
+    assert.equal(detailBody.members.length, 1);
+    assert.equal(detailBody.members[0].principalId, "U-member-1");
+    const missing = await adminGet(srv.base, `${UNITS_PATH}/unit-ghost`, "admin-alice");
+    assert.equal(missing.status, 404);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("invalid unit create and patch input is rejected 400 and unknown parents 404", async () => {
+  const srv = await startAdmin();
+  try {
+    const badCreates: Array<Record<string, unknown>> = [
+      {},
+      { parentId: "root" },
+      { parentId: "root", name: "x" },
+      { parentId: "root", name: "x", kind: "bogus" },
+      { parentId: "root", name: "  ", kind: "team" },
+      { parentId: "root", name: "x", kind: "team", sortOrder: "high" },
+      { parentId: "", name: "x", kind: "team" },
+      { parentId: 7, name: "x", kind: "team" },
+    ];
+    for (const body of badCreates) {
+      const res = await adminFetch(srv.base, "POST", UNITS_PATH, "admin-alice", body);
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+    const unknownParent = await adminFetch(srv.base, "POST", UNITS_PATH, "admin-alice", {
+      parentId: "unit-ghost",
+      name: "x",
+      kind: "team",
+    });
+    assert.equal(unknownParent.status, 404);
+    const parent = await createUnitAsAdmin(srv.base, { parentId: "root", name: "P", kind: "department" });
+    const archived = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${parent.id}`, "admin-alice", {
+      status: "archived",
+    });
+    assert.equal(archived.status, 200);
+    const archivedParent = await adminFetch(srv.base, "POST", UNITS_PATH, "admin-alice", {
+      parentId: parent.id,
+      name: "child",
+      kind: "team",
+    });
+    assert.equal(archivedParent.status, 400);
+    assert.equal(((await archivedParent.json()) as any).error, "archived");
+    const unit = await createUnitAsAdmin(srv.base, { parentId: "root", name: "Q", kind: "team" });
+    const badPatches: Array<Record<string, unknown>> = [
+      {},
+      { name: "" },
+      { sortOrder: "high" },
+      { parentId: "" },
+      { status: "banned" },
+      { status: 42 },
+    ];
+    for (const body of badPatches) {
+      const res = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${unit.id}`, "admin-alice", body);
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+  } finally {
+    await srv.close();
+  }
+});
+
+test("admin moves and renames units via PATCH with rejection reasons mapped to 400", async () => {
+  const srv = await startAdmin();
+  try {
+    const a = await createUnitAsAdmin(srv.base, { parentId: "root", name: "A", kind: "department" });
+    const b = await createUnitAsAdmin(srv.base, { parentId: a.id, name: "B", kind: "team" });
+    const ontoDescendant = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${a.id}`, "admin-alice", {
+      parentId: b.id,
+    });
+    assert.equal(ontoDescendant.status, 400);
+    assert.equal(((await ontoDescendant.json()) as any).error, "self_or_descendant");
+    const ontoSelf = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${a.id}`, "admin-alice", {
+      parentId: a.id,
+    });
+    assert.equal(ontoSelf.status, 400);
+    assert.equal(((await ontoSelf.json()) as any).error, "self_or_descendant");
+    const moveRoot = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/root`, "admin-alice", { parentId: a.id });
+    assert.equal(moveRoot.status, 400);
+    assert.equal(((await moveRoot.json()) as any).error, "root");
+    const missingParent = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${a.id}`, "admin-alice", {
+      parentId: "unit-ghost",
+    });
+    assert.equal(missingParent.status, 400);
+    assert.equal(((await missingParent.json()) as any).error, "missing_parent");
+    const missingUnit = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/unit-ghost`, "admin-alice", {
+      parentId: "root",
+    });
+    assert.equal(missingUnit.status, 404);
+    const moved = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${b.id}`, "admin-alice", { parentId: "root" });
+    assert.equal(moved.status, 200);
+    assert.equal(((await moved.json()) as any).unit.parentId, "root");
+    const renamed = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${a.id}`, "admin-alice", {
+      name: "Alpha",
+      sortOrder: 9,
+    });
+    assert.equal(renamed.status, 200);
+    const renamedUnit: any = ((await renamed.json()) as any).unit;
+    assert.equal(renamedUnit.name, "Alpha");
+    assert.equal(renamedUnit.sortOrder, 9);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("archiving a populated unit conflicts with an impact summary and restore reopens it", async () => {
+  const srv = await startAdmin();
+  try {
+    const clean = await createUnitAsAdmin(srv.base, { parentId: "root", name: "C", kind: "team" });
+    const archived = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${clean.id}`, "admin-alice", {
+      status: "archived",
+    });
+    assert.equal(archived.status, 200);
+    assert.equal(((await archived.json()) as any).unit.status, "archived");
+    const withMember = await createUnitAsAdmin(srv.base, { parentId: "root", name: "D", kind: "team" });
+    await seedActive(srv.built, "U-member-2");
+    await adminFetch(srv.base, "POST", `${UNITS_PATH}/${withMember.id}/members`, "admin-alice", {
+      principalId: "U-member-2",
+      role: "member",
+    });
+    const conflict = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${withMember.id}`, "admin-alice", {
+      status: "archived",
+    });
+    assert.equal(conflict.status, 409);
+    const conflictBody: any = await conflict.json();
+    assert.equal(conflictBody.error, "conflict");
+    assert.equal(conflictBody.impact.activeMembers, 1);
+    assert.equal(conflictBody.impact.activeChildUnits, 0);
+    const withChild = await createUnitAsAdmin(srv.base, { parentId: "root", name: "E", kind: "department" });
+    await createUnitAsAdmin(srv.base, { parentId: withChild.id, name: "F", kind: "team" });
+    const childConflict = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${withChild.id}`, "admin-alice", {
+      status: "archived",
+    });
+    assert.equal(childConflict.status, 409);
+    assert.equal(((await childConflict.json()) as any).impact.activeChildUnits, 1);
+    const removed = await adminFetch(
+      srv.base,
+      "DELETE",
+      `${UNITS_PATH}/${withMember.id}/members/U-member-2`,
+      "admin-alice",
+      {},
+    );
+    assert.equal(removed.status, 200);
+    assert.equal(((await removed.json()) as any).members.length, 0);
+    const nowArchived = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${withMember.id}`, "admin-alice", {
+      status: "archived",
+      sortOrder: 1,
+    });
+    assert.equal(nowArchived.status, 200);
+    assert.equal(((await nowArchived.json()) as any).unit.status, "archived");
+    const restored = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${withMember.id}`, "admin-alice", {
+      status: "active",
+    });
+    assert.equal(restored.status, 200);
+    assert.equal(((await restored.json()) as any).unit.status, "active");
+    const archiveRoot = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/root`, "admin-alice", {
+      status: "archived",
+    });
+    assert.equal(archiveRoot.status, 400);
+    assert.equal(((await archiveRoot.json()) as any).error, "root");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a non-admin active user without a manager role is forbidden from unit reads and member writes", async () => {
+  const srv = await startAdmin();
+  try {
+    await seedActive(srv.built, "U-plain");
+    const unit = await createUnitAsAdmin(srv.base, { parentId: "root", name: "G", kind: "team" });
+    const added = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${unit.id}/members`, "U-plain", {
+      principalId: "U-plain",
+      role: "member",
+    });
+    assert.equal(added.status, 403);
+    const removed = await adminFetch(
+      srv.base,
+      "DELETE",
+      `${UNITS_PATH}/${unit.id}/members/U-plain`,
+      "U-plain",
+      {},
+    );
+    assert.equal(removed.status, 403);
+    const list = await adminGet(srv.base, UNITS_PATH, "U-plain");
+    assert.equal(list.status, 403);
+    const detail = await adminGet(srv.base, `${UNITS_PATH}/${unit.id}`, "U-plain");
+    assert.equal(detail.status, 403);
+    const patched = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${unit.id}`, "U-plain", { name: "H" });
+    assert.equal(patched.status, 403);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("unit managers add and remove member-role members only inside their managed subtree", async () => {
+  const srv = await startAdmin();
+  try {
+    const managed = await createUnitAsAdmin(srv.base, { parentId: "root", name: "M", kind: "department" });
+    const sibling = await createUnitAsAdmin(srv.base, { parentId: "root", name: "S", kind: "department" });
+    await seedActive(srv.built, "U-mgr");
+    await seedActive(srv.built, "U-join");
+    const grant = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${managed.id}/members`, "admin-alice", {
+      principalId: "U-mgr",
+      role: "manager",
+    });
+    assert.equal(grant.status, 200);
+    const added = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${managed.id}/members`, "U-mgr", {
+      principalId: "U-join",
+      role: "member",
+    });
+    assert.equal(added.status, 200);
+    const addedBody: any = await added.json();
+    assert.equal(addedBody.members.length, 2);
+    assert.equal(addedBody.members.find((m: any) => m.principalId === "U-join").role, "member");
+    const removed = await adminFetch(
+      srv.base,
+      "DELETE",
+      `${UNITS_PATH}/${managed.id}/members/U-join`,
+      "U-mgr",
+      {},
+    );
+    assert.equal(removed.status, 200);
+    assert.equal(((await removed.json()) as any).members.length, 1);
+    const crossUnit = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${sibling.id}/members`, "U-mgr", {
+      principalId: "U-join",
+      role: "member",
+    });
+    assert.equal(crossUnit.status, 403);
+    const managerGrant = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${managed.id}/members`, "U-mgr", {
+      principalId: "U-join",
+      role: "manager",
+    });
+    assert.equal(managerGrant.status, 403);
+    const managerRevoke = await adminFetch(
+      srv.base,
+      "DELETE",
+      `${UNITS_PATH}/${managed.id}/members/U-mgr`,
+      "U-mgr",
+      {},
+    );
+    assert.equal(managerRevoke.status, 403);
+    const unknown = await adminFetch(srv.base, "POST", `${UNITS_PATH}/unit-ghost/members`, "U-mgr", {
+      principalId: "U-join",
+      role: "member",
+    });
+    assert.equal(unknown.status, 404);
+    const archived = await createUnitAsAdmin(srv.base, { parentId: "root", name: "T", kind: "team" });
+    await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${archived.id}`, "admin-alice", { status: "archived" });
+    const hidden = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${archived.id}/members`, "U-mgr", {
+      principalId: "U-join",
+      role: "member",
+    });
+    assert.equal(hidden.status, 404);
+    const adminUnknown = await adminFetch(srv.base, "POST", `${UNITS_PATH}/unit-ghost/members`, "admin-alice", {
+      principalId: "U-join-admin-probe",
+      role: "member",
+    });
+    assert.equal(adminUnknown.status, 404);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a manager on a parent unit manages members in descendant units", async () => {
+  const srv = await startAdmin();
+  try {
+    const parent = await createUnitAsAdmin(srv.base, { parentId: "root", name: "P", kind: "department" });
+    const child = await createUnitAsAdmin(srv.base, { parentId: parent.id, name: "Q", kind: "team" });
+    await seedActive(srv.built, "U-mgr2");
+    await seedActive(srv.built, "U-join2");
+    await adminFetch(srv.base, "POST", `${UNITS_PATH}/${parent.id}/members`, "admin-alice", {
+      principalId: "U-mgr2",
+      role: "manager",
+    });
+    const added = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${child.id}/members`, "U-mgr2", {
+      principalId: "U-join2",
+      role: "member",
+    });
+    assert.equal(added.status, 200);
+    const removed = await adminFetch(
+      srv.base,
+      "DELETE",
+      `${UNITS_PATH}/${child.id}/members/U-join2`,
+      "U-mgr2",
+      {},
+    );
+    assert.equal(removed.status, 200);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a suspended manager is rejected by the portal gate before authorization runs", async () => {
+  const srv = await startAdmin();
+  try {
+    const unit = await createUnitAsAdmin(srv.base, { parentId: "root", name: "R", kind: "team" });
+    await seedActive(srv.built, "U-mgr3");
+    await adminFetch(srv.base, "POST", `${UNITS_PATH}/${unit.id}/members`, "admin-alice", {
+      principalId: "U-mgr3",
+      role: "manager",
+    });
+    const suspended = await adminFetch(srv.base, "PATCH", `${INVITE_PATH}/U-mgr3`, "admin-alice", {
+      status: "suspended",
+    });
+    assert.equal(suspended.status, 200);
+    const res = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${unit.id}/members`, "U-mgr3", {
+      principalId: "U-mgr3",
+      role: "member",
+    });
+    assert.equal(res.status, 401);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("member add rejects unknown or deprovisioned principals with 400 missing_user", async () => {
+  const srv = await startAdmin();
+  try {
+    const unit = await createUnitAsAdmin(srv.base, { parentId: "root", name: "E2", kind: "team" });
+    const unknown = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${unit.id}/members`, "admin-alice", {
+      principalId: "U-ghost",
+      role: "member",
+    });
+    assert.equal(unknown.status, 400);
+    assert.equal(((await unknown.json()) as any).error, "missing_user");
+    await seedActive(srv.built, "U-dep");
+    const deprovisioned = await adminFetch(srv.base, "PATCH", `${INVITE_PATH}/U-dep`, "admin-alice", {
+      status: "deprovisioned",
+    });
+    assert.equal(deprovisioned.status, 200);
+    const res = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${unit.id}/members`, "admin-alice", {
+      principalId: "U-dep",
+      role: "member",
+    });
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as any).error, "missing_user");
+    const badRoles: Array<Record<string, unknown>> = [
+      {},
+      { principalId: "U-x" },
+      { principalId: "U-x", role: "owner" },
+      { principalId: "", role: "member" },
+    ];
+    for (const body of badRoles) {
+      const bad = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${unit.id}/members`, "admin-alice", body);
+      assert.equal(bad.status, 400, JSON.stringify(body));
+    }
+  } finally {
+    await srv.close();
+  }
+});
+
+test("capability tokens are denied org unit routes", async () => {
+  const srv = await startAdmin();
+  try {
+    const cap = await mintCapabilityToken(
+      {
+        actorId: "admin-alice",
+        scopeId: "personal:admin-alice",
+        aud: CONTROL_PLANE_AUD,
+        liveActor: true,
+        exp: Date.now() + 60_000,
+      },
+      CAP,
+    );
+    const created = await fetch(`${srv.base}${UNITS_PATH}`, {
+      method: "POST",
+      headers: { "x-agent-capability": cap, "content-type": "application/json" },
+      body: JSON.stringify({ parentId: "root", name: "X", kind: "team" }),
+    });
+    assert.equal(created.status, 403, "capability tokens must not reach org unit mutations");
+    const list = await fetch(`${srv.base}${UNITS_PATH}`, { headers: { "x-agent-capability": cap } });
+    assert.equal(list.status, 403, "capability tokens must not reach org unit reads");
   } finally {
     await srv.close();
   }
