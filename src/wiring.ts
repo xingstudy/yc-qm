@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { baseModelProviders, configuredModelForHarness, providerKeysPresent, type Config } from "./config.ts";
 import { createIdentityService, type DeactivationRecord, type IdentityService } from "./identity/identity-service.ts";
 import { createOrganizationService, type OrganizationService } from "./organization/organization-service.ts";
-import { createMemoryOrganizationStore } from "./organization/organization-store.ts";
+import { createMemoryOrganizationStore, type OrganizationStore } from "./organization/organization-store.ts";
 import { createPostgresOrganizationStore } from "./organization/postgres-organization-store.ts";
 import {
   createMemoryConfigStore,
@@ -346,6 +346,7 @@ export interface BuiltApp {
   egressAudit: EgressAuditSink;
   identity: IdentityService;
   organization: OrganizationService;
+  organizationStore: OrganizationStore;
   keychain?: Keychain;
   serviceCreds: ServiceCredentialStore;
   deliveries: DeliveryStore;
@@ -491,10 +492,11 @@ export function buildApp(
   const layerSkillsDir = config.deploymentLayerDir ? resolve(deploymentLayer.dir, "skills") : undefined;
   const brokeredTools = deploymentLayer.brokeredTools;
   const orgScope = scopeId("org", config.orgId);
-  const auditLog = config.databaseUrl ? createPostgresAuditLog(config.databaseUrl) : createAuditLog();
-  const organizationStore = config.databaseUrl
-    ? createPostgresOrganizationStore(config.databaseUrl)
-    : createMemoryOrganizationStore();
+  const postgresAuditLog = config.databaseUrl ? createPostgresAuditLog(config.databaseUrl) : null;
+  const auditLog: AuditLog = postgresAuditLog ?? createAuditLog();
+  const organizationStore = postgresAuditLog
+    ? createPostgresOrganizationStore(config.databaseUrl!, { auditLog: postgresAuditLog })
+    : createMemoryOrganizationStore({ auditLog });
   const organization = createOrganizationService({
     store: organizationStore,
     orgId: config.orgId,
@@ -503,6 +505,7 @@ export function buildApp(
     auditLog,
     identity,
   });
+  void organizationStore.ensureOrgRoot({ orgId: config.orgId, name: config.orgId, actor: "system:bootstrap", now: Date.now() });
   void organization.hydrate();
   void activateBootstrapUsers(organization, config.orgBootstrapUsers);
   const deploymentLayerStore = createDeploymentLayerStore({
@@ -1520,6 +1523,7 @@ export function buildApp(
     egressAudit,
     identity,
     organization,
+    organizationStore,
     workspace,
     memory,
     ...(keychain ? { keychain } : {}),

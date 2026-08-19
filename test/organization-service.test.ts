@@ -1,5 +1,10 @@
+import "./support/auto-fake-sprites.ts";
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createAuditLog, type AuditLog } from "../src/audit/audit-log.ts";
 import { createIdentityService, type IdentityService } from "../src/identity/identity-service.ts";
 import { createOrganizationService, type LoginInput, type OrgAdmission } from "../src/organization/organization-service.ts";
@@ -8,7 +13,9 @@ import {
   type OrganizationStore,
   type OrganizationUser,
 } from "../src/organization/organization-store.ts";
-import { activateBootstrapUsers } from "../src/wiring.ts";
+import { activateBootstrapUsers, buildApp } from "../src/wiring.ts";
+import { settle } from "./support/settle.ts";
+import { testConfig } from "./support/test-config.ts";
 
 const ORG = "default-org";
 const ISSUER = "https://idp.example.com";
@@ -246,6 +253,62 @@ test("checkActive: reflects local writes immediately and converges across instan
   advance(10_000);
   await service.refresh();
   assert.deepEqual(await service.checkActive("alice@acme.com"), { status: "active", sessionVersion: 4 });
+});
+
+test("setStatus: a status change bumps the authz revision once and audits transactionally; a no-op writes nothing", async () => {
+  const { service, store, auditLog } = setup();
+  await bootstrapRoot(store);
+  await service.invite({ principalId: "alice@acme.com", email: "alice@acme.com", displayName: "Alice", actor: "admin@acme.com" });
+  const invited = await store.getAuthzRevision(ORG);
+  await service.setStatus({ principalId: "alice@acme.com", status: "active", actor: "admin@acme.com" });
+  const activated = await store.getAuthzRevision(ORG);
+  assert.equal(activated, invited + 1, "invited -> active bumps the revision once");
+  await service.setStatus({ principalId: "alice@acme.com", status: "suspended", actor: "admin@acme.com" });
+  assert.equal(await store.getAuthzRevision(ORG), activated + 1, "active -> suspended bumps the revision once");
+  const statusEvents = (await auditLog.events()).filter((e) => e.action === "org.user.status");
+  assert.deepEqual(statusEvents.map((e) => e.status), ["active", "suspended"]);
+  assert.ok(statusEvents.every((e) => e.scopeLabel === SCOPE && e.resource === "alice@acme.com"));
+  await service.setStatus({ principalId: "alice@acme.com", status: "suspended", actor: "admin@acme.com" });
+  assert.equal(await store.getAuthzRevision(ORG), activated + 1, "a same-status write never bumps the revision");
+  assert.equal((await auditLog.events()).filter((e) => e.action === "org.user.status").length, 2, "a no-op writes no audit event");
+});
+
+test("login: invited activation bumps the authz revision while a returning login does not", async () => {
+  const { service, store } = setup();
+  await bootstrapRoot(store);
+  await service.invite({ principalId: "alice@acme.com", email: "alice@acme.com", displayName: "Alice", actor: "admin@acme.com" });
+  const invited = await store.getAuthzRevision(ORG);
+  const first = await service.login(loginInput());
+  assert.equal(first.status, "ok");
+  const activated = await store.getAuthzRevision(ORG);
+  assert.equal(activated, invited + 1, "invited -> active activation bumps the revision once");
+  const second = await service.login(loginInput());
+  assert.equal(second.status, "ok");
+  assert.equal(await store.getAuthzRevision(ORG), activated, "a returning login never bumps the revision");
+});
+
+test("login: domain auto-join creation bumps the authz revision", async () => {
+  const { service, store, auditLog } = setup({ admission: "domain_auto_join", autoJoinDomains: ["acme.com"] });
+  await bootstrapRoot(store);
+  const before = await store.getAuthzRevision(ORG);
+  const result = await service.login(loginInput());
+  assert.equal(result.status, "ok");
+  assert.equal(await store.getAuthzRevision(ORG), before + 1, "auto-join creation bumps the revision once");
+  assert.deepEqual(
+    (await auditLog.events()).map((e) => e.action),
+    ["org.user.auto_join"],
+  );
+});
+
+test("wiring: buildApp ensures the org root before seeding bootstrap users", async () => {
+  const config = testConfig({ dataDir: mkdtempSync(join(tmpdir(), "qm-org-root-")), orgBootstrapUsers: ["ops@acme.com"] });
+  const built = buildApp(config);
+  await settle(async () => (await built.organizationStore.getUnit(config.orgId, "root")) !== null);
+  const root = await built.organizationStore.getUnit(config.orgId, "root");
+  assert.equal(root?.parentId, null);
+  assert.equal(root?.kind, "organization");
+  assert.equal(root?.status, "active");
+  assert.ok((await built.organizationStore.getAuthzRevision(config.orgId)) >= 1);
 });
 
 test("audit: login, denial, activation, auto-join, and status changes are recorded", async () => {

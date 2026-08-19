@@ -120,8 +120,12 @@ export function createOrganizationService(deps: {
   let refreshP: Promise<void> | null = null;
   let hydrateP: Promise<void> | null = null;
 
+  function userEvent(action: string, principalId: string, status?: string): AuditEvent {
+    return { at: now(), principalId, action, resource: principalId, scopeLabel, ...(status ? { status } : {}) };
+  }
+
   function record(action: string, principalId: string, status?: string): void {
-    auditLog.record({ at: now(), principalId, action, resource: principalId, scopeLabel, ...(status ? { status } : {}) });
+    auditLog.record(userEvent(action, principalId, status));
   }
 
   function orgEvent(action: string, resource: string, actor: string, detail: Record<string, string | null>): AuditEvent {
@@ -172,9 +176,13 @@ export function createOrganizationService(deps: {
 
   async function activate(user: OrganizationUser, input: LoginInput): Promise<OrganizationUser> {
     const next = withLoginProfile({ ...user, status: "active", sessionVersion: user.sessionVersion + 1 }, input);
-    await persistUser(next);
+    await store.transact(async (tx) => {
+      await tx.putUser(next);
+      await tx.bumpRevision(orgId);
+      await tx.audit(userEvent("org.user.activate", next.principalId));
+    });
+    cacheUser(next);
     await identity.reactivate(next.principalId);
-    record("org.user.activate", next.principalId);
     return next;
   }
 
@@ -234,9 +242,13 @@ export function createOrganizationService(deps: {
         createdBy: LOGIN_ACTOR,
         updatedBy: LOGIN_ACTOR,
       };
-      await persistUser(user);
+      await store.transact(async (tx) => {
+        await tx.putUser(user);
+        await tx.bumpRevision(orgId);
+        await tx.audit(userEvent("org.user.auto_join", user.principalId));
+      });
+      cacheUser(user);
       await linkIdentity(input, user.principalId);
-      record("org.user.auto_join", user.principalId);
       return { status: "ok", user };
     }
     const reason = autoJoinAdmits(input) && !input.emailVerified ? "email_unverified" : "not_invited";
@@ -286,13 +298,17 @@ export function createOrganizationService(deps: {
       updatedAt: now(),
       updatedBy: input.actor,
     };
-    await persistUser(next);
+    await store.transact(async (tx) => {
+      await tx.putUser(next);
+      await tx.bumpRevision(orgId);
+      await tx.audit(userEvent("org.user.status", next.principalId, input.status));
+    });
+    cacheUser(next);
     if (input.status === "suspended" || input.status === "deprovisioned") {
       await identity.deactivate(input.principalId, "manual");
     } else if (input.status === "active") {
       await identity.reactivate(input.principalId);
     }
-    record("org.user.status", next.principalId, input.status);
     return next;
   }
 
