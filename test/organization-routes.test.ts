@@ -618,6 +618,39 @@ test("admin moves and renames units via PATCH with rejection reasons mapped to 4
   }
 });
 
+test("ambiguous multi-key patches are rejected or fail atomically", async () => {
+  const srv = await startAdmin();
+  try {
+    const a = await createUnitAsAdmin(srv.base, { parentId: "root", name: "A", kind: "department" });
+    const b = await createUnitAsAdmin(srv.base, { parentId: "root", name: "B", kind: "department" });
+    const combined = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${a.id}`, "admin-alice", {
+      parentId: b.id,
+      status: "archived",
+    });
+    assert.equal(combined.status, 400);
+    const after = await adminGet(srv.base, `${UNITS_PATH}/${a.id}`, "admin-alice");
+    const afterUnit: any = ((await after.json()) as any).unit;
+    assert.equal(afterUnit.parentId, "root");
+    assert.equal(afterUnit.status, "active");
+    await seedActive(srv.built, "U-member-3");
+    await adminFetch(srv.base, "POST", `${UNITS_PATH}/${b.id}/members`, "admin-alice", {
+      principalId: "U-member-3",
+      role: "member",
+    });
+    const conflictRename = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${b.id}`, "admin-alice", {
+      status: "archived",
+      name: "B-renamed",
+    });
+    assert.equal(conflictRename.status, 409);
+    const afterConflict = await adminGet(srv.base, `${UNITS_PATH}/${b.id}`, "admin-alice");
+    const afterConflictUnit: any = ((await afterConflict.json()) as any).unit;
+    assert.equal(afterConflictUnit.name, "B");
+    assert.equal(afterConflictUnit.status, "active");
+  } finally {
+    await srv.close();
+  }
+});
+
 test("archiving a populated unit conflicts with an impact summary and restore reopens it", async () => {
   const srv = await startAdmin();
   try {

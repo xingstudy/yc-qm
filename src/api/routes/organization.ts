@@ -288,9 +288,11 @@ async function patchUnit(ctx: ApiCtx): Promise<void> {
       message: "provide name, sortOrder, parentId, or status (active or archived) with valid values",
     });
   }
-  if (hasParent && parentId) {
-    const moved = await authz.organization.moveUnit({ unitId, newParentId: parentId, actor: authz.actorId });
-    if (!moved.ok) return sendJson(ctx.res, 400, { error: moved.reason });
+  if (hasParent && hasStatus) {
+    return sendJson(ctx.res, 400, {
+      error: "bad_request",
+      message: "parentId and status cannot be combined in one patch",
+    });
   }
   if (status === "archived") {
     const archived = await authz.organization.archiveUnit({ unitId, actor: authz.actorId });
@@ -300,6 +302,10 @@ async function patchUnit(ctx: ApiCtx): Promise<void> {
     }
   } else if (status === "active") {
     await authz.organization.updateUnit({ unitId, status: "active", actor: authz.actorId });
+  }
+  if (hasParent && parentId) {
+    const moved = await authz.organization.moveUnit({ unitId, newParentId: parentId, actor: authz.actorId });
+    if (!moved.ok) return sendJson(ctx.res, 400, { error: moved.reason });
   }
   if (hasName || hasSortOrder) {
     await authz.organization.updateUnit({
