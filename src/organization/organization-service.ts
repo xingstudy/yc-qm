@@ -3,11 +3,16 @@ import type { AuditEvent, AuditLog } from "../audit/audit-log.ts";
 import { personKey } from "../directory/person.ts";
 import type { IdentityService } from "../identity/identity-service.ts";
 import type {
+  AccessGroup,
+  AccessGroupMember,
+  AccessGroupStatus,
   OrganizationStore,
   OrganizationUser,
   OrganizationUserStatus,
+  OrgMemberRole,
   OrgUnit,
   OrgUnitKind,
+  OrgUnitMember,
   OrgUnitStatus,
   UnitImpact,
 } from "./organization-store.ts";
@@ -36,6 +41,14 @@ export type MoveUnitResult = { ok: true } | { ok: false; reason: "root" | "self_
 
 export type ArchiveUnitResult = { ok: true } | { ok: false; reason: "root" | "conflict"; impact?: UnitImpact };
 
+export type AddUnitMemberResult = { ok: true } | { ok: false; reason: "missing_unit" | "missing_user" | "archived" };
+
+export type RemoveUnitMemberResult = { ok: true } | { ok: false; reason: "missing_unit" };
+
+export type AddGroupMemberResult = { ok: true } | { ok: false; reason: "missing_group" | "missing_user" | "archived" };
+
+export type RemoveGroupMemberResult = { ok: true } | { ok: false; reason: "missing_group" };
+
 export interface OrganizationService {
   login(input: LoginInput): Promise<LoginResult>;
   invite(input: {
@@ -60,6 +73,15 @@ export interface OrganizationService {
   }): Promise<OrgUnit | null>;
   moveUnit(input: { unitId: string; newParentId: string; actor: string }): Promise<MoveUnitResult>;
   archiveUnit(input: { unitId: string; actor: string }): Promise<ArchiveUnitResult>;
+  addUnitMember(input: { unitId: string; principalId: string; role: OrgMemberRole; actor: string }): Promise<AddUnitMemberResult>;
+  removeUnitMember(input: { unitId: string; principalId: string; actor: string }): Promise<RemoveUnitMemberResult>;
+  createGroup(input: { name: string; actor: string }): Promise<AccessGroup>;
+  updateGroup(input: { groupId: string; name?: string; status?: AccessGroupStatus; actor: string }): Promise<AccessGroup | null>;
+  archiveGroup(input: { groupId: string; actor: string }): Promise<{ ok: true }>;
+  addGroupMember(input: { groupId: string; principalId: string; role: OrgMemberRole; actor: string }): Promise<AddGroupMemberResult>;
+  removeGroupMember(input: { groupId: string; principalId: string; actor: string }): Promise<RemoveGroupMemberResult>;
+  unitImpact(orgId: string, unitId: string): Promise<UnitImpact>;
+  listManagedSubtreeUnitIds(principalId: string): Promise<string[]>;
   refresh(): Promise<void>;
   hydrate(): Promise<void>;
 }
@@ -102,12 +124,12 @@ export function createOrganizationService(deps: {
     auditLog.record({ at: now(), principalId, action, resource: principalId, scopeLabel, ...(status ? { status } : {}) });
   }
 
-  function unitEvent(action: string, unitId: string, actor: string, detail: Record<string, string | null>): AuditEvent {
+  function orgEvent(action: string, resource: string, actor: string, detail: Record<string, string | null>): AuditEvent {
     return {
       at: now(),
       principalId: actor,
       action,
-      resource: `unit:${unitId}`,
+      resource,
       scopeLabel,
       orgId,
       detail: JSON.stringify(detail),
@@ -308,7 +330,7 @@ export function createOrganizationService(deps: {
     await store.transact(async (tx) => {
       await tx.putUnit(unit);
       await tx.bumpRevision(orgId);
-      await tx.audit(unitEvent("org.unit.create", unit.id, input.actor, { unitId: unit.id, parentId: unit.parentId }));
+      await tx.audit(orgEvent("org.unit.create", `unit:${unit.id}`, input.actor, { unitId: unit.id, parentId: unit.parentId }));
     });
     return unit;
   }
@@ -333,7 +355,7 @@ export function createOrganizationService(deps: {
     await store.transact(async (tx) => {
       await tx.putUnit(next);
       await tx.bumpRevision(orgId);
-      await tx.audit(unitEvent("org.unit.update", next.id, input.actor, { unitId: next.id }));
+      await tx.audit(orgEvent("org.unit.update", `unit:${next.id}`, input.actor, { unitId: next.id }));
     });
     return next;
   }
@@ -351,7 +373,7 @@ export function createOrganizationService(deps: {
     await store.transact(async (tx) => {
       await tx.moveUnitSubtree(orgId, input.unitId, input.newParentId);
       await tx.bumpRevision(orgId);
-      await tx.audit(unitEvent("org.unit.move", input.unitId, input.actor, { unitId: input.unitId, parentId: input.newParentId }));
+      await tx.audit(orgEvent("org.unit.move", `unit:${input.unitId}`, input.actor, { unitId: input.unitId, parentId: input.newParentId }));
     });
     return { ok: true };
   }
@@ -365,7 +387,166 @@ export function createOrganizationService(deps: {
     await store.transact(async (tx) => {
       await tx.putUnit(next);
       await tx.bumpRevision(orgId);
-      await tx.audit(unitEvent("org.unit.archive", next.id, input.actor, { unitId: next.id }));
+      await tx.audit(orgEvent("org.unit.archive", `unit:${next.id}`, input.actor, { unitId: next.id }));
+    });
+    return { ok: true };
+  }
+
+  async function addUnitMember(input: {
+    unitId: string;
+    principalId: string;
+    role: OrgMemberRole;
+    actor: string;
+  }): Promise<AddUnitMemberResult> {
+    const unit = await store.getUnit(orgId, input.unitId);
+    if (!unit) return { ok: false, reason: "missing_unit" };
+    if (unit.status !== "active") return { ok: false, reason: "archived" };
+    const user = await store.getUser(orgId, input.principalId);
+    if (!user || user.status === "deprovisioned") return { ok: false, reason: "missing_user" };
+    const existing = (await store.listUnitMembers(orgId, input.unitId)).find((m) => m.principalId === input.principalId);
+    if (existing?.role === input.role) return { ok: true };
+    const member: OrgUnitMember = existing
+      ? { ...existing, role: input.role }
+      : {
+          orgId,
+          unitId: input.unitId,
+          principalId: input.principalId,
+          role: input.role,
+          createdAt: now(),
+          createdBy: input.actor,
+        };
+    await store.transact(async (tx) => {
+      await tx.putUnitMember(member);
+      await tx.bumpRevision(orgId);
+      await tx.audit(
+        orgEvent("org.unit.member.add", `unit:${input.unitId}`, input.actor, {
+          unitId: input.unitId,
+          principalId: input.principalId,
+          role: input.role,
+        }),
+      );
+    });
+    return { ok: true };
+  }
+
+  async function removeUnitMember(input: { unitId: string; principalId: string; actor: string }): Promise<RemoveUnitMemberResult> {
+    const unit = await store.getUnit(orgId, input.unitId);
+    if (!unit) return { ok: false, reason: "missing_unit" };
+    const existing = (await store.listUnitMembers(orgId, input.unitId)).some((m) => m.principalId === input.principalId);
+    if (!existing) return { ok: true };
+    await store.transact(async (tx) => {
+      await tx.removeUnitMember(orgId, input.unitId, input.principalId);
+      await tx.bumpRevision(orgId);
+      await tx.audit(
+        orgEvent("org.unit.member.remove", `unit:${input.unitId}`, input.actor, { unitId: input.unitId, principalId: input.principalId }),
+      );
+    });
+    return { ok: true };
+  }
+
+  async function createGroup(input: { name: string; actor: string }): Promise<AccessGroup> {
+    const at = now();
+    const group: AccessGroup = {
+      orgId,
+      id: `grp-${randomUUID()}`,
+      name: sanitizeDisplayName(input.name),
+      status: "active",
+      createdAt: at,
+      updatedAt: at,
+      createdBy: input.actor,
+      updatedBy: input.actor,
+    };
+    await store.transact(async (tx) => {
+      await tx.putGroup(group);
+      await tx.bumpRevision(orgId);
+      await tx.audit(orgEvent("org.group.create", `group:${group.id}`, input.actor, { groupId: group.id }));
+    });
+    return group;
+  }
+
+  async function updateGroup(input: {
+    groupId: string;
+    name?: string;
+    status?: AccessGroupStatus;
+    actor: string;
+  }): Promise<AccessGroup | null> {
+    const group = await store.getGroup(orgId, input.groupId);
+    if (!group) return null;
+    const next: AccessGroup = {
+      ...group,
+      name: input.name !== undefined ? sanitizeDisplayName(input.name) : group.name,
+      status: input.status ?? group.status,
+      updatedAt: now(),
+      updatedBy: input.actor,
+    };
+    await store.transact(async (tx) => {
+      await tx.putGroup(next);
+      await tx.bumpRevision(orgId);
+      await tx.audit(orgEvent("org.group.update", `group:${next.id}`, input.actor, { groupId: next.id }));
+    });
+    return next;
+  }
+
+  async function archiveGroup(input: { groupId: string; actor: string }): Promise<{ ok: true }> {
+    const group = await store.getGroup(orgId, input.groupId);
+    if (!group || group.status === "archived") return { ok: true };
+    const next: AccessGroup = { ...group, status: "archived", updatedAt: now(), updatedBy: input.actor };
+    await store.transact(async (tx) => {
+      await tx.putGroup(next);
+      await tx.bumpRevision(orgId);
+      await tx.audit(orgEvent("org.group.archive", `group:${next.id}`, input.actor, { groupId: next.id }));
+    });
+    return { ok: true };
+  }
+
+  async function addGroupMember(input: {
+    groupId: string;
+    principalId: string;
+    role: OrgMemberRole;
+    actor: string;
+  }): Promise<AddGroupMemberResult> {
+    const group = await store.getGroup(orgId, input.groupId);
+    if (!group) return { ok: false, reason: "missing_group" };
+    if (group.status !== "active") return { ok: false, reason: "archived" };
+    const user = await store.getUser(orgId, input.principalId);
+    if (!user || user.status === "deprovisioned") return { ok: false, reason: "missing_user" };
+    const existing = (await store.listGroupMembers(orgId, input.groupId)).find((m) => m.principalId === input.principalId);
+    if (existing?.role === input.role) return { ok: true };
+    const member: AccessGroupMember = existing
+      ? { ...existing, role: input.role }
+      : {
+          orgId,
+          groupId: input.groupId,
+          principalId: input.principalId,
+          role: input.role,
+          createdAt: now(),
+          createdBy: input.actor,
+        };
+    await store.transact(async (tx) => {
+      await tx.putGroupMember(member);
+      await tx.bumpRevision(orgId);
+      await tx.audit(
+        orgEvent("org.group.member.add", `group:${input.groupId}`, input.actor, {
+          groupId: input.groupId,
+          principalId: input.principalId,
+          role: input.role,
+        }),
+      );
+    });
+    return { ok: true };
+  }
+
+  async function removeGroupMember(input: { groupId: string; principalId: string; actor: string }): Promise<RemoveGroupMemberResult> {
+    const group = await store.getGroup(orgId, input.groupId);
+    if (!group) return { ok: false, reason: "missing_group" };
+    const existing = (await store.listGroupMembers(orgId, input.groupId)).some((m) => m.principalId === input.principalId);
+    if (!existing) return { ok: true };
+    await store.transact(async (tx) => {
+      await tx.removeGroupMember(orgId, input.groupId, input.principalId);
+      await tx.bumpRevision(orgId);
+      await tx.audit(
+        orgEvent("org.group.member.remove", `group:${input.groupId}`, input.actor, { groupId: input.groupId, principalId: input.principalId }),
+      );
     });
     return { ok: true };
   }
@@ -395,6 +576,15 @@ export function createOrganizationService(deps: {
     updateUnit,
     moveUnit,
     archiveUnit,
+    addUnitMember,
+    removeUnitMember,
+    createGroup,
+    updateGroup,
+    archiveGroup,
+    addGroupMember,
+    removeGroupMember,
+    unitImpact: (scopeOrgId, unitId) => store.unitImpact(scopeOrgId, unitId),
+    listManagedSubtreeUnitIds: (principalId) => store.listManagedSubtreeUnitIds(orgId, principalId),
     async checkActive(principalId: string): Promise<ActiveCheck | null> {
       await refresh();
       return cache.get(personKey(principalId)) ?? null;

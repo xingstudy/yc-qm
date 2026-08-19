@@ -431,6 +431,223 @@ test("archiveUnit: a suspended member still blocks archival while deprovisioned 
   assert.equal(blocked.impact?.activeMembers, 1, "only the suspended member counts");
 });
 
+test("addUnitMember: adds a row with role, audit, and one revision bump; re-add updates the role in place", async () => {
+  const { service, store, auditLog } = setup();
+  await bootstrapRoot(store);
+  const unit = await service.createUnit({ parentId: "root", name: "Team", kind: "team", actor: "admin@acme.com" });
+  await store.putUser(orgUser({ principalId: "bob@acme.com", email: "bob@acme.com" }));
+  const before = await store.getAuthzRevision(ORG);
+  assert.deepEqual(await service.addUnitMember({ unitId: unit.id, principalId: "bob@acme.com", role: "member", actor: "admin@acme.com" }), {
+    ok: true,
+  });
+  let members = await store.listUnitMembers(ORG, unit.id);
+  assert.equal(members.length, 1);
+  assert.equal(members[0]?.role, "member");
+  assert.equal(members[0]?.createdBy, "admin@acme.com");
+  assert.equal(await store.getAuthzRevision(ORG), before + 1);
+  const adds = (await auditLog.events()).filter((e) => e.action === "org.unit.member.add");
+  assert.equal(adds.length, 1);
+  assert.equal(adds[0]?.principalId, "admin@acme.com");
+  assert.equal(adds[0]?.scopeLabel, SCOPE);
+  assert.equal(adds[0]?.resource, `unit:${unit.id}`);
+  assert.deepEqual(JSON.parse(adds[0]?.detail ?? ""), { unitId: unit.id, principalId: "bob@acme.com", role: "member" });
+  const roleBefore = await store.getAuthzRevision(ORG);
+  assert.deepEqual(await service.addUnitMember({ unitId: unit.id, principalId: "bob@acme.com", role: "manager", actor: "admin@acme.com" }), {
+    ok: true,
+  });
+  members = await store.listUnitMembers(ORG, unit.id);
+  assert.equal(members.length, 1, "re-add keeps a single row");
+  assert.equal(members[0]?.role, "manager");
+  assert.equal(members[0]?.createdBy, "admin@acme.com", "role update preserves the original row fields");
+  assert.equal(await store.getAuthzRevision(ORG), roleBefore + 1);
+  const noopBefore = await store.getAuthzRevision(ORG);
+  assert.deepEqual(await service.addUnitMember({ unitId: unit.id, principalId: "bob@acme.com", role: "manager", actor: "admin@acme.com" }), {
+    ok: true,
+  });
+  assert.equal(await store.getAuthzRevision(ORG), noopBefore, "a same-role re-add is a no-op");
+  assert.equal((await auditLog.events()).filter((e) => e.action === "org.unit.member.add").length, 2);
+});
+
+test("addUnitMember: unknown and deprovisioned users are missing_user while invited users are allowed", async () => {
+  const { service, store } = setup();
+  await bootstrapRoot(store);
+  const unit = await service.createUnit({ parentId: "root", name: "Team", kind: "team", actor: "admin@acme.com" });
+  await store.putUser(orgUser({ principalId: "gone@acme.com", status: "deprovisioned" }));
+  await store.putUser(orgUser({ principalId: "pending@acme.com", status: "invited" }));
+  assert.deepEqual(await service.addUnitMember({ unitId: unit.id, principalId: "ghost@acme.com", role: "member", actor: "admin@acme.com" }), {
+    ok: false,
+    reason: "missing_user",
+  });
+  assert.deepEqual(await service.addUnitMember({ unitId: unit.id, principalId: "gone@acme.com", role: "member", actor: "admin@acme.com" }), {
+    ok: false,
+    reason: "missing_user",
+  });
+  assert.deepEqual(await service.addUnitMember({ unitId: unit.id, principalId: "pending@acme.com", role: "member", actor: "admin@acme.com" }), {
+    ok: true,
+  });
+  assert.equal((await store.listUnitMembers(ORG, unit.id)).length, 1);
+});
+
+test("addUnitMember: archived or missing units reject without touching membership", async () => {
+  const { service, store } = setup();
+  await bootstrapRoot(store);
+  await store.putUser(orgUser({ principalId: "bob@acme.com", email: "bob@acme.com" }));
+  assert.deepEqual(await service.addUnitMember({ unitId: "unit-missing", principalId: "bob@acme.com", role: "member", actor: "admin@acme.com" }), {
+    ok: false,
+    reason: "missing_unit",
+  });
+  const unit = await service.createUnit({ parentId: "root", name: "Team", kind: "team", actor: "admin@acme.com" });
+  await service.archiveUnit({ unitId: unit.id, actor: "admin@acme.com" });
+  assert.deepEqual(await service.addUnitMember({ unitId: unit.id, principalId: "bob@acme.com", role: "member", actor: "admin@acme.com" }), {
+    ok: false,
+    reason: "archived",
+  });
+  assert.equal((await store.listUnitMembers(ORG, unit.id)).length, 0);
+});
+
+test("removeUnitMember: removes the row with audit and one revision bump; removing a non-member is a no-op success", async () => {
+  const { service, store, auditLog } = setup();
+  await bootstrapRoot(store);
+  const unit = await service.createUnit({ parentId: "root", name: "Team", kind: "team", actor: "admin@acme.com" });
+  await store.putUser(orgUser({ principalId: "bob@acme.com", email: "bob@acme.com" }));
+  await service.addUnitMember({ unitId: unit.id, principalId: "bob@acme.com", role: "member", actor: "admin@acme.com" });
+  assert.deepEqual(await service.removeUnitMember({ unitId: "unit-missing", principalId: "bob@acme.com", actor: "admin@acme.com" }), {
+    ok: false,
+    reason: "missing_unit",
+  });
+  const before = await store.getAuthzRevision(ORG);
+  assert.deepEqual(await service.removeUnitMember({ unitId: unit.id, principalId: "bob@acme.com", actor: "admin@acme.com" }), { ok: true });
+  assert.equal((await store.listUnitMembers(ORG, unit.id)).length, 0);
+  assert.equal(await store.getAuthzRevision(ORG), before + 1);
+  const removes = (await auditLog.events()).filter((e) => e.action === "org.unit.member.remove");
+  assert.equal(removes.length, 1);
+  assert.equal(removes[0]?.principalId, "admin@acme.com");
+  assert.equal(removes[0]?.resource, `unit:${unit.id}`);
+  assert.deepEqual(JSON.parse(removes[0]?.detail ?? ""), { unitId: unit.id, principalId: "bob@acme.com" });
+  const noopBefore = await store.getAuthzRevision(ORG);
+  assert.deepEqual(await service.removeUnitMember({ unitId: unit.id, principalId: "bob@acme.com", actor: "admin@acme.com" }), { ok: true });
+  assert.equal(await store.getAuthzRevision(ORG), noopBefore, "removing a non-member writes nothing");
+  assert.equal((await auditLog.events()).filter((e) => e.action === "org.unit.member.remove").length, 1);
+});
+
+test("group lifecycle: create, rename, archive blocks member adds, and restore re-enables them", async () => {
+  const { service, store, auditLog } = setup();
+  await bootstrapRoot(store);
+  await store.putUser(orgUser({ principalId: "bob@acme.com", email: "bob@acme.com" }));
+  const before = await store.getAuthzRevision(ORG);
+  const group = await service.createGroup({ name: "On-call", actor: "admin@acme.com" });
+  assert.ok(group.id.startsWith("grp-"));
+  assert.equal(group.orgId, ORG);
+  assert.equal(group.status, "active");
+  assert.equal(group.createdBy, "admin@acme.com");
+  assert.equal(await store.getAuthzRevision(ORG), before + 1);
+  const creates = (await auditLog.events()).filter((e) => e.action === "org.group.create");
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0]?.principalId, "admin@acme.com");
+  assert.equal(creates[0]?.scopeLabel, SCOPE);
+  assert.equal(creates[0]?.resource, `group:${group.id}`);
+  assert.deepEqual(JSON.parse(creates[0]?.detail ?? ""), { groupId: group.id });
+  assert.equal(await service.updateGroup({ groupId: "grp-missing", name: "X", actor: "admin@acme.com" }), null);
+  const renamed = await service.updateGroup({ groupId: group.id, name: "On-call Renamed", actor: "admin@acme.com" });
+  assert.equal(renamed?.name, "On-call Renamed");
+  assert.equal(renamed?.updatedBy, "admin@acme.com");
+  assert.equal((await auditLog.events()).filter((e) => e.action === "org.group.update").length, 1);
+  assert.deepEqual(await service.archiveGroup({ groupId: group.id, actor: "admin@acme.com" }), { ok: true });
+  assert.equal((await store.getGroup(ORG, group.id))?.status, "archived");
+  assert.equal((await auditLog.events()).filter((e) => e.action === "org.group.archive").length, 1);
+  assert.deepEqual(await service.addGroupMember({ groupId: group.id, principalId: "bob@acme.com", role: "member", actor: "admin@acme.com" }), {
+    ok: false,
+    reason: "archived",
+  });
+  const restoreBefore = await store.getAuthzRevision(ORG);
+  const restored = await service.updateGroup({ groupId: group.id, status: "active", actor: "admin@acme.com" });
+  assert.equal(restored?.status, "active");
+  assert.equal(await store.getAuthzRevision(ORG), restoreBefore + 1);
+  assert.deepEqual(await service.addGroupMember({ groupId: group.id, principalId: "bob@acme.com", role: "member", actor: "admin@acme.com" }), {
+    ok: true,
+  });
+  assert.deepEqual(await service.archiveGroup({ groupId: "grp-missing", actor: "admin@acme.com" }), { ok: true }, "archiving a missing group is a no-op success");
+  assert.deepEqual(await service.archiveGroup({ groupId: group.id, actor: "admin@acme.com" }), { ok: true });
+  const rearchiveBefore = await store.getAuthzRevision(ORG);
+  assert.deepEqual(await service.archiveGroup({ groupId: group.id, actor: "admin@acme.com" }), { ok: true });
+  assert.equal(await store.getAuthzRevision(ORG), rearchiveBefore, "re-archiving an archived group writes nothing");
+});
+
+test("group members: add and remove round-trip, role update on re-add, and missing branches", async () => {
+  const { service, store, auditLog } = setup();
+  await bootstrapRoot(store);
+  await store.putUser(orgUser({ principalId: "bob@acme.com", email: "bob@acme.com" }));
+  await store.putUser(orgUser({ principalId: "gone@acme.com", status: "deprovisioned" }));
+  assert.deepEqual(await service.addGroupMember({ groupId: "grp-missing", principalId: "bob@acme.com", role: "member", actor: "admin@acme.com" }), {
+    ok: false,
+    reason: "missing_group",
+  });
+  assert.deepEqual(await service.removeGroupMember({ groupId: "grp-missing", principalId: "bob@acme.com", actor: "admin@acme.com" }), {
+    ok: false,
+    reason: "missing_group",
+  });
+  const group = await service.createGroup({ name: "On-call", actor: "admin@acme.com" });
+  assert.deepEqual(await service.addGroupMember({ groupId: group.id, principalId: "ghost@acme.com", role: "member", actor: "admin@acme.com" }), {
+    ok: false,
+    reason: "missing_user",
+  });
+  assert.deepEqual(await service.addGroupMember({ groupId: group.id, principalId: "gone@acme.com", role: "member", actor: "admin@acme.com" }), {
+    ok: false,
+    reason: "missing_user",
+  });
+  assert.deepEqual(await service.addGroupMember({ groupId: group.id, principalId: "bob@acme.com", role: "member", actor: "admin@acme.com" }), {
+    ok: true,
+  });
+  assert.deepEqual(await service.addGroupMember({ groupId: group.id, principalId: "bob@acme.com", role: "manager", actor: "admin@acme.com" }), {
+    ok: true,
+  });
+  const members = await store.listGroupMembers(ORG, group.id);
+  assert.equal(members.length, 1, "re-add keeps a single row");
+  assert.equal(members[0]?.role, "manager");
+  const adds = (await auditLog.events()).filter((e) => e.action === "org.group.member.add");
+  assert.equal(adds.length, 2);
+  assert.equal(adds[0]?.resource, `group:${group.id}`);
+  assert.deepEqual(JSON.parse(adds[0]?.detail ?? ""), { groupId: group.id, principalId: "bob@acme.com", role: "member" });
+  const before = await store.getAuthzRevision(ORG);
+  assert.deepEqual(await service.removeGroupMember({ groupId: group.id, principalId: "bob@acme.com", actor: "admin@acme.com" }), { ok: true });
+  assert.equal((await store.listGroupMembers(ORG, group.id)).length, 0);
+  assert.equal(await store.getAuthzRevision(ORG), before + 1);
+  const removes = (await auditLog.events()).filter((e) => e.action === "org.group.member.remove");
+  assert.equal(removes.length, 1);
+  assert.deepEqual(JSON.parse(removes[0]?.detail ?? ""), { groupId: group.id, principalId: "bob@acme.com" });
+  assert.deepEqual(await service.removeGroupMember({ groupId: group.id, principalId: "bob@acme.com", actor: "admin@acme.com" }), {
+    ok: true,
+  });
+  assert.equal((await auditLog.events()).filter((e) => e.action === "org.group.member.remove").length, 1, "removing a non-member is a no-op");
+});
+
+test("listManagedSubtreeUnitIds: management follows direct manager rows through moves, not tree position", async () => {
+  const { service, store } = setup();
+  await bootstrapRoot(store);
+  const a = await service.createUnit({ parentId: "root", name: "A", kind: "department", actor: "admin@acme.com" });
+  const b = await service.createUnit({ parentId: a.id, name: "B", kind: "team", actor: "admin@acme.com" });
+  const d = await service.createUnit({ parentId: b.id, name: "D", kind: "team", actor: "admin@acme.com" });
+  const c = await service.createUnit({ parentId: "root", name: "C", kind: "department", actor: "admin@acme.com" });
+  await store.putUser(orgUser({ principalId: "mgr-b@acme.com" }));
+  await store.putUser(orgUser({ principalId: "mgr-c@acme.com" }));
+  await service.addUnitMember({ unitId: b.id, principalId: "mgr-b@acme.com", role: "manager", actor: "admin@acme.com" });
+  await service.addUnitMember({ unitId: c.id, principalId: "mgr-c@acme.com", role: "manager", actor: "admin@acme.com" });
+  assert.deepEqual((await service.listManagedSubtreeUnitIds("mgr-b@acme.com")).sort(), [b.id, d.id].sort());
+  assert.deepEqual(await service.listManagedSubtreeUnitIds("mgr-c@acme.com"), [c.id]);
+  assert.deepEqual(await service.listManagedSubtreeUnitIds("alice@acme.com"), [], "no manager rows manage nothing");
+  assert.deepEqual(await service.moveUnit({ unitId: b.id, newParentId: c.id, actor: "admin@acme.com" }), { ok: true });
+  assert.deepEqual(
+    (await service.listManagedSubtreeUnitIds("mgr-b@acme.com")).sort(),
+    [b.id, d.id].sort(),
+    "a manager keeps their subtree when it moves under a new ancestor",
+  );
+  assert.deepEqual(
+    (await service.listManagedSubtreeUnitIds("mgr-c@acme.com")).sort(),
+    [b.id, c.id, d.id].sort(),
+    "the new ancestor's manager manages the moved-in subtree through the closure",
+  );
+});
+
 test("updateUnit: renames and reorders an existing unit and returns null for a missing one", async () => {
   const { service, store, auditLog } = setup();
   await bootstrapRoot(store);
