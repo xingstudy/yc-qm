@@ -1061,6 +1061,23 @@
         background: var(--subtle);
         box-shadow: var(--shadow);
       }
+      .org-node.with-count {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .org-node.with-count .org-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .org-node.with-count .org-count {
+        margin-left: auto;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 400;
+      }
       .org-detail {
         min-width: 0;
       }
@@ -6067,6 +6084,25 @@
         "Couldn't move the unit.": "无法移动节点。",
         "Couldn't archive the unit.": "无法归档节点。",
         "Couldn't remove the member.": "无法移除成员。",
+        "Access groups": "访问组",
+        "Active groups": "活跃访问组",
+        "Archived groups": "已归档访问组",
+        "Active groups and their member counts. Select one to manage it.":
+          "活跃访问组及其成员数量。选择一个访问组进行管理。",
+        "No active groups yet.": "尚无活跃访问组。",
+        "Select a group on the left to manage it.": "在左侧选择一个访问组进行管理。",
+        "Loading group detail...": "正在加载访问组详情…",
+        "Add a principal to this group as a member or manager.": "将主体添加为此访问组的成员或管理员。",
+        "New access group": "新建访问组",
+        "Create a named group to manage member access.": "创建一个具名访问组来管理成员访问权限。",
+        "Create group": "创建访问组",
+        "Couldn't create the group.": "无法新建访问组。",
+        "Update the group name.": "更新访问组名称。",
+        "Couldn't rename the group.": "无法重命名访问组。",
+        "Archive group": "归档访问组",
+        "Archived groups leave the active list; their membership is preserved.":
+          "归档后访问组将离开活跃列表，成员关系保留。",
+        "Couldn't archive the group.": "无法归档访问组。",
       };
       const normalizeAdminLocale = (value) => {
         const normalized = String(value || "").toLowerCase();
@@ -6344,7 +6380,17 @@
         { label: "System", views: ["metrics"] },
         {
           label: "Admin",
-          views: ["onboarding", "governance", "connectors", "users", "org-units", "keychain", "egress", "audit"],
+          views: [
+            "onboarding",
+            "governance",
+            "connectors",
+            "users",
+            "org-units",
+            "org-groups",
+            "keychain",
+            "egress",
+            "audit",
+          ],
         },
         { label: "Insights", views: ["retention"] },
       ];
@@ -6361,6 +6407,7 @@
         connectors: "Connectors",
         users: "Users",
         "org-units": "Org tree",
+        "org-groups": "Access groups",
         keychain: "Keychain",
         user: "User",
         metrics: "Metrics",
@@ -6391,7 +6438,16 @@
         "crons",
         "deployments",
       ]);
-      const ORG_WIDE = new Set(["retention", "users", "org-units", "keychain", "connectors", "judgments", "ackemoji"]);
+      const ORG_WIDE = new Set([
+        "retention",
+        "users",
+        "org-units",
+        "org-groups",
+        "keychain",
+        "connectors",
+        "judgments",
+        "ackemoji",
+      ]);
       const ENDPOINT = { history: "sessions", files: "files", live: "runs" };
       const HISTORY_PAGE_SIZE = 50;
 
@@ -9902,6 +9958,7 @@
           retention: renderRetention,
           users: renderUsers,
           "org-units": renderOrgUnits,
+          "org-groups": renderOrgGroups,
           keychain: renderKeychain,
         })[view](root, data);
       }
@@ -12753,6 +12810,7 @@
       }
 
       let orgUnitSelectedId = null;
+      let orgGroupSelectedId = null;
       function renderOrgUnits(root, d) {
         const all = d.units || [];
         const units = all.filter((u) => u.status === "active");
@@ -13077,6 +13135,274 @@
 
         drawTree();
         loadDetail();
+      }
+
+      function renderOrgGroups(root, d) {
+        const all = d.groups || [];
+        const groups = all.filter((g) => g.status === "active").sort((a, b) => a.name.localeCompare(b.name));
+        defaultShell({
+          stats: [
+            [groups.length, "Active groups"],
+            [all.length - groups.length, "Archived groups"],
+          ],
+        });
+        if (!groups.some((g) => g.id === orgGroupSelectedId)) orgGroupSelectedId = groups[0]?.id ?? null;
+
+        const byId = new Map(groups.map((g) => [g.id, g]));
+        const fail = (r, fallback) => setApiStatus("st-org-groups", r.data?.message, fallback, "err");
+        const mkField = (cls, labelText, control) => {
+          const f = document.createElement("div");
+          f.className = "f" + (cls ? " " + cls : "");
+          const l = document.createElement("label");
+          l.textContent = adminTr(labelText);
+          f.append(l, control);
+          return f;
+        };
+        const textInput = (value, placeholder) => {
+          const i = document.createElement("input");
+          i.type = "text";
+          i.value = value || "";
+          if (placeholder) i.placeholder = adminTr(placeholder);
+          i.spellcheck = false;
+          i.autocapitalize = "none";
+          return i;
+        };
+        const selectOf = (options, value) => {
+          const sel = document.createElement("select");
+          options.forEach(([v, label]) => {
+            const opt = document.createElement("option");
+            opt.value = v;
+            opt.textContent = label;
+            sel.appendChild(opt);
+          });
+          if (options.some(([v]) => v === value)) sel.value = value;
+          return sel;
+        };
+        const actionBtn = (label, cls, run) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          if (cls) b.className = cls;
+          b.textContent = adminTr(label);
+          b.onclick = run;
+          return b;
+        };
+
+        const groupList = document.createElement("div");
+        groupList.className = "org-tree";
+        const detail = document.createElement("div");
+        detail.className = "org-detail";
+        const layout = document.createElement("div");
+        layout.className = "org-layout";
+        layout.append(
+          dataCard("Access groups", "Active groups and their member counts. Select one to manage it.", groupList),
+          detail,
+        );
+        root.appendChild(layout);
+        const st = document.createElement("p");
+        st.className = "status";
+        st.id = "st-org-groups";
+
+        const createName = textInput("");
+        const createForm = document.createElement("div");
+        createForm.className = "grant-form";
+        createForm.append(
+          mkField("grow", "Name", createName),
+          actionBtn("Create group", "primary", async () => {
+            const name = createName.value.trim();
+            if (!name) return setStatus("st-org-groups", "Name required.", "err");
+            const r = await api("POST", "/api/org-groups", { name });
+            if (r.ok) {
+              orgGroupSelectedId = r.data.group?.id ?? orgGroupSelectedId;
+              renderData();
+            } else fail(r, "Couldn't create the group.");
+          }),
+        );
+        root.appendChild(dataCard("New access group", "Create a named group to manage member access.", createForm));
+        root.appendChild(st);
+
+        const counts = new Map();
+        const countNodes = new Map();
+        const drawList = () => {
+          groupList.textContent = "";
+          countNodes.clear();
+          if (!groups.length) {
+            const p = document.createElement("p");
+            p.className = "empty";
+            p.textContent = adminTr("No active groups yet.");
+            groupList.appendChild(p);
+            return;
+          }
+          groups.forEach((g) => {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "org-node with-count" + (g.id === orgGroupSelectedId ? " active" : "");
+            const name = document.createElement("span");
+            name.className = "org-name";
+            name.textContent = g.name;
+            const count = document.createElement("span");
+            count.className = "org-count";
+            const known = counts.get(g.id);
+            if (known !== undefined) count.textContent = String(known);
+            b.append(name, count);
+            countNodes.set(g.id, count);
+            b.onclick = () => {
+              if (orgGroupSelectedId === g.id) return;
+              orgGroupSelectedId = g.id;
+              drawList();
+              loadDetail();
+            };
+            groupList.appendChild(b);
+          });
+        };
+        const setCount = (groupId, members) => {
+          counts.set(groupId, members.length);
+          const node = countNodes.get(groupId);
+          if (node && node.isConnected) node.textContent = String(members.length);
+        };
+        const loadCounts = () => {
+          groups.forEach(async (g) => {
+            if (g.id === orgGroupSelectedId) return;
+            const r = await api("GET", "/api/org-groups/" + encodeURIComponent(g.id));
+            if (r.ok) setCount(g.id, r.data.members || []);
+          });
+        };
+
+        async function loadDetail() {
+          detail.textContent = "";
+          const selected = byId.get(orgGroupSelectedId);
+          if (!selected) {
+            const p = document.createElement("p");
+            p.className = "empty";
+            p.textContent = adminTr("Select a group on the left to manage it.");
+            detail.appendChild(p);
+            return;
+          }
+          const loading = document.createElement("p");
+          loading.className = "empty";
+          loading.textContent = adminTr("Loading group detail...");
+          detail.appendChild(loading);
+          const r = await api("GET", "/api/org-groups/" + encodeURIComponent(selected.id));
+          if (selected.id !== orgGroupSelectedId) return;
+          detail.textContent = "";
+          if (!r.ok) {
+            const p = document.createElement("p");
+            p.className = "empty";
+            p.textContent = r.data?.message || `${adminTr("Failed to load")} (${r.status}).`;
+            detail.appendChild(p);
+            return;
+          }
+          drawDetail(r.data.group || selected, r.data.members || []);
+        }
+
+        function drawDetail(group, members) {
+          setCount(group.id, members);
+          const managers = members.filter((m) => m.role === "manager");
+          const summary = document.createElement("div");
+          summary.appendChild(
+            kpis([
+              [members.length, "Members"],
+              [managers.length, "Managers"],
+            ]),
+          );
+          summary.appendChild(
+            actionTable(
+              ["Principal", "Role", ""],
+              members,
+              (m) => [
+                { text: m.principalId, cls: "mono" },
+                { badge: adminTr(m.role), kind: m.role === "manager" ? "info" : "muted" },
+                {
+                  action: {
+                    label: "Remove",
+                    danger: true,
+                    run: () => removeMember(group, m),
+                  },
+                },
+              ],
+              "No members yet.",
+            ),
+          );
+          detail.appendChild(dataCard(group.name, "", summary, { titleI18n: false }));
+
+          const memberInput = textInput("", "principal id (e.g. U07ABCD)");
+          const roleSel = selectOf(
+            [
+              ["member", adminTr("member")],
+              ["manager", adminTr("manager")],
+            ],
+            "member",
+          );
+          const addForm = document.createElement("div");
+          addForm.className = "grant-form";
+          addForm.append(
+            mkField("grow", "Principal id", memberInput),
+            mkField("", "Role", roleSel),
+            actionBtn("Add member", "primary", async () => {
+              const principalId = memberInput.value.trim();
+              if (!principalId) return setStatus("st-org-groups", "Principal id required.", "err");
+              const r = await api("POST", "/api/org-groups/" + encodeURIComponent(group.id) + "/members", {
+                principalId,
+                role: roleSel.value,
+              });
+              if (r.ok) {
+                detail.textContent = "";
+                drawDetail(r.data.group || group, r.data.members || []);
+              } else fail(r, "Couldn't add member.");
+            }),
+          );
+          detail.appendChild(dataCard("Add member", "Add a principal to this group as a member or manager.", addForm));
+
+          const renameName = textInput(group.name);
+          const renameForm = document.createElement("div");
+          renameForm.className = "grant-form";
+          renameForm.append(
+            mkField("grow", "Name", renameName),
+            actionBtn("Save", "", async () => {
+              const name = renameName.value.trim();
+              if (!name) return setStatus("st-org-groups", "Name required.", "err");
+              const r = await api("PATCH", "/api/org-groups/" + encodeURIComponent(group.id), { name });
+              if (r.ok) renderData();
+              else fail(r, "Couldn't rename the group.");
+            }),
+          );
+          detail.appendChild(dataCard("Rename", "Update the group name.", renameForm));
+
+          const archiveForm = document.createElement("div");
+          archiveForm.className = "grant-form";
+          archiveForm.appendChild(
+            actionBtn("Archive group", "danger", async () => {
+              if (!confirm('Archive "' + group.name + '"? It leaves the active list; its membership is preserved.'))
+                return;
+              const r = await api("PATCH", "/api/org-groups/" + encodeURIComponent(group.id), {
+                status: "archived",
+              });
+              if (r.ok) renderData();
+              else fail(r, "Couldn't archive the group.");
+            }),
+          );
+          detail.appendChild(
+            dataCard(
+              "Archive group",
+              "Archived groups leave the active list; their membership is preserved.",
+              archiveForm,
+            ),
+          );
+        }
+
+        async function removeMember(group, m) {
+          const r = await api(
+            "DELETE",
+            "/api/org-groups/" + encodeURIComponent(group.id) + "/members/" + encodeURIComponent(m.principalId),
+          );
+          if (r.ok) {
+            detail.textContent = "";
+            drawDetail(r.data.group || group, r.data.members || []);
+          } else fail(r, "Couldn't remove the member.");
+        }
+
+        drawList();
+        loadDetail();
+        loadCounts();
       }
 
       const fmtBytes = (n) => {

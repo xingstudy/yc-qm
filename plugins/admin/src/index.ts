@@ -269,9 +269,10 @@ const WRITES = new Map<string, string[]>([
   ["model-providers", ["PUT", "DELETE"]],
   ["custom-providers", ["PUT", "DELETE"]],
   ["org-units", ["POST", "PATCH", "DELETE"]],
+  ["org-groups", ["POST", "PATCH", "DELETE"]],
 ]);
 
-const CORE_PREFIX: Record<string, string> = { "org-units": "org/units" };
+const CORE_PREFIX: Record<string, string> = { "org-units": "org/units", "org-groups": "org/access-groups" };
 
 const READS = [
   "metrics",
@@ -297,6 +298,7 @@ const READS = [
   "model-providers",
   "custom-providers",
   "org-units",
+  "org-groups",
 ];
 
 const server = createServer((req, res) => {
