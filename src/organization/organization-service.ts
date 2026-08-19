@@ -85,6 +85,9 @@ export interface OrganizationService {
   getUnit(unitId: string): Promise<OrgUnit | null>;
   listUnits(): Promise<OrgUnit[]>;
   listUnitMembers(unitId: string): Promise<OrgUnitMember[]>;
+  getGroup(groupId: string): Promise<AccessGroup | null>;
+  listGroups(): Promise<AccessGroup[]>;
+  listGroupMembers(groupId: string): Promise<AccessGroupMember[]>;
   refresh(): Promise<void>;
   hydrate(): Promise<void>;
 }
@@ -607,6 +610,9 @@ export function createOrganizationService(deps: {
     getUnit: (unitId) => store.getUnit(orgId, unitId),
     listUnits: () => store.listUnits(orgId),
     listUnitMembers: (unitId) => store.listUnitMembers(orgId, unitId),
+    getGroup: (groupId) => store.getGroup(orgId, groupId),
+    listGroups: () => store.listGroups(orgId),
+    listGroupMembers: (groupId) => store.listGroupMembers(orgId, groupId),
     async checkActive(principalId: string): Promise<ActiveCheck | null> {
       await refresh();
       return cache.get(personKey(principalId)) ?? null;

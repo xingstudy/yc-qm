@@ -5,6 +5,8 @@ import { adminStatusFromGrants } from "../../admin/admin-service.ts";
 import type { OrganizationService } from "../../organization/organization-service.ts";
 import {
   ORGANIZATION_USER_STATUSES,
+  type AccessGroup,
+  type AccessGroupMember,
   type OrganizationUser,
   type OrganizationUserStatus,
   type OrgMemberRole,
@@ -62,6 +64,28 @@ function serializeUnitMember(member: OrgUnitMember): Record<string, unknown> {
   };
 }
 
+function serializeGroup(group: AccessGroup): Record<string, unknown> {
+  return {
+    id: group.id,
+    name: group.name,
+    status: group.status,
+    createdAt: group.createdAt,
+    updatedAt: group.updatedAt,
+    createdBy: group.createdBy,
+    updatedBy: group.updatedBy,
+  };
+}
+
+function serializeGroupMember(member: AccessGroupMember): Record<string, unknown> {
+  return {
+    groupId: member.groupId,
+    principalId: member.principalId,
+    role: member.role,
+    createdAt: member.createdAt,
+    createdBy: member.createdBy,
+  };
+}
+
 async function requireOrganizationAdmin(
   ctx: ApiCtx,
 ): Promise<{ organization: OrganizationService; actorId: string } | null> {
@@ -80,7 +104,9 @@ async function requireOrganizationAdmin(
 
 async function authorizeOrgMembershipWrite(
   ctx: ApiCtx,
-  target: { kind: "unit"; unitId: string; role: OrgMemberRole },
+  target:
+    | { kind: "unit"; unitId: string; role: OrgMemberRole }
+    | { kind: "group"; groupId: string; role: OrgMemberRole },
 ): Promise<{ organization: OrganizationService; actorId: string } | null> {
   const organization = ctx.deps.organization;
   if (!organization) {
@@ -104,19 +130,38 @@ async function authorizeOrgMembershipWrite(
     sendJson(ctx.res, 403, { error: "forbidden", message: "admin grant required for this scope" });
     return null;
   }
-  const unit = await organization.getUnit(target.unitId);
-  if (!unit || unit.status !== "active") {
-    sendJson(ctx.res, 404, { error: "not_found", message: "unknown organization unit" });
+  const active = await organization.checkActive(actorId);
+  if (target.kind === "unit") {
+    const unit = await organization.getUnit(target.unitId);
+    if (!unit || unit.status !== "active") {
+      sendJson(ctx.res, 404, { error: "not_found", message: "unknown organization unit" });
+      return null;
+    }
+    if (!active || active.status !== "active" || target.role !== "member") {
+      sendJson(ctx.res, 403, { error: "forbidden", message: "admin grant required for this scope" });
+      return null;
+    }
+    const managed = await organization.listManagedSubtreeUnitIds(actorId);
+    if (!managed.includes(target.unitId)) {
+      sendJson(ctx.res, 403, { error: "forbidden", message: "unit is outside the managed subtree" });
+      return null;
+    }
+    return { organization, actorId };
+  }
+  const group = await organization.getGroup(target.groupId);
+  if (!group || group.status !== "active") {
+    sendJson(ctx.res, 404, { error: "not_found", message: "unknown access group" });
     return null;
   }
-  const active = await organization.checkActive(actorId);
   if (!active || active.status !== "active" || target.role !== "member") {
     sendJson(ctx.res, 403, { error: "forbidden", message: "admin grant required for this scope" });
     return null;
   }
-  const managed = await organization.listManagedSubtreeUnitIds(actorId);
-  if (!managed.includes(target.unitId)) {
-    sendJson(ctx.res, 403, { error: "forbidden", message: "unit is outside the managed subtree" });
+  const manages = (await organization.listGroupMembers(target.groupId)).some(
+    (member) => member.principalId === actorId && member.role === "manager",
+  );
+  if (!manages) {
+    sendJson(ctx.res, 403, { error: "forbidden", message: "group is outside the managed scope" });
     return null;
   }
   return { organization, actorId };
@@ -373,6 +418,115 @@ async function removeUnitMember(ctx: ApiCtx): Promise<void> {
   return sendJson(ctx.res, 200, (await unitWithMembers(authz.organization, unitId))!);
 }
 
+async function listGroups(ctx: ApiCtx): Promise<void> {
+  const authz = await requireOrganizationAdmin(ctx);
+  if (!authz) return;
+  const groups = await authz.organization.listGroups();
+  return sendJson(ctx.res, 200, { groups: groups.map(serializeGroup) });
+}
+
+async function createGroup(ctx: ApiCtx): Promise<void> {
+  const authz = await requireOrganizationAdmin(ctx);
+  if (!authz) return;
+  const body = isObj(ctx.body) ? ctx.body : {};
+  const name = trimmedString(body.name);
+  if (!name) {
+    return sendJson(ctx.res, 400, { error: "bad_request", message: "name must be a non-empty string" });
+  }
+  const group = await authz.organization.createGroup({ name, actor: authz.actorId });
+  return sendJson(ctx.res, 200, { group: serializeGroup(group) });
+}
+
+async function groupWithMembers(
+  organization: OrganizationService,
+  groupId: string,
+): Promise<{ group: Record<string, unknown>; members: Array<Record<string, unknown>> } | null> {
+  const group = await organization.getGroup(groupId);
+  if (!group) return null;
+  const members = await organization.listGroupMembers(groupId);
+  return { group: serializeGroup(group), members: members.map(serializeGroupMember) };
+}
+
+async function getGroup(ctx: ApiCtx): Promise<void> {
+  const authz = await requireOrganizationAdmin(ctx);
+  if (!authz) return;
+  const detail = await groupWithMembers(authz.organization, ctx.params.id ?? "");
+  if (!detail) return sendJson(ctx.res, 404, { error: "not_found", message: "unknown access group" });
+  return sendJson(ctx.res, 200, detail);
+}
+
+async function patchGroup(ctx: ApiCtx): Promise<void> {
+  const authz = await requireOrganizationAdmin(ctx);
+  if (!authz) return;
+  const groupId = ctx.params.id ?? "";
+  const existing = await authz.organization.getGroup(groupId);
+  if (!existing) return sendJson(ctx.res, 404, { error: "not_found", message: "unknown access group" });
+  const body = isObj(ctx.body) ? ctx.body : {};
+  const hasName = body.name !== undefined;
+  const hasStatus = body.status !== undefined;
+  const name = hasName ? trimmedString(body.name) : null;
+  const status = hasStatus && typeof body.status === "string" ? body.status : null;
+  if ((!hasName && !hasStatus) || (hasName && !name) || (hasStatus && status !== "active" && status !== "archived")) {
+    return sendJson(ctx.res, 400, {
+      error: "bad_request",
+      message: "provide name or status (active or archived) with valid values",
+    });
+  }
+  if (status === "archived") {
+    await authz.organization.archiveGroup({ groupId, actor: authz.actorId });
+  } else if (status === "active") {
+    await authz.organization.updateGroup({ groupId, status: "active", actor: authz.actorId });
+  }
+  if (name) {
+    await authz.organization.updateGroup({ groupId, name, actor: authz.actorId });
+  }
+  return sendJson(ctx.res, 200, { group: serializeGroup((await authz.organization.getGroup(groupId))!) });
+}
+
+async function addGroupMember(ctx: ApiCtx): Promise<void> {
+  const body = isObj(ctx.body) ? ctx.body : {};
+  const principalId = trimmedString(body.principalId);
+  const role = typeof body.role === "string" && (ORG_MEMBER_ROLES as ReadonlyArray<string>).includes(body.role) ? body.role : null;
+  if (!principalId || !role) {
+    return sendJson(ctx.res, 400, {
+      error: "bad_request",
+      message: "principalId must be a non-empty string and role must be member or manager",
+    });
+  }
+  const authz = await authorizeOrgMembershipWrite(ctx, { kind: "group", groupId: ctx.params.id ?? "", role: role as OrgMemberRole });
+  if (!authz) return;
+  const groupId = ctx.params.id ?? "";
+  const result = await authz.organization.addGroupMember({ groupId, principalId, role: role as OrgMemberRole, actor: authz.actorId });
+  if (!result.ok) {
+    if (result.reason === "missing_group") {
+      return sendJson(ctx.res, 404, { error: "not_found", message: "unknown access group" });
+    }
+    return sendJson(ctx.res, 400, { error: result.reason });
+  }
+  return sendJson(ctx.res, 200, (await groupWithMembers(authz.organization, groupId))!);
+}
+
+async function removeGroupMember(ctx: ApiCtx): Promise<void> {
+  const groupId = ctx.params.id ?? "";
+  const principalId = trimmedString(ctx.params.principalId);
+  if (!principalId) {
+    return sendJson(ctx.res, 400, { error: "bad_request", message: "principalId must be a non-empty string" });
+  }
+  const organization = ctx.deps.organization;
+  const existing = organization
+    ? (await organization.listGroupMembers(groupId)).find((m) => m.principalId === principalId)
+    : undefined;
+  const authz = await authorizeOrgMembershipWrite(ctx, {
+    kind: "group",
+    groupId,
+    role: existing?.role ?? "member",
+  });
+  if (!authz) return;
+  const result = await authz.organization.removeGroupMember({ groupId, principalId, actor: authz.actorId });
+  if (!result.ok) return sendJson(ctx.res, 404, { error: "not_found", message: "unknown access group" });
+  return sendJson(ctx.res, 200, (await groupWithMembers(authz.organization, groupId))!);
+}
+
 export const organizationRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/internal/auth/users/login", auth: "source", handle: loginUser },
   { method: "POST", path: "/v1/admin/org/users", auth: "either", handle: inviteUser },
@@ -383,4 +537,10 @@ export const organizationRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "PATCH", path: "/v1/admin/org/units/:id", auth: "either", handle: patchUnit },
   { method: "POST", path: "/v1/admin/org/units/:id/members", auth: "either", handle: addUnitMember },
   { method: "DELETE", path: "/v1/admin/org/units/:id/members/:principalId", auth: "either", handle: removeUnitMember },
+  { method: "GET", path: "/v1/admin/org/access-groups", auth: "either", handle: listGroups },
+  { method: "POST", path: "/v1/admin/org/access-groups", auth: "either", handle: createGroup },
+  { method: "GET", path: "/v1/admin/org/access-groups/:id", auth: "either", handle: getGroup },
+  { method: "PATCH", path: "/v1/admin/org/access-groups/:id", auth: "either", handle: patchGroup },
+  { method: "POST", path: "/v1/admin/org/access-groups/:id/members", auth: "either", handle: addGroupMember },
+  { method: "DELETE", path: "/v1/admin/org/access-groups/:id/members/:principalId", auth: "either", handle: removeGroupMember },
 ];

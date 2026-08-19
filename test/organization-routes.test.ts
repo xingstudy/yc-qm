@@ -20,6 +20,7 @@ const PID = "portal-identity-secret-for-org-tests-01";
 const CAP = "capability-secret-for-org-tests-000001";
 const INVITE_PATH = "/v1/admin/org/users";
 const UNITS_PATH = "/v1/admin/org/units";
+const GROUPS_PATH = "/v1/admin/org/access-groups";
 
 function start(overrides: Partial<Config> = {}): { built: BuiltApp; base: string; close: () => Promise<void> } {
   const built = buildApp(
@@ -918,6 +919,271 @@ test("capability tokens are denied org unit routes", async () => {
     assert.equal(created.status, 403, "capability tokens must not reach org unit mutations");
     const list = await fetch(`${srv.base}${UNITS_PATH}`, { headers: { "x-agent-capability": cap } });
     assert.equal(list.status, 403, "capability tokens must not reach org unit reads");
+  } finally {
+    await srv.close();
+  }
+});
+
+async function createGroupAsAdmin(base: string, body: Record<string, unknown>): Promise<any> {
+  const res = await adminFetch(base, "POST", GROUPS_PATH, "admin-alice", body);
+  const payload: any = await res.json();
+  assert.equal(res.status, 200, JSON.stringify(payload));
+  return payload.group;
+}
+
+test("admin creates, lists, and reads access groups with members", async () => {
+  const srv = await startAdmin();
+  try {
+    const group = await createGroupAsAdmin(srv.base, { name: "On-call" });
+    assert.ok(group.id.startsWith("grp-"));
+    assert.equal(group.name, "On-call");
+    assert.equal(group.status, "active");
+    assert.equal(group.createdBy, "admin-alice");
+    assert.equal(group.updatedBy, "admin-alice");
+    assert.equal(typeof group.createdAt, "number");
+    assert.equal(typeof group.updatedAt, "number");
+    const list = await adminGet(srv.base, GROUPS_PATH, "admin-alice");
+    assert.equal(list.status, 200);
+    const listed: any = await list.json();
+    assert.ok(listed.groups.some((g: any) => g.id === group.id));
+    await seedActive(srv.built, "U-grp-member");
+    const added = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${group.id}/members`, "admin-alice", {
+      principalId: "U-grp-member",
+      role: "member",
+    });
+    assert.equal(added.status, 200);
+    const addedBody: any = await added.json();
+    assert.equal(addedBody.group.id, group.id);
+    assert.equal(addedBody.members.length, 1);
+    assert.equal(addedBody.members[0].groupId, group.id);
+    assert.equal(addedBody.members[0].principalId, "U-grp-member");
+    assert.equal(addedBody.members[0].role, "member");
+    assert.equal(addedBody.members[0].createdBy, "admin-alice");
+    const detail = await adminGet(srv.base, `${GROUPS_PATH}/${group.id}`, "admin-alice");
+    assert.equal(detail.status, 200);
+    const detailBody: any = await detail.json();
+    assert.equal(detailBody.group.id, group.id);
+    assert.equal(detailBody.members.length, 1);
+    assert.equal(detailBody.members[0].principalId, "U-grp-member");
+    const missing = await adminGet(srv.base, `${GROUPS_PATH}/grp-ghost`, "admin-alice");
+    assert.equal(missing.status, 404);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("admin renames, archives, and restores access groups via PATCH with invalid input rejected 400", async () => {
+  const srv = await startAdmin();
+  try {
+    const group = await createGroupAsAdmin(srv.base, { name: "Old" });
+    const renamed = await adminFetch(srv.base, "PATCH", `${GROUPS_PATH}/${group.id}`, "admin-alice", { name: "New" });
+    assert.equal(renamed.status, 200);
+    assert.equal(((await renamed.json()) as any).group.name, "New");
+    const archived = await adminFetch(srv.base, "PATCH", `${GROUPS_PATH}/${group.id}`, "admin-alice", {
+      status: "archived",
+    });
+    assert.equal(archived.status, 200);
+    assert.equal(((await archived.json()) as any).group.status, "archived");
+    const restored = await adminFetch(srv.base, "PATCH", `${GROUPS_PATH}/${group.id}`, "admin-alice", {
+      status: "active",
+    });
+    assert.equal(restored.status, 200);
+    assert.equal(((await restored.json()) as any).group.status, "active");
+    const combined = await adminFetch(srv.base, "PATCH", `${GROUPS_PATH}/${group.id}`, "admin-alice", {
+      status: "archived",
+      name: "Both",
+    });
+    assert.equal(combined.status, 200);
+    const combinedGroup: any = ((await combined.json()) as any).group;
+    assert.equal(combinedGroup.status, "archived");
+    assert.equal(combinedGroup.name, "Both");
+    const missing = await adminFetch(srv.base, "PATCH", `${GROUPS_PATH}/grp-ghost`, "admin-alice", { name: "x" });
+    assert.equal(missing.status, 404);
+    const badPatches: Array<Record<string, unknown>> = [{}, { name: "" }, { status: "banned" }, { status: 42 }];
+    for (const body of badPatches) {
+      const res = await adminFetch(srv.base, "PATCH", `${GROUPS_PATH}/${group.id}`, "admin-alice", body);
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+    const badCreates: Array<Record<string, unknown>> = [{}, { name: "" }, { name: "  " }, { name: 7 }];
+    for (const body of badCreates) {
+      const res = await adminFetch(srv.base, "POST", GROUPS_PATH, "admin-alice", body);
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a non-admin active user without a manager role is forbidden from group reads and writes", async () => {
+  const srv = await startAdmin();
+  try {
+    await seedActive(srv.built, "U-gplain");
+    const group = await createGroupAsAdmin(srv.base, { name: "Locked" });
+    const created = await adminFetch(srv.base, "POST", GROUPS_PATH, "U-gplain", { name: "Nope" });
+    assert.equal(created.status, 403);
+    const added = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${group.id}/members`, "U-gplain", {
+      principalId: "U-gplain",
+      role: "member",
+    });
+    assert.equal(added.status, 403);
+    const removed = await adminFetch(
+      srv.base,
+      "DELETE",
+      `${GROUPS_PATH}/${group.id}/members/U-gplain`,
+      "U-gplain",
+      {},
+    );
+    assert.equal(removed.status, 403);
+    const list = await adminGet(srv.base, GROUPS_PATH, "U-gplain");
+    assert.equal(list.status, 403);
+    const detail = await adminGet(srv.base, `${GROUPS_PATH}/${group.id}`, "U-gplain");
+    assert.equal(detail.status, 403);
+    const patched = await adminFetch(srv.base, "PATCH", `${GROUPS_PATH}/${group.id}`, "U-gplain", { name: "H" });
+    assert.equal(patched.status, 403);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("group managers add and remove member-role members only in their own group", async () => {
+  const srv = await startAdmin();
+  try {
+    const managed = await createGroupAsAdmin(srv.base, { name: "Managed" });
+    const other = await createGroupAsAdmin(srv.base, { name: "Other" });
+    await seedActive(srv.built, "U-gmgr");
+    await seedActive(srv.built, "U-gjoin");
+    const grant = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${managed.id}/members`, "admin-alice", {
+      principalId: "U-gmgr",
+      role: "manager",
+    });
+    assert.equal(grant.status, 200);
+    const added = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${managed.id}/members`, "U-gmgr", {
+      principalId: "U-gjoin",
+      role: "member",
+    });
+    assert.equal(added.status, 200);
+    const addedBody: any = await added.json();
+    assert.equal(addedBody.members.length, 2);
+    assert.equal(addedBody.members.find((m: any) => m.principalId === "U-gjoin").role, "member");
+    const removed = await adminFetch(
+      srv.base,
+      "DELETE",
+      `${GROUPS_PATH}/${managed.id}/members/U-gjoin`,
+      "U-gmgr",
+      {},
+    );
+    assert.equal(removed.status, 200);
+    assert.equal(((await removed.json()) as any).members.length, 1);
+    const crossGroup = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${other.id}/members`, "U-gmgr", {
+      principalId: "U-gjoin",
+      role: "member",
+    });
+    assert.equal(crossGroup.status, 403);
+    const managerGrant = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${managed.id}/members`, "U-gmgr", {
+      principalId: "U-gjoin",
+      role: "manager",
+    });
+    assert.equal(managerGrant.status, 403);
+    const managerRevoke = await adminFetch(
+      srv.base,
+      "DELETE",
+      `${GROUPS_PATH}/${managed.id}/members/U-gmgr`,
+      "U-gmgr",
+      {},
+    );
+    assert.equal(managerRevoke.status, 403);
+    const unknown = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/grp-ghost/members`, "U-gmgr", {
+      principalId: "U-gjoin",
+      role: "member",
+    });
+    assert.equal(unknown.status, 404);
+    const archived = await createGroupAsAdmin(srv.base, { name: "Archived" });
+    await adminFetch(srv.base, "PATCH", `${GROUPS_PATH}/${archived.id}`, "admin-alice", { status: "archived" });
+    const hidden = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${archived.id}/members`, "U-gmgr", {
+      principalId: "U-gjoin",
+      role: "member",
+    });
+    assert.equal(hidden.status, 404);
+    const managerRestore = await adminFetch(srv.base, "PATCH", `${GROUPS_PATH}/${archived.id}`, "U-gmgr", {
+      status: "active",
+    });
+    assert.equal(managerRestore.status, 403);
+    const adminUnknown = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/grp-ghost/members`, "admin-alice", {
+      principalId: "U-gjoin-admin-probe",
+      role: "member",
+    });
+    assert.equal(adminUnknown.status, 404);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("group member add rejects unknown, deprovisioned, or archived targets with mapped statuses", async () => {
+  const srv = await startAdmin();
+  try {
+    const group = await createGroupAsAdmin(srv.base, { name: "Members" });
+    const unknown = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${group.id}/members`, "admin-alice", {
+      principalId: "U-ghost",
+      role: "member",
+    });
+    assert.equal(unknown.status, 400);
+    assert.equal(((await unknown.json()) as any).error, "missing_user");
+    await seedActive(srv.built, "U-gdep");
+    const deprovisioned = await adminFetch(srv.base, "PATCH", `${INVITE_PATH}/U-gdep`, "admin-alice", {
+      status: "deprovisioned",
+    });
+    assert.equal(deprovisioned.status, 200);
+    const res = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${group.id}/members`, "admin-alice", {
+      principalId: "U-gdep",
+      role: "member",
+    });
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as any).error, "missing_user");
+    const archivedGroup = await createGroupAsAdmin(srv.base, { name: "Arc" });
+    await adminFetch(srv.base, "PATCH", `${GROUPS_PATH}/${archivedGroup.id}`, "admin-alice", { status: "archived" });
+    const archivedAdd = await adminFetch(
+      srv.base,
+      "POST",
+      `${GROUPS_PATH}/${archivedGroup.id}/members`,
+      "admin-alice",
+      { principalId: "U-ghost", role: "member" },
+    );
+    assert.equal(archivedAdd.status, 400);
+    assert.equal(((await archivedAdd.json()) as any).error, "archived");
+    const badRoles: Array<Record<string, unknown>> = [
+      {},
+      { principalId: "U-x" },
+      { principalId: "U-x", role: "owner" },
+      { principalId: "", role: "member" },
+    ];
+    for (const body of badRoles) {
+      const bad = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${group.id}/members`, "admin-alice", body);
+      assert.equal(bad.status, 400, JSON.stringify(body));
+    }
+  } finally {
+    await srv.close();
+  }
+});
+
+test("capability tokens are denied org access group routes", async () => {
+  const srv = await startAdmin();
+  try {
+    const cap = await mintCapabilityToken(
+      {
+        actorId: "admin-alice",
+        scopeId: "personal:admin-alice",
+        aud: CONTROL_PLANE_AUD,
+        liveActor: true,
+        exp: Date.now() + 60_000,
+      },
+      CAP,
+    );
+    const created = await fetch(`${srv.base}${GROUPS_PATH}`, {
+      method: "POST",
+      headers: { "x-agent-capability": cap, "content-type": "application/json" },
+      body: JSON.stringify({ name: "X" }),
+    });
+    assert.equal(created.status, 403, "capability tokens must not reach org access group mutations");
   } finally {
     await srv.close();
   }
