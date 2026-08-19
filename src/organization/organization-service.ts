@@ -1,7 +1,16 @@
-import type { AuditLog } from "../audit/audit-log.ts";
+import { randomUUID } from "node:crypto";
+import type { AuditEvent, AuditLog } from "../audit/audit-log.ts";
 import { personKey } from "../directory/person.ts";
 import type { IdentityService } from "../identity/identity-service.ts";
-import type { OrganizationStore, OrganizationUser, OrganizationUserStatus } from "./organization-store.ts";
+import type {
+  OrganizationStore,
+  OrganizationUser,
+  OrganizationUserStatus,
+  OrgUnit,
+  OrgUnitKind,
+  OrgUnitStatus,
+  UnitImpact,
+} from "./organization-store.ts";
 
 export type OrgAdmission = "invite_only" | "domain_auto_join";
 
@@ -23,6 +32,10 @@ export interface ActiveCheck {
   sessionVersion: number;
 }
 
+export type MoveUnitResult = { ok: true } | { ok: false; reason: "root" | "self_or_descendant" | "missing_parent" | "archived" };
+
+export type ArchiveUnitResult = { ok: true } | { ok: false; reason: "root" | "conflict"; impact?: UnitImpact };
+
 export interface OrganizationService {
   login(input: LoginInput): Promise<LoginResult>;
   invite(input: {
@@ -37,6 +50,16 @@ export interface OrganizationService {
     actor: string;
   }): Promise<OrganizationUser | null>;
   checkActive(principalId: string): Promise<ActiveCheck | null>;
+  createUnit(input: { parentId: string | null; name: string; kind: OrgUnitKind; sortOrder?: number; actor: string }): Promise<OrgUnit>;
+  updateUnit(input: {
+    unitId: string;
+    name?: string;
+    sortOrder?: number;
+    status?: OrgUnitStatus;
+    actor: string;
+  }): Promise<OrgUnit | null>;
+  moveUnit(input: { unitId: string; newParentId: string; actor: string }): Promise<MoveUnitResult>;
+  archiveUnit(input: { unitId: string; actor: string }): Promise<ArchiveUnitResult>;
   refresh(): Promise<void>;
   hydrate(): Promise<void>;
 }
@@ -45,6 +68,10 @@ const REFRESH_TTL_MS = 5_000;
 const LOGIN_ACTOR = "system:login";
 
 function sanitizeDisplayName(name: string): string {
+  return name.replace(/[\x00-\x1f\x7f]/g, "").trim().slice(0, 200);
+}
+
+function sanitizeUnitName(name: string): string {
   return name.replace(/[\x00-\x1f\x7f]/g, "").trim().slice(0, 200);
 }
 
@@ -73,6 +100,18 @@ export function createOrganizationService(deps: {
 
   function record(action: string, principalId: string, status?: string): void {
     auditLog.record({ at: now(), principalId, action, resource: principalId, scopeLabel, ...(status ? { status } : {}) });
+  }
+
+  function unitEvent(action: string, unitId: string, actor: string, detail: Record<string, string | null>): AuditEvent {
+    return {
+      at: now(),
+      principalId: actor,
+      action,
+      resource: `unit:${unitId}`,
+      scopeLabel,
+      orgId,
+      detail: JSON.stringify(detail),
+    };
   }
 
   function cacheUser(user: OrganizationUser): void {
@@ -235,6 +274,102 @@ export function createOrganizationService(deps: {
     return next;
   }
 
+  async function createUnit(input: {
+    parentId: string | null;
+    name: string;
+    kind: OrgUnitKind;
+    sortOrder?: number;
+    actor: string;
+  }): Promise<OrgUnit> {
+    if (input.parentId === null) {
+      const units = await store.listUnits(orgId);
+      if (units.some((u) => u.parentId === null && u.status === "active")) {
+        throw new Error("org root already exists");
+      }
+    } else {
+      const parent = await store.getUnit(orgId, input.parentId);
+      if (!parent) throw new Error(`org unit parent not found: ${input.parentId}`);
+      if (parent.status !== "active") throw new Error(`org unit parent archived: ${input.parentId}`);
+    }
+    const at = now();
+    const unit: OrgUnit = {
+      orgId,
+      id: `unit-${randomUUID()}`,
+      parentId: input.parentId,
+      name: sanitizeUnitName(input.name),
+      kind: input.kind,
+      status: "active",
+      sortOrder: input.sortOrder ?? 0,
+      createdAt: at,
+      updatedAt: at,
+      createdBy: input.actor,
+      updatedBy: input.actor,
+    };
+    await store.transact(async (tx) => {
+      await tx.putUnit(unit);
+      await tx.bumpRevision(orgId);
+      await tx.audit(unitEvent("org.unit.create", unit.id, input.actor, { unitId: unit.id, parentId: unit.parentId }));
+    });
+    return unit;
+  }
+
+  async function updateUnit(input: {
+    unitId: string;
+    name?: string;
+    sortOrder?: number;
+    status?: OrgUnitStatus;
+    actor: string;
+  }): Promise<OrgUnit | null> {
+    const unit = await store.getUnit(orgId, input.unitId);
+    if (!unit) return null;
+    const next: OrgUnit = {
+      ...unit,
+      name: input.name !== undefined ? sanitizeUnitName(input.name) : unit.name,
+      sortOrder: input.sortOrder ?? unit.sortOrder,
+      status: input.status ?? unit.status,
+      updatedAt: now(),
+      updatedBy: input.actor,
+    };
+    await store.transact(async (tx) => {
+      await tx.putUnit(next);
+      await tx.bumpRevision(orgId);
+      await tx.audit(unitEvent("org.unit.update", next.id, input.actor, { unitId: next.id }));
+    });
+    return next;
+  }
+
+  async function moveUnit(input: { unitId: string; newParentId: string; actor: string }): Promise<MoveUnitResult> {
+    const unit = await store.getUnit(orgId, input.unitId);
+    if (!unit || unit.status !== "active") return { ok: false, reason: "archived" };
+    if (unit.parentId === null) return { ok: false, reason: "root" };
+    const parent = await store.getUnit(orgId, input.newParentId);
+    if (!parent) return { ok: false, reason: "missing_parent" };
+    if (parent.status !== "active") return { ok: false, reason: "archived" };
+    if (input.newParentId === input.unitId || (await store.isDescendant(orgId, input.unitId, input.newParentId))) {
+      return { ok: false, reason: "self_or_descendant" };
+    }
+    await store.transact(async (tx) => {
+      await tx.moveUnitSubtree(orgId, input.unitId, input.newParentId);
+      await tx.bumpRevision(orgId);
+      await tx.audit(unitEvent("org.unit.move", input.unitId, input.actor, { unitId: input.unitId, parentId: input.newParentId }));
+    });
+    return { ok: true };
+  }
+
+  async function archiveUnit(input: { unitId: string; actor: string }): Promise<ArchiveUnitResult> {
+    const unit = await store.getUnit(orgId, input.unitId);
+    if (!unit || unit.parentId === null) return { ok: false, reason: "root" };
+    const impact = await store.unitImpact(orgId, input.unitId);
+    if (impact.activeChildUnits > 0 || impact.activeMembers > 0) return { ok: false, reason: "conflict", impact };
+    const next: OrgUnit = { ...unit, status: "archived", updatedAt: now(), updatedBy: input.actor };
+    await store.transact(async (tx) => {
+      await tx.putUnit(next);
+      await tx.bumpRevision(orgId);
+      await tx.audit(unitEvent("org.unit.archive", next.id, input.actor, { unitId: next.id }));
+    });
+    return { ok: true };
+  }
+
   async function refresh(): Promise<void> {
     const at = now();
     if (refreshP) return refreshP;
@@ -256,6 +391,10 @@ export function createOrganizationService(deps: {
     login,
     invite,
     setStatus,
+    createUnit,
+    updateUnit,
+    moveUnit,
+    archiveUnit,
     async checkActive(principalId: string): Promise<ActiveCheck | null> {
       await refresh();
       return cache.get(personKey(principalId)) ?? null;
