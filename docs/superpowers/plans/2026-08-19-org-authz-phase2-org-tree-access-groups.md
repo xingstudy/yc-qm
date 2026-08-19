@@ -339,7 +339,7 @@ SELECT $1, up.ancestor_id, sub.descendant_id, up.depth + sub.depth + 1
   4. Remove member → row gone, audit, revision; removing a non-member is a no-op success.
   5. Group lifecycle: create → rename via `updateGroup` → archive → members cannot be added (`archived`); restore via `updateGroup({ status: "active" })`.
   6. Group members: add/remove round-trip; role update on re-add; `missing_user`/`missing_group` branches.
-  7. `listManagedSubtreeUnitIds` reflects the store: manager on B gets B + descendants; after B moves under C, C's manager does NOT gain B's subtree unless also manager on B (pin: managed set derives from direct manager rows + closure, not from ancestor managers of ancestors).
+  7. `listManagedSubtreeUnitIds` reflects the store: manager on B gets B + descendants; after B moves under C, B's manager keeps managing B's subtree and C's manager ALSO gains it (managed set derives from direct manager rows + live closure, per design §6.4 "manager 管理该节点及其后代" — controller ruling, supersedes an earlier conflicting pin in this plan).
 
 - [ ] **Step 2: Run to verify failure.**
 
