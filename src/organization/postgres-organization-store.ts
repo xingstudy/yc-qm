@@ -78,6 +78,10 @@ const SCHEMA_SQL = [
 export function createPostgresOrganizationStore(connectionString: string): OrganizationStore {
   const pg = createPgPool(connectionString, SCHEMA_SQL);
 
+  const notImplemented = async (): Promise<never> => {
+    throw new Error("postgres org tree store not implemented yet");
+  };
+
   return {
     async getUser(orgId, principalId) {
       const rows = await pg.q(`SELECT ${USER_COLUMNS} FROM organization_users WHERE org_id = $1 AND principal_id = $2`, [
@@ -149,5 +153,24 @@ export function createPostgresOrganizationStore(connectionString: string): Organ
         [i.orgId, i.issuer, i.subject, i.principalId, i.emailAtLink, i.createdAt, i.updatedAt],
       );
     },
+    getUnit: notImplemented,
+    listUnits: notImplemented,
+    putUnit: notImplemented,
+    isDescendant: notImplemented,
+    listSubtreeUnitIds: notImplemented,
+    listManagedSubtreeUnitIds: notImplemented,
+    unitImpact: notImplemented,
+    listUnitMembers: notImplemented,
+    putUnitMember: notImplemented,
+    removeUnitMember: notImplemented,
+    getGroup: notImplemented,
+    listGroups: notImplemented,
+    putGroup: notImplemented,
+    listGroupMembers: notImplemented,
+    putGroupMember: notImplemented,
+    removeGroupMember: notImplemented,
+    getAuthzRevision: notImplemented,
+    ensureOrgRoot: notImplemented,
+    transact: notImplemented,
   };
 }
