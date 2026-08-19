@@ -1019,6 +1019,51 @@
         display: grid;
         gap: 0;
       }
+      .org-layout {
+        display: grid;
+        grid-template-columns: minmax(220px, 30%) minmax(0, 1fr);
+        gap: 14px;
+        align-items: start;
+      }
+      @media (max-width: 900px) {
+        .org-layout {
+          grid-template-columns: 1fr;
+        }
+      }
+      .org-tree {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .org-node {
+        display: block;
+        width: 100%;
+        border: none;
+        background: none;
+        padding: 6px 10px;
+        border-radius: 6px;
+        color: var(--muted);
+        font: inherit;
+        font-size: 13px;
+        font-weight: 500;
+        text-align: left;
+        cursor: pointer;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .org-node:hover {
+        color: var(--text);
+        background: var(--subtle);
+      }
+      .org-node.active {
+        color: var(--text);
+        background: var(--subtle);
+        box-shadow: var(--shadow);
+      }
+      .org-detail {
+        min-width: 0;
+      }
       .metric-note {
         display: flex;
         gap: 8px;
@@ -5982,6 +6027,46 @@
         "Matches several people — pick one from the suggestions.": "匹配到多个人员——请从建议中选择一个。",
         Impersonate: "模拟身份",
         "Ack emoji": "确认表情",
+        "Org tree": "组织架构",
+        "Active units": "活跃节点",
+        "Archived units": "已归档节点",
+        "Active units in display order. Select one to manage it.": "活跃节点按显示顺序排列。选择一个节点进行管理。",
+        "No active units yet.": "尚无活跃节点。",
+        "Select a unit on the left to manage it.": "在左侧选择一个节点进行管理。",
+        "Loading unit detail...": "正在加载节点详情…",
+        Members: "成员",
+        Managers: "管理员",
+        manager: "管理员",
+        department: "部门",
+        team: "团队",
+        organization: "组织",
+        "No members yet.": "尚无成员。",
+        "Add member": "添加成员",
+        "Add a principal to this unit as a member or manager.": "将主体添加为此节点的成员或管理员。",
+        "New child unit": "新建子节点",
+        "Create a unit under the selected one.": "在所选节点下新建一个节点。",
+        Name: "名称",
+        Kind: "类型",
+        "Sort order": "排序",
+        "Create unit": "新建节点",
+        "Name required.": "必须填写名称。",
+        Rename: "重命名",
+        "Update the unit name and display order.": "更新节点名称和显示顺序。",
+        "Move unit": "移动节点",
+        "Attach this unit under a different parent. It cannot move under itself or its descendants.":
+          "将此节点挂载到另一个父节点下。不能移动到自身或其子孙节点下。",
+        "New parent": "新父节点",
+        Move: "移动",
+        "Pick a new parent first.": "请先选择新的父节点。",
+        "Archive unit": "归档节点",
+        "Archived units leave the active tree. The server refuses while the unit still has active children or members and reports the impact.":
+          "归档后节点将离开活跃树。节点仍有活跃子节点或成员时，服务端会拒绝并报告影响。",
+        "Couldn't add member.": "无法添加成员。",
+        "Couldn't create the unit.": "无法新建节点。",
+        "Couldn't rename the unit.": "无法重命名节点。",
+        "Couldn't move the unit.": "无法移动节点。",
+        "Couldn't archive the unit.": "无法归档节点。",
+        "Couldn't remove the member.": "无法移除成员。",
       };
       const normalizeAdminLocale = (value) => {
         const normalized = String(value || "").toLowerCase();
@@ -6257,7 +6342,10 @@
         { views: ["history", "slack", "judgments"] },
         { label: "Artifacts", views: ["files", "skills", "memory", "deployments", "crons"] },
         { label: "System", views: ["metrics"] },
-        { label: "Admin", views: ["onboarding", "governance", "connectors", "users", "keychain", "egress", "audit"] },
+        {
+          label: "Admin",
+          views: ["onboarding", "governance", "connectors", "users", "org-units", "keychain", "egress", "audit"],
+        },
         { label: "Insights", views: ["retention"] },
       ];
 
@@ -6272,6 +6360,7 @@
         governance: "Governance",
         connectors: "Connectors",
         users: "Users",
+        "org-units": "Org tree",
         keychain: "Keychain",
         user: "User",
         metrics: "Metrics",
@@ -6302,7 +6391,7 @@
         "crons",
         "deployments",
       ]);
-      const ORG_WIDE = new Set(["retention", "users", "keychain", "connectors", "judgments", "ackemoji"]);
+      const ORG_WIDE = new Set(["retention", "users", "org-units", "keychain", "connectors", "judgments", "ackemoji"]);
       const ENDPOINT = { history: "sessions", files: "files", live: "runs" };
       const HISTORY_PAGE_SIZE = 50;
 
@@ -9812,6 +9901,7 @@
           deployments: renderDeployments,
           retention: renderRetention,
           users: renderUsers,
+          "org-units": renderOrgUnits,
           keychain: renderKeychain,
         })[view](root, data);
       }
@@ -12660,6 +12750,333 @@
           );
         };
         drawLists();
+      }
+
+      let orgUnitSelectedId = null;
+      function renderOrgUnits(root, d) {
+        const all = d.units || [];
+        const units = all.filter((u) => u.status === "active");
+        defaultShell({
+          stats: [
+            [units.length, "Active units"],
+            [all.length - units.length, "Archived units"],
+          ],
+        });
+        if (!units.some((u) => u.id === orgUnitSelectedId)) orgUnitSelectedId = units[0]?.id ?? null;
+
+        const byId = new Map(units.map((u) => [u.id, u]));
+        const byParent = new Map();
+        units.forEach((u) => {
+          const key = u.parentId && byId.has(u.parentId) ? u.parentId : "";
+          if (!byParent.has(key)) byParent.set(key, []);
+          byParent.get(key).push(u);
+        });
+        byParent.forEach((list) => list.sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name)));
+        const descendantsOf = (id) => {
+          const out = new Set([id]);
+          const walk = (parentId) => {
+            (byParent.get(parentId) || []).forEach((child) => {
+              out.add(child.id);
+              walk(child.id);
+            });
+          };
+          walk(id);
+          return out;
+        };
+        const fail = (r, fallback) => {
+          if (r.status === 409 && r.data?.impact)
+            return setStatus("st-org-units", r.data.error + " " + JSON.stringify(r.data.impact), "err", true, false);
+          setApiStatus("st-org-units", r.data?.message, fallback, "err");
+        };
+        const mkField = (cls, labelText, control) => {
+          const f = document.createElement("div");
+          f.className = "f" + (cls ? " " + cls : "");
+          const l = document.createElement("label");
+          l.textContent = adminTr(labelText);
+          f.append(l, control);
+          return f;
+        };
+        const textInput = (value, placeholder) => {
+          const i = document.createElement("input");
+          i.type = "text";
+          i.value = value || "";
+          if (placeholder) i.placeholder = adminTr(placeholder);
+          i.spellcheck = false;
+          i.autocapitalize = "none";
+          return i;
+        };
+        const numberInput = (value) => {
+          const i = document.createElement("input");
+          i.type = "number";
+          i.step = "1";
+          i.value = String(value ?? 0);
+          return i;
+        };
+        const selectOf = (options, value) => {
+          const sel = document.createElement("select");
+          options.forEach(([v, label]) => {
+            const opt = document.createElement("option");
+            opt.value = v;
+            opt.textContent = label;
+            sel.appendChild(opt);
+          });
+          if (options.some(([v]) => v === value)) sel.value = value;
+          return sel;
+        };
+        const actionBtn = (label, cls, run) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          if (cls) b.className = cls;
+          b.textContent = adminTr(label);
+          b.onclick = run;
+          return b;
+        };
+
+        const treeList = document.createElement("div");
+        treeList.className = "org-tree";
+        const detail = document.createElement("div");
+        detail.className = "org-detail";
+        const layout = document.createElement("div");
+        layout.className = "org-layout";
+        layout.append(
+          dataCard("Organization", "Active units in display order. Select one to manage it.", treeList),
+          detail,
+        );
+        root.appendChild(layout);
+        const st = document.createElement("p");
+        st.className = "status";
+        st.id = "st-org-units";
+        root.appendChild(st);
+
+        const drawTree = () => {
+          treeList.textContent = "";
+          if (!(byParent.get("") || []).length) {
+            const p = document.createElement("p");
+            p.className = "empty";
+            p.textContent = adminTr("No active units yet.");
+            treeList.appendChild(p);
+            return;
+          }
+          const walkRows = (parentKey, depth) => {
+            (byParent.get(parentKey) || []).forEach((u) => {
+              const b = document.createElement("button");
+              b.type = "button";
+              b.className = "org-node" + (u.id === orgUnitSelectedId ? " active" : "");
+              b.style.paddingLeft = 10 + depth * 18 + "px";
+              b.textContent = u.name;
+              b.onclick = () => {
+                if (orgUnitSelectedId === u.id) return;
+                orgUnitSelectedId = u.id;
+                drawTree();
+                loadDetail();
+              };
+              treeList.appendChild(b);
+              walkRows(u.id, depth + 1);
+            });
+          };
+          walkRows("", 0);
+        };
+
+        async function loadDetail() {
+          detail.textContent = "";
+          const selected = byId.get(orgUnitSelectedId);
+          if (!selected) {
+            const p = document.createElement("p");
+            p.className = "empty";
+            p.textContent = adminTr("Select a unit on the left to manage it.");
+            detail.appendChild(p);
+            return;
+          }
+          const loading = document.createElement("p");
+          loading.className = "empty";
+          loading.textContent = adminTr("Loading unit detail...");
+          detail.appendChild(loading);
+          const r = await api("GET", "/api/org-units/" + encodeURIComponent(selected.id));
+          if (selected.id !== orgUnitSelectedId) return;
+          detail.textContent = "";
+          if (!r.ok) {
+            const p = document.createElement("p");
+            p.className = "empty";
+            p.textContent = r.data?.message || `${adminTr("Failed to load")} (${r.status}).`;
+            detail.appendChild(p);
+            return;
+          }
+          drawDetail(r.data.unit || selected, r.data.members || []);
+        }
+
+        function drawDetail(unit, members) {
+          const managers = members.filter((m) => m.role === "manager");
+          const summary = document.createElement("div");
+          summary.appendChild(badgeList([{ text: adminTr(unit.kind), kind: "muted" }]));
+          summary.appendChild(
+            kpis([
+              [members.length, "Members"],
+              [managers.length, "Managers"],
+            ]),
+          );
+          summary.appendChild(
+            actionTable(
+              ["Principal", "Role", ""],
+              members,
+              (m) => [
+                { text: m.principalId, cls: "mono" },
+                { badge: adminTr(m.role), kind: m.role === "manager" ? "info" : "muted" },
+                {
+                  action: {
+                    label: "Remove",
+                    danger: true,
+                    run: () => removeMember(unit, m),
+                  },
+                },
+              ],
+              "No members yet.",
+            ),
+          );
+          detail.appendChild(dataCard(unit.name, "", summary, { titleI18n: false }));
+
+          const memberInput = textInput("", "principal id (e.g. U07ABCD)");
+          const roleSel = selectOf(
+            [
+              ["member", adminTr("member")],
+              ["manager", adminTr("manager")],
+            ],
+            "member",
+          );
+          const addForm = document.createElement("div");
+          addForm.className = "grant-form";
+          addForm.append(
+            mkField("grow", "Principal id", memberInput),
+            mkField("", "Role", roleSel),
+            actionBtn("Add member", "primary", async () => {
+              const principalId = memberInput.value.trim();
+              if (!principalId) return setStatus("st-org-units", "Principal id required.", "err");
+              const r = await api("POST", "/api/org-units/" + encodeURIComponent(unit.id) + "/members", {
+                principalId,
+                role: roleSel.value,
+              });
+              if (r.ok) {
+                detail.textContent = "";
+                drawDetail(r.data.unit || unit, r.data.members || []);
+              } else fail(r, "Couldn't add member.");
+            }),
+          );
+          detail.appendChild(dataCard("Add member", "Add a principal to this unit as a member or manager.", addForm));
+
+          const childName = textInput("");
+          const childKind = selectOf(
+            [
+              ["department", adminTr("department")],
+              ["team", adminTr("team")],
+              ["organization", adminTr("organization")],
+            ],
+            "department",
+          );
+          const childSort = numberInput(0);
+          const createForm = document.createElement("div");
+          createForm.className = "grant-form";
+          createForm.append(
+            mkField("grow", "Name", childName),
+            mkField("", "Kind", childKind),
+            mkField("", "Sort order", childSort),
+            actionBtn("Create unit", "primary", async () => {
+              const name = childName.value.trim();
+              if (!name) return setStatus("st-org-units", "Name required.", "err");
+              const body = { parentId: unit.id, name, kind: childKind.value };
+              const sort = Number(childSort.value);
+              if (childSort.value.trim() !== "" && Number.isFinite(sort)) body.sortOrder = sort;
+              const r = await api("POST", "/api/org-units", body);
+              if (r.ok) renderData();
+              else fail(r, "Couldn't create the unit.");
+            }),
+          );
+          detail.appendChild(dataCard("New child unit", "Create a unit under the selected one.", createForm));
+
+          const renameName = textInput(unit.name);
+          const renameSort = numberInput(unit.sortOrder);
+          const renameForm = document.createElement("div");
+          renameForm.className = "grant-form";
+          renameForm.append(
+            mkField("grow", "Name", renameName),
+            mkField("", "Sort order", renameSort),
+            actionBtn("Save", "", async () => {
+              const name = renameName.value.trim();
+              if (!name) return setStatus("st-org-units", "Name required.", "err");
+              const body = { name };
+              const sort = Number(renameSort.value);
+              if (renameSort.value.trim() !== "" && Number.isFinite(sort)) body.sortOrder = sort;
+              const r = await api("PATCH", "/api/org-units/" + encodeURIComponent(unit.id), body);
+              if (r.ok) renderData();
+              else fail(r, "Couldn't rename the unit.");
+            }),
+          );
+          detail.appendChild(dataCard("Rename", "Update the unit name and display order.", renameForm));
+
+          const excluded = descendantsOf(unit.id);
+          const candidates = units.filter((u) => !excluded.has(u.id));
+          const parentSel = selectOf(
+            candidates.map((u) => [u.id, u.name]),
+            unit.parentId,
+          );
+          const moveForm = document.createElement("div");
+          moveForm.className = "grant-form";
+          moveForm.append(
+            mkField("grow", "New parent", parentSel),
+            actionBtn("Move", "", async () => {
+              if (!parentSel.value) return setStatus("st-org-units", "Pick a new parent first.", "err");
+              const r = await api("PATCH", "/api/org-units/" + encodeURIComponent(unit.id), {
+                parentId: parentSel.value,
+              });
+              if (r.ok) renderData();
+              else fail(r, "Couldn't move the unit.");
+            }),
+          );
+          detail.appendChild(
+            dataCard(
+              "Move unit",
+              "Attach this unit under a different parent. It cannot move under itself or its descendants.",
+              moveForm,
+            ),
+          );
+
+          const archiveForm = document.createElement("div");
+          archiveForm.className = "grant-form";
+          archiveForm.appendChild(
+            actionBtn("Archive unit", "danger", async () => {
+              if (
+                !confirm(
+                  'Archive "' +
+                    unit.name +
+                    '"? It leaves the active tree; the server refuses while it still has active children or members.',
+                )
+              )
+                return;
+              const r = await api("PATCH", "/api/org-units/" + encodeURIComponent(unit.id), { status: "archived" });
+              if (r.ok) renderData();
+              else fail(r, "Couldn't archive the unit.");
+            }),
+          );
+          detail.appendChild(
+            dataCard(
+              "Archive unit",
+              "Archived units leave the active tree. The server refuses while the unit still has active children or members and reports the impact.",
+              archiveForm,
+            ),
+          );
+        }
+
+        async function removeMember(unit, m) {
+          const r = await api(
+            "DELETE",
+            "/api/org-units/" + encodeURIComponent(unit.id) + "/members/" + encodeURIComponent(m.principalId),
+          );
+          if (r.ok) {
+            detail.textContent = "";
+            drawDetail(r.data.unit || unit, r.data.members || []);
+          } else fail(r, "Couldn't remove the member.");
+        }
+
+        drawTree();
+        loadDetail();
       }
 
       const fmtBytes = (n) => {

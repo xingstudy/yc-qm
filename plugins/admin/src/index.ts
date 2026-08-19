@@ -268,7 +268,10 @@ const WRITES = new Map<string, string[]>([
   ["slack-installation", ["PUT", "DELETE"]],
   ["model-providers", ["PUT", "DELETE"]],
   ["custom-providers", ["PUT", "DELETE"]],
+  ["org-units", ["POST", "PATCH", "DELETE"]],
 ]);
+
+const CORE_PREFIX: Record<string, string> = { "org-units": "org/units" };
 
 const READS = [
   "metrics",
@@ -293,6 +296,7 @@ const READS = [
   "slack-installation",
   "model-providers",
   "custom-providers",
+  "org-units",
 ];
 
 const server = createServer((req, res) => {
@@ -428,7 +432,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (WRITES.get(first)?.includes(method)) {
     if (!principal) return json(res, 401, { error: "signed_out" });
     const m = method as "POST" | "PUT" | "PATCH" | "DELETE";
-    const corePath = `/v1/admin/${rest}${url.search}`;
+    const corePath = `/v1/admin/${CORE_PREFIX[first] ?? first}${rest.slice(first.length)}${url.search}`;
     return m === "DELETE"
       ? forward(req, res, principal, m, corePath)
       : forward(req, res, principal, m, corePath, await readBody(req));
@@ -436,7 +440,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   if (method === "GET" && READS.includes(first)) {
     if (!principal) return json(res, 401, { error: "signed_out" });
-    return forward(req, res, principal, "GET", `/v1/admin/${rest}${url.search}`);
+    return forward(
+      req,
+      res,
+      principal,
+      "GET",
+      `/v1/admin/${CORE_PREFIX[first] ?? first}${rest.slice(first.length)}${url.search}`,
+    );
   }
 
   if (method === "GET" && !pathname.startsWith("/api/") && !pathname.startsWith("/deployments/")) {
