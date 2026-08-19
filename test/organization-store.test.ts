@@ -119,6 +119,19 @@ test("memory organization store: ensureOrgRoot creates root and revision 1, seco
   assert.equal(await s.getAuthzRevision("default-org"), 1);
 });
 
+test("memory organization store: ensureOrgRoot never regresses an existing revision", async () => {
+  const s = createMemoryOrganizationStore();
+  await s.transact(async (tx) => {
+    await tx.bumpRevision("default-org");
+  });
+  assert.equal(await s.getAuthzRevision("default-org"), 2);
+  await s.ensureOrgRoot({ orgId: "default-org", name: "Acme", actor: "system:bootstrap", now: 10 });
+  assert.equal(await s.getAuthzRevision("default-org"), 2, "bootstrap never clobbers a concurrent bump");
+  const root = await s.getUnit("default-org", "root");
+  assert.equal(root?.kind, "organization");
+  assert.equal(root?.status, "active");
+});
+
 test("memory organization store: putUnit maintains closure self-rows, isDescendant and listSubtreeUnitIds reflect the tree", async () => {
   const s = createMemoryOrganizationStore();
   await s.ensureOrgRoot({ orgId: "default-org", name: "Acme", actor: "system:bootstrap", now: 1 });

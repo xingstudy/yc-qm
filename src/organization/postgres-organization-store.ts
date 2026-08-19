@@ -601,7 +601,7 @@ export function createPostgresOrganizationStore(
         });
         await exec(
           `INSERT INTO organization_authz_state (org_id, revision, updated_at) VALUES ($1, 1, $2)
-           ON CONFLICT (org_id) DO UPDATE SET revision = 1, updated_at = $2`,
+           ON CONFLICT (org_id) DO NOTHING`,
           [orgId, now],
         );
       });

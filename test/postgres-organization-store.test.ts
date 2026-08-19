@@ -253,6 +253,20 @@ test("pg org tree: ensureOrgRoot creates root and revision 1, second call is a n
   assert.equal(await store.getAuthzRevision(org), 1);
 });
 
+test("pg org tree: ensureOrgRoot never regresses an existing revision", { skip }, async () => {
+  const org = "org-ensure-root-bump";
+  const store = createPostgresOrganizationStore(URL!);
+  await store.transact(async (tx) => {
+    await tx.bumpRevision(org);
+  });
+  assert.equal(await store.getAuthzRevision(org), 2);
+  await store.ensureOrgRoot({ orgId: org, name: "Acme", actor: "admin", now: 10 });
+  assert.equal(await store.getAuthzRevision(org), 2, "bootstrap never clobbers a concurrent bump");
+  const root = await store.getUnit(org, "root");
+  assert.equal(root?.kind, "organization");
+  assert.equal(root?.status, "active");
+});
+
 test("pg org tree: putUnit maintains closure self-rows, isDescendant and listSubtreeUnitIds reflect the tree", { skip }, async () => {
   const org = "org-closure-basic";
   const store = createPostgresOrganizationStore(URL!);

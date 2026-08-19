@@ -350,7 +350,7 @@ export function createMemoryOrganizationStore(opts: { auditLog?: AuditLog } = {}
         createdBy: actor,
         updatedBy: actor,
       });
-      revisions.set(orgId, 1);
+      if (!revisions.has(orgId)) revisions.set(orgId, 1);
     },
     async transact(fn) {
       const audits: AuditEvent[] = [];
