@@ -30,6 +30,8 @@ services:
       QM_DATABASE_MODE: ${QM_DATABASE_MODE:-bundled}
       QM_DATABASE_TRANSPORT: ${QM_DATABASE_TRANSPORT:-}
       DATABASE_URL: ${DATABASE_URL:-}
+      DATABASE_CA_CERT: ${DATABASE_CA_CERT:-}
+      DATABASE_CA_CERT_FILE: ${DATABASE_CA_CERT_FILE:+/run/qm/database-ca.crt}
       POSTGRES_USER: ${POSTGRES_USER:-qm}
       POSTGRES_DB: ${POSTGRES_DB:-qm}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
@@ -88,6 +90,12 @@ services:
       - scripts/production-preflight.ts
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - type: bind
+        source: ${DATABASE_CA_CERT_FILE:-/dev/null}
+        target: /run/qm/database-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
     network_mode: host
     depends_on:
       postgres:
@@ -162,6 +170,8 @@ services:
       RUN_STORE: postgres
       QM_DATABASE_MODE: ${QM_DATABASE_MODE:-bundled}
       DATABASE_URL: ${DATABASE_URL:-}
+      DATABASE_CA_CERT: ${DATABASE_CA_CERT:-}
+      DATABASE_CA_CERT_FILE: ${DATABASE_CA_CERT_FILE:+/run/qm/database-ca.crt}
       POSTGRES_USER: ${POSTGRES_USER:-qm}
       POSTGRES_DB: ${POSTGRES_DB:-qm}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
@@ -197,6 +207,12 @@ services:
     volumes:
       - core-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
+      - type: bind
+        source: ${DATABASE_CA_CERT_FILE:-/dev/null}
+        target: /run/qm/database-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
     stop_grace_period: 300s
     healthcheck:
       test:

@@ -73,6 +73,7 @@ export interface DeployService {
   renameDeployment(id: string, name: string): Promise<Deployment>;
   setDeploymentDisplayName(id: string, displayName: string): Promise<Deployment>;
   reachDeployment(idOrName: string, principalId: string, opts?: ReachOptions): Promise<Reach>;
+  deploymentLogs(idOrName: string, opts: { tailLines: number }): Promise<string | null>;
   gitRepoPath(idOrName: string): Promise<string | null>;
   pushGit<T>(id: string, runReceivePack: () => Promise<{ result: T; ok: boolean }>): Promise<T>;
   reapIdleDeployments(ttlMs: number, now?: number): Promise<number>;
@@ -126,6 +127,17 @@ const DISPLAY_NAME_MAX = 60;
 function validateDisplayName(displayName: string): void {
   if (/[\u0000-\u001f\u007f]/.test(displayName)) throw new Error("invalid display name: no control characters");
   if (displayName.length > DISPLAY_NAME_MAX) throw new Error(`display name too long (max ${DISPLAY_NAME_MAX} chars)`);
+}
+
+function deploymentEntrypoint(d: Deployment | null): string | undefined {
+  if (!d) return undefined;
+  return d.versions.find((v) => v.version === d.currentVersion)?.entrypoint || undefined;
+}
+
+function requiredEntrypoint(input: string | undefined, d: Deployment | null): string {
+  const entrypoint = input ?? deploymentEntrypoint(d);
+  if (!entrypoint) throw new Error('publish requires an entrypoint, e.g. "node server.js"');
+  return entrypoint;
 }
 
 export function createDeployService(deps: DeployServiceDeps): DeployService {
@@ -488,6 +500,13 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       return { status: "ok", endpoint };
     },
 
+    async deploymentLogs(idOrName, opts): Promise<string | null> {
+      if (!deps.provider.logs) return null;
+      const d = (await deps.deployStore.get(idOrName)) ?? (await deps.deployStore.getByName(idOrName));
+      if (!d || d.status !== "running") return null;
+      return deps.provider.logs(d, opts);
+    },
+
     async gitRepoPath(idOrName) {
       const d = (await deps.deployStore.get(idOrName)) ?? (await deps.deployStore.getByName(idOrName));
       return d ? await deps.deployStore.repoUrl(d.id) : null;
@@ -572,9 +591,10 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
           resource: existing.id,
           scopeLabel: existing.ownerScopeId,
         });
-        if (input.entrypoint && input.files) {
+        if ((input.entrypoint !== undefined || input.files !== undefined) && input.files) {
+          const entrypoint = requiredEntrypoint(input.entrypoint, existing);
           await this.redeploy(existing.id, {
-            entrypoint: input.entrypoint,
+            entrypoint,
             files: input.files,
             ...(input.homeFiles ? { homeFiles: input.homeFiles } : {}),
             ...(input.env ? { env: input.env } : {}),
@@ -597,7 +617,6 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         return (await deps.deployStore.get(existing.id))!;
       }
 
-      if (!input.entrypoint) throw new Error("publish requires an entrypoint");
       const files = input.files ?? [];
       const existing = input.name !== undefined ? await deps.deployStore.getByName(input.name) : null;
       let d: Deployment;
@@ -609,18 +628,20 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         ) {
           throw new Error(`deployment name taken: ${input.name}`);
         }
+        const entrypoint = requiredEntrypoint(input.entrypoint, existing);
         d = await this.redeploy(existing.id, {
-          entrypoint: input.entrypoint,
+          entrypoint,
           files,
           ...(input.homeFiles ? { homeFiles: input.homeFiles } : {}),
           ...(input.env ? { env: input.env } : {}),
         });
         isCreate = false;
       } else {
+        const entrypoint = requiredEntrypoint(input.entrypoint, existing);
         d = await this.deploy({
           ownerScopeId,
           createdBy,
-          entrypoint: input.entrypoint,
+          entrypoint,
           files,
           ...(input.homeFiles ? { homeFiles: input.homeFiles } : {}),
           ...(input.name !== undefined ? { name: input.name } : {}),

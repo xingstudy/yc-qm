@@ -5,6 +5,62 @@ export type AppLocale = "en" | "zh-CN";
 export const LOCALE_KEY = "qm:locale";
 
 const ZH: Record<string, string> = {
+  Admin: "管理",
+  agent: "智能体",
+  "another conversation": "另一个对话",
+  "Ask QM to find it:": "让 QM 帮你查找：",
+  "ask QM in a new chat": "在新对话中询问 QM",
+  "A small pinned message in the Slack channel naming the model in use.":
+    "在 Slack 频道中置顶一条简短消息，显示当前使用的模型。",
+  "Couldn't load the pinned header setting.": "无法加载置顶消息设置。",
+  "Couldn't update the pinned header setting.": "无法更新置顶消息设置。",
+  Failed: "失败",
+  "Focus over the grid": "聚焦显示",
+  fork: "分支",
+  "Forked from": "分支来源",
+  "Back to this chat": "返回此对话",
+  "Header pinned in the channel.": "已在频道中置顶消息。",
+  "Inherit future defaults": "继承未来的默认设置",
+  "Keep mine": "保留我的设置",
+  "Loading runtime settings…": "正在加载运行时设置…",
+  "No messages match": "没有匹配的消息",
+  navigate: "导航",
+  "Nothing running can take this — it will go out as its own turn": "当前没有可接收此消息的任务——它将作为独立轮次发送",
+  "Open project": "打开项目",
+  "open chat": "打开对话",
+  "open the original": "打开原始对话",
+  "Preparing files...": "正在准备文件…",
+  "Pinned header": "置顶消息",
+  "Pinned header removed.": "已移除置顶消息。",
+  "Pinned Slack header for this channel": "此频道的 Slack 置顶消息",
+  "Private channel": "私有频道",
+  "Queue a message for after this turn…": "输入要在本轮结束后发送的消息…",
+  "Queue for after this turn": "在本轮结束后发送",
+  Queued: "已排队",
+  "Queued messages": "已排队消息",
+  "Refresh conversations": "刷新对话",
+  "Remove queued message": "移除已排队消息",
+  "Restore to grid (Esc)": "恢复网格（Esc）",
+  Retry: "重试",
+  "Search every chat you can see — messages, not just titles.": "搜索你可见的所有对话——不只搜索标题，也搜索消息。",
+  "Search failed — check the connection and try again.": "搜索失败——请检查连接后重试。",
+  "Search your chats": "搜索对话",
+  "Search your chats…": "搜索对话…",
+  Sessions: "会话",
+  "Show full command": "显示完整命令",
+  Steer: "调整任务",
+  "Steer the running task with this instead of waiting": "用这条消息调整正在运行的任务，而不是等待",
+  "starts a new chat where QM hunts down the matching session and links it": "新建对话，让 QM 查找匹配的会话并提供链接",
+  Stop: "停止",
+  "The org now recommends": "组织现在推荐",
+  "Turning it on posts and pins the header; turning it off unpins and removes it. Default follows the org-wide setting. Model changes edit the pinned message in place.":
+    "开启后会发布并置顶消息；关闭后会取消置顶并删除消息。默认值跟随组织设置，模型变化时会直接更新置顶消息。",
+  Tools: "工具",
+  "Triggered by": "触发规则",
+  Upgrade: "升级",
+  "Untitled chat": "未命名对话",
+  Why: "原因",
+  Worked: "已工作",
   "(default timezone)": "（默认时区）",
   "(no action)": "（无操作）",
   "(no output yet)": "（暂无输出）",
@@ -70,6 +126,8 @@ const ZH: Record<string, string> = {
   Contexts: "上下文",
   "Context settings": "上下文设置",
   "Core returned an invalid project": "核心服务返回了无效项目",
+  "Couldn't link that channel — you must be a member of it.": "无法关联该频道——你必须是该频道的成员。",
+  "Couldn't unlink the channel.": "无法取消关联该频道。",
   "Could not attach that file.": "无法附加该文件。",
   "Could not create the one-time page.": "无法创建一次性页面。",
   "Could not delete the key.": "无法删除密钥。",
@@ -187,6 +245,8 @@ const ZH: Record<string, string> = {
   "Loading instructions…": "正在加载指令…",
   "Loading output…": "正在加载输出…",
   "Loading projects…": "正在加载项目…",
+  Link: "关联",
+  "Link a channel": "关联频道",
   "Loading runtime…": "正在加载运行时…",
   "Loading skill instructions…": "正在加载技能指令…",
   "Loading skills…": "正在加载技能…",
@@ -282,7 +342,6 @@ const ZH: Record<string, string> = {
   Reconnect: "重新连接",
   "Resize sidebar": "调整侧边栏大小",
   "Restore revision": "恢复修订版",
-  "Restore to grid (Esc)": "恢复网格视图 (Esc)",
   "Restoring deployment…": "正在恢复部署…",
   "Revision restored ✓": "已恢复修订版 ✓",
   "Revision restored ✓ History could not refresh.": "已恢复修订版 ✓，但历史记录未能刷新。",
@@ -310,7 +369,6 @@ const ZH: Record<string, string> = {
   "Search skills…": "搜索技能…",
   "Describe the cron you want.": "请描述你想创建的定时任务。",
   Send: "发送",
-  Sessions: "会话",
   "Searched history": "已搜索历史记录",
   "Searched memory": "已搜索记忆",
   "Searching history": "正在搜索历史记录",
@@ -356,6 +414,7 @@ const ZH: Record<string, string> = {
   "The model every conversation here starts on.": "此处的每个对话都会以该模型开始。",
   "This conversation is read-only here.": "此对话在这里为只读状态。",
   "This conversation lives in Slack. Replies happen there.": "此对话位于 Slack 中，请在那里回复。",
+  "this project": "此项目",
   "This chat runs in the": "此对话运行于",
   "context — the agent works with that context's files and memory, separate from your personal context.":
     "上下文中——智能体使用该上下文的文件和记忆，并与个人上下文隔离。",
@@ -460,7 +519,6 @@ const ZH: Record<string, string> = {
   Expires: "到期时间",
   "Filter by:": "筛选：",
   first: "首次",
-  "Forked from": "分支自",
   group: "群组",
   hide: "隐藏",
   In: "位于",
@@ -523,6 +581,8 @@ const ZH: Record<string, string> = {
   "Add people": "添加人员",
   "Agent behavior": "智能体行为",
   "Choose what this project should notice and act on.": "选择此项目中智能体应关注并采取行动的内容。",
+  "Give this project a home channel on Slack — the agent will post updates there, and everyone in the channel joins the project.":
+    "为此项目指定一个 Slack 主频道——智能体会在那里发布更新，频道中的所有人都会加入该项目。",
   "When off, the agent never acts on overheard messages here — it only responds to direct @mentions. Default: on only when standing orders (or an action-mode bot) are set below — otherwise mention-only.":
     "关闭后，智能体不会对这里偶然听到的消息采取行动，只响应直接 @提及。默认仅在下方设置长期指令（或行动模式机器人）时启用；否则仅响应提及。",
   "Standing orders": "长期指令",
@@ -553,6 +613,10 @@ const ZH: Record<string, string> = {
   "Skill packs": "技能包",
   Overrides: "覆盖项",
   "Project / group": "项目 / 群组",
+  "channel name": "频道名称",
+  "Slack channel to link": "要关联的 Slack 频道",
+  "Slack channel": "Slack 频道",
+  "Joined via the linked Slack channel": "通过已关联的 Slack 频道加入",
   "Filter by skill status": "按技能状态筛选",
   "Narrower scope takes precedence where both apply": "当多个范围同时适用时，较窄的范围优先",
   "Everyone matching is already in this project.": "所有匹配的人员已在此项目中。",
@@ -575,6 +639,8 @@ const ZH: Record<string, string> = {
   "Search remembered facts": "搜索已记住的事实",
   "Forget this fact": "忘记这条事实",
   "Refresh projects": "刷新项目",
+  Web: "网页",
+  Slack: "Slack",
   Everything: "全部",
   "launch cohort": "发布批次",
   Owner: "所有者",
@@ -731,6 +797,14 @@ function translatePattern(source: string): string | null {
   if (match) return `${match[1]} 的选项`;
   match = source.match(/^Copy link to (.+)$/);
   if (match) return `复制 ${match[1]} 的链接`;
+  match = source.match(/^Unlink #(.+) from (.+)\?$/);
+  if (match) return `取消关联 #${match[1]} 与 ${match[2]}？`;
+  match = source.match(/^Unlink #(.+)$/);
+  if (match) return `取消关联 #${match[1]}`;
+  match = source.match(
+    /^The agent posts this project's updates to #(.+), and everyone in the channel is in the project\.$/,
+  );
+  if (match) return `智能体会将此项目的更新发布到 #${match[1]}，频道中的所有人都属于该项目。`;
   match = source.match(/^More actions for (.+)$/);
   if (match) return `${match[1]} 的更多操作`;
   match = source.match(/^Handling for (.+)$/);

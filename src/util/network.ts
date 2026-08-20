@@ -38,6 +38,14 @@ function normalizedIp(raw: string): string | null {
     .toLowerCase()
     .replace(/^\[(.*)\]$/, "$1")
     .replace(/%.*$/, "");
+  const dottedMapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(value);
+  if (dottedMapped && isIP(dottedMapped[1]!) === 4) return dottedMapped[1]!;
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(value);
+  if (mapped) {
+    const high = Number.parseInt(mapped[1]!, 16);
+    const low = Number.parseInt(mapped[2]!, 16);
+    return `${high >>> 8}.${high & 255}.${low >>> 8}.${low & 255}`;
+  }
   return isIP(value) ? value : null;
 }
 

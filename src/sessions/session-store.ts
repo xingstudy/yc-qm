@@ -1,4 +1,17 @@
+import { createHash } from "node:crypto";
 import type { EntryType, ScopeId, Session, SessionEntry, SessionType } from "../types.ts";
+
+export function promptEnvelopeBody(envelope: unknown): { hash: string; body: string } | null {
+  if (envelope == null) return null;
+  let body: string;
+  try {
+    body = JSON.stringify(envelope);
+  } catch {
+    return null;
+  }
+  if (body === undefined) return null;
+  return { hash: createHash("sha256").update(body).digest("hex"), body };
+}
 
 export interface Lease {
   sessionId: string;
@@ -166,6 +179,8 @@ export interface LlmRequestRecord {
   scopeLabel: ScopeId;
   createdAt: number;
   request: unknown;
+  promptHash: string | null;
+  promptEnvelope?: unknown;
   truncated: boolean;
   ttftMs: number | null;
   durationMs: number | null;
@@ -181,7 +196,7 @@ export interface NewLlmRequest {
   step: number;
   model: string;
   scopeLabel: ScopeId;
-  request: unknown;
+  promptEnvelope?: unknown;
   truncated?: boolean;
   ttftMs?: number | null;
   durationMs?: number | null;
@@ -253,6 +268,15 @@ export interface SessionRef {
 export interface DistinctScope {
   scopeId: ScopeId;
   channelName?: string;
+}
+
+export interface EntrySearchHit {
+  sessionId: string;
+  seq: number;
+  type: EntryType;
+  author?: string;
+  text: string;
+  createdAt: number;
 }
 
 export interface SessionSummary {
@@ -440,10 +464,13 @@ export interface SessionStore {
   listByParticipant(principalId: string): Promise<Session[]>;
 
   deleteSession(sessionId: string): Promise<void>;
+  deleteSessionIfEmpty(sessionId: string): Promise<boolean>;
 
   updateParticipantView(sessionId: string, principalId: string, patch: ParticipantViewPatch): Promise<void>;
 
   visibleEntries(sessionId: string, principalId: string): Promise<SessionEntry[]>;
+
+  searchEntries(principalId: string, query: string, limit?: number): Promise<EntrySearchHit[]>;
 
   listAll(): Promise<Session[]>;
 

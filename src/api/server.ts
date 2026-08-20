@@ -38,7 +38,7 @@ const safeDecode = (s: string): string => {
 function capabilityAdminDenied(method: string, pathname: string, url: URL, claims: CapabilityClaims): string | null {
   if (method === "GET" && pathname === "/v1/admin/whoami") return null;
   if (claims.aud !== CONTROL_PLANE_AUD) return "admin routes require the per-turn agent token";
-  if (claims.liveActor !== true) {
+  if (claims.liveActor !== true && !unattendedAdminReadAllowed(method, pathname, claims)) {
     return "admin actions through the agent require a turn the admin started themselves — autonomous turns (crons) cannot act as an admin";
   }
   if (pathname.startsWith("/v1/admin/grants")) {
@@ -70,6 +70,17 @@ function capabilityAdminDenied(method: string, pathname: string, url: URL, claim
     }
   }
   return null;
+}
+
+function unattendedAdminReadAllowed(method: string, pathname: string, claims: CapabilityClaims): boolean {
+  if (method !== "GET" || !claims.grants?.includes("admin.sessions.read")) return false;
+  return (
+    pathname === "/v1/admin/sessions" ||
+    /^\/v1\/admin\/sessions\/[^/]+$/.test(pathname) ||
+    pathname === "/v1/admin/scopes" ||
+    pathname === "/v1/admin/errors" ||
+    pathname === "/v1/admin/runs"
+  );
 }
 
 function isAdminContentRead(pathname: string): boolean {
@@ -181,6 +192,9 @@ async function gate(
         actorId: capability.actorId,
         scopeId: capability.scopeId,
         ...(capability.scopeVersion ? { scopeVersion: capability.scopeVersion } : {}),
+        ...(capability.botActor ? { botActor: true } : {}),
+        ...(capability.liveActor ? { liveActor: true } : {}),
+        ...(capability.members ? { members: capability.members } : {}),
       }))
     ) {
       sendJson(res, 403, { error: "forbidden", message: "capability scope membership has been revoked" });
@@ -299,7 +313,7 @@ function respondError(req: IncomingMessage, res: ServerResponse, err: unknown): 
     else res.destroy();
     return;
   }
-  console.error(`[server] 500 ${req.method ?? "?"} ${req.url ?? "?"}:`, err);
+  console.error("[server] 500 %s %s: %s", req.method ?? "?", req.url ?? "?", errMessage(err));
   if (!res.headersSent) sendJson(res, 500, { error: "internal_error", message: "internal server error" });
   else res.destroy();
 }
@@ -368,7 +382,7 @@ function buildFastify(wiring: Wiring, server: Server): { fastify: FastifyInstanc
   fastify.decorateRequest("gate", undefined);
 
   fastify.setErrorHandler((err, request, reply) => {
-    console.error(`[server] 500 ${request.raw.method ?? "?"} ${request.raw.url ?? "?"}:`, err);
+    console.error(`[server] 500 ${request.raw.method ?? "?"} ${request.raw.url ?? "?"}:`, errMessage(err));
     return reply.code(500).send({ error: "internal_error", message: "internal server error" });
   });
 
@@ -438,7 +452,7 @@ function buildServer(app: App, deps: ServerOptions, allowUnsignedSourceAuth: boo
     : null;
   const wiring: Wiring = {
     app,
-    deps: { ...deps, control: createControlService(app, deps.scheduler) },
+    deps: { ...deps, control: createControlService(app, deps.scheduler, deps.admin) },
     secret: deps.signingSecret,
     auth,
     requirePortalIdentity,
@@ -451,7 +465,7 @@ function buildServer(app: App, deps: ServerOptions, allowUnsignedSourceAuth: boo
   });
   const { fastify, routing } = buildFastify(wiring, server);
   const ready = Promise.resolve(fastify.ready());
-  ready.catch((err: unknown) => console.error("[server] fastify initialization failed:", err));
+  ready.catch((err: unknown) => console.error("[server] fastify initialization failed:", errMessage(err)));
   server.requestTimeout = 30_000;
   server.headersTimeout = 10_000;
   server.keepAliveTimeout = 5_000;

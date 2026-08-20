@@ -96,6 +96,8 @@ test("the production example is a complete fail-closed template without organiza
   assert.equal(values.get("QM_CORE_VOLUME"), "qm_core-data");
   assert.equal(values.get("QM_DATABASE_MODE"), "bundled");
   assert.equal(values.get("QM_DATABASE_TRANSPORT"), "private-network");
+  assert.equal(values.get("DATABASE_CA_CERT"), "");
+  assert.equal(values.get("DATABASE_CA_CERT_FILE"), "");
   assert.equal(values.get("QM_EDGE_PROXY_MODE"), "same-host");
   assert.equal(values.get("QM_BIND_ADDRESS"), "127.0.0.1");
   assert.equal(values.get("PORTAL_PUBLIC_URL"), "https://qm.example.com");
@@ -142,7 +144,15 @@ test("the production Compose stack is image-only and exposes only the edge", () 
   assert.match(serviceBlock(compose, "core"), /sandbox-image:[\s\S]*?service_completed_successfully/);
   assert.match(serviceBlock(compose, "postgres"), /profiles:[\s\S]*?bundled-postgres/);
   assert.match(serviceBlock(compose, "core"), /postgres:[\s\S]*?required: false/);
-  assert.match(serviceBlock(compose, "core"), /DATABASE_URL: \$\{DATABASE_URL:-\}/);
+  for (const service of ["preflight", "core"]) {
+    const block = serviceBlock(compose, service);
+    assert.match(block, /DATABASE_URL: \$\{DATABASE_URL:-\}/);
+    assert.match(block, /DATABASE_CA_CERT: \$\{DATABASE_CA_CERT:-\}/);
+    assert.match(block, /DATABASE_CA_CERT_FILE: \$\{DATABASE_CA_CERT_FILE:\+\/run\/qm\/database-ca\.crt\}/);
+    assert.match(block, /source: \$\{DATABASE_CA_CERT_FILE:-\/dev\/null\}/);
+    assert.match(block, /target: \/run\/qm\/database-ca\.crt/);
+    assert.match(block, /create_host_path: false/);
+  }
   assert.match(compose, /^\s*edge:\s*$/m);
   assert.match(compose, /edge:[\s\S]*?ports:/);
   assert.match(serviceBlock(compose, "edge"), /QM_BIND_ADDRESS:-127\.0\.0\.1[^\n]*QM_HTTP_PORT:-8088/);
@@ -220,6 +230,65 @@ test("external production database mode excludes bundled PostgreSQL and preserve
     ) as { services: Record<string, { environment?: Record<string, string> }> };
     assert.equal(rendered.services.postgres, undefined);
     assert.equal(rendered.services.core?.environment?.DATABASE_URL, databaseUrl);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("external database CA configuration reaches production preflight and core", () => {
+  const directory = mkdtempSync("/tmp/qm-production-external-db-ca-");
+  try {
+    const envFile = join(directory, ".env.production");
+    const certFile = join(directory, "database-ca.crt");
+    const databaseUrl = "postgresql://vendor:password@db.provider.test:5432/qm?sslmode=verify-full";
+    const inlineCert = "inline-root-ca";
+    writeFileSync(certFile, "file-root-ca");
+    writeFileSync(
+      envFile,
+      readFileSync(".env.production.example", "utf8")
+        .replace("QM_DATABASE_MODE=bundled", "QM_DATABASE_MODE=external")
+        .replace("DATABASE_URL=", `DATABASE_URL=${databaseUrl}`)
+        .replace("DATABASE_CA_CERT=", `DATABASE_CA_CERT=${inlineCert}`)
+        .replace("DATABASE_CA_CERT_FILE=", `DATABASE_CA_CERT_FILE=${certFile}`),
+    );
+    const rendered = JSON.parse(
+      execFileSync("docker", [
+        "compose",
+        "--project-name",
+        "external-db-ca",
+        "--env-file",
+        envFile,
+        "--env-file",
+        "images.production.env",
+        "-f",
+        "compose.production.yaml",
+        "config",
+        "--format",
+        "json",
+      ]).toString(),
+    ) as {
+      services: Record<
+        string,
+        {
+          environment?: Record<string, string>;
+          volumes?: Array<{
+            source?: string;
+            target?: string;
+            read_only?: boolean;
+            bind?: { create_host_path?: boolean };
+          }>;
+        }
+      >;
+    };
+    for (const service of ["preflight", "core"]) {
+      assert.equal(rendered.services[service]?.environment?.DATABASE_URL, databaseUrl);
+      assert.equal(rendered.services[service]?.environment?.DATABASE_CA_CERT, inlineCert);
+      assert.equal(rendered.services[service]?.environment?.DATABASE_CA_CERT_FILE, "/run/qm/database-ca.crt");
+      const mount = rendered.services[service]?.volumes?.find((entry) => entry.target === "/run/qm/database-ca.crt");
+      assert.equal(mount?.source, certFile);
+      assert.equal(mount?.read_only, true);
+      assert.notEqual(mount?.bind?.create_host_path, true);
+    }
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }

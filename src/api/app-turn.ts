@@ -36,6 +36,7 @@ export function createTurnMethods(
   | "pendingApprovalForThread"
   | "getRun"
   | "activeRunForThread"
+  | "withdrawRun"
   | "signalRun"
   | "replayOrphanedRunSignals"
 > {
@@ -56,6 +57,9 @@ export function createTurnMethods(
     async turn(req: TurnRequest): Promise<TurnResult> {
       await deps.identity.refresh();
       const actor: Principal = deps.identity.resolve(req.actor);
+      if (!deps.identity.isInternal(actor)) {
+        return { status: "refused", reason: "internal-only: non-internal principals cannot interact" };
+      }
       let projectAudience: Principal[] | undefined;
       let projectName: string | undefined;
       let projectVersion: string | undefined;
@@ -65,9 +69,6 @@ export function createTurnMethods(
       const projectId = projectGroup ? projectIdFromGroupRef(conversationRef) : null;
 
       if (projectGroup) {
-        if (!deps.identity.isInternal(actor)) {
-          return { status: "refused", reason: "you're not a member of that context" };
-        }
         if (!projectId) return { status: "refused", reason: "you're not a member of that context" };
         const project = await deps.projects?.get(projectId);
         if (
@@ -241,6 +242,9 @@ export function createTurnMethods(
         ...(req.model ? { model: req.model } : {}),
         ...turnModelOptions(req),
         ...(req.readOnly ? { readOnly: true } : {}),
+        ...(req.skipMemory ? { skipMemory: true } : {}),
+        ...(req.unattendedGrants?.length ? { unattendedGrants: req.unattendedGrants } : {}),
+        ...(req.botActor ? { botActor: true } : {}),
         ...(req.surfaceTools ? { surfaceTools: true } : {}),
         ...(req.envelopeWrapped ? { envelopeWrapped: true } : {}),
         ...(typeof req.displayText === "string" && req.displayText ? { displayText: req.displayText } : {}),
@@ -315,11 +319,17 @@ export function createTurnMethods(
               return req.async ? { status: "queued", runId: live.id, steered: true } : drive(live.id);
             if (decision === "unscreened") injectedText = `${unscreenedNotice("mid-turn message")}\n${steerText}`;
           }
+          const fileNames = (req.attachments ?? []).map((a) =>
+            a.sourceId
+              ? `${a.name} (fetch via surface-file, ts ${origin.kind === "human" ? (origin.messageTs ?? origin.entryTs) : origin.entryTs})`
+              : a.name,
+          );
           const wake: Wake = {
             situation: origin.kind === "ambient" ? "ambientUpdate" : "addressed",
             ts: String(req.clientSentAt ?? Date.now()),
             text: injectedText,
             halt: origin.kind === "human" && isHalt(req.text),
+            ...(fileNames.length ? { fileNames } : {}),
           };
           const route = routeWake(wake, true, resolveTurnOrigin(live.request).kind === "ambient");
           if (route.kind === "steer" || route.kind === "drop") {
@@ -486,8 +496,22 @@ export function createTurnMethods(
     },
 
     async activeRunForThread(threadRef, viewer) {
-      const run = await deps.runs.activeForThread(threadRef);
-      return run && (!viewer || (await viewerMayUseRun(run, viewer))) ? { runId: run.id } : null;
+      const inFlight = await deps.runs.inFlightForThread(threadRef);
+      const visible: typeof inFlight = [];
+      for (const run of inFlight) if (!viewer || (await viewerMayUseRun(run, viewer))) visible.push(run);
+      const live = visible[0];
+      if (!live) return null;
+      const queued = visible
+        .slice(1)
+        .map((run) => ({ runId: run.id, text: run.request.displayText ?? run.request.text ?? "" }));
+      return { runId: live.id, ...(queued.length ? { queued } : {}) };
+    },
+
+    async withdrawRun(runId, viewer) {
+      const run = await deps.runs.get(runId);
+      if (!run) return { withdrawn: false, reason: "not_found" };
+      if (viewer && !(await viewerMayUseRun(run, viewer))) return { withdrawn: false, reason: "not_found" };
+      return (await deps.runs.withdraw(runId)) ? { withdrawn: true } : { withdrawn: false, reason: "started" };
     },
 
     async signalRun(runId, signal, viewer) {

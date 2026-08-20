@@ -4,7 +4,7 @@ import type { IdentityService } from "../identity/identity-service.ts";
 import type { CronStore } from "./cron-store.ts";
 import type { DeliveryStore } from "../delivery/delivery-store.ts";
 import type { IdempotencyStore } from "../idempotency/idempotency-store.ts";
-import { runTrigger } from "../triggers/run-trigger.ts";
+import { runTrigger, type TriggerDeps } from "../triggers/run-trigger.ts";
 import type { CurrentScopeMembers } from "../resolution/scope-membership.ts";
 import type { VisibilityDirectory } from "../directory/visibility.ts";
 import type { DirectoryMember } from "../directory/directory-store.ts";
@@ -43,6 +43,7 @@ export interface SchedulerDeps {
   };
   sweepAsks?: (now: number) => Promise<void>;
   jobQueue?: CronJobQueue;
+  sessions?: TriggerDeps["sessions"];
 }
 
 function truncate(s: string, maxChars: number): string {
@@ -125,6 +126,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           run: deps.run,
           ...(deps.directory ? { directory: deps.directory } : {}),
           ...(deps.currentScopeMembers ? { currentScopeMembers: deps.currentScopeMembers } : {}),
+          ...(deps.sessions ? { sessions: deps.sessions } : {}),
         },
         {
           owner: cron.owner,
@@ -136,6 +138,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           ...(cron.message !== undefined ? { message: cron.message } : {}),
           ...(cron.destination ? { destination: cron.destination } : {}),
           ...(cron.runAs ? { runAs: cron.runAs } : {}),
+          ...(cron.unattendedGrants ? { unattendedGrants: cron.unattendedGrants } : {}),
           ...(cron.members ? { members: cron.members } : {}),
           ...(cron.recipientConsent ? { recipientConsent: cron.recipientConsent } : {}),
           recipientConsentRequired: cron.schedule.everyMs !== undefined || cron.schedule.cron !== undefined,
@@ -174,13 +177,28 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
   const fireDue = async (t: number): Promise<void> => {
     const due = await deps.crons.due(t);
-    const batch = due.slice(0, maxFiresPerTick);
-    if (due.length > batch.length) {
+    let batch = due;
+    if (due.length > maxFiresPerTick) {
+      const ordered = [...due].sort((a, b) => (a.lastAttemptAt ?? 0) - (b.lastAttemptAt ?? 0));
+      batch = [];
+      for (const cron of ordered) {
+        if (batch.length >= maxFiresPerTick) break;
+        try {
+          await deps.crons.markAttempted(cron.id, t);
+          batch.push(cron);
+        } catch (e) {
+          console.error("[scheduler] attempt mark failed, holding this cron back:", errMessage(e));
+        }
+      }
       console.warn(`[scheduler] fan-out capped: firing ${batch.length}/${due.length} due crons this tick`);
     }
     for (const cron of batch) {
-      const { authzFailed } = await fire(cron, t, `cron:${cron.id}:${cron.scheduledAt}`, cron.scheduledAt);
-      if (!authzFailed) await deps.crons.markFired(cron.id, t, cron.scheduledAt);
+      try {
+        const { authzFailed } = await fire(cron, t, `cron:${cron.id}:${cron.scheduledAt}`, cron.scheduledAt);
+        if (!authzFailed) await deps.crons.markFired(cron.id, t, cron.scheduledAt);
+      } catch (e) {
+        console.error("[scheduler] fire failed:", errMessage(e));
+      }
     }
   };
 
@@ -188,12 +206,12 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     const t = nowArg ?? now();
     await leaderLease.hold(TICK_LEASE_KEY, async () => {
       await fireDue(t);
-      await deps.sweepAsks?.(t).catch((e: unknown) => console.error("[scheduler] ask sweep failed:", e));
+      await deps.sweepAsks?.(t).catch((e: unknown) => console.error("[scheduler] ask sweep failed:", errMessage(e)));
     });
   };
 
   const sweeper = createSweeper(
-    () => tick().catch((e: unknown) => console.error("[scheduler] tick failed:", e)),
+    () => tick().catch((e: unknown) => console.error("[scheduler] tick failed:", errMessage(e))),
     1000,
     { label: "scheduler" },
   );
@@ -227,7 +245,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         return;
       }
     } catch (e) {
-      console.error("[scheduler] fire failed:", e);
+      console.error("[scheduler] fire failed:", errMessage(e));
       await deps.crons.unclaimSlot(job.cronId, slot, t, cron.lastFiredAt);
       return;
     }
@@ -242,9 +260,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         if (slot !== undefined) await deps.jobQueue!.enqueueFire({ cronId: cron.id, scheduledAt: slot });
       }
     } catch (e) {
-      console.error("[scheduler] tick failed:", e);
+      console.error("[scheduler] tick failed:", errMessage(e));
     }
-    await deps.sweepAsks?.(now()).catch((e: unknown) => console.error("[scheduler] ask sweep failed:", e));
+    await deps.sweepAsks?.(now()).catch((e: unknown) => console.error("[scheduler] ask sweep failed:", errMessage(e)));
   }
 
   const leaseGuard = createSweeper(

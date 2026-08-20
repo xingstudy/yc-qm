@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { interpolateSplitEnv } from "../deployment/deployment-layer.ts";
 import { BASE_RESIDENT_AUTH_PATHS, residentAuthPaths, type CredentialPathSpec } from "../credentials/resident-paths.ts";
-import type { ExecResult, Sandbox, SandboxHandle } from "../sandbox/sandbox.ts";
+import type { ComputerStatus, ExecResult, Sandbox, SandboxHandle } from "../sandbox/sandbox.ts";
 import { CapabilityUnsupportedError, hasParentPathSegment, supportsAgentComputerBackup } from "../sandbox/sandbox.ts";
 import type {
   CommandPolicy,
@@ -34,15 +34,16 @@ import type {
 } from "../connectors/background-exec-broker.ts";
 import type { MonitorBroker, BackgroundWatchResult, BackgroundUnwatchResult } from "../monitors/monitor-broker.ts";
 import type { DeployService, DeployFile } from "../deploy/deploy-service.ts";
-import { publicUrlOf } from "../deploy/deploy-store.ts";
+import { publicUrlOf, type Deployment } from "../deploy/deploy-store.ts";
 import { carriesGitMetadata } from "../deploy/deploy-fs.ts";
 import type { AclStore } from "../acl/acl-store.ts";
 import type { AuditLog } from "../audit/audit-log.ts";
 import { mimeFromName } from "../core/attachments.ts";
 import { swallow } from "../util/errors.ts";
-import { fileArtifactId, type FileArtifactStore } from "../files/file-artifact-store.ts";
+import { fileArtifactId, isArtifactPath, type FileArtifactStore } from "../files/file-artifact-store.ts";
 import type { ScopedConfigStore } from "../resolution/config-store.ts";
 import { MEMORY_FILE, type MemoryService } from "../memory/memory-service.ts";
+import type { McpToolService, McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import type { ReachResolution } from "../resolution/scope-reach.ts";
 import type {
   ControlService,
@@ -100,6 +101,11 @@ interface PublishResult {
   dataDir?: string;
 }
 
+function deploymentEntrypoint(d: Deployment | null): string | undefined {
+  if (!d) return undefined;
+  return d.versions.find((v) => v.version === d.currentVersion)?.entrypoint || undefined;
+}
+
 export class NeedsApproval extends Error {
   command: string;
   approvalReason: string;
@@ -144,6 +150,12 @@ interface ReachedProvenance {
 }
 
 export interface ToolContext extends SurfaceToolDeps {
+  credentialExecServices?: readonly { service: string; binary: string }[];
+  credentialExec?(
+    service: string,
+    args: string[],
+    opts?: { timeoutSeconds?: number; signal?: AbortSignal },
+  ): Promise<ExecResult>;
   execute(
     command: string,
     opts?: {
@@ -154,6 +166,8 @@ export interface ToolContext extends SurfaceToolDeps {
       signal?: AbortSignal;
     },
   ): Promise<ExecResult & { reached?: ReachedProvenance }>;
+  computerStatus(): Promise<ComputerStatus>;
+  restartComputer(): Promise<void>;
   read(path: string): Promise<ReadResult>;
   write(path: string, data?: string, share?: ShareDirective[]): Promise<WriteResult>;
   publish(input: PublishInput): Promise<PublishResult>;
@@ -162,6 +176,8 @@ export interface ToolContext extends SurfaceToolDeps {
   memoryRemember(facts: string[]): Promise<number | null>;
   memoryRewrite(content: string): Promise<true | null>;
   history(q: string, limit?: number): Promise<string[]>;
+  mcpToolDefs(): McpToolDescriptor[];
+  callMcpTool(capability: string, args: Record<string, unknown>): Promise<string>;
   backgroundStart(command: string, opts?: { ttlSeconds?: number }): Promise<BackgroundStartResult>;
   backgroundPoll(
     processId: string,
@@ -253,11 +269,19 @@ export interface SurfaceDeleteInput {
   participants?: readonly string[];
 }
 
+export interface PostedFileMeta {
+  name: string;
+  mimetype: string;
+  sizeBytes: number;
+  artifactId?: string;
+}
+
 export interface SurfacePostResult {
   ok: boolean;
   deliveryId?: string;
   message?: string;
   matched?: string;
+  attachments?: PostedFileMeta[];
 }
 
 interface SurfaceReadResult {
@@ -305,7 +329,8 @@ interface SurfaceFileResult {
 }
 
 type SurfaceStandingOrderResult =
-  { ok: true; orders: string; bots?: Record<string, BotPolicy> } | { ok: false; message: string };
+  | { ok: true; orders: string; bots?: Record<string, BotPolicy>; ambientEnabled?: boolean }
+  | { ok: false; message: string };
 
 export interface SurfaceToolDeps {
   post(text: string, opts?: SurfacePostOpts, files?: readonly string[]): Promise<SurfacePostResult>;
@@ -319,7 +344,11 @@ export interface SurfaceToolDeps {
   readMembers(): Promise<SurfaceMembersResult>;
   readFile(ref: string): Promise<SurfaceFileResult>;
   getStandingOrder(): Promise<SurfaceStandingOrderResult>;
-  setStandingOrder(orders: string, bots?: Record<string, BotPolicy>): Promise<SurfaceStandingOrderResult>;
+  setStandingOrder(
+    orders: string,
+    bots?: Record<string, BotPolicy>,
+    ambientEnabled?: boolean | null,
+  ): Promise<SurfaceStandingOrderResult>;
   staySilent(reason: string): Promise<{ ok: true; message: string }>;
 }
 
@@ -336,10 +365,13 @@ export const CONTROL_UNAVAILABLE: ControlUnavailable = {
 
 export interface ToolContextDeps {
   sandbox: Sandbox;
+  credentialExecServices?: readonly { service: string; binary: string }[];
+  credentialExec?: ToolContext["credentialExec"];
   provision: () => Promise<SandboxHandle>;
   provisionScratch?: () => Promise<SandboxHandle>;
   provisionOwnerAuth?: () => Promise<SandboxHandle>;
   ownerAuthCommand?: (command: string) => string;
+  scopedCommand?: (command: string) => string;
   ensureSkillTree?: (skillDir: string) => Promise<void>;
   reach?: {
     resolveChannel(query: string): Promise<ReachResolution>;
@@ -369,6 +401,7 @@ export interface ToolContextDeps {
   memory?: MemoryService;
   memoryScopeId?: ScopeId;
   memoryAccess?: { write?: ScopeId; read: ScopeId[] };
+  mcp?: McpToolService;
   sessionHistory?: { search(q: string, limit?: number): Promise<string[]> };
   actingSlackUserId?: string;
   layerAuth?: {
@@ -442,7 +475,54 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     return cache ? once(call, cache) : call();
   }
 
+  const MAX_SHARED_ARTIFACT_BYTES = 10 * 1024 * 1024;
+
+  async function readGrantedArtifactBytes(ownerScopeId: ScopeId, ownerPath: string): Promise<Buffer | null> {
+    if (!deps.files) return null;
+    const rows = await deps.files.resolveByOwnerPaths([{ ownerScopeId, path: ownerPath }]);
+    const row = rows.find((r) => r.ownerScopeId === ownerScopeId && r.path === ownerPath);
+    if (!row) return null;
+    const opened = await deps.files.open(row.id);
+    if (!opened) return null;
+    if (opened.sizeBytes > MAX_SHARED_ARTIFACT_BYTES) {
+      opened.stream.destroy();
+      throw new Error(
+        `shared file ${ownerPath.split("/").pop()} is ${opened.sizeBytes} bytes — larger than the ${MAX_SHARED_ARTIFACT_BYTES}-byte shared-read limit`,
+      );
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of opened.stream) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+      total += buf.length;
+      if (total > MAX_SHARED_ARTIFACT_BYTES) {
+        opened.stream.destroy();
+        throw new Error(
+          `shared file ${ownerPath.split("/").pop()} exceeds the ${MAX_SHARED_ARTIFACT_BYTES}-byte shared-read limit`,
+        );
+      }
+      chunks.push(buf);
+    }
+    return Buffer.concat(chunks);
+  }
+
   return {
+    ...(deps.credentialExecServices ? { credentialExecServices: deps.credentialExecServices } : {}),
+    ...(deps.credentialExec ? { credentialExec: deps.credentialExec } : {}),
+    async computerStatus(): Promise<ComputerStatus> {
+      if (!deps.sandbox.computerStatus) {
+        throw new CapabilityUnsupportedError(deps.sandbox.profile.backend, "reporting computer status");
+      }
+      if (!writableScopeId) throw new Error("this turn has no scoped computer");
+      return deps.sandbox.computerStatus(writableScopeId);
+    },
+    async restartComputer(): Promise<void> {
+      if (!deps.sandbox.restartComputer) {
+        throw new CapabilityUnsupportedError(deps.sandbox.profile.backend, "restarting the computer");
+      }
+      if (!writableScopeId) throw new Error("this turn has no scoped computer to restart");
+      await deps.sandbox.restartComputer(writableScopeId);
+    },
     async execute(
       command: string,
       execOpts?: {
@@ -519,7 +599,9 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           });
         }
         return timed("exec", async () => {
-          const sandboxCommand = ownerAuth && deps.ownerAuthCommand ? deps.ownerAuthCommand(command) : command;
+          const sandboxCommand = ownerAuth
+            ? (deps.ownerAuthCommand?.(command) ?? command)
+            : (deps.scopedCommand?.(command) ?? command);
           const r = await deps.sandbox.run(handle, sandboxCommand, opts);
           return reached ? { ...r, reached } : r;
         });
@@ -544,7 +626,9 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           };
         }
         const granted = matches[0]!;
-        const bytes = await deps.workspace.readBytes(granted.ownerScopeId, granted.ownerPath);
+        const bytes = isArtifactPath(granted.ownerPath)
+          ? await readGrantedArtifactBytes(granted.ownerScopeId, granted.ownerPath)
+          : await deps.workspace.readBytes(granted.ownerScopeId, granted.ownerPath);
         if (bytes === null) return { content: null, sourceScopeId: granted.ownerScopeId };
         const asText = tryDecodeUtf8(bytes);
         if (asText !== null) return { content: asText, sourceScopeId: granted.ownerScopeId };
@@ -655,17 +739,28 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       if (!writableScopeId) throw new Error("publish needs a writable scope to own the app");
       const owner: ScopeId = scopeId("personal", deps.createdBy);
       const createdInScope: ScopeId = writableScopeId;
-      if (input.entrypoint && input.dir && hasParentPathSegment(input.dir)) {
+      let effectiveEntrypoint = input.entrypoint;
+      if (effectiveEntrypoint === undefined && input.rollbackTo === undefined) {
+        const shouldInheritForRename = input.renameFrom !== undefined && input.dir !== undefined;
+        const priorName =
+          input.renameFrom === undefined || shouldInheritForRename ? (input.renameFrom ?? input.name) : undefined;
+        const prior = priorName ? await deps.deploy.getDeployment(priorName) : null;
+        effectiveEntrypoint = deploymentEntrypoint(prior);
+        if (!effectiveEntrypoint && input.renameFrom === undefined) {
+          throw new Error('publish requires an entrypoint, e.g. "node server.js"');
+        }
+      }
+      if (effectiveEntrypoint && input.dir && hasParentPathSegment(input.dir)) {
         throw new Error("publish directory must stay inside the workspace — no .. path segments");
       }
       const handle = await deps.provision();
-      const files: DeployFile[] = input.entrypoint
+      const files: DeployFile[] = effectiveEntrypoint
         ? filesUnder(await collectTree(deps.sandbox, handle, input.dir), input.dir)
         : [];
-      if (input.entrypoint && files.length === 0) {
+      if (effectiveEntrypoint && files.length === 0) {
         throw new Error(`publish: no files found under ${input.dir ?? "."} - nothing to deploy`);
       }
-      const { authEnv } = input.entrypoint
+      const { authEnv } = effectiveEntrypoint
         ? await captureResidentAuth(deps.sandbox, handle, {
             split: true,
             ...(deps.actingSlackUserId ? { actingSlackUserId: deps.actingSlackUserId } : {}),
@@ -688,7 +783,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           : { kind: "owner", grantees: [] };
       const optOut = Array.isArray(input.share) && input.share.length === 0;
       const desiredDefault = optOut ? [] : aud.grantees;
-      const doReconcile = input.entrypoint !== undefined && (optOut || !aud.incomplete);
+      const doReconcile = effectiveEntrypoint !== undefined && (optOut || !aud.incomplete);
       const snapshotAt = Date.now();
       const resolvedShare = input.share?.map((s) => {
         const scope = s.scope === "org" ? orgScopeId : s.scope;
@@ -728,12 +823,12 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           d.createdInScope,
         );
         const audience: PublishAudienceDescriptor =
-          aud.incomplete && input.entrypoint !== undefined && input.share === undefined && aud.reason
+          aud.incomplete && effectiveEntrypoint !== undefined && input.share === undefined && aud.reason
             ? { ...base, note: aud.reason }
             : base;
         const urlBase = deps.publicWebUrl?.replace(/\/$/, "") ?? "";
         const url = publicUrlOf(d.endpoint) ?? `${urlBase}/d/${ref}/`;
-        const dataDir = input.entrypoint ? deps.deploy.providerProfile?.dataDir : undefined;
+        const dataDir = effectiveEntrypoint ? deps.deploy.providerProfile?.dataDir : undefined;
         return {
           id: d.id,
           ...(d.name ? { name: d.name } : {}),
@@ -787,6 +882,15 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       return deps.sessionHistory.search(q, limit);
     },
 
+    mcpToolDefs(): McpToolDescriptor[] {
+      return deps.mcp?.toolDefs() ?? [];
+    },
+
+    async callMcpTool(capability: string, args: Record<string, unknown>): Promise<string> {
+      if (!deps.mcp) throw new Error("no MCP connectors are configured");
+      return deps.mcp.call(capability, args, deps.createdBy);
+    },
+
     async backgroundStart(command: string, opts?: { ttlSeconds?: number }): Promise<BackgroundStartResult> {
       if (!deps.backgroundBroker) throw new Error(BACKGROUND_UNAVAILABLE_MESSAGE);
       const handle = await deps.provision();
@@ -803,7 +907,12 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         for (const skillDir of skillTreeDirsInCommand(command)) await deps.ensureSkillTree(skillDir);
       }
       return once(
-        () => deps.backgroundBroker!.start(handle, command, opts?.ttlSeconds ? opts.ttlSeconds * 1000 : undefined),
+        () =>
+          deps.backgroundBroker!.start(
+            handle,
+            deps.scopedCommand?.(command) ?? command,
+            opts?.ttlSeconds ? opts.ttlSeconds * 1000 : undefined,
+          ),
         () => true,
       );
     },
@@ -943,7 +1052,8 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     readMembers: () => surfaceOp((s) => s.readMembers()),
     readFile: (ref) => surfaceOp((s) => s.readFile(ref)),
     getStandingOrder: () => surfaceOp((s) => s.getStandingOrder()),
-    setStandingOrder: (orders, bots) => surfaceOp((s) => s.setStandingOrder(orders, bots)),
+    setStandingOrder: (orders, bots, ambientEnabled) =>
+      surfaceOp((s) => s.setStandingOrder(orders, bots, ambientEnabled)),
     staySilent: (reason) =>
       deps.surface
         ? deps.surface.staySilent(reason)
@@ -1022,7 +1132,10 @@ async function captureResidentAuth(
     });
     return { homeFiles: entries.map((e) => ({ path: e.path, data: e.data })), authEnv: {} };
   } catch (e) {
-    if (e instanceof CapabilityUnsupportedError) return { homeFiles: [], authEnv: {} };
+    if (e instanceof CapabilityUnsupportedError) {
+      console.warn(`[publish] ${e.message}; skipping resident auth backup`);
+      return { homeFiles: [], authEnv: {} };
+    }
     throw e;
   }
 }
@@ -1044,6 +1157,7 @@ async function collectTree(
       return entries.filter((e) => !carriesGitMetadata(e.path)).map((e) => ({ path: e.path, data: e.data }));
     } catch (e) {
       if (!(e instanceof CapabilityUnsupportedError)) throw e;
+      console.warn(`[publish] ${e.message}; falling back to per-file reads`);
     }
   }
   const out: Array<{ path: string; data: Uint8Array }> = [];

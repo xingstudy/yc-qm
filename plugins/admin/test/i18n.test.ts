@@ -128,6 +128,12 @@ test("admin exposes a bilingual control and translates only explicit UI sinks", 
   assert.match(html, /adminTr\("Version"\) \+ " " \+ immutable\.version/);
   assert.match(html, /adminTr\("restored as a new revision"\)/);
   assert.match(html, /adminTr\(plural\(d\.totals\?\.users/);
+  assert.match(html, /\$\("environment-notice-title"\)\.textContent = adminTr\("Uses named environment " \+ name\)/);
+  assert.match(html, /\$\("environment-notice-open"\)\.textContent = adminTr\("Open environment " \+ name\)/);
+  assert.match(html, /if \(!attached\.length\) return adminTr\("no scopes attached"\)/);
+  assert.match(html, /dataCard\(\s*adminTr\("Named environments"\)/);
+  assert.match(html, /env\.title = adminTr\("This scope is attached to a named environment\."\)/);
+  assert.match(html, /none\.textContent = adminTr\("No scopes attached\."\)/);
   assert.doesNotMatch(html, /adminTr\(d\.attribution/);
 });
 
@@ -178,6 +184,18 @@ test("admin locale also controls date and number formatting", () => {
   assert.equal(adminTr("set (write-only)"), "已设置（只写）");
   assert.equal(adminTr("All scopes"), "所有范围");
   assert.equal(adminTr("Upload to "), "上传至 ");
+  assert.equal(adminTr("Open environment"), "打开环境");
+  assert.equal(adminTr("Channel pinned header"), "频道置顶消息");
+  assert.equal(adminTr("Named environments"), "命名环境");
+  assert.equal(adminTr("No scopes attached."), "没有已关联的范围。");
+  assert.equal(adminTr("env: "), "环境： ");
+  assert.equal(translatePattern("Uses named environment Research"), "正在使用命名环境 Research");
+  assert.equal(translatePattern("Open environment Research"), "打开环境 Research");
+  assert.equal(translatePattern("one +2 more scopes"), "one + 另外 2 个范围");
+  assert.equal(
+    translatePattern("2 scopes share this environment's computer and working memory."),
+    "2 个范围共享此环境的计算机和工作记忆。",
+  );
   assert.equal(adminTr("Grant org admin"), "授予组织管理员");
   assert.equal(adminTr("Effective security posture"), "当前生效的安全策略");
   assert.equal(adminTr("Open egress"), "开放出站访问");

@@ -27,7 +27,7 @@ primary_region = "sjc"
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "256mb"
+  memory = "512mb"
 
 kill_signal = "SIGTERM"
 kill_timeout = "10s"

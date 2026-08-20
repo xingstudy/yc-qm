@@ -6,6 +6,7 @@ import type { OrchestratorInput } from "../core/orchestrator.ts";
 import { resolveTurnOrigin } from "../core/turn-origin.ts";
 import type { EnqueueInput, EnqueueResult, ReapEvent, Run, RunDeliveryState, RunStore } from "./run-store.ts";
 import { isTerminal } from "./run-store.ts";
+import { errMessage } from "../util/errors.ts";
 import type { LedgerBegin, ToolLedger } from "./tool-ledger.ts";
 
 export interface PostgresRuntime {
@@ -55,6 +56,8 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
       )`,
     `ALTER TABLE runs ADD COLUMN IF NOT EXISTS delivery_state TEXT`,
     `ALTER TABLE runs ADD COLUMN IF NOT EXISTS error_attempts INT NOT NULL DEFAULT 0`,
+    `ALTER TABLE runs ADD COLUMN IF NOT EXISTS seq BIGSERIAL`,
+    `CREATE INDEX IF NOT EXISTS idx_runs_status_created_seq ON runs(status, created_at, seq)`,
     `CREATE INDEX IF NOT EXISTS idx_runs_status_created ON runs(status, created_at)`,
     `CREATE INDEX IF NOT EXISTS idx_runs_session_active_created
         ON runs(session_id, created_at DESC) WHERE status IN ('pending','running')`,
@@ -73,8 +76,28 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
         PRIMARY KEY(run_id, attempt, call_index)
       )`,
     `ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS attempt INT NOT NULL DEFAULT 1`,
-    `ALTER TABLE tool_calls DROP CONSTRAINT IF EXISTS tool_calls_pkey`,
-    `ALTER TABLE tool_calls ADD PRIMARY KEY (run_id, attempt, call_index)`,
+    `DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM pg_constraint c
+          WHERE c.conrelid = 'tool_calls'::regclass AND c.contype = 'p'
+            AND (SELECT array_agg(a.attname::text ORDER BY k.ord)
+                 FROM unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord)
+                 JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+                ) <> ARRAY['run_id','attempt','call_index']
+        ) OR NOT EXISTS (
+          SELECT 1 FROM pg_constraint c
+          WHERE c.conrelid = 'tool_calls'::regclass AND c.contype = 'p'
+        ) THEN
+          DELETE FROM tool_calls t USING (
+            SELECT ctid, row_number() OVER (
+              PARTITION BY run_id, attempt, call_index ORDER BY created_at DESC, ctid DESC
+            ) AS rn FROM tool_calls
+          ) dup WHERE t.ctid = dup.ctid AND dup.rn > 1;
+          ALTER TABLE tool_calls DROP CONSTRAINT IF EXISTS tool_calls_pkey;
+          ALTER TABLE tool_calls ADD PRIMARY KEY (run_id, attempt, call_index);
+        END IF;
+      END $$`,
   ]);
 
   async function getRun(id: string): Promise<Run | null> {
@@ -147,7 +170,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
            WHERE id = (
              SELECT id FROM runs WHERE status='pending'
                AND session_id NOT IN (SELECT session_id FROM runs WHERE status='running')
-             ORDER BY created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1
+             ORDER BY created_at ASC, seq ASC FOR UPDATE SKIP LOCKED LIMIT 1
            ) RETURNING *`,
           [token, now + ttlMs, workerId, now],
         );
@@ -239,6 +262,19 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
       return rows[0] ? rowToRun(rows[0]) : null;
     },
 
+    async inFlightForThread(sessionId: string): Promise<Run[]> {
+      const { rows } = await q(
+        "SELECT * FROM runs WHERE session_id = $1 AND status IN ('pending','running') ORDER BY created_at ASC, seq ASC",
+        [sessionId],
+      );
+      return rows.map(rowToRun);
+    },
+
+    async withdraw(runId: string): Promise<boolean> {
+      const { rowCount } = await q("DELETE FROM runs WHERE id = $1 AND status = 'pending'", [runId]);
+      return (rowCount ?? 0) > 0;
+    },
+
     async activeSessionIds(): Promise<string[]> {
       const { rows } = await q("SELECT DISTINCT session_id FROM runs WHERE status IN ('pending','running')");
       return rows.map((r) => r.session_id as string);
@@ -290,6 +326,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
           if (done) return;
           done = true;
           clearInterval(poll);
+          clearTimeout(timer);
           events.off(runId, onSettle);
           resolve(r);
         };
@@ -298,9 +335,13 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
         }
         events.once(runId, onSettle);
         const poll = setInterval(() => {
-          void getRun(runId).then((r) => {
-            if (r && isTerminal(r.status)) finish(r);
-          });
+          void getRun(runId)
+            .then((r) => {
+              if (r && isTerminal(r.status)) finish(r);
+            })
+            .catch((err: unknown) => {
+              console.error(`[postgres-run-store] waitFor poll for run ${runId} failed transiently:`, errMessage(err));
+            });
         }, 250);
         poll.unref?.();
         const timer = setTimeout(() => {

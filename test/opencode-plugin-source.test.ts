@@ -53,9 +53,19 @@ test("OpenCode plugin recognizes imported non-empty history", () => {
 });
 
 test("OpenCode prompt disables bridged tools absent from this turn", () => {
-  assert.match(harnessSource, /\.\.\.asTools\(definitionRef, \{ \.\.\.toolOptions\(opts\), surfaceTools: false \}\)/);
-  assert.match(harnessSource, /Object\.fromEntries\(definitions\.map\(\(tool\) => \[tool\.name, false\]\)\)/);
+  assert.match(harnessSource, /function bridgeDefinitionSnapshot/);
+  assert.match(harnessSource, /const key = runtimeKey\(expectedCustomProvidersVersion, expectedDefinitions\.key\)/);
+  assert.match(harnessSource, /definitionNames: definitionSnapshot\.definitions\.map/);
+  assert.match(harnessSource, /Object\.fromEntries\(rt\.definitionNames\.map\(\(name\) => \[name, false\]\)\)/);
   assert.match(harnessSource, /for \(const tool of tools\) enabled\[bridgeToolName\(tool\.name\)\] = true/);
+});
+
+test("OpenCode prevents MCP tools from taking core, bridge, or native tool names", () => {
+  assert.match(harnessSource, /function bridgeTools/);
+  assert.match(harnessSource, /seen\.has\(name\)/);
+  assert.match(harnessSource, /OPENCODE_RESERVED_TOOL_NAMES\.has\(name\)/);
+  assert.match(harnessSource, /"bash"/);
+  assert.match(harnessSource, /"workspace_execute"/);
 });
 
 test("OpenCode observes cancellation before runtime startup, session creation, and prompt dispatch", () => {
@@ -73,7 +83,7 @@ test("OpenCode observes cancellation before runtime startup, session creation, a
   const session = runPromptWithRuntime.indexOf("rt.client.session.create({");
   const prompt = runPromptWithRuntime.indexOf("rt.client.session.prompt({");
   const preRuntimeGuard = runPrompt.indexOf("if (turn.cancel?.aborted)");
-  const acquireRuntime = runPrompt.indexOf("await acquireRuntime()");
+  const acquireRuntime = runPrompt.indexOf("await acquireRuntime(turn)");
   assert.ok(preRuntimeGuard >= 0);
   assert.ok(acquireRuntime >= 0);
   assert.ok(preRuntimeGuard < acquireRuntime);

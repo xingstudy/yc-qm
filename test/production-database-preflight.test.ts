@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { mock, test } from "node:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 let releaseLock = true;
 let tlsActive = true;
 let ended = false;
 let queries: string[] = [];
+let clientConfigs: Record<string, unknown>[] = [];
 
 class FakeClient {
   constructor(config: Record<string, unknown>) {
+    clientConfigs.push(config);
     assert.equal(config.connectionTimeoutMillis, 5000);
     assert.equal(config.query_timeout, 5000);
     assert.equal(config.statement_timeout, 5000);
@@ -37,11 +42,12 @@ test("database preflight verifies query, advisory lock round-trip, and notificat
   tlsActive = true;
   ended = false;
   queries = [];
+  clientConfigs = [];
 
   const problem = await productionDatabaseProblem({
     QM_DATABASE_MODE: "external",
     QM_DATABASE_TRANSPORT: "private-network",
-    DATABASE_URL: "postgresql://provider-user:provider-password@db.provider.test/qm",
+    DATABASE_URL: "postgresql://provider-user:provider-password@db.provider.test/qm?sslmode=require",
   });
 
   assert.equal(problem, undefined);
@@ -51,12 +57,58 @@ test("database preflight verifies query, advisory lock round-trip, and notificat
   assert.ok(queries.some((query) => query.includes("pg_advisory_unlock")));
   assert.ok(queries.some((query) => query.startsWith("LISTEN qm_preflight_")));
   assert.ok(queries.some((query) => query.startsWith("UNLISTEN qm_preflight_")));
+  assert.equal(clientConfigs[0]?.ssl, undefined);
+  assert.match(String(clientConfigs[0]?.connectionString), /sslmode=require/);
+});
+
+test("database preflight passes the configured root CA to pg", async () => {
+  releaseLock = true;
+  tlsActive = true;
+  ended = false;
+  queries = [];
+  clientConfigs = [];
+
+  const problem = await productionDatabaseProblem({
+    QM_DATABASE_MODE: "external",
+    QM_DATABASE_TRANSPORT: "tls",
+    DATABASE_URL: "postgresql://provider-user:provider-password@db.provider.test/qm?sslmode=require",
+    DATABASE_CA_CERT: "-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----\\n",
+  });
+
+  assert.equal(problem, undefined);
+  assert.equal(
+    (clientConfigs[0]?.ssl as { ca?: string } | undefined)?.ca,
+    "-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----\\n",
+  );
+  assert.equal(clientConfigs[0]?.host, "db.provider.test");
+});
+
+test("database preflight reads the configured root CA file", async () => {
+  releaseLock = true;
+  tlsActive = true;
+  ended = false;
+  queries = [];
+  clientConfigs = [];
+  const cert = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+  const certFile = join(mkdtempSync(join(tmpdir(), "qm-pg-ca-")), "root.crt");
+  writeFileSync(certFile, cert);
+
+  const problem = await productionDatabaseProblem({
+    QM_DATABASE_MODE: "external",
+    QM_DATABASE_TRANSPORT: "tls",
+    DATABASE_URL: "postgresql://provider-user:provider-password@db.provider.test/qm",
+    DATABASE_CA_CERT_FILE: certFile,
+  });
+
+  assert.equal(problem, undefined);
+  assert.equal((clientConfigs[0]?.ssl as { ca?: string } | undefined)?.ca, cert);
 });
 
 test("database preflight rejects a session whose advisory lock cannot be released without leaking credentials", async () => {
   releaseLock = false;
   ended = false;
   queries = [];
+  clientConfigs = [];
 
   const problem = await productionDatabaseProblem({
     QM_DATABASE_MODE: "external",
@@ -74,6 +126,7 @@ test("database preflight rejects a declared TLS transport when PostgreSQL report
   tlsActive = false;
   ended = false;
   queries = [];
+  clientConfigs = [];
 
   const problem = await productionDatabaseProblem({
     QM_DATABASE_MODE: "external",

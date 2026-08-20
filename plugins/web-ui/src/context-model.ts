@@ -149,7 +149,7 @@ export function contextModelSection(scopeId: string): TemplateResult | typeof no
             ? t("Following the org default — it changes when the org's does.")
             : t("Pinned for this project. Anyone in a chat can still pick a different model for that conversation.")
         }
-        ${isSlack ? ` ${t("The channel description in Slack names this model.")}` : ""}
+        ${isSlack ? ` ${t("The pinned Slack header (when enabled below) names this model.")}` : ""}
       </p>
       ${
         contextModelState.notice

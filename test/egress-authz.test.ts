@@ -4,12 +4,14 @@ import type { AddressInfo } from "node:net";
 import { request, type Server } from "node:http";
 import {
   buildEgressAuthzServer,
+  createEgressAuditFromEnv,
   createRelayAuditSink,
   tokenFromRequest,
   hostFromAuthority,
-  isLinkLocalOrMetadataIp,
+  isBlockedDestinationIp,
   type EgressAuthzDeps,
 } from "../src/egress-authz-main.ts";
+import { configurePgCaTrust, pgConnectionOptions } from "../src/persistence/pg-pool.ts";
 import { verifySignature } from "../src/auth/source-auth.ts";
 import { mintCapabilityToken, EGRESS_PROXY_AUD, CONTROL_PLANE_AUD } from "../src/auth/capability-token.ts";
 import type { EgressAuditRecord } from "../src/admin/egress-audit-sink.ts";
@@ -17,6 +19,7 @@ import { scopeId, type EgressPolicy } from "../src/types.ts";
 
 const CAPABILITY_SECRET = "test-egress-capability-secret";
 const SOURCE_SECRET = "test-egress-source-secret";
+const PG_CA = "-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----\\n";
 const listen = (s: Server): Promise<number> =>
   new Promise((r) => s.listen(0, () => r((s.address() as AddressInfo).port)));
 const close = (s: Server): Promise<void> => new Promise((r) => s.close(() => r()));
@@ -25,6 +28,21 @@ function recordingSink() {
   const records: Omit<EgressAuditRecord, "ts">[] = [];
   return { records, sink: { record: (s: Omit<EgressAuditRecord, "ts">) => records.push(s) } };
 }
+
+test("egress PostgreSQL fallback configures CA trust before creating its durable audit sink", async () => {
+  const databaseUrl = "postgresql://audit:secret@db.example.test:5432/qm?sslmode=require";
+  try {
+    createEgressAuditFromEnv({ DATABASE_URL: databaseUrl, DATABASE_CA_CERT: PG_CA });
+    const pg = (await import("pg")).default;
+    const client = new pg.Client(pgConnectionOptions(databaseUrl)) as unknown as {
+      connectionParameters: { ssl?: { ca?: string }; host?: string };
+    };
+    assert.equal(client.connectionParameters.ssl?.ca, PG_CA);
+    assert.equal(client.connectionParameters.host, "db.example.test");
+  } finally {
+    configurePgCaTrust({});
+  }
+});
 
 function egressToken(
   egress: EgressPolicy | undefined,
@@ -111,26 +129,31 @@ test("hostFromAuthority strips ports and IPv6 brackets", () => {
   assert.equal(hostFromAuthority(""), null);
 });
 
-test("isLinkLocalOrMetadataIp covers IMDS, 169.254/16, fe80::/10, v4-mapped, AWS v6 IMDS", () => {
-  assert.equal(isLinkLocalOrMetadataIp("169.254.169.254"), true);
-  assert.equal(isLinkLocalOrMetadataIp("169.254.1.1"), true);
-  assert.equal(isLinkLocalOrMetadataIp("::ffff:169.254.169.254"), true);
-  assert.equal(isLinkLocalOrMetadataIp("fe80::1"), true);
-  assert.equal(isLinkLocalOrMetadataIp("febf::1"), true);
-  assert.equal(isLinkLocalOrMetadataIp("fd00:ec2::254"), true);
-  assert.equal(isLinkLocalOrMetadataIp("[fd00:ec2::254]"), true);
-  assert.equal(isLinkLocalOrMetadataIp("8.8.8.8"), false);
-  assert.equal(isLinkLocalOrMetadataIp("2606:4700::1111"), false);
-  assert.equal(isLinkLocalOrMetadataIp("fec0::1"), false);
+test("isBlockedDestinationIp covers IMDS, 169.254/16, fe80::/10, v4-mapped, AWS v6 IMDS", () => {
+  assert.equal(isBlockedDestinationIp("169.254.169.254"), true);
+  assert.equal(isBlockedDestinationIp("169.254.1.1"), true);
+  assert.equal(isBlockedDestinationIp("::ffff:169.254.169.254"), true);
+  assert.equal(isBlockedDestinationIp("fe80::1"), true);
+  assert.equal(isBlockedDestinationIp("febf::1"), true);
+  assert.equal(isBlockedDestinationIp("fd00:ec2::254"), true);
+  assert.equal(isBlockedDestinationIp("[fd00:ec2::254]"), true);
+  assert.equal(isBlockedDestinationIp("8.8.8.8"), false);
+  assert.equal(isBlockedDestinationIp("2606:4700::1111"), false);
+  assert.equal(isBlockedDestinationIp("fec0::1"), false);
 });
 
-test("isLinkLocalOrMetadataIp catches non-canonical spellings of blocked addresses", () => {
-  assert.equal(isLinkLocalOrMetadataIp("::ffff:a9fe:a9fe"), true);
-  assert.equal(isLinkLocalOrMetadataIp("[::ffff:a9fe:a9fe]"), true);
-  assert.equal(isLinkLocalOrMetadataIp("fd00:ec2:0:0:0:0:0:254"), true);
-  assert.equal(isLinkLocalOrMetadataIp("fd00:0ec2::0254"), true);
-  assert.equal(isLinkLocalOrMetadataIp("FE80::1"), true);
-  assert.equal(isLinkLocalOrMetadataIp("fe80::1%eth0"), true);
+test("isBlockedDestinationIp catches non-canonical spellings of blocked addresses", () => {
+  assert.equal(isBlockedDestinationIp("::ffff:a9fe:a9fe"), true);
+  assert.equal(isBlockedDestinationIp("[::ffff:a9fe:a9fe]"), true);
+  assert.equal(isBlockedDestinationIp("fd00:ec2:0:0:0:0:0:254"), true);
+  assert.equal(isBlockedDestinationIp("fd00:0ec2::0254"), true);
+  assert.equal(isBlockedDestinationIp("FE80::1"), true);
+  assert.equal(isBlockedDestinationIp("fe80::1%eth0"), true);
+  assert.equal(isBlockedDestinationIp("0.0.0.0"), true);
+  assert.equal(isBlockedDestinationIp("0.0.0.7"), true);
+  assert.equal(isBlockedDestinationIp("::"), true);
+  assert.equal(isBlockedDestinationIp("::ffff:0:0"), true);
+  assert.equal(isBlockedDestinationIp("[::]"), true);
 });
 
 test("valid token, open policy => 200 + audited as ok with scope/principal", async () => {
@@ -257,6 +280,21 @@ test("a name RESOLVING to link-local / denied IP is denied (rebind guard)", asyn
   const port = await listen(server);
   try {
     assert.equal(await check(port, "innocent.example.com:443", await egressToken({ allowedHosts: [] })), 403);
+    assert.equal(records.at(-1)?.verdict, "denied");
+  } finally {
+    await close(server);
+  }
+});
+
+test("loopback destinations are denied even under an open policy, by literal and by resolved IP", async () => {
+  const { server, records } = boot({ lookup: async () => ["127.0.0.1"] });
+  const port = await listen(server);
+  try {
+    const open = await egressToken({ allowedHosts: [] });
+    for (const authority of ["127.0.0.1:9901", "127.0.0.1:48081", "[::1]:9901", "127.1.2.3:80"]) {
+      assert.equal(await check(port, authority, open), 403, authority);
+    }
+    assert.equal(await check(port, "rebind.example.com:9901", open), 403);
     assert.equal(records.at(-1)?.verdict, "denied");
   } finally {
     await close(server);

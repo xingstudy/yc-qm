@@ -1,8 +1,9 @@
 import type { PendingApprovalRecord } from "../types.ts";
 import { orgId as orgIdOf } from "../config.ts";
 import { parseScopeId, scopeId } from "../types.ts";
-import { fileArtifactId } from "../files/file-artifact-store.ts";
+import { fileArtifactId, artifactPath } from "../files/file-artifact-store.ts";
 import { transcriptEntries, windowedTranscript } from "../sessions/session-store.ts";
+import { SEARCH_HIT_LIMIT, searchSnippet, searchTerms } from "../sessions/entry-search.ts";
 import { supportsProcessSessions } from "../sandbox/sandbox.ts";
 import { processIsGone } from "../sandbox/process-poll.ts";
 import { cronRef, deployRef, encodeRef, fileRef, skillRef } from "../acl/resource-ref.ts";
@@ -14,7 +15,7 @@ import { MAX_ATTACHMENT_BYTES, mimeFromName, safeAttachmentName } from "../core/
 import { projectIdFromGroupRef, projectScopeId } from "../projects/project-store.ts";
 
 import type { App, AppDeps } from "./app-types.ts";
-import { toFileItem, type ScopeDeployment } from "./app-types.ts";
+import { toFileItem, type ScopeDeployment, type SessionSearchHit } from "./app-types.ts";
 import type { AppHelpers } from "./app-helpers.ts";
 
 export function createSessionMethods(
@@ -29,6 +30,7 @@ export function createSessionMethods(
   | "uploadFileForViewer"
   | "openFileForViewer"
   | "listSessions"
+  | "searchSessions"
   | "sessionBackground"
   | "readSessionBackgroundOutput"
   | "listContexts"
@@ -37,6 +39,7 @@ export function createSessionMethods(
   | "addProjectMember"
   | "removeProjectMember"
   | "renameProject"
+  | "setProjectSlackChannel"
   | "listScopeResources"
   | "managesScope"
   | "membershipControlsScope"
@@ -44,6 +47,7 @@ export function createSessionMethods(
   | "updateSession"
   | "regenerateTitle"
   | "spawnSession"
+  | "discardSession"
   | "forkSession"
   | "grant"
   | "revokeGrant"
@@ -64,6 +68,7 @@ export function createSessionMethods(
     projectsForViewer,
     projectView,
     reconcileProjectMember,
+    syncProjectChannelRoster,
     managedProjectMembership,
     approvalRecordIsCurrent,
     principalCanAccessCurrentScope,
@@ -112,7 +117,7 @@ export function createSessionMethods(
       const name = safeAttachmentName(input.name);
       const mimetype = (input.mimetype ?? mimeFromName(name)).split(";")[0]!.trim().toLowerCase() || mimeFromName(name);
       const id = fileArtifactId(`upload:${principalId}:${createdInScope}:${Date.now()}:${randomUUID()}`, "in", 0);
-      const path = `artifacts/${id}/${name}`;
+      const path = artifactPath(id, name);
       const { artifact } = await deps.files.put({
         id,
         ownerScopeId,
@@ -184,7 +189,18 @@ export function createSessionMethods(
         if (m.expiresAt <= now) continue;
         watchCounts.set(m.threadRef, (watchCounts.get(m.threadRef) ?? 0) + 1);
       }
-      if (workingThreadRefs.size === 0 && waiting.size === 0 && jobCounts.size === 0 && watchCounts.size === 0)
+      const cronCounts = new Map<string, number>();
+      for (const c of await deps.crons.list()) {
+        if (!c.enabled || c.archived || !c.destination) continue;
+        cronCounts.set(c.destination.target, (cronCounts.get(c.destination.target) ?? 0) + 1);
+      }
+      if (
+        workingThreadRefs.size === 0 &&
+        waiting.size === 0 &&
+        jobCounts.size === 0 &&
+        watchCounts.size === 0 &&
+        cronCounts.size === 0
+      )
         return sessions;
       return sessions.map((s) => ({
         ...s,
@@ -192,7 +208,35 @@ export function createSessionMethods(
         ...(waiting.has(s.id) ? { awaitingInput: true } : {}),
         ...(jobCounts.has(s.threadRef) ? { backgroundJobs: jobCounts.get(s.threadRef)! } : {}),
         ...(watchCounts.has(s.threadRef) ? { watches: watchCounts.get(s.threadRef)! } : {}),
+        ...(cronCounts.has(s.threadRef) ? { crons: cronCounts.get(s.threadRef)! } : {}),
       }));
+    },
+
+    async searchSessions(principalId, query, limit = SEARCH_HIT_LIMIT): Promise<SessionSearchHit[]> {
+      const capped = Math.max(1, Math.min(limit, 100));
+      const hits = await deps.sessions.searchEntries(principalId, query, capped);
+      if (!hits.length) return [];
+      const visible = new Map((await sessionsForViewer(principalId)).map((s) => [s.id, s]));
+      const terms = searchTerms(query);
+      return hits.flatMap((hit) => {
+        const session = visible.get(hit.sessionId);
+        if (!session) return [];
+        return [
+          {
+            sessionId: hit.sessionId,
+            title: session.title ?? null,
+            scopeId: session.scopeId,
+            ...(session.channelName ? { channelName: session.channelName } : {}),
+            ...(session.surface ? { surface: session.surface } : {}),
+            seq: hit.seq,
+            entryType: hit.type,
+            ...(hit.author ? { author: hit.author } : {}),
+            snippet: searchSnippet(hit.text, terms),
+            createdAt: hit.createdAt,
+            ...(session.archived ? { archived: true } : {}),
+          },
+        ];
+      });
     },
 
     async sessionBackground(sessionId, viewer) {
@@ -216,7 +260,15 @@ export function createSessionMethods(
           expiresAt: m.expiresAt,
           ...(m.lastFiredAt !== undefined ? { lastFiredAt: m.lastFiredAt } : {}),
         }));
-      return { jobs, watches };
+      const crons = (await deps.crons.list())
+        .filter((c) => c.enabled && !c.archived && c.destination?.target === session.threadRef)
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map((c) => ({
+          id: c.id,
+          ...(c.title !== undefined ? { title: c.title } : {}),
+          ...(c.nextFireAt !== undefined ? { nextFireAt: c.nextFireAt } : {}),
+        }));
+      return { jobs, watches, crons };
     },
 
     async readSessionBackgroundOutput(sessionId, processId, viewer, sinceCursor) {
@@ -310,6 +362,64 @@ export function createSessionMethods(
         return { ...result, project: await projectView(result.project) };
       }
       return result;
+    },
+
+    async setProjectSlackChannel(id, principalId, channel) {
+      if (!deps.projects) return { status: "not_found" };
+      if (!deps.identity.isInternal(deps.identity.classify(principalId))) return { status: "forbidden" };
+      const existing = await deps.projects.get(id);
+      if (!existing || existing.orgId !== orgIdOf()) return { status: "not_found" };
+      let link: { channelId: string; channelName: string } | null = null;
+      if (channel !== null) {
+        const wanted = channel.trim().replace(/^#/, "");
+        if (!wanted) return { status: "invalid_channel" };
+        const findChannel = async () => {
+          const reachable = await deps.directory.listChannelsFor(principalId).catch(() => []);
+          return (
+            reachable.find((c) => c.channelId === wanted) ??
+            reachable.find((c) => c.name.toLowerCase() === wanted.toLowerCase())
+          );
+        };
+        let match = await findChannel();
+        if (!match) {
+          await h.refreshSurfaceDirectory().catch(() => undefined);
+          match = await findChannel();
+        }
+        if (!match) return { status: "invalid_channel" };
+        const channelScope = scopeId("channel", match.channelId);
+        const inUse = (await deps.sessions.listAll()).some((session) => session.scopeId === channelScope);
+        if (inUse) return { status: "channel_in_use" };
+        link = { channelId: match.channelId, channelName: match.name };
+      }
+      const prevDerived = existing.channelMemberIds ?? [];
+      const manual = new Set([existing.ownerId, ...existing.memberIds]);
+      const result = await deps.projects.setSlackChannel(id, principalId, link, async ({ project, changed }) => {
+        if (changed)
+          deps.auditLog.record({
+            at: Date.now(),
+            principalId,
+            action: link ? "project.slack_channel.link" : "project.slack_channel.unlink",
+            resource: link?.channelId ?? existing.slackChannel?.channelId ?? "",
+            scopeLabel: projectScopeId(project.id),
+          });
+        if (!link) {
+          for (const m of prevDerived) {
+            if (manual.has(m)) continue;
+            deps.auditLog.record({
+              at: Date.now(),
+              principalId,
+              action: "project.member.remove",
+              resource: m,
+              scopeLabel: projectScopeId(project.id),
+            });
+            await reconcileProjectMember(project, m, false);
+          }
+        }
+      });
+      if (result.status !== "ok") return result;
+      if (link) await syncProjectChannelRoster(result.project, principalId);
+      const fresh = (await deps.projects.get(id)) ?? result.project;
+      return { ...result, project: await projectView(fresh) };
     },
 
     async renameProject(id, principalId, name) {
@@ -516,6 +626,22 @@ export function createSessionMethods(
       }
       if (!(await principalCanAccessCurrentScope(principalId, scope))) return null;
       return create();
+    },
+
+    async discardSession(sessionId, principalId) {
+      const session = await deps.sessions.get(sessionId);
+      if (!session) return false;
+      const mine = await deps.sessions.listByParticipant(principalId);
+      if (!mine.some((s) => s.id === sessionId)) return false;
+      if (!(await deps.sessions.deleteSessionIfEmpty(sessionId))) return false;
+      deps.auditLog.record({
+        at: Date.now(),
+        principalId,
+        action: "session.discard",
+        resource: sessionId,
+        scopeLabel: session.scopeId,
+      });
+      return true;
     },
 
     async grant(g) {

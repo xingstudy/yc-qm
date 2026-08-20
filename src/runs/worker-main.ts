@@ -5,6 +5,7 @@ const config = loadConfig();
 const built = buildApp(config);
 await built.config.hydrate?.();
 await built.identity.hydrate();
+await built.mcpToolService.ready();
 const { runtime } = built;
 runtime.start();
 console.log(`[qm:worker] draining runs (org=${config.orgId}, runStore=${config.runStore}, workers=${config.workers})`);

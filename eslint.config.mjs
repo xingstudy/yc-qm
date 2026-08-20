@@ -59,6 +59,11 @@ export default tseslint.config(
             "Read configuration through loadConfig() (src/config.ts) and pass it down — process.env is parsed exactly once at the boundary.",
         },
         {
+          selector: "CallExpression[callee.object.name='console'] > Identifier.arguments[name=/^(e|err|error)$/]",
+          message:
+            "Pass errMessage(e), not the raw error object, to console.* — raw errors can leak response bodies or secrets into logs.",
+        },
+        {
           selector: "VariableDeclarator[init.name='process'] ObjectPattern Property[key.name='env']",
           message:
             "Read configuration through loadConfig() (src/config.ts) and pass it down — process.env is parsed exactly once at the boundary.",
@@ -81,6 +86,19 @@ export default tseslint.config(
                 "Read configuration through loadConfig() (src/config.ts) and pass it down — process.env is parsed exactly once at the boundary.",
             },
           ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["plugins/**/*.ts", "src/config.ts", "src/index.ts", "src/runs/worker-main.ts", "src/egress-authz-main.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "CallExpression[callee.object.name='console'] > Identifier.arguments[name=/^(e|err|error)$/]",
+          message:
+            "Pass errMessage(e), not the raw error object, to console.* — raw errors can leak response bodies or secrets into logs.",
         },
       ],
     },

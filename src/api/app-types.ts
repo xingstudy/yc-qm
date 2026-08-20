@@ -28,6 +28,8 @@ import type { TaskStore, TaskStatus } from "../tasks/task-store.ts";
 import type { ModelGateway } from "../model/model-gateway.ts";
 import type { ModelCredentialStore } from "../model/model-credential-store.ts";
 import type { CustomProviderStore } from "../model/custom-provider-store.ts";
+import type { McpServerStore } from "../mcp/mcp-server-store.ts";
+import type { McpToolService } from "../mcp/mcp-tool-service.ts";
 import type { AclStore } from "../acl/acl-store.ts";
 import type { SkillStore, Skill, SkillResolution } from "../skills/skill-store.ts";
 import type { SkillPack, NewSkillPack, SkillPackStore } from "../skills/skill-pack-store.ts";
@@ -175,12 +177,12 @@ export type VisibleCron = Cron & { scopeName?: string };
 
 export type ProjectView = Project & {
   scopeId: ScopeId;
-  members: Array<{ principalId: string; displayName: string }>;
+  members: Array<{ principalId: string; displayName: string; viaChannel?: boolean }>;
 };
 
 type ProjectViewMutation =
   | { status: "ok"; project: ProjectView; changed: boolean }
-  | { status: "not_found" | "forbidden" | "invalid_member" | "invalid_name" };
+  | { status: "not_found" | "forbidden" | "invalid_member" | "invalid_name" | "invalid_channel" | "channel_in_use" };
 
 interface DeploymentGitUrl {
   url: string;
@@ -199,6 +201,7 @@ interface SessionBackgroundView {
     expiresAt: number;
     lastFiredAt?: number;
   }>;
+  crons: Array<{ id: string; title?: string; nextFireAt?: number }>;
 }
 
 interface SessionBackgroundOutput {
@@ -212,6 +215,20 @@ interface TranscriptWindow {
   tailTurns?: number;
   sinceSeq?: number;
   beforeSeq?: number;
+}
+
+export interface SessionSearchHit {
+  sessionId: string;
+  title: string | null;
+  scopeId: string;
+  channelName?: string;
+  surface?: string;
+  seq: number;
+  entryType: string;
+  author?: string;
+  snippet: string;
+  createdAt: number;
+  archived?: boolean;
 }
 
 export interface App {
@@ -239,7 +256,11 @@ export interface App {
     startedAt: number | null;
     finishedAt: number | null;
   } | null>;
-  activeRunForThread(threadRef: string, viewer?: string): Promise<{ runId: string } | null>;
+  activeRunForThread(
+    threadRef: string,
+    viewer?: string,
+  ): Promise<{ runId: string; queued?: Array<{ runId: string; text: string }> } | null>;
+  withdrawRun(runId: string, viewer?: string): Promise<{ withdrawn: boolean; reason?: string }>;
   signalRun(
     runId: string,
     signal: RunSignal,
@@ -261,6 +282,7 @@ export interface App {
     seq: number,
   ): Promise<{ entry: SessionEntry } | null>;
   listSessions(principalId: string): Promise<Session[]>;
+  searchSessions(principalId: string, query: string, limit?: number): Promise<SessionSearchHit[]>;
   sessionBackground(sessionId: string, viewer: string): Promise<SessionBackgroundView | null>;
   readSessionBackgroundOutput(
     sessionId: string,
@@ -273,6 +295,7 @@ export interface App {
   createProject(principalId: string, name: string): Promise<ProjectView | null>;
   addProjectMember(id: string, principalId: string, memberId: string): Promise<ProjectViewMutation>;
   removeProjectMember(id: string, principalId: string, memberId: string): Promise<ProjectViewMutation>;
+  setProjectSlackChannel(id: string, principalId: string, channel: string | null): Promise<ProjectViewMutation>;
   renameProject(id: string, principalId: string, name: string): Promise<ProjectViewMutation>;
   updateSession(
     sessionId: string,
@@ -281,6 +304,7 @@ export interface App {
   ): Promise<Session | null>;
   regenerateTitle(sessionId: string, principalId: string): Promise<{ title: string | null } | null>;
   spawnSession(principalId: string, opts: { scopeId: ScopeId; title?: string }): Promise<{ session: Session } | null>;
+  discardSession(sessionId: string, principalId: string): Promise<boolean>;
   forkSession(
     sessionId: string,
     principalId: string,
@@ -294,7 +318,9 @@ export interface App {
   listScopeResources(principalId: string, scope: ScopeId): Promise<ScopeResources | null>;
   managesScope(principalId: string, scope: ScopeId): Promise<boolean>;
   membershipControlsScope(scope: ScopeId): Promise<boolean>;
-  authorizesCapabilityScope(claims: Pick<CapabilityClaims, "actorId" | "scopeId" | "scopeVersion">): Promise<boolean>;
+  authorizesCapabilityScope(
+    claims: Pick<CapabilityClaims, "actorId" | "scopeId" | "scopeVersion" | "botActor" | "liveActor" | "members">,
+  ): Promise<boolean>;
   openFileForViewer(id: string, principalId: string): Promise<OpenedFile | null>;
   grant(g: Grant): Promise<void>;
   revokeGrant(ownerScopeId: ScopeId, ref: string, granteeScopeId: ScopeId, revokedBy: string): Promise<void>;
@@ -362,8 +388,19 @@ export interface App {
   ackDeliveryByKey(idempotencyKey: string): Promise<void>;
   setRunDeliveryState(runId: string, state: RunDeliveryState): Promise<boolean>;
   upsertDirectory(members: DirectoryMember[], syncedAt?: number): Promise<void>;
-  upsertChannels(channels: DirectoryChannel[], channelMembers?: ChannelMembership[], syncedAt?: number): Promise<void>;
-  upsertGroups(groupMembers: GroupMembership[], syncedAt?: number): Promise<void>;
+  upsertChannels(
+    channels: DirectoryChannel[],
+    channelMembers?: ChannelMembership[],
+    syncedAt?: number,
+    channelRosterIds?: string[],
+    revocations?: ChannelMembership[],
+  ): Promise<void>;
+  upsertGroups(
+    groupMembers: GroupMembership[],
+    syncedAt?: number,
+    groupIds?: string[],
+    groupRosterIds?: string[],
+  ): Promise<void>;
   setDirectoryWorkspaceUrl(url: string): Promise<void>;
   directoryMeta(): Promise<DirectoryMeta>;
   resolveRecipient(query: string): Promise<RecipientResolution>;
@@ -431,6 +468,11 @@ export interface App {
   renameDeployment(id: string, name: string): Promise<Deployment>;
   setDeploymentDisplayName(id: string, displayName: string): Promise<Deployment>;
   reachDeployment(id: string, principalId: string, opts?: ReachOptions): Promise<Reach>;
+  deploymentLogsFor(
+    id: string,
+    principalId: string,
+    opts: { tailLines: number },
+  ): Promise<{ status: "ok"; logs: string | null } | { status: "not_found" | "denied" }>;
   shareDeployment(
     idOrName: string,
     grantee: ScopeId,
@@ -468,6 +510,8 @@ export interface AppDeps {
   tasks?: TaskStore;
   modelGateway: ModelGateway;
   modelCredentials?: ModelCredentialStore;
+  mcpServers?: McpServerStore;
+  mcpToolService?: McpToolService;
   modelCredentialFetch?: typeof fetch;
   customProviders?: CustomProviderStore;
   refreshCustomProviders?: () => Promise<void>;

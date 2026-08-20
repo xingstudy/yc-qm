@@ -16,7 +16,7 @@ import {
   posixJoin,
 } from "./exec-file-ops.ts";
 import { ephemeralCredLinkScript, type CredentialPathSpec } from "../credentials/resident-paths.ts";
-import { DROPPED_PROXY_ENV, proxyExportPrefix } from "./sandbox-env.ts";
+import { DROPPED_PROXY_ENV, forceThroughProxyEnv, proxyExportPrefix } from "./sandbox-env.ts";
 import { BLOB_TRANSFER_AUD, mintCapabilityToken } from "../auth/capability-token.ts";
 import type { BlobTransferStore } from "../persistence/blob-transfer.ts";
 import { CAPABILITY_HEADER } from "../api/contract.ts";
@@ -41,6 +41,9 @@ const RO_LAYERS_MANIFEST = ".ro-layers.manifest";
 const MISSING_RC = 44;
 const READ_CHUNK = 512 * 1024;
 const EXIT_GRACE_MS = 60_000;
+const RESTART_TIMEOUT_MS = 60_000;
+const CHECK_TIMEOUT_MS = 30_000;
+const GUEST_PROBE_TIMEOUT_SEC = 15;
 const DEFAULT_SPRITES_BASE_URL = "https://api.sprites.dev";
 
 export interface SpritesClientLike {
@@ -161,7 +164,10 @@ export function createSpritesSandbox(workspace: WorkspaceStore, opts: SpritesSan
   }
 
   async function writeAbsBytes(name: string, absPath: string, data: Uint8Array): Promise<void> {
-    const script = `mkdir -p "$(dirname ${shq(absPath)})" && cat > ${shq(absPath)} && wc -c < ${shq(absPath)}`;
+    const tmp = `${absPath}.part.${randomUUID()}`;
+    const script =
+      `mkdir -p "$(dirname ${shq(absPath)})" && cat > ${shq(tmp)} && ` +
+      `mv -f ${shq(tmp)} ${shq(absPath)} && wc -c < ${shq(absPath)}`;
     const r = await postExec(name, ["sh", "-c", script], 120, data);
     const written = Number.parseInt(r.stdout.toString("utf8").trim(), 10);
     if (r.rc !== 0 || written !== data.length) {
@@ -198,20 +204,6 @@ export function createSpritesSandbox(workspace: WorkspaceStore, opts: SpritesSan
     if (!check.ok || !bound)
       throw new Error(`sprites egress policy ${name}: readback mismatch (${JSON.stringify(got).slice(0, 200)})`);
     egressPolicyByName.set(name, want);
-  }
-
-  function spritesProxyEnv(token: string): Record<string, string> {
-    const u = new URL(opts.egressProxyUrl!);
-    const url = `${u.protocol}//x:${token}@${u.host}`;
-    const noProxy = "localhost,127.0.0.1,::1";
-    return {
-      HTTPS_PROXY: url,
-      HTTP_PROXY: url,
-      NO_PROXY: noProxy,
-      https_proxy: url,
-      http_proxy: url,
-      no_proxy: noProxy,
-    };
   }
 
   async function readAbsBytes(name: string, absPath: string): Promise<Uint8Array | null> {
@@ -404,7 +396,10 @@ export function createSpritesSandbox(workspace: WorkspaceStore, opts: SpritesSan
       const turnEnv = Object.fromEntries(
         Object.entries(provOpts?.env ?? {}).filter(([k]) => !DROPPED_PROXY_ENV.has(k)),
       );
-      const env = { ...turnEnv, ...(forceEgress ? spritesProxyEnv(provOpts!.egressToken!) : {}) };
+      const env = {
+        ...turnEnv,
+        ...(forceEgress ? forceThroughProxyEnv(opts.egressProxyUrl!, provOpts!.egressToken!) : {}),
+      };
       const handle: SandboxHandle = {
         id: name,
         rootDir: workspaceDir,
@@ -477,6 +472,39 @@ export function createSpritesSandbox(workspace: WorkspaceStore, opts: SpritesSan
     },
 
     backupComputer: execBackup.backupComputer,
+
+    async computerStatus(scopeId: string) {
+      const name = spriteScopeName(prefix, scopeId);
+      let machine: string;
+      try {
+        const res = await fetchImpl(`${baseUrl}/v1/sprites/${encodeURIComponent(name)}/check`, {
+          headers: { authorization: `Bearer ${opts.token ?? ""}` },
+          signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
+        });
+        const body = res.ok ? ((await res.json().catch(() => null)) as { status?: string } | null) : null;
+        machine = body?.status ?? `check failed: http ${res.status}`;
+      } catch (e) {
+        machine = `check failed: ${errMessage(e)}`;
+      }
+      let guestResponsive = false;
+      try {
+        guestResponsive = (await execRaw(name, "true", GUEST_PROBE_TIMEOUT_SEC)).code === 0;
+      } catch (e) {
+        void e;
+      }
+      return { machine, guestResponsive };
+    },
+
+    async restartComputer(scopeId: string): Promise<void> {
+      const name = spriteScopeName(prefix, scopeId);
+      ensured.delete(name);
+      const res = await fetchImpl(`${baseUrl}/v1/sprites/${encodeURIComponent(name)}/restart`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${opts.token ?? ""}` },
+        signal: AbortSignal.timeout(RESTART_TIMEOUT_MS),
+      });
+      if (!res.ok) throw new Error(`sprites restart ${name}: http ${res.status} ${(await res.text()).slice(0, 200)}`);
+    },
 
     async teardown(handle, tdOpts?: TeardownOptions): Promise<void> {
       if (handle.scratch) {

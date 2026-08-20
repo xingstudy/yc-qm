@@ -11,6 +11,10 @@ function fakeToolContext(sink?: { lastExecOpts?: Parameters<ToolContext["execute
       if (sink) sink.lastExecOpts = opts;
       return { stdout: `ran ${command}`, stderr: "", code: 0, timedOut: false };
     },
+    async restartComputer() {},
+    async computerStatus() {
+      return { machine: "healthy", guestResponsive: true };
+    },
     async read(path) {
       return path === "a.txt"
         ? { content: "data", sourceScopeId: "personal:U1" }
@@ -281,6 +285,12 @@ function fakeToolContext(sink?: { lastExecOpts?: Parameters<ToolContext["execute
     async staySilent() {
       return { ok: true as const, message: "[staying silent]" };
     },
+    mcpToolDefs() {
+      return [];
+    },
+    async callMcpTool() {
+      return "";
+    },
   };
 }
 
@@ -327,6 +337,41 @@ test("each pi tool emits a tool_call then a tool_result", async () => {
     emitted.every((e) => e.scopeLabel === "personal:U1"),
     true,
   );
+});
+
+test("execute's computer param manages the box out-of-band instead of running a command", async () => {
+  const restarted: number[] = [];
+  const tc = {
+    ...fakeToolContext(),
+    restartComputer: async () => {
+      restarted.push(1);
+    },
+    computerStatus: async () => ({ machine: "healthy", guestResponsive: false }),
+  };
+  const ref: ToolContextRef = { current: tc, emit: () => {}, scopeLabel: "personal:U1" };
+  const [execute] = createPiTools(ref);
+
+  const status = (await call(execute, { command: "", computer: "status", purpose: "p" })) as {
+    content: Array<{ text?: string }>;
+  };
+  assert.match(status.content[0]!.text!, /machine: healthy; shell: NOT answering/);
+
+  const restart = (await call(execute, { command: "", computer: "restart", purpose: "p" })) as {
+    content: Array<{ text?: string }>;
+  };
+  assert.equal(restarted.length, 1);
+  assert.match(restart.content[0]!.text!, /restarting/i);
+
+  ref.current = {
+    ...tc,
+    restartComputer: async () => {
+      throw new Error("this computer's substrate (local) does not support restarting the computer");
+    },
+  };
+  const err = (await call(execute, { command: "", computer: "restart", purpose: "p" })) as {
+    content: Array<{ text?: string }>;
+  };
+  assert.match(err.content[0]!.text!, /does not support restarting/);
 });
 
 test("a giant tool result is capped for the model, keeping the tail and matching the persisted replay record", async () => {
@@ -944,6 +989,35 @@ test("readOnly assembles ONLY observational tools — no execute/background/writ
   }
 });
 
+test("readOnly MCP tools cannot collide with a reserved core tool", () => {
+  const tc = fakeToolContext();
+  tc.mcpToolDefs = () => [
+    {
+      name: "credential_exec",
+      serverId: "credential",
+      remoteName: "exec",
+      description: "External write",
+      inputSchema: {},
+      readOnly: true,
+      capability: "blocked",
+    },
+    {
+      name: "crm_query",
+      serverId: "crm",
+      remoteName: "query",
+      description: "External read",
+      inputSchema: {},
+      readOnly: true,
+      capability: "allowed",
+    },
+  ];
+  const names = createPiTools({ current: tc }, { readOnly: true, mcpTools: () => tc.mcpToolDefs() }).map(
+    (tool) => tool.name,
+  );
+  assert.ok(names.includes("crm_query"));
+  assert.ok(!names.includes("credential_exec"));
+});
+
 test("finish_silently on a poll fire terminates the turn at the tool contract; off one it no-ops", async () => {
   const emitted: Emitted[] = [];
   const ref: ToolContextRef = {
@@ -1104,6 +1178,134 @@ test("tool entries carry the call id + faithful model-facing result (WAL replay 
   assert.match(result("call-exec").result, /\[exit 0\]/);
 });
 
+test("memory remember accepts facts as a single string and records coercion", async () => {
+  const emitted: Emitted[] = [];
+  const remembered: string[][] = [];
+  const ref: ToolContextRef = {
+    current: {
+      ...fakeToolContext(),
+      async memoryRemember(facts) {
+        remembered.push(facts);
+        return facts.length;
+      },
+    },
+    emit: (e) => {
+      emitted.push(e as Emitted);
+    },
+    scopeLabel: "personal:U1",
+  };
+  const memory = createPiTools(ref).find((tool) => tool.name === "memory");
+
+  await call(memory, { action: "remember", facts: "Owns billing." });
+
+  assert.deepEqual(remembered, [["Owns billing."]]);
+  const result = emitted.find((e) => e.type === "tool_result" && e.payload.tool === "memory")!.payload;
+  assert.equal(result.coercedFrom, "facts");
+  assert.equal(result.added, 1);
+});
+
+test("memory remember falls back to content lines with bullets", async () => {
+  const emitted: Emitted[] = [];
+  const remembered: string[][] = [];
+  const ref: ToolContextRef = {
+    current: {
+      ...fakeToolContext(),
+      async memoryRemember(facts) {
+        remembered.push(facts);
+        return facts.length;
+      },
+    },
+    emit: (e) => {
+      emitted.push(e as Emitted);
+    },
+    scopeLabel: "personal:U1",
+  };
+  const memory = createPiTools(ref).find((tool) => tool.name === "memory");
+
+  await call(memory, { action: "remember", facts: [], content: "\n- Owns billing.\n- Likes short updates.\n\n" });
+
+  assert.deepEqual(remembered, [["Owns billing.", "Likes short updates."]]);
+  const result = emitted.find((e) => e.type === "tool_result" && e.payload.tool === "memory")!.payload;
+  assert.equal(result.coercedFrom, "content");
+  assert.equal(result.added, 2);
+});
+
+test("memory remember falls back to query when facts and content are empty", async () => {
+  const emitted: Emitted[] = [];
+  const remembered: string[][] = [];
+  const ref: ToolContextRef = {
+    current: {
+      ...fakeToolContext(),
+      async memoryRemember(facts) {
+        remembered.push(facts);
+        return facts.length;
+      },
+    },
+    emit: (e) => {
+      emitted.push(e as Emitted);
+    },
+    scopeLabel: "personal:U1",
+  };
+  const memory = createPiTools(ref).find((tool) => tool.name === "memory");
+
+  await call(memory, { action: "remember", facts: [], content: "  ", query: "Prefers email summaries." });
+
+  assert.deepEqual(remembered, [["Prefers email summaries."]]);
+  const result = emitted.find((e) => e.type === "tool_result" && e.payload.tool === "memory")!.payload;
+  assert.equal(result.coercedFrom, "query");
+  assert.equal(result.added, 1);
+});
+
+test("memory remember keeps normal facts arrays unchanged", async () => {
+  const emitted: Emitted[] = [];
+  const remembered: string[][] = [];
+  const ref: ToolContextRef = {
+    current: {
+      ...fakeToolContext(),
+      async memoryRemember(facts) {
+        remembered.push(facts);
+        return facts.length;
+      },
+    },
+    emit: (e) => {
+      emitted.push(e as Emitted);
+    },
+    scopeLabel: "personal:U1",
+  };
+  const memory = createPiTools(ref).find((tool) => tool.name === "memory");
+
+  await call(memory, { action: "remember", facts: ["Owns billing.", "Likes short updates."] });
+
+  assert.deepEqual(remembered, [["Owns billing.", "Likes short updates."]]);
+  const result = emitted.find((e) => e.type === "tool_result" && e.payload.tool === "memory")!.payload;
+  assert.equal(result.coercedFrom, undefined);
+  assert.equal(result.added, 2);
+});
+
+test("memory remember all-empty error names the supplied fields", async () => {
+  const emitted: Emitted[] = [];
+  const ref: ToolContextRef = {
+    current: fakeToolContext(),
+    emit: (e) => {
+      emitted.push(e as Emitted);
+    },
+    scopeLabel: "personal:U1",
+  };
+  const memory = createPiTools(ref).find((tool) => tool.name === "memory");
+
+  const ret = (await call(memory, { action: "remember", facts: [], content: "", query: "" })) as {
+    content: Array<{ text: string }>;
+  };
+
+  assert.equal(
+    ret.content[0]!.text,
+    "[error] memory remember requires `facts` (a non-empty list). Received: facts, content, query (use facts instead).",
+  );
+  const result = emitted.find((e) => e.type === "tool_result" && e.payload.tool === "memory")!.payload;
+  assert.equal(result.isError, true);
+  assert.equal(result.error, "facts required");
+});
+
 test("not-found read and denied command record isError + the faithful error text", async () => {
   const emitted: Emitted[] = [];
   const denyTC: ToolContext = {
@@ -1176,6 +1378,72 @@ test("execute forwards the agent's timeout_seconds into tc.execute; omitting it 
 
   await call(execute, { command: "echo hi" });
   assert.equal(sink.lastExecOpts, undefined);
+});
+
+test("credential_exec is turn-scoped, typed, and forwards only service plus literal argv", async () => {
+  const calls: unknown[] = [];
+  const tc: ToolContext = {
+    ...fakeToolContext(),
+    credentialExecServices: [{ service: "acme", binary: "acmecli" }],
+    async credentialExec(service, args, opts) {
+      calls.push({ service, args, opts });
+      return { stdout: "authenticated", stderr: "", code: 0, timedOut: false };
+    },
+  };
+  const absent = createPiTools({ current: fakeToolContext() });
+  assert.equal(
+    absent.some((tool) => tool.name === "credential_exec"),
+    false,
+  );
+  const tools = createPiTools(
+    { current: tc },
+    { credentialExecServices: tc.credentialExecServices, execTimeoutCeilingMs: 10_000 },
+  );
+  const tool = tools.find((candidate) => candidate.name === "credential_exec")!;
+  assert.match(tool.description, /acme \(acmecli\)/);
+  assert.match(tool.description, /Shell operators and pipelines are not supported/);
+  const args = ["; env", "$(env)", "a|b", "> out", "two words"];
+  const result = await call(tool, { service: "acme", args, timeout_seconds: 7 });
+  assert.deepEqual(calls, [{ service: "acme", args, opts: { timeoutSeconds: 7 } }]);
+  assert.match((result as { content: Array<{ text: string }> }).content[0]!.text, /authenticated/);
+});
+
+test("credential_exec surfaces NeedsApproval and CommandDenied like execute", async () => {
+  const gated: ToolContext = {
+    ...fakeToolContext(),
+    credentialExecServices: [{ service: "acme", binary: "acmecli" }],
+    async credentialExec() {
+      throw new NeedsApproval("'acmecli' 'tool'", "mutating subcommand", "approval", "tool", "\\bacmecli\\s+tool\\b");
+    },
+  };
+  const ref = { current: gated, pendingApprovals: [] as NonNullable<ToolContextRef["pendingApprovals"]> };
+  const tool = createPiTools(ref, { credentialExecServices: gated.credentialExecServices }).find(
+    (candidate) => candidate.name === "credential_exec",
+  )!;
+  const blocked = (await call(tool, { service: "acme", args: ["tool"] })) as {
+    content: Array<{ text: string }>;
+    terminate?: boolean;
+  };
+  assert.match(blocked.content[0]!.text, /needs human approval/);
+  assert.equal(blocked.terminate, true);
+  assert.equal(ref.pendingApprovals.length, 1);
+  assert.equal(ref.pendingApprovals[0]!.approvalKey, "\\bacmecli\\s+tool\\b");
+  assert.equal((ref as { pausedOnApproval?: boolean }).pausedOnApproval, true);
+
+  const denied: ToolContext = {
+    ...fakeToolContext(),
+    credentialExecServices: [{ service: "acme", binary: "acmecli" }],
+    async credentialExec() {
+      throw new CommandDenied("'acmecli'", "must be run with credential_exec");
+    },
+  };
+  const deniedTool = createPiTools({ current: denied }, { credentialExecServices: denied.credentialExecServices }).find(
+    (candidate) => candidate.name === "credential_exec",
+  )!;
+  const deniedResult = (await call(deniedTool, { service: "acme", args: [] })) as {
+    content: Array<{ text: string }>;
+  };
+  assert.match(deniedResult.content[0]!.text, /denied by policy/);
 });
 
 test('execute scope:"owner" routes only when the owner-auth surface is enabled', async () => {
@@ -1300,6 +1568,39 @@ test("background dispatches each action and emits tool_call/tool_result", async 
 
   const bg = emitted.filter((e) => e.payload.tool === "background");
   assert.equal(bg.length, 10);
+});
+
+test("background watch reports an already exited job as a successful tail result", async () => {
+  const textOf = (r: unknown): string => (r as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+  const emitted: Emitted[] = [];
+  const ref: ToolContextRef = {
+    current: {
+      ...fakeToolContext(),
+      async backgroundWatch(processId) {
+        return {
+          processId,
+          completed: true,
+          registryStatus: "exited",
+          exitCode: 0,
+          outputTail: "final line\n",
+          cursor: 42,
+        };
+      },
+    },
+    emit: (e) => {
+      emitted.push(e as Emitted);
+    },
+    scopeLabel: "personal:U1",
+  };
+  const background = createPiTools(ref).find((t) => t.name === "background");
+
+  const watched = textOf(await call(background, { action: "watch", process_id: "bg-1" }));
+
+  assert.match(watched, /job already exited \(code 0\) — no watch armed; here is the tail of its output:/);
+  assert.match(watched, /final line/);
+  const result = emitted.find((e) => e.type === "tool_result")!.payload;
+  assert.equal(result.completed, true);
+  assert.equal(result.error, undefined);
 });
 
 test("background per-action validation returns a crisp [error] instead of throwing", async () => {
@@ -1574,7 +1875,7 @@ test("guidance conversation scope reads the effective SOUL; write requires conte
 });
 
 test("guidance defaults to channel scope when a channel is available, and rewrites the channel order", async () => {
-  assert.match(textOut(await call(tool("guidance"), { action: "read" })), /no channel guidance set/);
+  assert.match(textOut(await call(tool("guidance"), { action: "read" })), /Ambient replies: default/);
   assert.match(
     textOut(await call(tool("guidance"), { action: "write", content: "reply piratey to tweets" })),
     /channel guidance updated/,
@@ -1585,7 +1886,44 @@ test("guidance defaults to channel scope when a channel is available, and rewrit
   );
   assert.match(
     textOut(await call(tool("guidance"), { action: "write" })),
-    /\[error\].*needs `content`.*and\/or `bots`/,
+    /\[error\].*needs `content`.*`bots`.*and\/or `ambientEnabled`/,
+  );
+});
+
+test("guidance reads and writes channel ambient replies without changing omitted state", async () => {
+  let ambientEnabled: boolean | undefined;
+  const tc: ToolContext = {
+    ...fakeToolContext(),
+    async getStandingOrder() {
+      return { ok: true, orders: "keep watch", ...(ambientEnabled === undefined ? {} : { ambientEnabled }) };
+    },
+    async setStandingOrder(orders, _bots, nextAmbientEnabled) {
+      if (nextAmbientEnabled !== undefined) ambientEnabled = nextAmbientEnabled ?? undefined;
+      return { ok: true, orders, ...(ambientEnabled === undefined ? {} : { ambientEnabled }) };
+    },
+  };
+
+  assert.match(textOut(await call(tool("guidance", tc), { action: "write", ambientEnabled: true })), /updated/);
+  assert.match(textOut(await call(tool("guidance", tc), { action: "read" })), /Ambient replies: on/);
+  await call(tool("guidance", tc), { action: "write", content: "keep watching" });
+  assert.match(textOut(await call(tool("guidance", tc), { action: "read" })), /Ambient replies: on/);
+  await call(tool("guidance", tc), { action: "write", ambientEnabled: false });
+  assert.match(textOut(await call(tool("guidance", tc), { action: "read" })), /Ambient replies: off/);
+  await call(tool("guidance", tc), { action: "write", ambientEnabled: null });
+  assert.match(textOut(await call(tool("guidance", tc), { action: "read" })), /Ambient replies: default/);
+});
+
+test("guidance rejects ambient replies at conversation scope", async () => {
+  assert.match(
+    textOut(
+      await call(tool("guidance"), {
+        action: "write",
+        scope: "conversation",
+        content: "Be terse.",
+        ambientEnabled: true,
+      }),
+    ),
+    /\[error\].*applies only to channel scope/,
   );
 });
 

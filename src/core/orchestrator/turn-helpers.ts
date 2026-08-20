@@ -107,6 +107,7 @@ const CONNECTOR_SKILL_PROVIDERS: Readonly<Record<string, string>> = {
   "google-workspace": "google",
   linear: "linear",
   "morning-digest": "x",
+  "slack-drafts": "slack",
   x: "x",
 };
 
@@ -256,6 +257,7 @@ export function replayableRequest(input: OrchestratorInput): TurnRequest {
     ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
     ...(input.fastMode !== undefined ? { fastMode: input.fastMode } : {}),
     ...(input.readOnly ? { readOnly: true } : {}),
+    ...(input.skipMemory ? { skipMemory: true } : {}),
     ...(input.surfaceTools ? { surfaceTools: true } : {}),
     ...(input.addressed ? { addressed: true } : {}),
     ...(input.envelopeWrapped ? { envelopeWrapped: true } : {}),

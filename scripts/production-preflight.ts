@@ -9,6 +9,7 @@ import {
   isProductionPlaceholder,
 } from "../plugins/chassis/src/production-placeholders.ts";
 import { sleep } from "../src/util/async.ts";
+import { pgConnectionOptions, resolvePgCaTrust } from "../src/persistence/pg-pool.ts";
 import { databaseUrlFromEnv } from "../src/util/postgres-url.ts";
 
 const imageNames = [
@@ -305,10 +306,13 @@ export async function productionDatabaseProblem(env: NodeJS.ProcessEnv): Promise
     if (delay) await sleep(delay);
     const client = new pg.Client({
       application_name: "qm-production-preflight",
-      connectionString: databaseUrl,
       connectionTimeoutMillis: 5000,
       query_timeout: 5000,
       statement_timeout: 5000,
+      ...pgConnectionOptions(
+        databaseUrl,
+        resolvePgCaTrust({ cert: env.DATABASE_CA_CERT, certFile: env.DATABASE_CA_CERT_FILE }),
+      ),
     });
     let lockKey = "";
     let lockAcquired = false;

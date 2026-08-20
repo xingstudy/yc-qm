@@ -1,6 +1,5 @@
 import { nothing, render, type TemplateResult } from "lit";
 import {
-  ArrowLeft,
   Box,
   Brain,
   ChevronDown,
@@ -14,6 +13,8 @@ import {
   Plus,
   RefreshCw,
   Rocket,
+  Search,
+  ShieldCheck,
   type IconNode,
 } from "lucide";
 import "@mariozechner/mini-lit/dist/ThemeToggle.js";
@@ -36,6 +37,7 @@ import { clearAllDrafts, saveDraft, storedDraft } from "./drafts";
 import { deepLinkPath, isPlainLeftClick, parseDeepLink, UI_BASE } from "./deep-link";
 import {
   addBlankPane,
+  adoptRemoteSplit,
   canvasToast,
   drawCanvas,
   exitSplitIfActive,
@@ -58,12 +60,15 @@ import {
 } from "./sessions";
 import { openCronById, renderCronsPage, resetActiveCron, routeCronsHistory } from "./crons";
 import { renderFiles } from "./files";
+import { setScopedSession } from "./session-scope";
+import { openChatSearch, SEARCH_HOTKEY_LABEL } from "./search";
+import { hideTooltip, showTooltip } from "./tooltip";
 import { clearConnectorNotice, noteConnectorResult, renderConnectors, resetKeychainState } from "./connectors";
 import { renderDeploys } from "./deploys";
 import { renderMemory, resetMemoryState } from "./memory";
 import { renderSkills } from "./skills";
 import { contextsState, ensureContexts, renderContexts, resetContextsState, resolveProjectScope } from "./contexts";
-import { appState, isView, type AuthMode, type Me, type View } from "./shell-state";
+import { appState, can, isView, type AuthMode, type Me, type View } from "./shell-state";
 import { trapDialogFocus } from "./dialog-focus";
 import { currentLocale, html, setLocale, t } from "./i18n.ts";
 export { appState, can, type Me, type View } from "./shell-state";
@@ -84,14 +89,11 @@ export const ADMIN_BASE = (() => {
 })();
 export const ADMIN_HOME_URL = `${ADMIN_BASE}/`;
 
-export function adminSessionLogUrl(sessionId: string, scopeId: string): string {
-  const q = new URLSearchParams({ view: "history", scope: scopeId, session: sessionId });
-  return `${ADMIN_BASE}/?${q.toString()}`;
-}
-
-export function syncUrlFromState(): void {
+export function syncUrlFromState(sessionOverride?: string | null): void {
   const chatState = mainConversation().state;
-  const sessionId = splitState.active ? null : (chatState.sessionId ?? chatState.rememberedSessionId);
+  const fromState =
+    sessionOverride !== undefined ? sessionOverride : (chatState.sessionId ?? chatState.rememberedSessionId);
+  const sessionId = splitState.active ? null : fromState;
   const next = deepLinkPath(UI_BASE, appState.currentView, sessionId, contextsState.selected);
   if (`${location.pathname}${location.search}` !== next) history.replaceState(null, "", next);
 }
@@ -148,9 +150,9 @@ const NAV_WORKSPACE_KEY = "web-ui:nav-workspace";
 
 function loadNavOpen(key: string): boolean {
   try {
-    return localStorage.getItem(key) !== "0";
+    return localStorage.getItem(key) === "1";
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -447,7 +449,7 @@ export function mountShell(): void {
               <span class="user-name">${appState.me?.user ?? ""}</span>
             </div>
             <a class="icon-btn subtle" href=${ADMIN_HOME_URL} title="Back to admin" aria-label="Back to admin"
-              >${icon(ArrowLeft, 17)}</a
+              >${icon(ShieldCheck, 17)}</a
             >
             <button
               class="language-toggle"
@@ -541,28 +543,48 @@ export function renderSidebarTop(): void {
             ${navRow("files", ICON.files, t("Files"))} ${navRow("crons", ICON.crons, t("Crons"))}
             ${navRow("keychain", ICON.keychain, t("Keychain"))} ${navRow("deploys", ICON.deploys, t("Apps"))}
             ${navRow("memory", ICON.memory, t("Memory"))} ${navRow("skills", ICON.skills, t("Skills"))}
+            ${
+              can("admin")
+                ? html`<a class="navrow" href=${ADMIN_HOME_URL} title=${t("Admin")}>
+                    ${icon(ShieldCheck, 17)}<span>${t("Admin")}</span>
+                  </a>`
+                : nothing
+            }
           `,
         )}
       </nav>
-      ${
-        appState.currentView === "chats"
-          ? html`
-              <div class="section-label recents-label">
-                <span>${t("Sessions")}</span>
-                <button
-                  class="web-only-toggle ${sessionsState.webOnly ? "on" : ""}"
-                  type="button"
-                  role="switch"
-                  aria-checked=${sessionsState.webOnly ? "true" : "false"}
-                  title=${t(sessionsState.webOnly ? "Showing web chats only" : "Hide non-web conversations")}
-                  @click=${toggleWebOnly}
-                >
-                  <span>${t("Web only")}</span><span class="mini-switch"><span class="mini-knob"></span></span>
-                </button>
-              </div>
-            `
-          : ""
-      }
+      ${html`
+        <div class="section-label recents-label">
+          <span>${t("Sessions")}</span>
+          <button
+            class="chat-search-open"
+            type="button"
+            aria-label=${t("Search your chats")}
+            @click=${() => {
+              hideTooltip();
+              openChatSearch();
+            }}
+            @mouseenter=${(e: Event) =>
+              showTooltip(e.currentTarget as Element, `${t("Search your chats")} · ${SEARCH_HOTKEY_LABEL}`)}
+            @mouseleave=${(e: Event) => hideTooltip(e.currentTarget as Element)}
+            @focus=${(e: Event) =>
+              showTooltip(e.currentTarget as Element, `${t("Search your chats")} · ${SEARCH_HOTKEY_LABEL}`)}
+            @blur=${(e: Event) => hideTooltip(e.currentTarget as Element)}
+          >
+            ${icon(Search, 13)}
+          </button>
+          <button
+            class="web-only-toggle ${sessionsState.webOnly ? "on" : ""}"
+            type="button"
+            role="switch"
+            aria-checked=${sessionsState.webOnly ? "true" : "false"}
+            title=${t(sessionsState.webOnly ? "Showing web chats only" : "Hide non-web conversations")}
+            @click=${toggleWebOnly}
+          >
+            <span>${t("Web only")}</span><span class="mini-switch"><span class="mini-knob"></span></span>
+          </button>
+        </div>
+      `}
     `,
     appState.topEl,
   );
@@ -575,6 +597,7 @@ function onNavClick(e: Event): void {
   if (!isView(view)) return;
   if (e instanceof MouseEvent && !isPlainLeftClick(e)) return;
   e.preventDefault();
+  setScopedSession(null);
   switchView(view);
   closeSidebarOnNarrowView();
 }
@@ -595,7 +618,6 @@ export function switchView(v: View): void {
   }
   renderSidebarTop();
   syncUrlFromState();
-  if (v !== "chats" && appState.listEl) render(nothing, appState.listEl);
   switch (v) {
     case "chats":
       if (splitState.active) drawCanvas();
@@ -847,6 +869,7 @@ export async function boot(): Promise<void> {
   ensureDeliveryStream();
   warmDeferredChunks();
   loadPersistedSplit();
+  await adoptRemoteSplit();
 
   const params = new URLSearchParams(location.search);
   const {

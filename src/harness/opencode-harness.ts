@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { sanitizeTitle, TITLE_GENERATION_PROMPT } from "./pi-harness.ts";
+import { sanitizeTitle, TITLE_GENERATION_PROMPT, titleUserPrompt } from "./pi-harness.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -18,15 +18,28 @@ import type { TaskStore } from "../tasks/task-store.ts";
 import { errMessage, swallow } from "../util/errors.ts";
 import { sleep } from "../util/async.ts";
 import { NonRetryableTurnError } from "../core/turn-error.ts";
-import { defineHarness, type Harness, type HarnessTurnInput, type HarnessTurnResult } from "./harness.ts";
+import {
+  defineHarness,
+  envelopeWithoutMessages,
+  type Harness,
+  type HarnessTurnInput,
+  type HarnessTurnResult,
+} from "./harness.ts";
 import { coreToolOptions, createPiTools, type PiToolsOptions, type ToolContextRef } from "./pi-tools.ts";
+import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import { reconstructMessagesFromHistory } from "./replay.ts";
 import { parseSecurityScreenVerdict, SECURITY_SCREEN_SYSTEM_PROMPT } from "../security/security-posture.ts";
 import { countTokens } from "../util/tokens.ts";
 
 const OPENCODE_VERSION = "1.17.18";
 const OPENCODE_IDLE_WAIT_MS = 30 * 60_000;
+const OPENCODE_RUNTIME_POOL_LIMIT = 4;
+const OPENCODE_CLOSE_DRAIN_MS = 2_000;
 export const OPENCODE_STARTUP_TIMEOUT_MS = 90_000;
+
+class OpenCodeTurnCancelled extends Error {}
+
+class OpenCodeTurnDeadlineExceeded extends NonRetryableTurnError {}
 
 export interface OpenCodeHarnessOptions {
   modelId?: string | ((scope?: ScopeId) => string | undefined);
@@ -36,6 +49,7 @@ export interface OpenCodeHarnessOptions {
   scratchExec?: boolean;
   ownerAuthExec?: boolean;
   reachExec?: boolean;
+  mcpTools?: () => McpToolDescriptor[];
   controlTools?: boolean;
   turnWallClockMs?: number;
   execTimeoutMs?: number;
@@ -92,21 +106,42 @@ type Runtime = {
   jail: string;
   bridgeUrl: string;
   customProvidersVersion: number;
+  definitionKey: string;
+  definitionNames: string[];
+  mcpTools: McpToolDescriptor[];
+  toolContract: BridgeToolContract;
+  lastUsed: number;
+  namespace: string;
   close(): Promise<void>;
 };
 
-function toolOptions(opts: OpenCodeHarnessOptions, turn?: HarnessTurnInput): PiToolsOptions {
+type BridgeToolContract = Pick<
+  HarnessTurnInput,
+  "readOnly" | "surfaceTools" | "surfaceName" | "credentialExecServices"
+>;
+
+function toolOptions(
+  opts: OpenCodeHarnessOptions,
+  turn?: BridgeToolContract,
+  mcpTools: (() => McpToolDescriptor[]) | undefined = opts.mcpTools,
+): PiToolsOptions {
   return {
     scratchExec: opts.scratchExec,
     ownerAuthExec: opts.ownerAuthExec,
     reachExec: opts.reachExec,
+    ...(mcpTools ? { mcpTools } : {}),
     controlTools: opts.controlTools,
     execTimeoutMs: opts.execTimeoutMs,
     execTimeoutCeilingMs: opts.execTimeoutCeilingMs,
     backgroundJobTtlMs: opts.backgroundJobTtlMs,
     backgroundJobTtlMaxMs: opts.backgroundJobTtlMaxMs,
     ...(turn
-      ? { readOnly: turn.readOnly, surfaceTools: turn.surfaceTools, surfaceName: turn.surfaceName }
+      ? {
+          readOnly: turn.readOnly,
+          surfaceTools: turn.surfaceTools,
+          surfaceName: turn.surfaceName,
+          credentialExecServices: turn.credentialExecServices,
+        }
       : { surfaceTools: true, surfaceName: "slack" }),
   };
 }
@@ -115,11 +150,81 @@ function asTools(ref: ToolContextRef, options: PiToolsOptions): BridgedTool[] {
   return createPiTools(ref, options) as unknown as BridgedTool[];
 }
 
+type BridgeDefinition = { name: string; description: string; parameters: unknown };
+
+type BridgeDefinitionSnapshot = {
+  definitions: BridgeDefinition[];
+  key: string;
+  mcpTools: McpToolDescriptor[];
+  toolContract: BridgeToolContract;
+};
+
+const OPENCODE_RESERVED_TOOL_NAMES = new Set([
+  "task",
+  "read",
+  "write",
+  "bash",
+  "edit",
+  "apply_patch",
+  "glob",
+  "grep",
+  "webfetch",
+  "websearch",
+  "codesearch",
+  "patch",
+  "question",
+  "skill",
+  "todowrite",
+  "todoread",
+  "workspace_execute",
+  "workspace_read",
+  "workspace_write",
+]);
+
 export function bridgeToolName(name: string): string {
   if (name === "execute") return "workspace_execute";
   if (name === "read") return "workspace_read";
   if (name === "write") return "workspace_write";
   return name;
+}
+
+function bridgeTools(ref: ToolContextRef, options: PiToolsOptions): BridgedTool[] {
+  const seen = new Set<string>();
+  return asTools(ref, options).filter((tool) => {
+    const name = bridgeToolName(tool.name);
+    if (seen.has(name) || (OPENCODE_RESERVED_TOOL_NAMES.has(name) && !["execute", "read", "write"].includes(tool.name)))
+      return false;
+    seen.add(name);
+    return true;
+  });
+}
+
+function bridgeDefinitionSnapshot(opts: OpenCodeHarnessOptions, turn: HarnessTurnInput): BridgeDefinitionSnapshot {
+  const ref: ToolContextRef = { current: null };
+  const mcpTools = structuredClone(opts.mcpTools?.() ?? []);
+  const mcpToolSnapshot = () => mcpTools;
+  const toolContract: BridgeToolContract = {
+    readOnly: turn.readOnly,
+    surfaceTools: turn.surfaceTools,
+    surfaceName: turn.surfaceName,
+    ...(turn.credentialExecServices ? { credentialExecServices: structuredClone(turn.credentialExecServices) } : {}),
+  };
+  const definitions = bridgeTools(ref, toolOptions(opts, toolContract, mcpToolSnapshot)).map((tool) => {
+    const name = bridgeToolName(tool.name);
+    return { name, description: tool.description, parameters: tool.parameters };
+  });
+  return { definitions, key: JSON.stringify({ definitions, mcpTools, toolContract }), mcpTools, toolContract };
+}
+
+function activeBridgeTools(
+  ref: ToolContextRef,
+  opts: OpenCodeHarnessOptions,
+  runtime: Pick<Runtime, "mcpTools" | "toolContract">,
+): BridgedTool[] {
+  return bridgeTools(
+    ref,
+    toolOptions(opts, runtime.toolContract, () => runtime.mcpTools),
+  );
 }
 
 function body(req: IncomingMessage, max = 16 * 1024 * 1024): Promise<Buffer> {
@@ -345,10 +450,20 @@ async function freePort(): Promise<number> {
   return address.port;
 }
 
-async function waitForSessionIdle(client: OpencodeClient, sessionId: string, timeoutMs: number): Promise<void> {
+export async function waitForSessionIdle(
+  client: OpencodeClient,
+  sessionId: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const response = await client.session.status();
+    const remaining = Math.max(1, deadline - Date.now());
+    const timeout = AbortSignal.timeout(remaining);
+    const response = await client.session.status({
+      throwOnError: true,
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    });
     const status = response.data?.[sessionId] as { type?: string } | undefined;
     if (!status || status.type === "idle") return;
     await sleep(100);
@@ -434,23 +549,6 @@ async function terminateProcess(proc: ChildProcess): Promise<void> {
 
 export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harness {
   const active = new Map<string, ActiveTurn>();
-  const definitionRef: ToolContextRef = { current: null };
-  const definitionTools = [
-    ...asTools(definitionRef, toolOptions(opts)),
-    ...asTools(definitionRef, { ...toolOptions(opts), surfaceTools: false }),
-  ];
-  const definitions = [
-    ...new Map(
-      definitionTools.map((tool) => [
-        bridgeToolName(tool.name),
-        {
-          name: bridgeToolName(tool.name),
-          description: tool.description,
-          parameters: tool.parameters,
-        },
-      ]),
-    ).values(),
-  ];
   const bridgeSecret = randomBytes(32).toString("base64url");
   const configuredModel = opts.modelId;
   const resolveModelId = (scope?: ScopeId) =>
@@ -458,31 +556,50 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
     opts.defaultModelId ??
     DEFAULT_AGENT_MODEL_ID;
   const defaultTurnWallClockMs = opts.turnWallClockMs ?? CONFIG_DEFAULTS.turnWallClockSec * 1000;
-  let runtime: Runtime | null = null;
-  let starting: Promise<Runtime> | null = null;
-  let runtimeUsers = 0;
-  const idleWaiters = new Set<() => void>();
-  const waitForIdle = (): Promise<void> =>
-    runtimeUsers === 0
-      ? Promise.resolve()
-      : new Promise((resolve) => {
-          idleWaiters.add(resolve);
-        });
-  const resolveIdle = (): void => {
-    if (runtimeUsers > 0) return;
-    for (const resolve of idleWaiters) resolve();
-    idleWaiters.clear();
+  const runtimes = new Map<string, Runtime>();
+  const starting = new Map<string, Promise<Runtime>>();
+  const startingProcesses = new Set<ChildProcess>();
+  let auxiliaryHarness: Harness | null = null;
+  let closed = false;
+  let closing: Promise<void> | null = null;
+  const runtimeUsers = new Map<Runtime, number>();
+  const leaseDrains = new Set<() => void>();
+  const activeTurnAborts = new Set<() => Promise<void>>();
+  let reservedRuntimeSlots = 0;
+  let processingRuntimeWaiters = false;
+  type RuntimeWaiter = {
+    turn: HarnessTurnInput;
+    deadline: number | null;
+    wallMs: number;
+    resolve: (release: () => void) => void;
+    reject: (error: unknown) => void;
+    timer?: NodeJS.Timeout;
+    onCancel?: () => void;
+    settled: boolean;
+  };
+  const runtimeWaiters: RuntimeWaiter[] = [];
+  const runtimeKey = (customProvidersVersion: number, definitionKey: string) =>
+    `${customProvidersVersion}:${definitionKey}`;
+  const signalLeases = () => {
+    if ([...runtimeUsers.values()].some((users) => users > 0)) return;
+    for (const resolve of leaseDrains) resolve();
+    leaseDrains.clear();
   };
   const leaseRuntime = (leased: Runtime) => {
-    runtimeUsers += 1;
+    runtimeUsers.set(leased, (runtimeUsers.get(leased) ?? 0) + 1);
+    leased.lastUsed = Date.now();
     let released = false;
     return {
       runtime: leased,
       release() {
         if (released) return;
         released = true;
-        runtimeUsers -= 1;
-        resolveIdle();
+        const users = Math.max(0, (runtimeUsers.get(leased) ?? 1) - 1);
+        if (users === 0 && ![...runtimes.values()].includes(leased)) runtimeUsers.delete(leased);
+        else runtimeUsers.set(leased, users);
+        leased.lastUsed = Date.now();
+        signalLeases();
+        void processRuntimeWaiters();
       },
     };
   };
@@ -495,19 +612,21 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
     eventTail: Promise.resolve(),
   });
 
-  const processEvent = async (event: unknown): Promise<void> => {
+  const activeKey = (namespace: string, sessionId: string) => `${namespace}:${sessionId}`;
+
+  const processEvent = async (namespace: string, event: unknown): Promise<void> => {
     const payload = (event as { payload?: unknown }).payload as
       { type?: string; properties?: Record<string, unknown> } | undefined;
     if (payload?.type === "session.created") {
       const info = payload.properties?.info as { id?: string; parentID?: string } | undefined;
-      const parent = info?.parentID ? active.get(info.parentID) : undefined;
-      if (info?.id && parent) active.set(info.id, childState(parent));
+      const parent = info?.parentID ? active.get(activeKey(namespace, info.parentID)) : undefined;
+      if (info?.id && parent) active.set(activeKey(namespace, info.id), childState(parent));
       return;
     }
     if (payload?.type !== "message.part.updated") return;
     const part = payload.properties?.part as Record<string, unknown> | undefined;
     const sessionID = typeof part?.sessionID === "string" ? part.sessionID : "";
-    const state = active.get(sessionID);
+    const state = active.get(activeKey(namespace, sessionID));
     if (!state || !part) return;
     const operation = state.eventTail.then(async () => {
       if (part.type === "text" && typeof payload.properties?.delta === "string" && !state.child) {
@@ -577,28 +696,33 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
     await operation;
   };
 
-  const startRuntime = (customProvidersVersion: number): Promise<Runtime> => {
+  const startRuntime = (
+    customProvidersVersion: number,
+    definitionSnapshot: BridgeDefinitionSnapshot,
+  ): Promise<Runtime> => {
     return (async () => {
       const jail = mkdtempSync(join(tmpdir(), "qm-opencode-"));
+      const namespace = randomBytes(12).toString("base64url");
+      let bridgeClient: OpencodeClient | undefined;
       const bridge = createServer(async (req, res) => {
         try {
           const url = new URL(req.url ?? "/", "http://127.0.0.1");
           if (url.pathname === "/definitions") {
             if (!equalSecret(bearer(req), bridgeSecret)) return json(res, 401, { error: "unauthorized" });
-            return json(res, 200, definitions);
+            return json(res, 200, definitionSnapshot.definitions);
           }
           const sessionMatch = /^\/session\/([^/]+)\/(context|tool|capture)$/.exec(url.pathname);
           if (sessionMatch) {
             if (!equalSecret(bearer(req), bridgeSecret)) return json(res, 401, { error: "unauthorized" });
             const requestedSessionId = decodeURIComponent(sessionMatch[1]!);
-            let state = active.get(requestedSessionId);
-            if (!state && runtime) {
-              const session = await runtime.client.session.get({ path: { id: requestedSessionId } }).catch(() => null);
+            let state = active.get(activeKey(namespace, requestedSessionId));
+            if (!state && bridgeClient) {
+              const session = await bridgeClient.session.get({ path: { id: requestedSessionId } }).catch(() => null);
               const parentId = session?.data?.parentID;
-              const parent = parentId ? active.get(parentId) : undefined;
+              const parent = parentId ? active.get(activeKey(namespace, parentId)) : undefined;
               if (parent) {
                 state = childState(parent);
-                active.set(requestedSessionId, state);
+                active.set(activeKey(namespace, requestedSessionId), state);
               }
             }
             if (!state) return json(res, 404, { error: "inactive session" });
@@ -654,6 +778,8 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
         }
       });
       let proc: ChildProcess | null = null;
+      let abortEvents: AbortController | undefined;
+      let published: { key: string; runtime: Runtime } | null = null;
       try {
         await new Promise<void>((resolveListen, reject) => {
           bridge.once("error", reject);
@@ -663,8 +789,9 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
         if (!address || typeof address === "string") throw new Error("failed to bind OpenCode bridge");
         const bridgeUrl = `http://127.0.0.1:${address.port}`;
         const pluginUrl = pathToFileURL(join(import.meta.dirname, "opencode-plugin.ts")).href;
-        const enabledTools = Object.fromEntries(definitions.map((item) => [item.name, true]));
+        const enabledTools = Object.fromEntries(definitionSnapshot.definitions.map((item) => [item.name, true]));
         const custom = (await opts.resolveCustomProviders?.()) ?? [];
+        if (closed) throw new Error("OpenCode harness is closed");
         const customProviderConfig = Object.fromEntries(
           custom.map(({ spec, apiKey }) => [
             spec.id,
@@ -772,30 +899,57 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
           OPENCODE_BRIDGE_SECRET: bridgeSecret,
         };
         const sidecarPort = await freePort();
+        const startupTimeoutMs = opts.startupTimeoutMs ?? OPENCODE_STARTUP_TIMEOUT_MS;
+        const startupDeadline = Date.now() + startupTimeoutMs;
         proc = spawn(binary, ["serve", "--hostname=127.0.0.1", `--port=${sidecarPort}`, "--log-level=ERROR"], {
           cwd: jail,
           env: cleanEnv,
           stdio: ["ignore", "pipe", "pipe"],
         });
-        const serverUrl = await waitForServer(proc, opts.startupTimeoutMs ?? OPENCODE_STARTUP_TIMEOUT_MS);
+        startingProcesses.add(proc);
+        proc.once("exit", () => {
+          startingProcesses.delete(proc!);
+          abortEvents?.abort();
+          if (published && runtimes.get(published.key) === published.runtime) {
+            runtimes.delete(published.key);
+            if ((runtimeUsers.get(published.runtime) ?? 0) === 0) runtimeUsers.delete(published.runtime);
+            signalLeases();
+            void processRuntimeWaiters();
+          }
+          bridge.close();
+          rmSync(jail, { recursive: true, force: true });
+        });
+        const serverUrl = await waitForServer(proc, startupTimeoutMs);
+        startingProcesses.delete(proc);
         proc.stdout?.resume();
         proc.stderr?.on("data", (chunk: Buffer) => console.error(`[opencode] ${chunk.toString().trimEnd()}`));
         const client = createOpencodeClient({ baseUrl: serverUrl, directory: jail });
-        const abortEvents = new AbortController();
+        try {
+          await client.session.status({
+            throwOnError: true,
+            signal: AbortSignal.timeout(Math.max(1, startupDeadline - Date.now())),
+          });
+        } catch (error) {
+          throw new Error(`OpenCode failed readiness check during startup: ${errMessage(error)}`, { cause: error });
+        }
+        if (proc.exitCode !== null || proc.signalCode !== null) throw new Error("OpenCode exited during startup");
+        bridgeClient = client;
+        const events = new AbortController();
+        abortEvents = events;
         void (async () => {
-          while (!abortEvents.signal.aborted) {
+          while (!events.signal.aborted) {
             try {
-              const events = await client.global.event({ signal: abortEvents.signal });
-              for await (const event of events.stream) {
+              const stream = await client.global.event({ signal: events.signal });
+              for await (const event of stream.stream) {
                 try {
-                  await processEvent(event);
+                  await processEvent(namespace, event);
                 } catch (error) {
                   swallow("opencode event", error);
                 }
               }
-              if (!abortEvents.signal.aborted) await sleep(100);
+              if (!events.signal.aborted) await sleep(100);
             } catch (error) {
-              if (!abortEvents.signal.aborted) {
+              if (!events.signal.aborted) {
                 swallow("opencode event stream", error);
                 await sleep(100);
               }
@@ -809,24 +963,32 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
           jail,
           bridgeUrl,
           customProvidersVersion,
+          definitionKey: definitionSnapshot.key,
+          definitionNames: definitionSnapshot.definitions.map((definition) => definition.name),
+          mcpTools: definitionSnapshot.mcpTools,
+          toolContract: definitionSnapshot.toolContract,
+          lastUsed: Date.now(),
+          namespace,
           async close() {
-            abortEvents.abort();
+            events.abort();
             await terminateProcess(proc!);
             await closeServer(bridge);
             rmSync(jail, { recursive: true, force: true });
           },
         };
-        proc.once("exit", () => {
-          abortEvents.abort();
-          if (runtime !== created) return;
-          runtime = null;
-          bridge.close();
-          rmSync(jail, { recursive: true, force: true });
-        });
-        runtime = created;
+        const key = runtimeKey(customProvidersVersion, definitionSnapshot.key);
+        if (closed) {
+          await created.close();
+          throw new Error("OpenCode harness is closed");
+        }
+        published = { key, runtime: created };
+        runtimes.set(key, created);
         return created;
       } catch (error) {
-        if (proc) await terminateProcess(proc);
+        if (proc) {
+          startingProcesses.delete(proc);
+          await terminateProcess(proc);
+        }
         await closeServer(bridge);
         rmSync(jail, { recursive: true, force: true });
         throw error;
@@ -834,35 +996,216 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
     })();
   };
 
-  const acquireRuntime = async () => {
-    while (true) {
-      const expectedCustomProvidersVersion = opts.customProvidersVersion?.() ?? 0;
-      if (
-        runtime &&
-        runtime.process.exitCode === null &&
-        runtime.customProvidersVersion === expectedCustomProvidersVersion
-      )
-        return leaseRuntime(runtime);
-      if (!starting)
-        starting = (async () => {
-          await waitForIdle();
-          if (runtime) {
-            const stale = runtime;
-            runtime = null;
-            await stale.close();
+  const deadlineError = (wallMs: number) =>
+    new OpenCodeTurnDeadlineExceeded(`OpenCode turn exceeded ${Math.max(1, Math.round(wallMs / 1000))}s wall clock`);
+
+  const settleRuntimeWaiter = (waiter: RuntimeWaiter, error?: unknown, release?: () => void) => {
+    if (waiter.settled) return;
+    waiter.settled = true;
+    if (waiter.timer) clearTimeout(waiter.timer);
+    if (waiter.onCancel) waiter.turn.cancel?.removeEventListener("abort", waiter.onCancel);
+    const index = runtimeWaiters.indexOf(waiter);
+    if (index >= 0) runtimeWaiters.splice(index, 1);
+    if (error !== undefined) waiter.reject(error);
+    else waiter.resolve(release!);
+  };
+
+  const rejectRuntimeWaiters = (error: Error) => {
+    for (const waiter of [...runtimeWaiters]) settleRuntimeWaiter(waiter, error);
+  };
+
+  async function processRuntimeWaiters(): Promise<void> {
+    if (processingRuntimeWaiters) return;
+    processingRuntimeWaiters = true;
+    try {
+      while (runtimeWaiters.length > 0) {
+        const waiter = runtimeWaiters[0]!;
+        if (waiter.settled) {
+          runtimeWaiters.shift();
+          continue;
+        }
+        if (closed) {
+          settleRuntimeWaiter(waiter, new Error("OpenCode harness is closed"));
+          continue;
+        }
+        if (waiter.turn.cancel?.aborted) {
+          settleRuntimeWaiter(waiter, new OpenCodeTurnCancelled());
+          continue;
+        }
+        if (waiter.deadline !== null && Date.now() >= waiter.deadline) {
+          settleRuntimeWaiter(waiter, deadlineError(waiter.wallMs));
+          continue;
+        }
+        if (runtimes.size + reservedRuntimeSlots >= OPENCODE_RUNTIME_POOL_LIMIT) {
+          const idle = [...runtimes.entries()]
+            .filter(([, runtime]) => (runtimeUsers.get(runtime) ?? 0) === 0)
+            .sort(([, left], [, right]) => left.lastUsed - right.lastUsed)[0];
+          if (!idle) break;
+          const [idleKey, idleRuntime] = idle;
+          runtimes.delete(idleKey);
+          runtimeUsers.delete(idleRuntime);
+          await idleRuntime.close();
+          if (waiter.settled) continue;
+          if (closed) {
+            settleRuntimeWaiter(waiter, new Error("OpenCode harness is closed"));
+            continue;
           }
-          return await startRuntime(opts.customProvidersVersion?.() ?? 0);
+        }
+        reservedRuntimeSlots += 1;
+        let released = false;
+        settleRuntimeWaiter(waiter, undefined, () => {
+          if (released) return;
+          released = true;
+          reservedRuntimeSlots = Math.max(0, reservedRuntimeSlots - 1);
+          void processRuntimeWaiters();
+        });
+      }
+    } finally {
+      processingRuntimeWaiters = false;
+    }
+  }
+
+  const reserveRuntimeSlot = (turn: HarnessTurnInput, deadline: number | null, wallMs: number): Promise<() => void> => {
+    if (closed) return Promise.reject(new Error("OpenCode harness is closed"));
+    if (turn.cancel?.aborted) return Promise.reject(new OpenCodeTurnCancelled());
+    if (deadline !== null && Date.now() >= deadline) return Promise.reject(deadlineError(wallMs));
+    return new Promise<() => void>((resolve, reject) => {
+      const waiter: RuntimeWaiter = {
+        turn,
+        deadline,
+        wallMs,
+        resolve,
+        reject,
+        settled: false,
+      };
+      if (turn.cancel) {
+        waiter.onCancel = () => {
+          settleRuntimeWaiter(waiter, new OpenCodeTurnCancelled());
+          void processRuntimeWaiters();
+        };
+        turn.cancel.addEventListener("abort", waiter.onCancel, { once: true });
+      }
+      if (deadline !== null) {
+        waiter.timer = setTimeout(
+          () => {
+            settleRuntimeWaiter(waiter, deadlineError(wallMs));
+            void processRuntimeWaiters();
+          },
+          Math.max(1, deadline - Date.now()),
+        );
+      }
+      runtimeWaiters.push(waiter);
+      void processRuntimeWaiters();
+    });
+  };
+
+  const waitForRuntime = async (
+    pending: Promise<Runtime>,
+    turn: HarnessTurnInput,
+    deadline: number | null,
+    wallMs: number,
+  ): Promise<Runtime | null> => {
+    if (turn.cancel?.aborted) return null;
+    if (deadline !== null && Date.now() >= deadline) throw deadlineError(wallMs);
+    let timer: NodeJS.Timeout | undefined;
+    let onCancel: (() => void) | undefined;
+    try {
+      const outcomes: Array<Promise<Runtime | null>> = [pending];
+      if (turn.cancel) {
+        outcomes.push(
+          new Promise<null>((resolve) => {
+            onCancel = () => resolve(null);
+            turn.cancel!.addEventListener("abort", onCancel, { once: true });
+          }),
+        );
+      }
+      if (deadline !== null) {
+        outcomes.push(
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(deadlineError(wallMs)), Math.max(1, deadline - Date.now()));
+          }),
+        );
+      }
+      return await Promise.race(outcomes);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (onCancel) turn.cancel?.removeEventListener("abort", onCancel);
+    }
+  };
+
+  const acquireRuntimeWithin = async (
+    turn: HarnessTurnInput,
+    deadline: number | null,
+    wallMs: number,
+  ): Promise<ReturnType<typeof leaseRuntime> | null> => {
+    while (true) {
+      if (closed) throw new Error("OpenCode harness is closed");
+      if (turn.cancel?.aborted) return null;
+      if (deadline !== null && Date.now() >= deadline) throw deadlineError(wallMs);
+      const expectedCustomProvidersVersion = opts.customProvidersVersion?.() ?? 0;
+      const expectedDefinitions = bridgeDefinitionSnapshot(opts, turn);
+      const key = runtimeKey(expectedCustomProvidersVersion, expectedDefinitions.key);
+      const current = runtimes.get(key);
+      if (current && current.process.exitCode === null) {
+        await new Promise<void>((resolveImmediate) => setImmediate(resolveImmediate));
+        if (runtimes.get(key) === current && current.process.exitCode === null) return leaseRuntime(current);
+        continue;
+      }
+      let pending = starting.get(key);
+      if (!pending) {
+        pending = (async () => {
+          const releaseReservation = await reserveRuntimeSlot(turn, deadline, wallMs);
+          try {
+            if (closed) throw new Error("OpenCode harness is closed");
+            return await startRuntime(expectedCustomProvidersVersion, expectedDefinitions);
+          } finally {
+            releaseReservation();
+          }
         })();
-      const pending = starting;
+        starting.set(key, pending);
+        void pending.then(
+          () => {
+            if (starting.get(key) === pending) starting.delete(key);
+          },
+          () => {
+            if (starting.get(key) === pending) starting.delete(key);
+          },
+        );
+      }
       try {
-        await pending;
-      } finally {
-        if (starting === pending) starting = null;
+        const ready = await waitForRuntime(pending, turn, deadline, wallMs);
+        if (!ready) return null;
+      } catch (error) {
+        if (turn.cancel?.aborted) return null;
+        if (
+          (error instanceof OpenCodeTurnCancelled || error instanceof OpenCodeTurnDeadlineExceeded) &&
+          (deadline === null || Date.now() < deadline)
+        ) {
+          await pending.catch(() => undefined);
+          if (starting.get(key) === pending) starting.delete(key);
+          continue;
+        }
+        throw error;
       }
     }
   };
 
-  const runPromptWithRuntime = async (turn: HarnessTurnInput, rt: Runtime): Promise<HarnessTurnResult> => {
+  const acquireRuntime = async (turn: HarnessTurnInput) => {
+    const wallMs = turn.turnWallClockMs ?? defaultTurnWallClockMs;
+    const deadline = wallMs > 0 ? Date.now() + wallMs : null;
+    return {
+      lease: await acquireRuntimeWithin(turn, deadline, wallMs),
+      deadline,
+      wallMs,
+    };
+  };
+
+  const runPromptWithRuntime = async (
+    turn: HarnessTurnInput,
+    rt: Runtime,
+    deadline: number | null,
+    wallMs: number,
+  ): Promise<HarnessTurnResult> => {
     if (turn.cancel?.aborted) return { reply: "", stopped: true };
     const selectedModel = turn.model ?? resolveModelId(turn.scopeLabel);
     const model = modelRef(selectedModel);
@@ -889,7 +1232,7 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
     };
     const controller = new AbortController();
     ref.abortSignal = controller.signal;
-    const tools = asTools(ref, toolOptions(opts, turn));
+    const tools = activeBridgeTools(ref, opts, rt);
     const userEntry = await turn.emit({
       type: "user",
       payload: {
@@ -914,7 +1257,7 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
       stopped: false,
       child: false,
     };
-    active.set(sessionId, state);
+    active.set(activeKey(rt.namespace, sessionId), state);
     const abort = async (stopped: boolean) => {
       state.stopped ||= stopped;
       controller.abort();
@@ -929,20 +1272,31 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
     }
     if (turn.cancel?.aborted) {
       await abort(false);
-      active.delete(sessionId);
+      active.delete(activeKey(rt.namespace, sessionId));
       turn.cancel.removeEventListener("abort", onCancel);
       await rt.client.session.delete({ path: { id: sessionId } }).catch(() => undefined);
       return { reply: "", stopped: true };
     }
-    const wallMs = turn.turnWallClockMs ?? defaultTurnWallClockMs;
+    const abortForClose = () => abort(true);
+    activeTurnAborts.add(abortForClose);
     const queuedSignals = new Set<Promise<void>>();
     const queueSignal = (text: string): Promise<void> => {
       const pending = (async () => {
+        const remaining =
+          wallMs > 0 ? Math.max(1, (deadline ?? Date.now() + wallMs) - Date.now()) : OPENCODE_IDLE_WAIT_MS;
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(remaining)]);
         await rt.client.session.promptAsync({
           path: { id: sessionId },
           body: { model, agent: "qm", parts: [{ type: "text", text }] },
+          throwOnError: true,
+          signal,
         });
-        await waitForSessionIdle(rt.client, sessionId, wallMs > 0 ? wallMs : OPENCODE_IDLE_WAIT_MS);
+        await waitForSessionIdle(
+          rt.client,
+          sessionId,
+          wallMs > 0 ? Math.max(1, (deadline ?? Date.now() + wallMs) - Date.now()) : OPENCODE_IDLE_WAIT_MS,
+          controller.signal,
+        );
       })();
       queuedSignals.add(pending);
       return pending;
@@ -1000,7 +1354,7 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
             turnSeq: state.userSeq,
             step: capture.step,
             model: capture.model,
-            request: capture.request,
+            promptEnvelope: envelopeWithoutMessages(capture.request),
             truncated: false,
             transport: info?.providerID && info.modelID ? { modelId: `${info.providerID}/${info.modelID}` } : null,
             ttftMs: null,
@@ -1025,7 +1379,7 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
         url: `data:${image.mimeType};base64,${image.dataBase64}`,
       })),
     ];
-    const enabled = Object.fromEntries(definitions.map((tool) => [tool.name, false]));
+    const enabled = Object.fromEntries(rt.definitionNames.map((name) => [name, false]));
     for (const tool of tools) enabled[bridgeToolName(tool.name)] = true;
     enabled.task = !turn.readOnly;
     let timer: NodeJS.Timeout | undefined;
@@ -1040,10 +1394,13 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
           ? await Promise.race([
               request,
               new Promise<never>((_, reject) => {
-                timer = setTimeout(() => {
-                  void abort(false);
-                  reject(new NonRetryableTurnError(`OpenCode turn exceeded ${Math.round(wallMs / 1000)}s wall clock`));
-                }, wallMs);
+                timer = setTimeout(
+                  () => {
+                    void abort(false);
+                    reject(deadlineError(wallMs));
+                  },
+                  Math.max(1, (deadline ?? Date.now() + wallMs) - Date.now()),
+                );
               }),
             ])
           : await request;
@@ -1059,7 +1416,7 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
       const messages = await rt.client.session.messages({ path: { id: sessionId } });
       for (const message of messages.data ?? []) {
         for (const part of (message as { parts?: unknown[] }).parts ?? []) {
-          await processEvent({ payload: { type: "message.part.updated", properties: { part } } });
+          await processEvent(rt.namespace, { payload: { type: "message.part.updated", properties: { part } } });
         }
       }
       let tapeWriteFailed = false;
@@ -1113,6 +1470,7 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
     } finally {
       try {
         if (timer) clearTimeout(timer);
+        activeTurnAborts.delete(abortForClose);
         if (!signalsStopped) await stopSignals?.();
         await Promise.allSettled(queuedSignals);
         turn.cancel?.removeEventListener("abort", onCancel);
@@ -1137,9 +1495,11 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
 
   const runPrompt = async (turn: HarnessTurnInput): Promise<HarnessTurnResult> => {
     if (turn.cancel?.aborted) return { reply: "", stopped: true };
-    const lease = await acquireRuntime();
+    if (closed) throw new Error("OpenCode harness is closed");
+    const { lease, deadline, wallMs } = await acquireRuntime(turn);
+    if (!lease) return { reply: "", stopped: true };
     try {
-      return await runPromptWithRuntime(turn, lease.runtime);
+      return await runPromptWithRuntime(turn, lease.runtime, deadline, wallMs);
     } finally {
       lease.release();
     }
@@ -1151,10 +1511,26 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
     instrumentation?: Pick<HarnessTurnInput, "recordModelCall" | "recordLlmRequest">,
     signal?: AbortSignal,
   ): Promise<string | undefined> => {
+    auxiliaryHarness ??= createOpenCodeHarness({
+      ...(opts.modelId !== undefined ? { modelId: opts.modelId } : {}),
+      ...(opts.defaultModelId !== undefined ? { defaultModelId: opts.defaultModelId } : {}),
+      ...(opts.apiKey !== undefined ? { apiKey: opts.apiKey } : {}),
+      ...(opts.openaiApiKey !== undefined ? { openaiApiKey: opts.openaiApiKey } : {}),
+      ...(opts.turnWallClockMs !== undefined ? { turnWallClockMs: opts.turnWallClockMs } : {}),
+      ...(opts.binaryPath !== undefined ? { binaryPath: opts.binaryPath } : {}),
+      ...(opts.startupTimeoutMs !== undefined ? { startupTimeoutMs: opts.startupTimeoutMs } : {}),
+      ...(opts.resolveCustomProviders ? { resolveCustomProviders: opts.resolveCustomProviders } : {}),
+      ...(opts.customProvidersVersion ? { customProvidersVersion: opts.customProvidersVersion } : {}),
+      mcpTools: () => [],
+      controlTools: false,
+      scratchExec: false,
+      ownerAuthExec: false,
+      reachExec: false,
+    });
     const session = { id: `oneshot-${randomBytes(8).toString("hex")}` } as HarnessTurnInput["session"];
     const scope = { kind: "org", id: "oneshot" } as unknown as ScopeId;
     const emitted: SessionEntry[] = [];
-    const result = await runPrompt({
+    const result = await auxiliaryHarness.turns.runTurn({
       session,
       input: prompt,
       systemPrompt: system,
@@ -1180,6 +1556,47 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
     return result.reply || undefined;
   };
 
+  const closeHarness = (): Promise<void> => {
+    if (closing) return closing;
+    closed = true;
+    rejectRuntimeWaiters(new Error("OpenCode harness is closed"));
+    closing = (async () => {
+      const drainDeadline = Date.now() + OPENCODE_CLOSE_DRAIN_MS;
+      const waitWithinDrain = async (pending: Promise<unknown>): Promise<void> => {
+        const remaining = drainDeadline - Date.now();
+        if (remaining <= 0) return;
+        await Promise.race([
+          pending.then(
+            () => undefined,
+            () => undefined,
+          ),
+          sleep(remaining),
+        ]);
+      };
+      await waitWithinDrain(Promise.allSettled([...activeTurnAborts].map((abort) => abort())));
+      await waitWithinDrain(Promise.all([...startingProcesses].map((proc) => terminateProcess(proc))));
+      await waitWithinDrain(Promise.all([...starting.values()].map((pending) => pending.catch(() => undefined))));
+      starting.clear();
+      if ([...runtimeUsers.values()].some((users) => users > 0)) {
+        let resolveDrain!: () => void;
+        const drained = new Promise<void>((resolve) => {
+          resolveDrain = resolve;
+          leaseDrains.add(resolve);
+        });
+        await waitWithinDrain(drained);
+        leaseDrains.delete(resolveDrain);
+      }
+      if (auxiliaryHarness?.turns.close) await waitWithinDrain(Promise.resolve(auxiliaryHarness.turns.close()));
+      auxiliaryHarness = null;
+      await Promise.all([...runtimes.values()].map((runtime) => runtime.close()));
+      runtimes.clear();
+      runtimeUsers.clear();
+      activeTurnAborts.clear();
+      signalLeases();
+    })();
+    return closing;
+  };
+
   return defineHarness(
     {
       id: "opencode",
@@ -1190,11 +1607,7 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
     },
     {
       runTurn: runPrompt,
-      close: async () => {
-        await starting?.catch(() => undefined);
-        await runtime?.close();
-        runtime = null;
-      },
+      close: closeHarness,
       resetSession: () => {},
       oneShot: single,
       judge: single,
@@ -1207,7 +1620,8 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
             signal,
           ),
         ),
-      generateTitle: async (transcript) => sanitizeTitle(await single(TITLE_GENERATION_PROMPT, transcript)),
+      generateTitle: async (transcript) =>
+        sanitizeTitle(await single(TITLE_GENERATION_PROMPT, titleUserPrompt(transcript))),
       summarizeApproval: async (command, reason, purpose) =>
         single(
           "Explain this command in one plain-English sentence for an approver.",

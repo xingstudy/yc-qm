@@ -1,3 +1,5 @@
+import { httpDeploymentLayerTransport, type DeploymentLayerTransport } from "../deployment-layer.ts";
+
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,6 +22,7 @@ import { manifestRef } from "../manifest.ts";
 import {
   brokerWiring,
   ordered,
+  brandEnvOf,
   orgEnv,
   runnableServices,
   serviceDef,
@@ -32,6 +35,10 @@ import { dockerBasePort, sandboxCoreEnv, securityScreenEnv, type QmConfig } from
 import { discoverPlugins, type ResolvedPlugin } from "../plugins.ts";
 import { computedSecrets, runtimeSecretNames, secretsForService } from "../secrets.ts";
 import { readDeploymentState, withDeploymentLock, writeDeploymentState, type DeploymentState } from "../state.ts";
+
+export const dockerDeploymentLayerTransport: DeploymentLayerTransport = httpDeploymentLayerTransport({
+  urlOf: (config) => new URL(`http://127.0.0.1:${dockerBasePort(config)}/v1/deployment-layer`),
+});
 
 const safe = (s: string): string => s.replace(/[^A-Za-z0-9_.-]/g, "-");
 const ORG_LABEL_KEY = "qm.org";
@@ -280,7 +287,7 @@ export function dockerServiceEnv(config: QmConfig, service: ServiceName): Record
   const out: Record<string, string> = {
     [def.docker.portEnv]: String(def.docker.internalPort),
     CORE_API_URL: "http://core:8080",
-    ...orgEnv(service, config.orgId, config.publicUrl, config.services.includes("portal")),
+    ...orgEnv(service, config.orgId, config.publicUrl, config.services.includes("portal"), brandEnvOf(config)),
   };
   if (service === "portal") {
     if (config.services.includes("web-ui")) out.WEB_UI_UPSTREAM = "http://web-ui:8080";
@@ -306,7 +313,10 @@ function serviceEnv(ctx: DockerCtx, service: ServiceName): Record<string, string
   const out: Record<string, string> = {};
   if (ctx.signingSecret) out.CORE_SIGNING_SECRET = ctx.signingSecret;
   if (service === "core") {
-    Object.assign(out, orgEnv("core", config.orgId, config.publicUrl, config.services.includes("portal")));
+    Object.assign(
+      out,
+      orgEnv("core", config.orgId, config.publicUrl, config.services.includes("portal"), brandEnvOf(config)),
+    );
     out.PORT = "8080";
     out.DATA_DIR = "/data";
     out.SESSION_STORE = "postgres";
@@ -608,7 +618,7 @@ export async function dockerUp(
     ];
     const wiring = {
       CORE_API_URL: "http://core:8080",
-      ...orgEnv(p.name, config.orgId, config.publicUrl, config.services.includes("portal")),
+      ...orgEnv(p.name, config.orgId, config.publicUrl, config.services.includes("portal"), brandEnvOf(config)),
       PORT: "8080",
     };
     const env = {

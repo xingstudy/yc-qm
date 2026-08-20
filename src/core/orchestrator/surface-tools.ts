@@ -21,6 +21,7 @@ import { hasParentPathSegment, type SandboxHandle } from "../../sandbox/sandbox.
 import type {
   SurfaceToolDeps,
   SurfacePostResult,
+  PostedFileMeta,
   SurfaceReactInput,
   SurfaceEditInput,
   SurfaceDeleteInput,
@@ -62,6 +63,15 @@ export interface SurfaceToolsContext {
   provision: () => Promise<SandboxHandle>;
   postProvenance: (deliveryKey: string) => DeliveryProvenance;
   spine: SpineState;
+}
+
+function postedFileMetas(attachments: readonly OutgoingAttachment[]): PostedFileMeta[] {
+  return attachments.map((a) => ({
+    name: a.name,
+    mimetype: a.mimetype,
+    sizeBytes: a.sizeBytes,
+    ...(a.artifactId ? { artifactId: a.artifactId } : {}),
+  }));
 }
 
 export function createSurfaceToolDeps(ctx: SurfaceToolsContext): SurfaceToolDeps | undefined {
@@ -217,7 +227,8 @@ export function createSurfaceToolDeps(ctx: SurfaceToolsContext): SurfaceToolDeps
         ...(taskList?.length ? { taskList: taskList.map(({ id, title, status }) => ({ id, title, status })) } : {}),
         ...(footer ? { debugFooter: footer } : {}),
       };
-      return enqueue(projectedDestination, postText, f.attachments);
+      const sent = await enqueue(projectedDestination, postText, f.attachments);
+      return sent.ok && f.attachments?.length ? { ...sent, attachments: postedFileMetas(f.attachments) } : sent;
     },
     reach: async (postText, target, files) => {
       if (spine.crossConversationPosts >= 5) return { ok: false, message: "outbound limit reached for this turn" };
@@ -233,8 +244,9 @@ export function createSurfaceToolDeps(ctx: SurfaceToolsContext): SurfaceToolDeps
       const sending = postText.trim().length > 0 || (f.attachments?.length ?? 0) > 0;
       const d = await resolveDestination(target, { mayOpenGroup: sending });
       if (!d.ok) return { ok: false, message: d.message };
-      const r = await enqueue(d.destination, postText, f.attachments);
-      if (!r.ok) return r;
+      const r0 = await enqueue(d.destination, postText, f.attachments);
+      if (!r0.ok) return r0;
+      const r = f.attachments?.length ? { ...r0, attachments: postedFileMetas(f.attachments) } : r0;
       spine.crossConversationPosts += 1;
       let label = `a group DM (${target.participants?.length ?? 0} people)`;
       if (target.channel !== undefined) label = `#${target.channel.replace(/^#/, "")}`;
@@ -417,9 +429,14 @@ export function createSurfaceToolDeps(ctx: SurfaceToolsContext): SurfaceToolDeps
       if (conversation.kind === "dm" || !conversation.channelRef)
         return { ok: false, message: "standing orders are per-channel — there isn't one for a DM." };
       const p = await deps.channelPolicy.get(conversation.channelRef);
-      return { ok: true, orders: p?.orders ?? "", ...(p?.bots && Object.keys(p.bots).length ? { bots: p.bots } : {}) };
+      return {
+        ok: true,
+        orders: p?.orders ?? "",
+        ...(p?.bots && Object.keys(p.bots).length ? { bots: p.bots } : {}),
+        ...(p?.ambientEnabled !== undefined ? { ambientEnabled: p.ambientEnabled } : {}),
+      };
     },
-    setStandingOrder: async (orders: string, bots?: Record<string, BotPolicy>) => {
+    setStandingOrder: async (orders: string, bots?: Record<string, BotPolicy>, ambientEnabled?: boolean | null) => {
       if (!deps.channelPolicy) return { ok: false, message: "standing orders aren't available on this turn" };
       if (conversation.kind === "dm" || !conversation.channelRef)
         return { ok: false, message: "standing orders are per-channel — you can only set one from inside a channel." };
@@ -433,6 +450,7 @@ export function createSurfaceToolDeps(ctx: SurfaceToolsContext): SurfaceToolDeps
         setBy: actor.id,
         bots: parsedBots,
         sessionId: session.id,
+        ambientEnabled,
       });
       deps.auditLog.record({
         at: Date.now(),
@@ -441,7 +459,12 @@ export function createSurfaceToolDeps(ctx: SurfaceToolsContext): SurfaceToolDeps
         resource: conversation.channelRef,
         scopeLabel: scopeId,
       });
-      return { ok: true, orders, ...(p.bots && Object.keys(p.bots).length ? { bots: p.bots } : {}) };
+      return {
+        ok: true,
+        orders,
+        ...(p.bots && Object.keys(p.bots).length ? { bots: p.bots } : {}),
+        ...(p.ambientEnabled !== undefined ? { ambientEnabled: p.ambientEnabled } : {}),
+      };
     },
     staySilent: async (reason: string) => {
       spine.staySilentReason = reason;

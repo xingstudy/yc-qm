@@ -7,6 +7,7 @@ import { signedRequestHeaders, withSourceAuthNonce } from "../../chassis/src/cor
 import { json, readBody, cookie } from "../../chassis/src/http.ts";
 import { createBrandingCache, injectBranding, type OrgBranding } from "../../chassis/src/branding.ts";
 import { verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
+import { errMessage } from "../../chassis/src/errors.ts";
 import {
   CORE_API_URL as CORE,
   CORE_ORG_ID as ORG,
@@ -20,6 +21,9 @@ import { dirname, join } from "node:path";
 
 const PORT = portFromEnv(8090);
 const ADMIN_BASE_PATH = (process.env.ADMIN_BASE_PATH ?? "").replace(/\/$/, "");
+const CORE_WHOAMI_ATTEMPTS = 2;
+const CORE_WHOAMI_TIMEOUT_MS = 2_500;
+const CORE_WHOAMI_RETRY_DELAY_MS = 250;
 function signedHeaders(method: string, corePath: string, rawBody: string): Record<string, string> {
   return signedRequestHeaders(CORE_SIGNING_SECRET, method, corePath, rawBody, { "content-type": "application/json" });
 }
@@ -64,7 +68,7 @@ let shellCache: { key: string; html: string; gzip: Buffer; etag: string } | null
 function brandedShell(branding: OrgBranding): { html: string; gzip: Buffer; etag: string } {
   const key = JSON.stringify([branding.accent, branding.mark, branding.selfLabel]);
   if (shellCache?.key === key) return shellCache;
-  const html = injectBranding(BASE_HTML, branding);
+  const html = injectBranding(BASE_HTML, branding, { titleSuffix: "Admin" });
   shellCache = {
     key,
     html,
@@ -141,7 +145,7 @@ async function forward(
     res.writeHead(r.status, { "content-type": "application/json" });
     pipeBody(res, r.body);
   } catch (err) {
-    console.error("[admin] core request failed:", err);
+    console.error("[admin] core request failed:", String(err));
     json(res, 502, { error: "core_unreachable", message: "core unavailable" });
   }
 }
@@ -176,7 +180,7 @@ async function forwardDownload(res: ServerResponse, principal: string, corePath:
     res.writeHead(r.status, headers);
     pipeBody(res, r.body);
   } catch (err) {
-    console.error("[admin] core download failed:", err);
+    console.error("[admin] core download failed:", String(err));
     json(res, 502, { error: "core_unreachable", message: "core unavailable" });
   }
 }
@@ -236,26 +240,44 @@ async function uploadFileFromRequest(
     });
     return forward(req, res, principal, "POST", corePath, body);
   } catch (err) {
-    console.error("[admin] upload failed:", err);
+    console.error("[admin] upload failed:", String(err));
     return json(res, 502, { error: "core_unreachable", message: "core unavailable" });
   }
 }
 
 async function coreWhoami(principal: string): Promise<{ isAdmin: boolean; role?: string; scopeId?: string } | null> {
   const corePath = "/v1/admin/whoami";
-  try {
-    const r = await fetch(`${CORE}${corePath}`, {
-      headers: {
-        ...signedHeaders("GET", corePath, ""),
-        ...portalIdentityHeader(),
-        "x-admin-actor": `${principal}@${ORG}`,
-      },
-    });
-    if (!r.ok) return null;
-    return (await r.json()) as { isAdmin: boolean; role?: string; scopeId?: string };
-  } catch {
-    return null;
+  const started = Date.now();
+  let failure = "unknown failure";
+  let attempts = 0;
+  for (; attempts < CORE_WHOAMI_ATTEMPTS; attempts++) {
+    try {
+      const r = await fetch(`${CORE}${corePath}`, {
+        headers: {
+          ...signedHeaders("GET", corePath, ""),
+          ...portalIdentityHeader(),
+          "x-admin-actor": `${principal}@${ORG}`,
+        },
+        signal: AbortSignal.timeout(CORE_WHOAMI_TIMEOUT_MS),
+      });
+      if (r.ok) {
+        const body = (await r.json()) as { isAdmin?: unknown; role?: string; scopeId?: string };
+        if (typeof body.isAdmin !== "boolean") throw new Error("core returned an invalid admin status");
+        return { ...body, isAdmin: body.isAdmin };
+      }
+      failure = `HTTP ${r.status}`;
+      if (r.status < 500 && r.status !== 429) break;
+    } catch (error) {
+      failure = errMessage(error);
+    }
+    if (attempts + 1 < CORE_WHOAMI_ATTEMPTS) {
+      await new Promise((resolve) => setTimeout(resolve, CORE_WHOAMI_RETRY_DELAY_MS));
+    }
   }
+  console.warn(
+    `[admin] core whoami failed after ${Math.min(attempts + 1, CORE_WHOAMI_ATTEMPTS)} attempt(s) in ${Date.now() - started}ms: ${failure}`,
+  );
+  return null;
 }
 
 const WRITES = new Map<string, string[]>([
@@ -301,7 +323,7 @@ const server = createServer((req, res) => {
   void portalTokenStore
     .run(token, () => handle(req, res))
     .catch((err: unknown) => {
-      console.error("[admin] unhandled request error:", err);
+      console.error("[admin] unhandled request error:", String(err));
       json(res, 500, { error: "internal_error", message: "internal server error" });
     });
 });
@@ -402,7 +424,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         res.writeHead(r.status, { "content-type": "application/json" });
         res.end(text);
       } catch (err) {
-        console.error("[admin] core request failed:", err);
+        console.error("[admin] core request failed:", String(err));
         json(res, 502, { error: "core_unreachable", message: "core unavailable" });
       }
       return;

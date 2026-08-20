@@ -8,6 +8,7 @@ import {
   ArchiveRestore,
   ChevronDown,
   ChevronRight,
+  Clock3,
   Cog,
   EllipsisVertical,
   Folder,
@@ -73,7 +74,7 @@ import {
 } from "./contexts";
 import { groupDmLabel, groupDmText } from "./group-dm-label";
 import { transcriptModel } from "./model-options";
-import { appState, closeSidebarOnNarrowView, renderSidebarTop, showMainEmpty } from "./shell";
+import { appState, closeSidebarOnNarrowView, renderSidebarTop, showMainEmpty, syncUrlFromState } from "./shell";
 import { allConversations, mainConversation } from "./conversations";
 import type { Conversation } from "./conv-types";
 import {
@@ -81,6 +82,8 @@ import {
   beginSessionDrag,
   endSessionDrag,
   notifySessionsChanged,
+  closeSessionSurfaces,
+  drawCanvas,
   sessionInCanvas,
   splitInterceptsOpen,
   splitState,
@@ -256,7 +259,7 @@ function visibleSessions(): CoreSession[] {
 }
 
 export function renderList(): void {
-  if (!appState.listEl || appState.currentView !== "chats") return;
+  if (!appState.listEl) return;
   const visible = visibleSessions();
   const active = visible.filter((s) => !s.archived);
   const archived = visible.filter((s) => s.archived);
@@ -595,7 +598,7 @@ function statusMarks(s: CoreSession): TemplateResult {
           @keydown=${(e: KeyboardEvent) => (e.key === "Enter" || e.key === " ") && openBackgroundInspector(e, s)}
           >${ind.background.jobs > 0 ? icon(Cog, 11) : nothing}${
             ind.background.watches > 0 ? icon(Binoculars, 11) : nothing
-          }</span
+          }${ind.background.crons > 0 ? icon(Clock3, 11) : nothing}</span
         >`
       : nothing
   }`;
@@ -975,6 +978,7 @@ function renameInput(menuKey: string, ariaLabel: string, commit: () => Promise<v
         renameDraft = (e.currentTarget as HTMLInputElement).value;
       }}
       @keydown=${(e: KeyboardEvent) => {
+        if (e.isComposing || e.keyCode === 229) return;
         if (e.key === "Enter") {
           e.preventDefault();
           void commit();
@@ -1072,6 +1076,7 @@ async function commitRename(s: CoreSession): Promise<void> {
 
 function setArchived(s: CoreSession, archived: boolean): void {
   sessionsState.openMenuId = null;
+  if (archived && s.id) closeSessionSurfaces(s.id);
   void persistSessionPatch(s.id, { archived });
 }
 
@@ -1183,6 +1188,14 @@ export async function refreshSessions(
 }
 
 export async function openSession(s: CoreSession, entriesPrefetch?: Promise<TranscriptPage | null>): Promise<void> {
+  if (appState.currentView !== "chats") {
+    appState.currentView = "chats";
+    appState.viewRenderSeq++;
+    renderSidebarTop();
+    renderList();
+    if (splitState.active) drawCanvas();
+    syncUrlFromState(s.id || null);
+  }
   if (splitInterceptsOpen(s)) return;
   closeSidebarOnNarrowView();
   if (projectName(s.scopeId) && sessionsState.collapsedProjectScopes.delete(s.scopeId)) renderList();

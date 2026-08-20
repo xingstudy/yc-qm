@@ -44,8 +44,6 @@ test("custom provider models resolve from the runtime catalog entry, whatever th
   const colliding = getBaseModel("gpt-4o", { name: "Gateway GPT", provider: "qa", api: "openai-completions" });
   assert.equal(colliding.provider, "qa");
   assert.equal(colliding.api, "openai-completions");
-
-  assert.throws(() => getBaseModel("qa-large", { name: "QA Large", provider: "qa" }), /Unsupported/);
 });
 
 test("fast-mode support is fed from core's runtime config, not a hardcoded client copy", () => {
@@ -57,4 +55,11 @@ test("fast-mode support is fed from core's runtime config, not a hardcoded clien
   assert.equal(modelSupportsFastMode(null, "claude-sonnet-4-6"), false);
   assert.equal(modelSupportsFastMode(null, "claude-haiku-4-5"), false);
   assert.equal(modelSupportsFastMode(null, undefined), false);
+});
+
+test("a custom-provider model builds from its dynamic catalog entry", () => {
+  const custom = getBaseModel("acme-large", { name: "Acme Large", provider: "acme-gateway" });
+  assert.equal(custom.id, "acme-large");
+  assert.equal(custom.name, "Acme Large");
+  assert.equal(custom.provider, "acme-gateway");
 });

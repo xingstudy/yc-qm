@@ -266,9 +266,12 @@ else if (a.includes("ecs describe-services")) {
       : ${JSON.stringify(opts.primaryFailedTasks ?? false)} || transientlyFailing
         ? [{ id: service.deploymentId, status: "PRIMARY", taskDefinition: service.taskDefinition, rolloutState: "IN_PROGRESS", runningCount: 0, failedTasks: 1 }]
         : [{ id: service.deploymentId, status: "PRIMARY", taskDefinition: service.taskDefinition, rolloutState: "COMPLETED", runningCount: service.desiredCount, failedTasks: transientFailedTaskPolls && s.updated ? 1 : 0 }];
-    return [{ serviceName: name, status: "ACTIVE", desiredCount: service.desiredCount, runningCount: ${JSON.stringify(opts.drainRollout ?? false)} ? service.desiredCount + 1 : service.desiredCount, taskDefinition: service.taskDefinition, deployments, loadBalancers: service.workload === ${JSON.stringify(frontService)} ? [{ targetGroupArn: ${JSON.stringify(frontTargetArn)} }] : (service.workload === "core" && ${JSON.stringify(coreHosts.length > 0)} ? [{ targetGroupArn: ${JSON.stringify(coreTargetArn)} }] : []), tags: [{ key: "Deployment", value: ${JSON.stringify(opts.foreignServiceTags ? "other" : configured.orgId)} }, { key: "ManagedBy", value: "terraform" }] }];
+    return [{ serviceName: name, status: "ACTIVE", desiredCount: service.desiredCount, runningCount: ${JSON.stringify(opts.drainRollout ?? false)} ? service.desiredCount + 1 : service.desiredCount, taskDefinition: service.taskDefinition, networkConfiguration: { awsvpcConfiguration: { subnets: ["subnet-test"], securityGroups: ["sg-test"], assignPublicIp: "DISABLED" } }, deployments, loadBalancers: service.workload === ${JSON.stringify(frontService)} ? [{ targetGroupArn: ${JSON.stringify(frontTargetArn)} }] : (service.workload === "core" && ${JSON.stringify(coreHosts.length > 0)} ? [{ targetGroupArn: ${JSON.stringify(coreTargetArn)} }] : []), tags: [{ key: "Deployment", value: ${JSON.stringify(opts.foreignServiceTags ? "other" : configured.orgId)} }, { key: "ManagedBy", value: "terraform" }] }];
   }), failures: names.filter((name) => !s.services[name]).map((name) => ({ arn: name, reason: "MISSING" })) }));
 }
+else if (a.includes("ecs run-task")) console.log(JSON.stringify({ tasks: [{ taskArn: "arn:aws:ecs:us-west-2:123456789012:task/canary" }] }));
+else if (a.includes("ecs wait tasks-stopped")) console.log("");
+else if (a.includes("ecs describe-tasks")) console.log(JSON.stringify({ tasks: [{ stoppedReason: "Essential container exited", containers: [{ name: "core", exitCode: Number(process.env.AWS_FAKE_CANARY_EXIT || "0"), reason: process.env.AWS_FAKE_CANARY_REASON }] }] }));
 else if (a.includes("ecs describe-task-definition")) {
   const id = after("--task-definition");
   console.log(JSON.stringify({ taskDefinition: s.definitions[id] }));
@@ -465,6 +468,15 @@ test("AWS environment derives identity, public URLs, private wiring, and MicroVM
   assert.equal(core.DEPLOY_PROVIDER, "aws");
   assert.equal(core.AWS_DEPLOY_REGION, "us-west-2");
   assert.equal(core.PORT, "8080");
+});
+
+test("a configured bot identity lands in the AWS core task env and only there", () => {
+  const branded = { ...config, botName: "straylight", orgName: "Straylight Industries" };
+  const core = serviceEnvironment(branded, "core");
+  assert.equal(core.ORG_BRAND_SELF_LABEL, "straylight");
+  assert.equal(core.ORG_BRAND_ORG_NAME, "Straylight Industries");
+  assert.equal(serviceEnvironment(branded, "web-ui").ORG_BRAND_SELF_LABEL, undefined);
+  assert.equal(serviceEnvironment(config, "core").ORG_BRAND_SELF_LABEL, undefined);
 });
 
 test("AWS routes security screen proxy configuration and its token only to core", () => {
@@ -1010,6 +1022,7 @@ test("AWS up scales services to the configured desired count and live check flag
   };
   const fake = statefulAws(dir, scaled());
   const priorPath = process.env.PATH;
+  const priorCanaryExit = process.env.AWS_FAKE_CANARY_EXIT;
   process.env.PATH = `${dir}:${priorPath}`;
   try {
     await awsUp(scaled(), dir, { yes: true });
@@ -1017,6 +1030,17 @@ test("AWS up scales services to the configured desired count and live check flag
     assert.equal(state.services["acme-core"].desiredCount, 2);
     assert.match(readFileSync(fake.log, "utf8"), /ecs update-service .*--desired-count 2/);
     await assert.doesNotReject(() => awsCheckLive(scaled(), { report: false }));
+    assert.match(
+      readFileSync(fake.log, "utf8"),
+      /ecs run-task .*postdeploy-smoke\.ts.*session.*http:\/\/core\.acme\.internal:8080/,
+    );
+    process.env.AWS_FAKE_CANARY_EXIT = "1";
+    await assert.rejects(
+      () => awsCheckLive(scaled(), { report: false }),
+      /core: private live session smoke failed: canary task exited 1/,
+    );
+    if (priorCanaryExit === undefined) delete process.env.AWS_FAKE_CANARY_EXIT;
+    else process.env.AWS_FAKE_CANARY_EXIT = priorCanaryExit;
     state.services["acme-core"].desiredCount = 1;
     writeFileSync(fake.state, JSON.stringify(state));
     await assert.rejects(
@@ -1024,6 +1048,8 @@ test("AWS up scales services to the configured desired count and live check flag
       /core: runtime is ACTIVE with 1\/1 running, expected 2/,
     );
   } finally {
+    if (priorCanaryExit === undefined) delete process.env.AWS_FAKE_CANARY_EXIT;
+    else process.env.AWS_FAKE_CANARY_EXIT = priorCanaryExit;
     process.env.PATH = priorPath;
     fake.restore();
     rmSync(dir, { recursive: true, force: true });

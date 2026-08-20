@@ -51,11 +51,30 @@ const FAMILIES: AgentApiFamily[] = [
     ],
   },
   {
+    match: (m, p) => p === "/v1/channel-header-pin" && (m === "GET" || m === "PUT"),
+    guidance:
+      "The pinned Slack header (a small pinned message naming the model in use) follows an org-wide default (off unless an admin turned it on). Only override it for a channel scope when someone in that channel asks.",
+    routes: [
+      {
+        method: "GET",
+        path: "/v1/channel-header-pin",
+        summary: "read whether this channel scope shows the pinned model header in Slack",
+      },
+      {
+        method: "PUT",
+        path: "/v1/channel-header-pin",
+        summary:
+          "override the pinned Slack header for this channel scope with {on: boolean}; {on: null} reverts to the org default",
+      },
+    ],
+  },
+  {
     match: (m, p) =>
       (p === "/v1/projects" && (m === "GET" || m === "POST")) ||
       (/^\/v1\/projects\/[^/]+$/.test(p) && m === "PATCH") ||
       (/^\/v1\/projects\/[^/]+\/members$/.test(p) && m === "POST") ||
-      (/^\/v1\/projects\/[^/]+\/members\/[^/]+$/.test(p) && m === "DELETE"),
+      (/^\/v1\/projects\/[^/]+\/members\/[^/]+$/.test(p) && m === "DELETE") ||
+      (/^\/v1\/projects\/[^/]+\/slack-channel$/.test(p) && (m === "PUT" || m === "DELETE")),
     guidance:
       "These act as the ASKING PERSON across every project they belong to, matching the web UI. Do not send principalId; the capability token always determines the person, and inaccessible projects return 404.",
     routes: [
@@ -79,6 +98,17 @@ const FAMILIES: AgentApiFamily[] = [
         method: "DELETE",
         path: "/v1/projects/:id/members/:memberId",
         summary: "remove a member from a project the asking person owns",
+      },
+      {
+        method: "PUT",
+        path: "/v1/projects/:id/slack-channel",
+        summary:
+          "link a project to its Slack home channel — body {channel} (name or id; the asking person must be in the project and able to see the channel — public, or a private one they belong to; a channel that already has its own agent workspace is rejected with 409). Everyone in the channel joins the project, and the roster follows the channel from then on; the channel becomes the project's default delivery audience for crons and report-outs.",
+      },
+      {
+        method: "DELETE",
+        path: "/v1/projects/:id/slack-channel",
+        summary: "unlink a project's Slack home channel — members who joined via the channel leave the project",
       },
     ],
   },
@@ -214,6 +244,7 @@ const FAMILIES: AgentApiFamily[] = [
       (m === "GET" && p === "/v1/deployments") ||
       (m === "GET" && /^\/v1\/deployments\/[^/]+$/.test(p)) ||
       (m === "GET" && /^\/v1\/deployments\/[^/]+\/fetch$/.test(p)) ||
+      (m === "GET" && /^\/v1\/deployments\/[^/]+\/logs$/.test(p)) ||
       (m === "GET" && /^\/v1\/deployments\/[^/]+\/git-url$/.test(p)) ||
       (m === "POST" && /^\/v1\/deployments\/[^/]+\/(share|archive|restore|name|display-name)$/.test(p)),
     guidance:
@@ -236,6 +267,12 @@ const FAMILIES: AgentApiFamily[] = [
         path: "/v1/deployments/:id/fetch",
         summary:
           "read a deployment's rendered content as the asking person — query path defaults to / and maxBytes defaults to 256KB; returns upstream status, contentType, body, and truncation metadata",
+      },
+      {
+        method: "GET",
+        path: "/v1/deployments/:id/logs",
+        summary:
+          "recent runtime output (entrypoint stdout+stderr) of a running deployment you can reach — query tailLines (default 200, max 2000); returns {logs} (null when the provider keeps none)",
       },
       {
         method: "GET",
@@ -571,6 +608,19 @@ const FAMILIES: AgentApiFamily[] = [
         path: "/v1/admin/keychain",
         summary: "person-owned keychain metadata, grants, and asks (DM only)",
       },
+    ],
+  },
+  {
+    match: () => false,
+    when: (v) => v.claims.liveActor !== true && v.claims.grants?.includes("admin.sessions.read") === true,
+    guidance:
+      "This cron has a specific read-only admin grant. Use only these listed routes; flag any other admin action to a human.",
+    routes: [
+      { method: "GET", path: "/v1/admin/sessions", summary: "list conversation metadata" },
+      { method: "GET", path: "/v1/admin/sessions/:id", summary: "read a conversation transcript" },
+      { method: "GET", path: "/v1/admin/scopes", summary: "list the scope directory" },
+      { method: "GET", path: "/v1/admin/errors", summary: "read error telemetry" },
+      { method: "GET", path: "/v1/admin/runs", summary: "read queued, in-flight, and recent runs" },
     ],
   },
 ];

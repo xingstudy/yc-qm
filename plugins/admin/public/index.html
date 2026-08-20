@@ -2905,6 +2905,30 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+      .environment-notice {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        margin: 0 0 18px;
+        padding: 14px 16px;
+        border: 1px solid color-mix(in srgb, var(--warn) 42%, var(--border));
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--warn) 8%, var(--surface));
+      }
+      .environment-notice strong,
+      .environment-notice p {
+        display: block;
+        margin: 0;
+      }
+      .environment-notice p {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .environment-notice button {
+        flex: none;
+      }
       .governance-overview {
         margin: 0 0 22px;
         padding: 18px 20px;
@@ -3843,7 +3867,7 @@
               <p class="governance-eyebrow">Temporary setup guide</p>
               <h1>Onboarding</h1>
               <p class="lead">
-                Get this QM instance ready for real conversations. Secrets are validated, encrypted in durable storage,
+                Get this deployment ready for real conversations. Secrets are validated, encrypted in durable storage,
                 and never displayed again.
               </p>
             </div>
@@ -3851,13 +3875,13 @@
               <section class="setup-step">
                 <span class="badge muted" id="onboarding-model-badge">Not ready</span>
                 <h2>1. Model provider</h2>
-                <p id="onboarding-model-summary">Add the key QM will use for its base model.</p>
+                <p id="onboarding-model-summary">Add the key the agent will use for its base model.</p>
               </section>
               <section class="setup-step">
                 <span class="badge muted" id="onboarding-slack-badge">Optional</span>
                 <h2>2. Slack app</h2>
                 <p id="onboarding-slack-summary">
-                  Create the QM app, install it, then add its bot and Socket Mode tokens.
+                  Create the Slack app, install it, then add its bot and Socket Mode tokens.
                 </p>
                 <div class="foot">
                   <a
@@ -3866,7 +3890,7 @@
                     href="https://api.slack.com/apps?new_app=1"
                     target="_blank"
                     rel="noopener noreferrer"
-                    >Create QM Slack app ↗</a
+                    >Create Slack app ↗</a
                   >
                   <button type="button" data-onboarding-target="slack">Enter Slack tokens</button>
                 </div>
@@ -3914,8 +3938,9 @@
               <div class="head">
                 <h2>Custom providers</h2>
                 <p>
-                  Point QM at any OpenAI- or Anthropic-compatible endpoint — a vendor like DeepSeek, or a gateway like
-                  LiteLLM fronting many models. Keys are validated, stored write-only, and the models join the picker.
+                  Point the deployment at any OpenAI- or Anthropic-compatible endpoint — a vendor like DeepSeek, or a
+                  gateway like LiteLLM fronting many models. Keys are validated, stored write-only, and the models join
+                  the picker.
                 </p>
               </div>
               <div class="body">
@@ -3992,6 +4017,13 @@
                 <span>Scope</span><strong id="governance-scope-label">Organization</strong>
               </div>
             </div>
+            <aside class="environment-notice hidden" id="environment-notice" role="status">
+              <div>
+                <strong id="environment-notice-title"></strong>
+                <p id="environment-notice-detail"></p>
+              </div>
+              <button type="button" id="environment-notice-open">Open environment</button>
+            </aside>
             <section class="governance-overview" id="governance-overview" aria-labelledby="governance-overview-title">
               <div class="governance-overview-head">
                 <h2 id="governance-overview-title">Effective state</h2>
@@ -4322,6 +4354,33 @@
                     ><span class="status" id="st-org-ambient"></span>
                   </div>
                 </section>
+                <section class="card setting-row hidden" id="card-channel-header-pin-default">
+                  <div class="head">
+                    <h2>Channel pinned header</h2>
+                    <p>
+                      Org-wide, default off. When on, the agent posts and pins a small header message (naming the model
+                      in use) in every Slack channel it's in. Channels can still override it either way from their
+                      project page.
+                    </p>
+                  </div>
+                  <div class="body">
+                    <label class="setting-toggle">
+                      <input type="checkbox" id="channel-header-pin-default" />
+                      <span class="setting-switch" aria-hidden="true"></span>
+                      <span class="setting-copy"
+                        ><strong>Pin the header by default</strong
+                        ><small
+                          >Applies to channels without an explicit choice; flipping this updates existing channels
+                          within a moment.</small
+                        ></span
+                      >
+                    </label>
+                  </div>
+                  <div class="foot">
+                    <button class="primary" data-save="channel-header-pin-default">Apply</button
+                    ><span class="status" id="st-channel-header-pin-default"></span>
+                  </div>
+                </section>
                 <div class="governance-group" id="governance-intelligence">
                   <h2>Models &amp; browsing</h2>
                   <p>The models, browser runtime, and organization context available on future turns.</p>
@@ -4412,8 +4471,9 @@
                     <h2>Branding</h2>
                     <p>
                       How this org's surfaces look. Accent is the highlight color across the web UI, admin, and portal;
-                      mark is the 1–2 character badge in the web UI; label is the assistant's name in transcripts. Leave
-                      a field blank to use the deployment default.
+                      mark is the 1–2 character badge in the web UI; label is the assistant's name everywhere it
+                      introduces itself; organization name is how the assistant refers to this org. Leave a field blank
+                      to use the deployment default.
                     </p>
                   </div>
                   <div class="body">
@@ -4428,6 +4488,14 @@
                       style="max-width: 320px"
                       maxlength="40"
                       placeholder="Agent"
+                    />
+                    <label for="branding-org-name" style="margin-top: 12px">Organization name</label>
+                    <input
+                      type="text"
+                      id="branding-org-name"
+                      style="max-width: 320px"
+                      maxlength="40"
+                      placeholder="Acme Corp"
                     />
                   </div>
                   <div class="foot">
@@ -4777,7 +4845,7 @@
                     href="https://api.slack.com/apps?new_app=1"
                     target="_blank"
                     rel="noopener noreferrer"
-                    >Create QM Slack app from manifest ↗</a
+                    >Create Slack app from manifest ↗</a
                   >
                 </p>
                 <p class="hint" id="slack-installation-state">Not configured.</p>
@@ -4871,8 +4939,32 @@
         "Add the key QM will use for its base model.": "添加 QM 基础模型所需的密钥。",
         Optional: "可选",
         "2. Slack app": "2. Slack 应用",
-        "Create the QM app, install it, then add its bot and Socket Mode tokens.":
-          "创建并安装 QM 应用，然后添加机器人和 Socket Mode 令牌。",
+        "Create the Slack app, install it, then add its bot and Socket Mode tokens.":
+          "创建并安装 Slack 应用，然后添加机器人和 Socket Mode 令牌。",
+        "Get this deployment ready for real conversations. Secrets are validated, encrypted in durable storage, and never displayed again.":
+          "为真实对话准备好此部署。密钥会经过验证、加密存储，并且不会再次显示。",
+        "Add the key the agent will use for its base model.": "添加智能体用于基础模型的密钥。",
+        "Create Slack app ↗": "创建 Slack 应用 ↗",
+        "Open environment": "打开环境",
+        "Channel pinned header": "频道置顶消息",
+        "Org-wide, default off. When on, the agent posts and pins a small header message (naming the model in use) in every Slack channel it's in. Channels can still override it either way from their project page.":
+          "组织级设置，默认关闭。开启后，智能体会在所在的每个 Slack 频道发布并置顶一条标明所用模型的简短消息。频道仍可在项目页面自行覆盖此设置。",
+        "Pin the header by default": "默认置顶消息",
+        "Applies to channels without an explicit choice; flipping this updates existing channels within a moment.":
+          "适用于未明确选择的频道；切换后会很快更新现有频道。",
+        "Organization name": "组织名称",
+        "Create Slack app from manifest ↗": "根据清单创建 Slack 应用 ↗",
+        "Computer files and working memory resolve to this environment. Governance and conversation history remain scoped here.":
+          "计算机文件和工作记忆会解析到此环境。治理和对话历史仍限定在当前范围内。",
+        "No named environments.": "没有命名环境。",
+        "Named environments": "命名环境",
+        "Named computers and working memory that scopes can share.": "范围可共享的命名计算机和工作记忆。",
+        "This scope is attached to a named environment.": "此范围已关联到命名环境。",
+        "no scopes attached": "没有已关联的范围",
+        "env:": "环境：",
+        "No scopes attached.": "没有已关联的范围。",
+        "Attached scopes": "已关联范围",
+        "not re-captured per step — the transcript is the record": "不再按步骤重复捕获——以对话记录为准",
         "Create QM Slack app ↗": "创建 QM Slack 应用 ↗",
         "Enter Slack tokens": "输入 Slack 令牌",
         "3. OAuth apps": "3. OAuth 应用",
@@ -6004,6 +6096,14 @@
       const adminTranslatePattern = (value) => {
         let match = value.match(/^([\d,.]+[kKmM]?) background$/);
         if (match) return `${match[1]} 个后台任务`;
+        match = value.match(/^Uses named environment (.+)$/);
+        if (match) return `正在使用命名环境 ${match[1]}`;
+        match = value.match(/^Open environment (.+)$/);
+        if (match) return `打开环境 ${match[1]}`;
+        match = value.match(/^(.+) \+([\d,.]+) more scopes?$/);
+        if (match) return `${match[1]} + 另外 ${match[2]} 个范围`;
+        match = value.match(/^([\d,.]+) scopes? share this environment's computer and working memory\.$/);
+        if (match) return `${match[1]} 个范围共享此环境的计算机和工作记忆。`;
         match = value.match(/^([\d,.]+[kKmM]?) active scopes?$/);
         if (match) return `${match[1]} 个活动范围`;
         match = value.match(/^([\d,.]+[kKmM]?) known scopes? without conversations$/);
@@ -7165,6 +7265,7 @@
       });
 
       let scopeDir = null;
+      let environmentDir = [];
       let scopeDirNote = adminTr("Loading scopes…");
       async function loadScopeDirectory() {
         const r = await api("GET", "/api/scopes");
@@ -7178,6 +7279,7 @@
         }
         viewLoadedAt.history = Date.now();
         scopeDir = r.data.scopes || [];
+        environmentDir = r.data.environments || [];
 
         if (SCOPED.has(view) && !urlToState().session) {
           const memoryEditor = view === "memory" && !(orgWideView() && urlToState().mem !== "edit");
@@ -7713,6 +7815,20 @@
         );
       }
       window.addEventListener("scroll", syncGovernanceSectionNav, { passive: true });
+      function renderEnvironmentNotice(data) {
+        const notice = $("environment-notice");
+        const attachment = data?.environmentAttachment;
+        notice.classList.toggle("hidden", !attachment);
+        if (!attachment) return;
+        const name = attachment.environmentName || shortName(attachment.environmentId);
+        $("environment-notice-title").textContent = adminTr("Uses named environment " + name);
+        $("environment-notice-detail").textContent = adminTr(
+          "Computer files and working memory resolve to this environment. Governance and conversation history remain scoped here.",
+        );
+        $("environment-notice-open").textContent = adminTr("Open environment " + name);
+        $("environment-notice-open").onclick = () =>
+          go({ view: "governance", scope: attachment.environmentId, session: null, page: 1 });
+      }
       let governanceReq = 0;
       async function loadScope() {
         const requestedScope = scope;
@@ -7729,6 +7845,7 @@
           );
           return;
         }
+        renderEnvironmentNotice(r.data);
         renderGovernanceOverview(r.data);
         syncGovernanceSectionNav();
         loadedCommandPolicyPresent = r.data.commandPolicy != null;
@@ -7789,6 +7906,9 @@
         const showInteractiveFastMode = scope.startsWith("org:") && "interactiveFastMode" in r.data;
         $("card-interactive-fast-mode").classList.toggle("hidden", !showInteractiveFastMode);
         if (showInteractiveFastMode) $("interactive-fast-mode").checked = r.data.interactiveFastMode === true;
+        const showHeaderPinDefault = scope.startsWith("org:") && "channelHeaderPinDefault" in r.data;
+        $("card-channel-header-pin-default").classList.toggle("hidden", !showHeaderPinDefault);
+        if (showHeaderPinDefault) $("channel-header-pin-default").checked = !!r.data.channelHeaderPinDefault;
 
         const opts = r.data.baseModelOptions || [];
         const dflt = r.data.baseModelDefault || "";
@@ -7942,6 +8062,7 @@
           $("branding-accent").value = b.accent || "";
           $("branding-mark").value = b.mark || "";
           $("branding-self-label").value = b.selfLabel || "";
+          $("branding-org-name").value = b.orgName || "";
         }
 
         const showBrowseSteps = scope.startsWith("org:") && "browseMaxSteps" in r.data;
@@ -8610,7 +8731,7 @@
           ? adminLocale === "zh-CN"
             ? `已连接到 ${slack.data.teamName || slack.data.teamId || "Slack 工作区"}。`
             : "Connected to " + (slack.data.teamName || slack.data.teamId || "a Slack workspace") + "."
-          : adminTr("Create the QM app, install it, then add its bot and Socket Mode tokens.");
+          : adminTr("Create the Slack app, install it, then add its bot and Socket Mode tokens.");
         if (slack.data.createUrl) $("onboarding-slack-create").href = slack.data.createUrl;
 
         const configured = (catalog.data.catalog || []).filter((item) => item.configured);
@@ -9574,6 +9695,7 @@
         "external-slack-participants": () => ({ on: $("external-slack-participants").checked }),
         "org-ambient": () => ({ on: $("org-ambient").checked }),
         "interactive-fast-mode": () => ({ on: $("interactive-fast-mode").checked }),
+        "channel-header-pin-default": () => ({ on: $("channel-header-pin-default").checked }),
         runtime: () => ({ harnessId: $("base-harness").value, modelId: $("base-model").value }),
         "approved-harnesses": () => ({
           ids: Array.from(document.querySelectorAll("#approved-harnesses-list input[type=checkbox]:checked")).map(
@@ -9591,6 +9713,7 @@
           accent: $("branding-accent").value.trim(),
           mark: $("branding-mark").value.trim(),
           selfLabel: $("branding-self-label").value.trim(),
+          orgName: $("branding-org-name").value.trim(),
         }),
         "browse-max-steps": () => ({ steps: $("browse-max-steps").value.trim() }),
         "turn-wall-clock": () => ({ sec: $("turn-wall-clock").value.trim() }),
@@ -9606,6 +9729,7 @@
         "external-slack-participants": "st-external-slack-participants",
         "org-ambient": "st-org-ambient",
         "interactive-fast-mode": "st-interactive-fast-mode",
+        "channel-header-pin-default": "st-channel-header-pin-default",
         runtime: "st-runtime",
         "approved-harnesses": "st-approved-harnesses",
         "webui-models": "st-webui-models",
@@ -13198,6 +13322,38 @@
           actions: [sortControl],
         });
         const activityTime = (s) => (scopeSort === "human" ? s.lastConversationActivity || 0 : s.lastActivity || 0);
+        const attachedScopesLabel = (attached) => {
+          if (!attached.length) return adminTr("no scopes attached");
+          const names = attached.map((id) => shortName(id));
+          const shown = names.slice(0, 4).join(", ");
+          const extra = names.length - 4;
+          return extra > 0 ? adminTr(`${shown} +${plural(extra, "more scope")}`) : shown;
+        };
+        if (environmentDir.length) {
+          const environments = denseList(
+            environmentDir,
+            (environment) => {
+              const attached = environment.attachedScopes || [];
+              const preview = document.createElement("span");
+              preview.textContent = attachedScopesLabel(attached);
+              if (attached.length) preview.title = attached.map((id) => shortName(id)).join(", ");
+              return {
+                name: environment.name || shortName(environment.id),
+                preview,
+                href: stateToUrl({ view: "history", scope: environment.id, historyKind }),
+              };
+            },
+            (environment) => selectScope(environment.id),
+            adminTr("No named environments."),
+          );
+          root.appendChild(
+            dataCard(
+              adminTr("Named environments"),
+              adminTr("Named computers and working memory that scopes can share."),
+              environments,
+            ),
+          );
+        }
         const t = denseList(
           activeRows,
           (s) => {
@@ -13206,6 +13362,15 @@
             counts.className = "dense-tag";
             counts.textContent = sessionCountsLabel(s.sessions || 0, s.backgroundSessions || 0);
             preview.appendChild(counts);
+            if (s.environmentAttachment) {
+              const env = document.createElement("span");
+              env.className = "dense-tag";
+              env.textContent =
+                adminTr("env: ") +
+                (s.environmentAttachment.environmentName || shortName(s.environmentAttachment.environmentId));
+              env.title = adminTr("This scope is attached to a named environment.");
+              preview.appendChild(env);
+            }
             if (s.lastMessage) preview.appendChild(document.createTextNode(s.lastMessage));
             return {
               name: shortName(s.scopeId),
@@ -13302,6 +13467,34 @@
             title: scopeKind(scope) !== "org" ? shortName(scope) : VIEW_TITLE.history,
             tabs,
           });
+        }
+        const environmentEntry = (environmentDir || []).find((environment) => environment.id === scope);
+        if (environmentEntry && !cronSel) {
+          const attached = environmentEntry.attachedScopes || [];
+          const chips = document.createElement("div");
+          chips.className = "history-empty-scopes";
+          attached.forEach((id) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "history-empty-scope";
+            button.textContent = shortName(id);
+            button.title = id;
+            button.onclick = () => selectScope(id);
+            chips.appendChild(button);
+          });
+          if (!attached.length) {
+            const none = document.createElement("p");
+            none.className = "empty";
+            none.textContent = adminTr("No scopes attached.");
+            chips.appendChild(none);
+          }
+          root.appendChild(
+            dataCard(
+              adminTr("Attached scopes"),
+              adminTr(plural(attached.length, "scope") + " share this environment's computer and working memory."),
+              chips,
+            ),
+          );
         }
         const cronDeliveryChip = (delivered, label) => {
           if (!delivered) return null;
@@ -13777,7 +13970,7 @@
         const stats = document.createElement("div");
         stats.className = "context-stats";
         const latest = reqs[reqs.length - 1];
-        const latestSections = contextSections(latest.request, latest.transport);
+        const latestSections = contextSections(requestBody(latest), latest.transport);
         stats.append(metaChip((latest.model || "?") + " · " + fmtContextSize(latest, latestSections)));
         cacheMetaItems(turnCache).forEach((b) => stats.appendChild(b));
         stats.appendChild(rawJsonLink(reqs));
@@ -15685,6 +15878,9 @@
           "\n\n(auth + anthropic-version headers are added by the provider SDK below the capture point, so they aren't shown)"
         );
       }
+      function requestBody(q) {
+        return q && q.promptEnvelope != null ? q.promptEnvelope : q ? q.request : null;
+      }
       function contextSections(request, transport) {
         const req = request && typeof request === "object" ? request : {};
         const messages = Array.isArray(req.messages) ? req.messages : [];
@@ -15709,7 +15905,9 @@
           {
             key: "messages",
             label: adminTr("Messages"),
-            note: adminTr(messages.length + " message" + (messages.length === 1 ? "" : "s")),
+            note: messages.length
+              ? adminTr(messages.length + " message" + (messages.length === 1 ? "" : "s"))
+              : adminTr("not re-captured per step — the transcript is the record"),
             text: messages.map(messageEntryText).join("\n\n"),
           },
           {
@@ -15877,8 +16075,8 @@
         a.className = "context-raw";
         let payload;
         if (requests.length === 1) {
-          payload = requests[0]?.request;
-          if (requests[0]?.transport) payload = { request: requests[0].request, transport: requests[0].transport };
+          payload = requestBody(requests[0]);
+          if (requests[0]?.transport) payload = { request: requestBody(requests[0]), transport: requests[0].transport };
         } else {
           payload = requests.map((q) => ({
             step: q.step,
@@ -15886,7 +16084,7 @@
             createdAt: q.createdAt,
             truncated: !!q.truncated,
             ...(q.transport ? { transport: q.transport } : {}),
-            request: q.request,
+            request: requestBody(q),
           }));
         }
         a.href = "#";
@@ -15903,7 +16101,7 @@
         return a;
       }
       function renderContextRequest(q, i, totalRequests) {
-        const sections = contextSections(q.request, q.transport);
+        const sections = contextSections(requestBody(q), q.transport);
         const wrap = document.createElement("div");
         wrap.className = "context-request";
         const selection = document.createElement("div");
@@ -15945,7 +16143,7 @@
         role.className = "role";
         role.textContent = adminTr("sent to model");
         const latest = requests[requests.length - 1] || { request: {} };
-        const latestSections = opts.latestSections || contextSections(latest.request, latest.transport);
+        const latestSections = opts.latestSections || contextSections(requestBody(latest), latest.transport);
         const sync = () => {
           const open = !block.classList.contains("collapsed");
           tog.textContent = open ? "▾" : "▸";

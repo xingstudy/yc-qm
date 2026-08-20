@@ -39,6 +39,7 @@ COPY src ./src
 COPY plugins/chassis/src ./plugins/chassis/src
 COPY tsconfig.json ./
 COPY --chmod=755 deploy/egress-proxy/envoy.yaml deploy/egress-proxy/start.sh ./
+RUN envoy --mode validate -c /app/envoy.yaml
 
 ENV NODE_ENV=production
 ENV PATH="/nodejs/bin:/usr/local/bin:/usr/bin:/bin"

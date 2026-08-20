@@ -16,6 +16,9 @@ import { TURN_FILES_DIR, turnFileId } from "../src/core/attachments.ts";
 import { contextSummaryPayload } from "../src/harness/context-compaction.ts";
 import { egressDecision } from "../src/resolution/egress-policy.ts";
 import { hashId } from "../src/util/crypto.ts";
+import { encodeRef, serviceCredRef } from "../src/acl/resource-ref.ts";
+import type { AclStore } from "../src/acl/acl-store.ts";
+import type { ScopeId } from "../src/types.ts";
 import type { SecurityScreener } from "../src/security/security-screener.ts";
 
 function freshApp(overrides: Partial<Config> = {}, securityScreener?: SecurityScreener) {
@@ -65,6 +68,16 @@ function channel(text: string, extra: Partial<TurnRequest> = {}): TurnRequest {
   };
 }
 
+async function grantCred(acl: AclStore, org: ScopeId, slug: string, grantee: ScopeId = org): Promise<void> {
+  await acl.grant({
+    ownerScopeId: org,
+    ref: encodeRef(serviceCredRef(slug)),
+    granteeScopeId: grantee,
+    permission: "read",
+    grantedBy: "admin@default-org",
+  });
+}
+
 test("internal DM turn runs end-to-end and records the session", async () => {
   const { app } = freshApp();
   const res = await app.turn(dm("hello there"));
@@ -111,9 +124,9 @@ test("inbound file problems ride a durable file_event entry — off the reply an
   );
   assert.match(payload.text, /screenshot\.png/);
 
-  const reqs = (await sessions.listLlmRequests(res.sessionId!)) as Array<{ model: string; request: unknown }>;
+  const reqs = (await sessions.listLlmRequests(res.sessionId!)) as Array<{ model: string; promptEnvelope: unknown }>;
   for (const r of reqs.filter((request) => request.model !== "mock-security")) {
-    assert.doesNotMatch(JSON.stringify(r.request), /too many files|screenshot\.png/);
+    assert.doesNotMatch(JSON.stringify(r.promptEnvelope), /too many files|screenshot\.png/);
   }
 
   assert.equal((res as { fileNotes?: unknown }).fileNotes, undefined);
@@ -171,7 +184,7 @@ test("a 1:1 names the authenticated human in the prompt so the agent never asks 
   const res = await app.turn(dm("hi", { actor: { externalId: "ada@acme.com", displayName: "Ada Lovelace" } }));
   assert.equal(res.status, "ok", res.reason);
   const sys = (await sessions.listLlmRequests(res.sessionId!)).at(-1)! as any;
-  assert.match(sys.request.system, /live, private 1:1 with Ada Lovelace \(ada@acme\.com\)/);
+  assert.match(sys.promptEnvelope.system, /live, private 1:1 with Ada Lovelace \(ada@acme\.com\)/);
 });
 
 test("a channel turn gets no 1:1 identity block", async () => {
@@ -179,7 +192,7 @@ test("a channel turn gets no 1:1 identity block", async () => {
   const res = await app.turn(channel("hi", { actor: { externalId: "U1", displayName: "Ada" } }));
   assert.equal(res.status, "ok", res.reason);
   const sys = (await sessions.listLlmRequests(res.sessionId!)).at(-1)! as any;
-  assert.doesNotMatch(sys.request.system, /## Who you're talking to/);
+  assert.doesNotMatch(sys.promptEnvelope.system, /## Who you're talking to/);
 });
 
 test("a silent cron source run stays out of normal human chat history", async () => {
@@ -260,8 +273,8 @@ test("a cron-delivered digest lands as a delivery event with origin, not recipie
   });
   const reqs = await built.sessions.listLlmRequests(recipient!.id);
   const latest = reqs.at(-1) as any;
-  assert.match(latest.request.messages.at(-1).content, /Recent agent-initiated deliveries to this conversation/);
-  assert.match(latest.request.messages.at(-1).content, /deploy digest ready/);
+  assert.match(latest.promptEnvelope.messages.at(-1).content, /Recent agent-initiated deliveries to this conversation/);
+  assert.match(latest.promptEnvelope.messages.at(-1).content, /deploy digest ready/);
 });
 
 test("a setup-phase failure after the lease is acquired does NOT wedge the thread (lease released)", async () => {
@@ -436,13 +449,55 @@ test("a per-turn egress-proxy token is minted and passed to provision, carrying 
   assert.deepEqual(captured!.egress, { allowedHosts: [], deniedHosts: [] });
 });
 
+test("live bot attestation reaches control, OAuth, and egress capabilities", async () => {
+  const config = testConfig({
+    dataDir: mkdtempSync(join(tmpdir(), "ap-")),
+    signingSecret: "test-secret",
+    apiBaseUrl: "https://core.example.com",
+  });
+  const { app, sandbox } = buildApp(config);
+  let captured: ProvisionOptions | undefined;
+  const realProvision = sandbox.provision.bind(sandbox);
+  sandbox.provision = (layers, opts) => {
+    captured = opts;
+    return realProvision(layers, opts);
+  };
+  const actor = { externalId: "B-LEGACY", isBot: true };
+  const res = await app.turn(
+    channel("!run echo bot", {
+      actor,
+      botActor: true,
+      liveActor: true,
+      conversation: {
+        kind: "channel",
+        threadRef: "ch:C1:bot",
+        channelRef: "C1",
+        isPrivate: true,
+        audience: [actor],
+        publishMembers: [actor],
+      },
+    }),
+  );
+  assert.equal(res.status, "ok");
+  for (const token of [
+    captured!.env!.AGENT_API_TOKEN,
+    captured!.env!.AGENT_OAUTH_CONSENT_TOKEN,
+    captured!.egressToken,
+  ]) {
+    const claims = await verifyCapabilityToken(token!, TEST_CAPABILITY_SECRET);
+    assert.equal(claims?.botActor, true);
+    assert.equal(claims?.liveActor, true);
+    assert.deepEqual(claims?.members, [{ id: "B-LEGACY", type: "internal" }]);
+  }
+});
+
 test("org env-delivery credentials ride provision env under their envKey — read live, so a rotation applies next turn", async () => {
   const config = testConfig({
     dataDir: mkdtempSync(join(tmpdir(), "ap-")),
     signingSecret: "test-secret",
     apiBaseUrl: "https://core.example.com",
   });
-  const { app, sandbox, serviceCreds } = buildApp(config);
+  const { app, sandbox, serviceCreds, acl } = buildApp(config);
   const org = scopeId("org", "default-org");
   await serviceCreds.setServiceCredential(org, {
     slug: "browse-steel",
@@ -452,6 +507,8 @@ test("org env-delivery credentials ride provision env under their envKey — rea
     secret: "steel-org-key",
     host: "",
   });
+  await grantCred(acl, org, "browse-steel");
+  await grantCred(acl, org, "browse-model-key");
   await serviceCreds.setServiceCredential(org, {
     slug: "browse-model-key",
     name: "Browse model key",
@@ -491,8 +548,10 @@ test("a disabled or broker-delivery credential never rides provision env", async
     signingSecret: "test-secret",
     apiBaseUrl: "https://core.example.com",
   });
-  const { app, sandbox, serviceCreds } = buildApp(config);
+  const { app, sandbox, serviceCreds, acl } = buildApp(config);
   const org = scopeId("org", "default-org");
+  await grantCred(acl, org, "x-firehose");
+  await grantCred(acl, org, "browse-steel");
   await serviceCreds.setServiceCredential(org, {
     slug: "x-firehose",
     name: "X",
@@ -531,7 +590,7 @@ test("a credential flipped away from env between the metadata read and the secre
     signingSecret: "test-secret",
     apiBaseUrl: "https://core.example.com",
   });
-  const { app, sandbox, serviceCreds } = buildApp(config);
+  const { app, sandbox, serviceCreds, acl } = buildApp(config);
   const org = scopeId("org", "default-org");
   await serviceCreds.setServiceCredential(org, {
     slug: "browse-steel",
@@ -541,6 +600,7 @@ test("a credential flipped away from env between the metadata read and the secre
     secret: "steel-org-key",
     host: "",
   });
+  await grantCred(acl, org, "browse-steel");
   const realGet = serviceCreds.getServiceCredentialSecret.bind(serviceCreds);
   serviceCreds.getServiceCredentialSecret = async (scope, slug) => {
     const rec = await realGet(scope, slug);
@@ -564,7 +624,7 @@ test("env-delivery injection is all-internal only, and an existing env key (keyc
     signingSecret: "test-secret",
     apiBaseUrl: "https://core.example.com",
   });
-  const { app, sandbox, serviceCreds } = buildApp(config);
+  const { app, sandbox, serviceCreds, acl } = buildApp(config);
   const org = scopeId("org", "default-org");
   await serviceCreds.setServiceCredential(org, {
     slug: "browse-steel",
@@ -574,6 +634,7 @@ test("env-delivery injection is all-internal only, and an existing env key (keyc
     secret: "steel-org-key",
     host: "",
   });
+  await grantCred(acl, org, "browse-steel");
   const captures: ProvisionOptions[] = [];
   const realProvision = sandbox.provision.bind(sandbox);
   sandbox.provision = (layers, opts) => {
@@ -594,6 +655,48 @@ test("env-delivery injection is all-internal only, and an existing env key (keyc
   );
   assert.equal(externalRoom.status, "ok");
   assert.equal(captures.at(-1)?.env?.STEEL_API_KEY, undefined, "a room with externals gets no org env credentials");
+});
+
+test("env-delivery credentials are gated by service-cred grants — no grant, no env var; a person grant admits only that person", async () => {
+  const config = testConfig({
+    dataDir: mkdtempSync(join(tmpdir(), "ap-")),
+    signingSecret: "test-secret",
+    apiBaseUrl: "https://core.example.com",
+  });
+  const { app, sandbox, serviceCreds, acl } = buildApp(config);
+  const org = scopeId("org", "default-org");
+  await serviceCreds.setServiceCredential(org, {
+    slug: "browse-steel",
+    name: "Steel",
+    delivery: "env",
+    envKey: "STEEL_API_KEY",
+    secret: "steel-org-key",
+    host: "",
+  });
+  const captures: ProvisionOptions[] = [];
+  const realProvision = sandbox.provision.bind(sandbox);
+  sandbox.provision = (layers, opts) => {
+    if (opts) captures.push(opts);
+    return realProvision(layers, opts);
+  };
+
+  let res = await app.turn(dm("!run echo keys", { conversation: { kind: "dm", threadRef: "dm:U1:gate1" } }));
+  assert.equal(res.status, "ok");
+  assert.equal(captures.at(-1)?.env?.STEEL_API_KEY, undefined, "ungranted env credential stays home");
+
+  await grantCred(acl, org, "browse-steel", scopeId("personal", "somebody-else"));
+  res = await app.turn(dm("!run echo keys", { conversation: { kind: "dm", threadRef: "dm:U1:gate2" } }));
+  assert.equal(res.status, "ok");
+  assert.equal(captures.at(-1)?.env?.STEEL_API_KEY, undefined, "a grant to someone else does not admit this actor");
+
+  await grantCred(acl, org, "browse-steel", scopeId("personal", "U1"));
+  res = await app.turn(dm("!run echo keys", { conversation: { kind: "dm", threadRef: "dm:U1:gate3" } }));
+  assert.equal(res.status, "ok");
+  assert.equal(
+    captures.at(-1)?.env?.STEEL_API_KEY,
+    "steel-org-key",
+    "a personal grant to the actor admits the env var",
+  );
 });
 
 test("admin-configured browse step limit rides provision env (BROWSE_LAB_MAX_STEPS)", async () => {
@@ -739,7 +842,7 @@ test("browse derives key and base URL from a custom provider's admin config", as
 
 test("an explicit browse key credential overrides the provider-derived key", async () => {
   const built = freshApp();
-  const { app, sandbox, serviceCreds } = built;
+  const { app, sandbox, serviceCreds, acl } = built;
   let captured: ProvisionOptions | undefined;
   const realProvision = sandbox.provision.bind(sandbox);
   sandbox.provision = (layers, opts) => {
@@ -767,6 +870,7 @@ test("an explicit browse key credential overrides the provider-derived key", asy
     secret: "sk-explicit",
     host: "",
   });
+  await grantCred(acl, scopeId("org", "default-org"), "browse-openai-key");
   try {
     const result = await app.turn(dm("!run echo browse", { conversation: { kind: "dm", threadRef: "dm:U1:custom2" } }));
     assert.equal(result.status, "ok");
@@ -872,6 +976,35 @@ test("turn timezone rides the prompt and control-plane capability token", async 
   assert.equal(invalid.status, "ok");
   const invalidClaims = await verifyCapabilityToken(captured!.env!.AGENT_API_TOKEN!, TEST_CAPABILITY_SECRET);
   assert.equal(invalidClaims!.timezone, undefined, "invalid surface timezones are omitted from the token");
+});
+
+test("unattended grants enter capability claims only on non-live turns", async () => {
+  const config = testConfig({
+    dataDir: mkdtempSync(join(tmpdir(), "ap-")),
+    signingSecret: "test-secret",
+    apiBaseUrl: "https://core.example.com",
+  });
+  const { app, sandbox } = buildApp(config);
+  let captured: ProvisionOptions | undefined;
+  const realProvision = sandbox.provision.bind(sandbox);
+  sandbox.provision = (layers, opts) => {
+    captured = opts;
+    return realProvision(layers, opts);
+  };
+
+  await app.turn(dm("!run echo cron", { triggered: true, unattendedGrants: ["admin.sessions.read"] }));
+  let claims = await verifyCapabilityToken(captured!.env!.AGENT_API_TOKEN!, TEST_CAPABILITY_SECRET);
+  assert.deepEqual(claims?.grants, ["admin.sessions.read"]);
+
+  await app.turn(
+    dm("!run echo live", {
+      liveActor: true,
+      conversation: { kind: "dm", threadRef: "dm:U1:live-grant" },
+      unattendedGrants: ["admin.sessions.read"],
+    }),
+  );
+  claims = await verifyCapabilityToken(captured!.env!.AGENT_API_TOKEN!, TEST_CAPABILITY_SECRET);
+  assert.equal(claims?.grants, undefined);
 });
 
 test("the egress claim keeps the control-plane host reachable under an allowlist or a matching denylist", () => {
@@ -1423,6 +1556,37 @@ test("a delivered file is recorded as a durable entry and surfaced to the next t
 
   const t3 = await app.turn(dm("ok thanks for that"));
   assert.doesNotMatch(t3.reply ?? "", /you delivered to this conversation in your previous turn/);
+});
+
+test("a file posted in a GROUP conversation is granted read to the conversation scope", async () => {
+  const { app, acl } = freshApp();
+  const grp = {
+    kind: "group" as const,
+    threadRef: "grp:G9:files",
+    channelRef: "G9",
+    audience: [internalActor, { externalId: "U2" }],
+  };
+  await app.turn(
+    dm("!run printf FLAG > flag.png", {
+      surface: "slack",
+      conversation: grp,
+      deliveryTarget: "slack:G9:files",
+      surfaceTools: true,
+    }),
+  );
+  const t = await app.turn(
+    dm("!postfiles flag.png here you go", {
+      surface: "slack",
+      conversation: grp,
+      deliveryTarget: "slack:G9:files",
+      surfaceTools: true,
+    }),
+  );
+  assert.notEqual(t.status, "error");
+  const handles = await acl.handlesFor([scopeId("group", "G9")]);
+  const fileHandle = handles.find((h) => h.ownerPath.endsWith("/flag.png"));
+  assert.ok(fileHandle, "the posted file is granted to the conversation scope");
+  assert.equal(fileHandle!.ownerScopeId, scopeId("personal", "U1"));
 });
 
 test("a file shared with the session is LISTED in the cached system prompt — without provisioning a sandbox", async () => {
@@ -2139,8 +2303,8 @@ test("Auto screens only the external event envelope and records classifier usage
     (rec) => rec.model === "mock-security",
   );
   assert.ok(classifier, "the security classifier request is persisted beside the turn");
-  assert.match(JSON.stringify(classifier.request), /customer asked for a refund/);
-  assert.doesNotMatch(JSON.stringify(classifier.request), /provenance-ok/);
+  assert.match(JSON.stringify(classifier.promptEnvelope), /customer asked for a refund/);
+  assert.doesNotMatch(JSON.stringify(classifier.promptEnvelope), /provenance-ok/);
   assert.ok(built.modelGateway.audit().some((rec) => rec.model === "mock-security"));
 });
 
@@ -2235,7 +2399,7 @@ test("Auto fails open on vision attachments it cannot screen, flagging them unsc
   const main = [...(await built.sessions.listLlmRequests(result.sessionId!))]
     .reverse()
     .find((rec) => rec.model !== "mock-security");
-  assert.match(JSON.stringify(main?.request), /NOT security-screened/);
+  assert.match(JSON.stringify(main?.promptEnvelope), /NOT security-screened/);
 });
 
 test("Auto screens text attachment contents (strict quarantines) and fails open on unreadable binary files", async () => {
@@ -2262,7 +2426,7 @@ test("Auto screens text attachment contents (strict quarantines) and fails open 
   const classifier = (await benign.sessions.listLlmRequests(allowed.sessionId!)).find(
     (rec) => rec.model === "mock-security",
   );
-  assert.match(JSON.stringify(classifier?.request), /quarterly revenue is 42/);
+  assert.match(JSON.stringify(classifier?.promptEnvelope), /quarterly revenue is 42/);
 
   const binary = freshApp();
   const pdf = await binary.blobTransfer.put(Buffer.from("%PDF synthetic"));
@@ -2338,8 +2502,8 @@ test("Auto does not let one quarantined thread file poison later attachments", a
   const classifier = (await built.sessions.listLlmRequests(allowed.sessionId!))
     .filter((rec) => rec.model === "mock-security")
     .at(-1);
-  assert.match(JSON.stringify(classifier?.request), /quarterly revenue is 42/);
-  assert.doesNotMatch(JSON.stringify(classifier?.request), /ignore previous instructions/);
+  assert.match(JSON.stringify(classifier?.promptEnvelope), /quarterly revenue is 42/);
+  assert.doesNotMatch(JSON.stringify(classifier?.promptEnvelope), /ignore previous instructions/);
 });
 
 test("an approved automation replay preserves and re-screens its external event provenance", async () => {
@@ -2375,7 +2539,7 @@ test("an approved automation replay preserves and re-screens its external event 
     (rec) => rec.model === "mock-security",
   );
   assert.equal(screens.length, 2);
-  assert.ok(screens.every((rec) => JSON.stringify(rec.request).includes("benign external marker")));
+  assert.ok(screens.every((rec) => JSON.stringify(rec.promptEnvelope).includes("benign external marker")));
 });
 
 test("Auto fails open on data-bearing turns when the security screen is unavailable", async () => {
@@ -2395,7 +2559,7 @@ test("Auto fails open on data-bearing turns when the security screen is unavaila
   const main = [...(await built.sessions.listLlmRequests(result.sessionId!))]
     .reverse()
     .find((rec) => rec.model !== "mock-security");
-  assert.match(JSON.stringify(main?.request), /NOT security-screened/);
+  assert.match(JSON.stringify(main?.promptEnvelope), /NOT security-screened/);
 });
 
 test("Auto retries a transient screen failure instead of quarantining", async () => {
@@ -2498,7 +2662,7 @@ test("Auto fails open when bounded screening omits oversize content, flagging it
   const main = [...(await built.sessions.listLlmRequests(result.sessionId!))]
     .reverse()
     .find((rec) => rec.model !== "mock-security");
-  assert.match(JSON.stringify(main?.request), /NOT security-screened/);
+  assert.match(JSON.stringify(main?.promptEnvelope), /NOT security-screened/);
 });
 
 test("an Auto-downgraded turn is quarantined from later full-authority model history", async () => {
@@ -2523,7 +2687,7 @@ test("an Auto-downgraded turn is quarantined from later full-authority model his
   const requests = await built.sessions.listLlmRequests(second.sessionId!);
   const latestMain = [...requests].reverse().find((rec) => rec.model !== "mock-security");
   assert.ok(latestMain);
-  assert.doesNotMatch(JSON.stringify(latestMain.request), /durable history/);
+  assert.doesNotMatch(JSON.stringify(latestMain.promptEnvelope), /durable history/);
 });
 
 test("Auto records quarantined overheard timestamps so they cannot poison every later mention", async () => {

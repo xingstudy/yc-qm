@@ -27,6 +27,7 @@ export {
   computeChannelAudience,
   computePublishMembers,
   allInternalChannelMembers,
+  internalChannelMembers,
   resolveChannelMembership,
 } from "./identity.ts";
 export {
@@ -118,6 +119,8 @@ export {
   channelWelcomeMessage,
   surfaceHeaderText,
   headerUpdate,
+  isSurfaceHeaderMessage,
+  findHeaderPin,
   createSurfaceHeaderEnsurer,
   scopeSurfaceUrl,
   type SurfaceHeaderClient,

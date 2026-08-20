@@ -36,6 +36,7 @@ export interface MonitorPollerDeps {
   run: (req: TurnRequest) => Promise<TurnResult>;
   directory?: TriggerDeps["directory"];
   currentScopeMembers?: CurrentScopeMembers;
+  sessions?: TriggerDeps["sessions"];
   now?: () => number;
   maxFiresPerTick?: number;
   leaderLease?: LeaderLease;
@@ -114,6 +115,7 @@ export function createMonitorPoller(deps: MonitorPollerDeps): MonitorPoller {
     run: deps.run,
     ...(deps.directory ? { directory: deps.directory } : {}),
     ...(deps.currentScopeMembers ? { currentScopeMembers: deps.currentScopeMembers } : {}),
+    ...(deps.sessions ? { sessions: deps.sessions } : {}),
   };
 
   async function fire(
@@ -264,13 +266,13 @@ export function createMonitorPoller(deps: MonitorPollerDeps): MonitorPoller {
           if (await poll(sandbox, handle, m, t)) fires++;
         } catch (e) {
           await deps.monitors.recordError(m.id, errMessage(e));
-          console.error(`[monitor] poll failed for ${m.id}:`, e);
+          console.error(`[monitor] poll failed for ${m.id}:`, errMessage(e));
         }
       }
     } finally {
       for (const handle of handles.values()) {
         await sandbox.teardown(handle, { keepWarm: true }).catch((e: unknown) => {
-          console.error("[monitor] teardown failed:", e);
+          console.error("[monitor] teardown failed:", errMessage(e));
         });
       }
     }
@@ -282,7 +284,7 @@ export function createMonitorPoller(deps: MonitorPollerDeps): MonitorPoller {
   };
 
   const sweeper = createSweeper(
-    () => tick().catch((e: unknown) => console.error("[monitor] tick failed:", e)),
+    () => tick().catch((e: unknown) => console.error("[monitor] tick failed:", errMessage(e))),
     10_000,
     { label: "monitor" },
   );

@@ -39,6 +39,10 @@ export function getBaseModel(id: string, fallback?: CatalogModelInfo): PiModel {
     if (template) return cloneModel(template, id, clone.name);
   }
   if (fallback?.api) return dynamicModel(id, fallback as CatalogModelInfo & { api: string });
+  if (fallback) {
+    const template = getModel("openrouter", "openrouter/auto" as Parameters<typeof getModel>[1]) as PiModel | undefined;
+    if (template) return { ...cloneModel(template, id, fallback.name), provider: fallback.provider };
+  }
   throw new Error(`Unsupported model: ${id}`);
 }
 

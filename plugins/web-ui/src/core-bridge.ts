@@ -62,6 +62,7 @@ export interface CoreSession {
   awaitingInput?: boolean;
   backgroundJobs?: number;
   watches?: number;
+  crons?: number;
   forkedFrom?: { sessionId: string; title?: string | null };
   forkBoundarySeq?: number;
 }
@@ -138,6 +139,7 @@ export interface SessionBackgroundView {
     expiresAt: number;
     lastFiredAt?: number;
   }>;
+  crons: Array<{ id: string; title?: string; nextFireAt?: number }>;
 }
 
 export interface SessionBackgroundOutput {
@@ -162,8 +164,10 @@ export interface CoreProject {
   name: string;
   ownerId: string;
   memberIds: string[];
+  channelMemberIds?: string[];
   scopeId: string;
-  members: Array<{ principalId: string; displayName: string }>;
+  members: Array<{ principalId: string; displayName: string; viaChannel?: boolean }>;
+  slackChannel?: { channelId: string; channelName: string; linkedBy?: string; linkedAt?: number };
   createdAt?: number;
   updatedAt?: number;
 }
@@ -345,8 +349,14 @@ export interface TurnOptions {
 }
 
 export interface ActiveRun {
+  runId: string | null;
+  run: RunPoll | null;
+  queued: QueuedRun[];
+}
+
+export interface QueuedRun {
   runId: string;
-  run: RunPoll;
+  text: string;
 }
 
 export function isContinuable(s: Pick<CoreSession, "threadRef" | "scopeId">, user: string): boolean {
@@ -448,6 +458,19 @@ export function setSigninRequiredHandler(fn: (detail: SigninRequired) => void): 
 
 export function reportSigninRequired(detail: SigninRequired): void {
   onSigninRequired?.(detail);
+}
+
+export interface UiStateRecord {
+  value: unknown;
+  updatedAt: number;
+}
+
+export function fetchUiState(key: string): Promise<UiStateRecord> {
+  return api<UiStateRecord>(`/api/ui-state?key=${encodeURIComponent(key)}`);
+}
+
+export function putUiState(key: string, value: unknown, updatedAt: number, init?: RequestInit): Promise<unknown> {
+  return api("/api/ui-state", { method: "PUT", body: JSON.stringify({ key, value, updatedAt }), ...init });
 }
 
 export async function api<T = unknown>(path: string, init?: RequestInit): Promise<T> {
@@ -576,10 +599,32 @@ export function makeCoreStreamFn(
   return fn as unknown as StreamFn;
 }
 
-export async function activeRunForThread(threadRef: string): Promise<ActiveRun | null> {
+export async function activeRunForThread(threadRef: string): Promise<ActiveRun> {
   const q = new URLSearchParams({ threadRef });
-  const r = await api<{ runId?: string | null; run?: RunPoll | null }>(`/api/runs/active?${q.toString()}`);
-  return r.runId && r.run ? { runId: r.runId, run: r.run } : null;
+  const r = await api<{ runId?: string | null; run?: RunPoll | null; queued?: QueuedRun[] }>(
+    `/api/runs/active?${q.toString()}`,
+  );
+  const live = r.runId && r.run ? { runId: r.runId, run: r.run } : { runId: null, run: null };
+  return { ...live, queued: r.queued ?? [] };
+}
+
+export async function queueTurn(
+  threadRef: string,
+  text: string,
+  agent: Agent,
+  getTurnOptions?: () => TurnOptions,
+): Promise<QueuedRun> {
+  const submit = await api<{ runId?: string }>("/api/turn", {
+    method: "POST",
+    body: JSON.stringify(turnRequestBody(threadRef, text, agent.state.model, agent, getTurnOptions)),
+  });
+  if (!submit.runId) throw new Error("Could not queue the message.");
+  return { runId: submit.runId, text };
+}
+
+export async function withdrawRun(runId: string): Promise<boolean> {
+  const r = await api<{ withdrawn?: boolean }>(runPath(runId, "/withdraw"), { method: "POST" });
+  return r.withdrawn === true;
 }
 
 export function makeRunResumeStreamFn(
@@ -635,6 +680,34 @@ export function makeOpenerStreamFn(
   return fn as unknown as StreamFn;
 }
 
+function turnRequestBody(
+  threadRef: string,
+  text: string,
+  model: Model<Api>,
+  agent: Agent,
+  getTurnOptions?: () => TurnOptions,
+  attachments: CoreAttachment[] = [],
+): Record<string, unknown> {
+  const turnOptions = getTurnOptions?.() ?? {};
+  const thinkingLevel =
+    !turnOptions.harness || harnessSupportsEffort(turnOptions.harness)
+      ? (turnOptions.effortLevel ?? agent.state.thinkingLevel ?? defaultEffortForModel(model))
+      : undefined;
+  const timezone = browserTimezone();
+  return {
+    text,
+    threadRef,
+    ...(turnOptions.harness ? { harness: turnOptions.harness } : {}),
+    model: model.id,
+    ...(thinkingLevel ? { thinkingLevel } : {}),
+    ...(typeof turnOptions.fastMode === "boolean" ? { fastMode: turnOptions.fastMode } : {}),
+    ...(timezone ? { timezone } : {}),
+    ...(turnOptions.scopeId ? { scopeId: turnOptions.scopeId } : {}),
+    ...(turnOptions.channelName ? { channelName: turnOptions.channelName } : {}),
+    ...(attachments.length ? { attachments } : {}),
+  };
+}
+
 async function drive(
   stream: AssistantMessageEventStream,
   model: Model<Api>,
@@ -651,12 +724,6 @@ async function drive(
   const work: WorkBlock = { status: "thinking", activity: [] };
   (partial as AssistantWork).work = work;
   const notify = (): void => onWork?.(work);
-  const turnOptions = getTurnOptions?.() ?? {};
-  const thinkingLevel =
-    !turnOptions.harness || harnessSupportsEffort(turnOptions.harness)
-      ? (turnOptions.effortLevel ?? agent.state.thinkingLevel ?? defaultEffortForModel(model))
-      : undefined;
-  const timezone = browserTimezone();
   try {
     notify();
     stream.push({ type: "start", partial });
@@ -669,16 +736,7 @@ async function drive(
     const submit = await api<{ status?: string; runId?: string; reply?: string }>("/api/turn", {
       method: "POST",
       body: JSON.stringify({
-        text,
-        threadRef,
-        ...(turnOptions.harness ? { harness: turnOptions.harness } : {}),
-        model: model.id,
-        ...(thinkingLevel ? { thinkingLevel } : {}),
-        ...(typeof turnOptions.fastMode === "boolean" ? { fastMode: turnOptions.fastMode } : {}),
-        ...(timezone ? { timezone } : {}),
-        ...(turnOptions.scopeId ? { scopeId: turnOptions.scopeId } : {}),
-        ...(turnOptions.channelName ? { channelName: turnOptions.channelName } : {}),
-        ...(attachments.length ? { attachments } : {}),
+        ...turnRequestBody(threadRef, text, model, agent, getTurnOptions, attachments),
         ...(approval ? { approval } : {}),
         ...(opener ? { proactiveOpener: true } : {}),
       }),
@@ -1144,8 +1202,9 @@ interface HistoryUserMessage {
 }
 
 function postCallText(payload: unknown): string | null {
-  const p = (payload ?? {}) as { action?: unknown; text?: unknown };
-  if (p.action !== "post" || typeof p.text !== "string" || !p.text.trim()) return null;
+  const p = (payload ?? {}) as { action?: unknown; text?: unknown; files?: unknown };
+  if (p.action !== "post" || typeof p.text !== "string") return null;
+  if (!p.text.trim() && !(Array.isArray(p.files) && p.files.length)) return null;
   return p.text;
 }
 
@@ -1181,6 +1240,14 @@ export function entriesToMessages(entries: SessionEntry[], model: Model<Api>): A
       return;
     }
     deliveryFiles.push(...files);
+  };
+  const appendPostFiles = (resultPayload: unknown): void => {
+    const files = (
+      resultPayload as {
+        files?: Array<{ name?: string; mimetype?: string; sizeBytes?: number; artifactId?: string }>;
+      } | null
+    )?.files;
+    deliveryFiles.push(...deliveredFilesFromAttachments(files));
   };
   const flushWork = (text: string, at?: number, closed = false): void => {
     if (!text && !pending.length && !deliveryFiles.length) return;
@@ -1243,7 +1310,7 @@ export function entriesToMessages(entries: SessionEntry[], model: Model<Api>): A
       };
       if (e.type === "tool_call") {
         const postText = postCallText(e.payload);
-        if (postText && typeof payload?.callId === "string") {
+        if (postText !== null && typeof payload?.callId === "string") {
           heldPosts.set(payload.callId, { text: postText, activity });
           continue;
         }
@@ -1252,6 +1319,7 @@ export function entriesToMessages(entries: SessionEntry[], model: Model<Api>): A
         const held = heldPosts.get(payload.callId)!;
         heldPosts.delete(payload.callId);
         if (postResultOk(e.payload)) {
+          appendPostFiles(e.payload);
           flushWork(held.text, e.createdAt);
           posted = true;
         } else {

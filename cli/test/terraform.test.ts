@@ -83,6 +83,20 @@ test("the deploy role registers task definitions only for configured ECS familie
   assert.doesNotMatch(global, /ecs:ListTagsForResource/);
 });
 
+test("the deploy role can run and inspect only stack-scoped deployment canaries", () => {
+  const policy = mainTf.match(/resource "aws_iam_role_policy" "github_deploy" \{([\s\S]*?)\n\}/)?.[1] ?? "";
+  const run = policy.match(/Sid\s*= "RunDeploymentCanaries"([\s\S]*?)\n\s*\},/)?.[1] ?? "";
+  assert.match(run, /ecs:RunTask/);
+  assert.match(run, /task-definition\/\$\{var\.services\["core"\]\.ecs_service\}:\*/);
+  assert.match(run, /"ecs:cluster"\s*=\s*aws_ecs_cluster\.this\.arn/);
+  assert.doesNotMatch(run, /Resource\s*= "\*"/);
+
+  const inspect = policy.match(/Sid\s*= "InspectDeploymentCanaries"([\s\S]*?)\n\s*\},/)?.[1] ?? "";
+  assert.match(inspect, /ecs:DescribeTasks/);
+  assert.match(inspect, /task\/\$\{var\.cluster_name\}\/\*/);
+  assert.doesNotMatch(inspect, /Resource\s*= "\*"/);
+});
+
 test("AWS deployments retain recovery history and can create scoped predeploy snapshots", () => {
   const variables = readFileSync(new URL("../templates/aws/variables.tf", import.meta.url), "utf8");
   assert.match(variables, /variable "db_backup_retention_days" \{[\s\S]*default = 35/);
@@ -359,7 +373,10 @@ test("AWS module provisions durable encrypted object storage and configurable sa
   assert.match(mainTf, /expiration\s*\{\s*expired_object_delete_marker\s*= true\s*\}/);
   assert.match(mainTf, /"s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"/);
   assert.match(mainTf, /"s3:ListBucketMultipartUploads"/);
-  assert.match(mainTf, /abort_incomplete_multipart_upload\s*\{\s*days_after_initiation\s*= 1\s*\}/);
+  assert.match(
+    mainTf,
+    /id\s*= "qm-transfer-expiry"[\s\S]*?abort_incomplete_multipart_upload\s*\{\s*days_after_initiation\s*= 1\s*\}/,
+  );
   assert.match(mainTf, /backup_retention_period\s*= var\.db_backup_retention_days/);
   assert.match(mainTf, /multi_az\s*= var\.db_multi_az/);
   assert.match(mainTf, /skip_final_snapshot\s*= var\.db_skip_final_snapshot/);
