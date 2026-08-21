@@ -49,8 +49,28 @@ function normalizedIp(raw: string): string | null {
   return isIP(value) ? value : null;
 }
 
+function wellKnownNat64Ipv4(value: string): string | null {
+  if (isIP(value) !== 6) return null;
+  const compressed = value.includes("::");
+  const [before = "", after = "", extra] = value.split("::");
+  if (extra !== undefined) return null;
+  const left = before ? before.split(":") : [];
+  const right = after ? after.split(":") : [];
+  const groups = compressed ? [...left, ...Array(8 - left.length - right.length).fill("0"), ...right] : left;
+  if (groups.length !== 8 || groups[0] !== "64" || groups[1] !== "ff9b") return null;
+  const tail = groups.slice(6);
+  if (tail.some((group) => !/^[0-9a-f]{1,4}$/.test(group))) return null;
+  const bytes = tail.flatMap((group) => [
+    Number.parseInt(group.slice(0, -2) || "0", 16),
+    Number.parseInt(group.slice(-2), 16),
+  ]);
+  return bytes.every((byte) => byte >= 0 && byte <= 255) ? bytes.join(".") : null;
+}
+
 export function isPrivateNetworkIp(raw: string): boolean {
   const value = normalizedIp(raw);
   if (!value) return false;
+  const nat64 = wellKnownNat64Ipv4(value);
+  if (nat64 && isPrivateNetworkIp(nat64)) return true;
   return PRIVATE_NETWORKS.check(value, isIP(value) === 4 ? "ipv4" : "ipv6");
 }

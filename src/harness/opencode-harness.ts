@@ -1011,7 +1011,7 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
   };
 
   const rejectRuntimeWaiters = (error: Error) => {
-    for (const waiter of [...runtimeWaiters]) settleRuntimeWaiter(waiter, error);
+    for (const waiter of runtimeWaiters.slice()) settleRuntimeWaiter(waiter, error);
   };
 
   async function processRuntimeWaiters(): Promise<void> {

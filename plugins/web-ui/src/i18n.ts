@@ -414,7 +414,6 @@ const ZH: Record<string, string> = {
   "The model every conversation here starts on.": "此处的每个对话都会以该模型开始。",
   "This conversation is read-only here.": "此对话在这里为只读状态。",
   "This conversation lives in Slack. Replies happen there.": "此对话位于 Slack 中，请在那里回复。",
-  "this project": "此项目",
   "This chat runs in the": "此对话运行于",
   "context — the agent works with that context's files and memory, separate from your personal context.":
     "上下文中——智能体使用该上下文的文件和记忆，并与个人上下文隔离。",

@@ -15,7 +15,27 @@ interface McpHttpResponse {
   status: number;
   text(): Promise<string>;
   headers?: { get(name: string): string | null };
-  body?: ReadableStream<Uint8Array> | null;
+  body?: unknown;
+}
+
+interface McpBodyReader {
+  read(): Promise<{ done: true; value?: undefined } | { done: false; value: Uint8Array }>;
+  cancel(): Promise<void>;
+}
+
+function bodyReader(body: unknown): McpBodyReader | null {
+  if (!body || typeof body !== "object") return null;
+  const getReader = (body as { getReader?: unknown }).getReader;
+  if (typeof getReader !== "function") return null;
+  const reader = getReader.call(body) as { read?: unknown; cancel?: unknown };
+  if (!reader || typeof reader.read !== "function" || typeof reader.cancel !== "function") return null;
+  return reader as McpBodyReader;
+}
+
+async function cancelBody(body: unknown): Promise<void> {
+  if (!body || typeof body !== "object") return;
+  const cancel = (body as { cancel?: unknown }).cancel;
+  if (typeof cancel === "function") await Promise.resolve(cancel.call(body)).catch(() => undefined);
 }
 
 export type McpFetch = (
@@ -228,12 +248,12 @@ export function createMcpClient(opts: {
     const contentLength = Number(response.headers?.get("content-length"));
     if (Number.isFinite(contentLength) && contentLength > maxBytes)
       throw new Error(`MCP response exceeds ${maxBytes} bytes`);
-    if (!response.body) {
+    const reader = bodyReader(response.body);
+    if (!reader) {
       const text = await response.text();
       if (Buffer.byteLength(text) > maxBytes) throw new Error(`MCP response exceeds ${maxBytes} bytes`);
       return text;
     }
-    const reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
     let size = 0;
     try {
@@ -255,12 +275,12 @@ export function createMcpClient(opts: {
     id: unknown,
     maxBytes: number,
   ): Promise<{ envelope: McpEnvelope | null; eventId?: string }> {
-    if (!response.body) {
+    const reader = bodyReader(response.body);
+    if (!reader) {
       const text = await response.text();
       if (Buffer.byteLength(text) > maxBytes) throw new Error(`MCP response exceeds ${maxBytes} bytes`);
       return parseSseText(text, id);
     }
-    const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     let size = 0;
@@ -345,7 +365,7 @@ export function createMcpClient(opts: {
       },
       async (res) => {
         if (!res.ok) {
-          await res.body?.cancel().catch(() => undefined);
+          await cancelBody(res.body);
           throw new McpHttpError(res.status, `mcp token mint failed (HTTP ${res.status})`);
         }
         const body = (safeJson(await readBody(res, TOKEN_MAX_BYTES)) ?? {}) as {
@@ -407,11 +427,11 @@ export function createMcpClient(opts: {
       },
       async (res) => {
         if (!res.ok) {
-          await res.body?.cancel().catch(() => undefined);
+          await cancelBody(res.body);
           throw new Error(`mcp ${method} stream resumption failed (HTTP ${res.status})`);
         }
         if (!res.headers?.get("content-type")?.toLowerCase().includes("text/event-stream")) {
-          await res.body?.cancel().catch(() => undefined);
+          await cancelBody(res.body);
           throw new Error(`mcp ${method} stream resumption returned non-SSE`);
         }
         const resumed = await readSseEnvelope(res, id, RPC_MAX_BYTES);
@@ -449,7 +469,7 @@ export function createMcpClient(opts: {
       },
       async (res) => {
         if (!res.ok) {
-          await res.body?.cancel().catch(() => undefined);
+          await cancelBody(res.body);
           throw new McpHttpError(res.status, `mcp ${method} failed (HTTP ${res.status})`);
         }
         const nextSessionId = res.headers?.get("mcp-session-id");

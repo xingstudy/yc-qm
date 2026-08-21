@@ -6,8 +6,8 @@ import { audit, authorizeAdmin, orgScope } from "../shared.ts";
 
 const AUTH_MODES: McpServerAuthMode[] = ["none", "bearer", "client-credentials"];
 
-export function isMcpServerUrlAllowed(url: URL, auth: McpServerAuthMode): boolean {
-  return auth === "none" || url.protocol === "https:";
+export function isMcpServerUrlAllowed(url: URL): boolean {
+  return url.protocol === "https:";
 }
 
 export function mcpReadOnly(value: unknown, existing?: McpServer): boolean {
@@ -77,9 +77,6 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
   } catch {
     return sendJson(ctx.res, 400, { error: "bad_request", message: "url must be a valid URL" });
   }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    return sendJson(ctx.res, 400, { error: "bad_request", message: "url must be http(s)" });
-  }
   if (parsed.username || parsed.password || parsed.search || parsed.hash) {
     return sendJson(ctx.res, 400, {
       error: "bad_request",
@@ -90,8 +87,8 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
   if (!AUTH_MODES.includes(auth)) {
     return sendJson(ctx.res, 400, { error: "bad_request", message: `auth must be one of ${AUTH_MODES.join(", ")}` });
   }
-  if (!isMcpServerUrlAllowed(parsed, auth)) {
-    return sendJson(ctx.res, 400, { error: "bad_request", message: "MCP servers with credentials must use https" });
+  if (!isMcpServerUrlAllowed(parsed)) {
+    return sendJson(ctx.res, 400, { error: "bad_request", message: "MCP servers must use https" });
   }
   try {
     await assertMcpUrlPublic(url);
@@ -134,7 +131,7 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
   if (b.validate !== false && ctx.deps.mcpToolService) {
     try {
       toolNames = await ctx.deps.mcpToolService.probe(server);
-    } catch (_error) {
+    } catch {
       return sendJson(ctx.res, 400, {
         error: "unreachable",
         message: "MCP server validation failed",
@@ -156,7 +153,12 @@ export async function deleteMcpServer(ctx: ApiCtx): Promise<void> {
   if (!authorized) return;
   if (!ctx.deps.mcpServers) return sendJson(ctx.res, 404, { error: "not_found" });
   const id = ctx.params.id ?? "";
-  if (!(await ctx.deps.mcpServers.get(id))) return sendJson(ctx.res, 404, { error: "not_found" });
+  if (!isValidMcpServerId(id)) {
+    return sendJson(ctx.res, 400, {
+      error: "bad_request",
+      message: "id must be 2-40 chars: lowercase letters, digits, hyphens, starting with a letter",
+    });
+  }
   await ctx.deps.mcpServers.delete(id);
   audit(ctx.deps, {
     principalId: authorized.id,

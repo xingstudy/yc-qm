@@ -100,7 +100,7 @@ function dockerError(args: string[], message: string): CliError {
 
 function containerRunning(name: string): boolean {
   try {
-    return docker(["inspect", "-f", "{{.State.Running}}", name], /No such object/).trim() === "true";
+    return docker(["inspect", "-f", "{{.State.Running}}", name], /No such object/i).trim() === "true";
   } catch {
     return false;
   }
@@ -219,7 +219,7 @@ function ensurePostgres(ctx: DockerCtx, dryRun: boolean): string {
 
     if (!containerRunning(pgName)) {
       step(`Postgres: starting ${pgName}`);
-      docker(["rm", "-f", pgName], /No such container|is not running/);
+      docker(["rm", "-f", pgName], /No such container|is not running/i);
       const secretFile = writeSecretEnvFile({ POSTGRES_PASSWORD: password });
       try {
         docker([
@@ -587,7 +587,7 @@ export async function dockerUp(
 
   for (const def of ordered(runnableServices(config.services))) {
     const image = resolveImage(ctx, def.name);
-    docker(["rm", "-f", cname(ctx, def.name)], /No such container|is not running/);
+    docker(["rm", "-f", cname(ctx, def.name)], /No such container|is not running/i);
     step(`starting ${def.name}`);
     const run = runArgs(ctx, def.name, image);
     try {
@@ -601,7 +601,7 @@ export async function dockerUp(
 
   for (const p of plugins) {
     const image = resolvePluginImage(ctx, p);
-    docker(["rm", "-f", cname(ctx, p.name)], /No such container|is not running/);
+    docker(["rm", "-f", cname(ctx, p.name)], /No such container|is not running/i);
     step(`starting plugin ${p.name} (${image})`);
     const args = [
       "run",
@@ -732,12 +732,14 @@ export async function dockerDown(config: QmConfig, opts: { purge?: boolean } = {
   for (const name of candidates) {
     if (!present.has(name)) continue;
     step(`removing ${name}`);
-    docker(["rm", "-f", name], /No such container/);
+    docker(["rm", "-f", name], /No such container/i);
   }
   if (opts.purge) {
     warn("purging the network and Postgres volume (durable data will be lost)");
-    docker(["network", "rm", prefix], /not found|No such/);
-    docker(["volume", "rm", `${prefix}-pgdata`, `${prefix}-coredata`], /No such volume|not found|in use/);
+    docker(["network", "rm", prefix], /network .* not found/i);
+    for (const volume of [`${prefix}-pgdata`, `${prefix}-coredata`]) {
+      docker(["volume", "rm", volume], /no such volume/i);
+    }
   }
   ok("down.");
 }

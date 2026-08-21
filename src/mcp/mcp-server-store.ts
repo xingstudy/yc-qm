@@ -84,7 +84,14 @@ export function createMcpServerStore(input: {
   return {
     async list() {
       const entries = await input.backing.entries();
-      const servers = await Promise.all(entries.map(([id, server]) => migrate(id, server)));
+      const servers: McpServer[] = [];
+      for (const [id, server] of entries) {
+        try {
+          servers.push(await migrate(id, server));
+        } catch {
+          continue;
+        }
+      }
       return servers.sort((a, b) => a.id.localeCompare(b.id));
     },
     async get(id) {

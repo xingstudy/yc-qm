@@ -66,7 +66,10 @@ test(
     standInPlugin(dep, "widget");
 
     const up = (): ReturnType<typeof runCli> =>
-      runCli(["up", "--build-from", checkout], { cwd: dep, env: { CORE_SIGNING_SECRET: undefined } });
+      runCli(["up", "--build-from", checkout], {
+        cwd: dep,
+        env: { CORE_SIGNING_SECRET: undefined, DATABASE_URL: undefined },
+      });
 
     try {
       await t.test("up builds + starts every service, the source plugin, and Postgres", () => {
@@ -197,6 +200,24 @@ test(
     try {
       writeConfig(dep, { orgId: org, target: "docker", services: ["core"] });
       const r = runCli(["down"], { cwd: dep });
+      assert.equal(r.code, 0, r.out);
+      assert.match(r.out, /down\./);
+    } finally {
+      dockerCleanup(org);
+      rmDir(dep);
+    }
+  },
+);
+
+test(
+  "down --purge tolerates absent managed volumes",
+  { skip: dockerAvailable() ? false : "no Docker daemon reachable" },
+  () => {
+    const org = `qm-e2e-dl-purge-${process.pid}`;
+    const dep = tmp("dl-purge");
+    try {
+      writeConfig(dep, { orgId: org, target: "docker", services: ["core"] });
+      const r = runCli(["down", "--purge"], { cwd: dep });
       assert.equal(r.code, 0, r.out);
       assert.match(r.out, /down\./);
     } finally {
