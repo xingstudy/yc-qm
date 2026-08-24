@@ -115,6 +115,7 @@ test("discovery for an org admin's LIVE turn includes the admin plane (live gran
     const p = paths(body);
     assert.ok(p.includes("/v1/admin/scopes"));
     assert.ok(p.includes("/v1/admin/users"));
+    assert.ok(!p.includes("/v1/admin/keychain"), "keychain metadata is portal-only and must not be advertised");
     assert.ok(!p.includes("/v1/admin/grants"), "grant management is portal-only and must not be advertised");
     assert.ok(body.guidance.some((g: string) => g.includes("confirm before any mutation")));
     assert.equal(p.filter((x: string) => x === "/v1/admin/whoami").length, 1, "whoami listed once, not duplicated");

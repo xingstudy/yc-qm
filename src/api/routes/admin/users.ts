@@ -7,6 +7,7 @@ import type { DirectoryMember } from "../../../directory/directory-store.ts";
 import { computeUsers } from "../../../admin/users.ts";
 import { forEachAttributedTurn } from "../../../admin/attribution.ts";
 import { detectOnboardingStatus, setOnboardingStatus, type OnboardingStatus } from "../../../onboarding/onboarding.ts";
+import type { KeychainCredentialMeta } from "../../../credentials/keychain.ts";
 import { sendJson } from "../../http.ts";
 import { audit, authorizeAdmin, orgScope } from "../shared.ts";
 import { type ApiCtx } from "../route.ts";
@@ -14,6 +15,25 @@ import { FILES_PAGE_SIZE } from "./common.ts";
 
 const USER_CONVERSATIONS_MAX = 100;
 const USER_FILES_MAX = 200;
+
+type AdminCredentialMetadata = Pick<
+  KeychainCredentialMeta,
+  "id" | "ownerId" | "service" | "kind" | "envKey" | "targets" | "host" | "accountLabel" | "expiresAt"
+>;
+
+function adminCredentialMetadata(credential: KeychainCredentialMeta): AdminCredentialMetadata {
+  return {
+    id: credential.id,
+    ownerId: credential.ownerId,
+    service: credential.service,
+    kind: credential.kind,
+    ...(credential.envKey !== undefined ? { envKey: credential.envKey } : {}),
+    ...(credential.targets !== undefined ? { targets: credential.targets } : {}),
+    ...(credential.host !== undefined ? { host: credential.host } : {}),
+    ...(credential.accountLabel !== undefined ? { accountLabel: credential.accountLabel } : {}),
+    ...(credential.expiresAt !== undefined ? { expiresAt: credential.expiresAt } : {}),
+  };
+}
 
 export async function listUsers(ctx: ApiCtx): Promise<void> {
   const { res, deps } = ctx;
@@ -53,13 +73,14 @@ export async function listKeychainStatus(ctx: ApiCtx): Promise<void> {
   if (!deps.keychain)
     return sendJson(res, 200, { scopeId: scope, people: [], credentials: [], grants: [], asks: [], enabled: false });
 
-  const [credentials, grants, asks, participants, adminGrants] = await Promise.all([
+  const [credentialRecords, grants, asks, participants, adminGrants] = await Promise.all([
     deps.keychain.listAllMetadata(),
     deps.keychain.listGrants({}),
     deps.keychain.listAsks({}),
     deps.sessions?.listParticipants() ?? Promise.resolve([]),
     deps.admin?.listGrants() ?? Promise.resolve([]),
   ]);
+  const credentials = credentialRecords.map(adminCredentialMetadata);
   const ids = new Set<string>([
     ...credentials.map((c) => c.ownerId),
     ...grants.map((g) => g.ownerId),

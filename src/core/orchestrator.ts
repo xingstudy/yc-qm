@@ -1486,7 +1486,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             (orgMemoryWrite
               ? ', and for plain "remember this org-wide" requests the lighter path is `"scope":"org"` on the memory self-API (memory skill)'
               : "") +
-            ". You're acting as them: confirm before any mutation, and say exactly what you changed. Hard limits the API enforces: private-content reads work only from a DM; admin grant changes are portal-only.";
+            ". You're acting as them: confirm before any mutation, and say exactly what you changed. Hard limits the API enforces: private-content reads work only from a DM; person-owned keychain metadata and admin grant changes are portal-only.";
         }
         if (deps.signingSecret && deps.apiBaseUrl && (deps.crons || deps.monitors)) {
           const nowMs = Date.now();

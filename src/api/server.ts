@@ -38,6 +38,9 @@ const safeDecode = (s: string): string => {
 function capabilityAdminDenied(method: string, pathname: string, url: URL, claims: CapabilityClaims): string | null {
   if (method === "GET" && pathname === "/v1/admin/whoami") return null;
   if (claims.aud !== CONTROL_PLANE_AUD) return "admin routes require the per-turn agent token";
+  if (method === "GET" && pathname === "/v1/admin/keychain") {
+    return "keychain metadata is portal-only — the agent cannot access person-owned credential metadata";
+  }
   if (claims.liveActor !== true && !unattendedAdminReadAllowed(method, pathname, claims)) {
     return "admin actions through the agent require a turn the admin started themselves — autonomous turns (crons) cannot act as an admin";
   }
