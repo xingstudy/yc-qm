@@ -222,6 +222,29 @@ export async function exerciseDeliveryStore(store: DeliveryStore): Promise<void>
   await store.ack(contested.id, 600);
   assert.deepEqual(await store.claimPending("group", 60_000), [], "an acked row never re-surfaces");
 
+  const owned = await store.enqueue({
+    destination: { type: "group", target: "bot:owned:thread" },
+    text: "owned bot reply",
+    idempotencyKey: "owned-prefix",
+  });
+  const routeOther = await store.enqueue({
+    destination: { type: "group", target: "bot:other:thread" },
+    text: "other bot reply",
+    idempotencyKey: "other-prefix",
+  });
+  assert.deepEqual(
+    (await store.claimPending("group", 60_000, "bot:owned:")).map((d) => d.id),
+    [owned.id],
+    "a drainer only claims deliveries for its owned route prefix",
+  );
+  await store.ack(owned.id, 650);
+  assert.deepEqual(
+    (await store.pending("group", "bot:other:")).map((d) => d.id),
+    [routeOther.id],
+    "pending filtering uses the same route boundary",
+  );
+  await store.ack(routeOther.id, 651);
+
   const abandoned = await store.enqueue({
     destination: { type: "group", target: "C-race" },
     text: "claimed, then the drainer died mid-post",

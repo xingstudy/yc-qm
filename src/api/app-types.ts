@@ -353,7 +353,7 @@ export interface App {
   setCronEnabled(id: string, enabled: boolean): Promise<void>;
   setCronDestination(id: string, destination: Destination | undefined): Promise<Cron | null>;
   setCronRecipientConsent(id: string, recipientConsent: RecipientConsent): Promise<void>;
-  pendingDeliveries(type: string, claimMs?: number): Promise<Delivery[]>;
+  pendingDeliveries(type: string, claimMs?: number, targetPrefix?: string): Promise<Delivery[]>;
   enqueueDelivery(input: { destination: Destination; text: string; idempotencyKey: string }): Promise<void>;
   createContextRequest(source: string, query: SurfaceContextQuery): Promise<SurfaceContextRequest>;
   getContextRequest(id: string): Promise<SurfaceContextRequest | null>;

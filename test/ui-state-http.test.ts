@@ -46,6 +46,9 @@ test("ui-state stores and returns a per-user record, isolated by principal", asy
     const other = await json(await fetch(`${s.base}/v1/ui-state?principalId=U2&key=split-canvas`));
     assert.equal(other.value, null, "another user's state is separate");
 
+    const listed = await json(await fetch(`${s.base}/v1/ui-state/entries?key=split-canvas`));
+    assert.deepEqual(listed.states, [{ principalId: "U1", value: layout, updatedAt: 1111 }]);
+
     const stale = await fetch(`${s.base}/v1/ui-state`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -54,6 +57,61 @@ test("ui-state stores and returns a per-user record, isolated by principal", asy
     assert.equal((await json(stale)).ok, false, "a stale write is refused");
     const kept = await json(await fetch(`${s.base}/v1/ui-state?principalId=U1&key=split-canvas`));
     assert.deepEqual(kept.value, layout, "the newer record survives a stale overwrite attempt");
+  } finally {
+    await s.close();
+  }
+});
+
+test("ui-state supports compare-and-set writes and deletes", async () => {
+  const s = start();
+  try {
+    const created = await json(
+      await fetch(`${s.base}/v1/ui-state`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          principalId: "U4",
+          key: "binding",
+          value: { v: 1 },
+          updatedAt: 100,
+          expectedUpdatedAt: 0,
+        }),
+      }),
+    );
+    assert.deepEqual(created, { ok: true, updatedAt: 100 });
+
+    const conflict = await json(
+      await fetch(`${s.base}/v1/ui-state`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          principalId: "U4",
+          key: "binding",
+          value: { v: 2 },
+          updatedAt: 101,
+          expectedUpdatedAt: 0,
+        }),
+      }),
+    );
+    assert.deepEqual(conflict, { ok: false, updatedAt: 100 });
+
+    const staleDelete = await json(
+      await fetch(`${s.base}/v1/ui-state`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ principalId: "U4", key: "binding", expectedUpdatedAt: 99 }),
+      }),
+    );
+    assert.deepEqual(staleDelete, { ok: false, updatedAt: 100 });
+
+    const deleted = await json(
+      await fetch(`${s.base}/v1/ui-state`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ principalId: "U4", key: "binding", expectedUpdatedAt: 100 }),
+      }),
+    );
+    assert.deepEqual(deleted, { ok: true, updatedAt: 0 });
   } finally {
     await s.close();
   }

@@ -1,10 +1,21 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Readable } from "node:stream";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, extname, join, normalize } from "node:path";
 import { LRUCache } from "lru-cache";
+import * as Lark from "@larksuiteoapi/node-sdk";
+import {
+  WSClient as WeComWSClient,
+  type TextMessage as WeComTextMessage,
+  type WsFrame,
+  type WsFrameHeaders,
+} from "@wecom/aibot-node-sdk";
+import { QQBot, type QQBotInboundMessage, type ReplyTarget } from "@tencent-connect/qqbot-nodejs";
+import { startQrConnect } from "@tencent-connect/qqbot-connector";
+import { DWClient, TOPIC_ROBOT, type DWClientDownStream, type RobotMessage } from "dingtalk-stream";
 import {
   signedHeaders,
   withSourceAuthNonce,
@@ -97,6 +108,2046 @@ function rememberRun(runId: string, user: string, threadRef: string): void {
 }
 
 const deliveryClients = new Map<string, Set<ServerResponse>>();
+
+type ImProviderId = "wechat" | "feishu" | "work-wechat" | "qq" | "dingtalk";
+type ImSetupMode = "wechat-qr" | "provision-qr" | "manual-credentials";
+type ImAuthorizationState =
+  "waiting" | "scanned" | "verification-required" | "blocked" | "expired" | "unrecoverable" | "error";
+
+const IM_BINDINGS_KEY = "im-bindings";
+const IM_TOKENS_PRINCIPAL = "web-ui-im";
+const IM_CREDENTIALS_SECRET = process.env.CONNECTOR_SECRET_KEY?.trim();
+const WEIXIN_ILINK_BASE_URL = "https://ilinkai.weixin.qq.com";
+const WEIXIN_ILINK_BOT_TYPE = "3";
+const WEIXIN_QR_TTL_MS = 5 * 60_000;
+const WEIXIN_API_TIMEOUT_MS = 35_000;
+const WEIXIN_BRIDGE_SYNC_MS = 2_500;
+const IM_SDK_CONNECT_TIMEOUT_MS = 15_000;
+const IM_RESOURCE_RESERVATION_MS = Math.max(60_000, IM_SDK_CONNECT_TIMEOUT_MS * 4);
+const DINGTALK_REGISTRATION_BASE_URL = "https://oapi.dingtalk.com";
+const DINGTALK_REGISTRATION_SOURCE = "qm";
+const IM_BRIDGE_INSTANCE_ID = randomUUID();
+const IM_BRIDGE_LEASE_MS = Math.max(10_000, WEIXIN_BRIDGE_SYNC_MS * 4);
+const IM_QR_LEASE_RESOURCE_ID = "provision";
+const IM_PROVIDER_META: Record<
+  ImProviderId,
+  {
+    label: string;
+    botName: string;
+    kind: string;
+    docsUrl?: string;
+    hint: string;
+    setupMode: ImSetupMode;
+    setupTitle: string;
+    setupSteps: string[];
+    credentialFields?: string[];
+    manualSetupSteps?: string[];
+    primaryActionLabel?: string;
+    primaryActionUrl?: string;
+    manualSetupTitle?: string;
+  }
+> = {
+  wechat: {
+    label: "微信",
+    botName: "微信 Bot",
+    kind: "weixin-ilink",
+    hint: "请使用微信扫描腾讯 iLink 二维码，并在手机上确认授权。",
+    setupMode: "wechat-qr",
+    setupTitle: "微信扫码连接",
+    setupSteps: ["打开微信扫一扫", "扫描二维码并在手机上确认", "保持页面打开，等待绑定完成"],
+  },
+  feishu: {
+    label: "飞书",
+    botName: "飞书 Bot",
+    kind: "bot-websocket",
+    docsUrl: "https://open.feishu.cn/document/home/index",
+    hint: "使用飞书扫码后选择已有应用；没有合适应用时再创建新机器人。平台会保存凭据并验证长连接。",
+    setupMode: "provision-qr",
+    setupTitle: "扫码选择或创建飞书机器人",
+    setupSteps: [
+      "用飞书扫描二维码并优先选择已有应用",
+      "没有可用应用时再创建新机器人并完成授权",
+      "平台保存应用凭据并验证长连接",
+    ],
+    credentialFields: ["App ID", "App Secret"],
+    manualSetupSteps: [
+      "在飞书开发者平台打开已有企业自建应用",
+      "确认应用已添加机器人、开启长连接并完成发布",
+      "在这里填写 App ID 和 App Secret 并验证绑定",
+    ],
+    primaryActionLabel: "打开飞书开放平台",
+    primaryActionUrl: "https://open.feishu.cn/app",
+    manualSetupTitle: "绑定已有飞书机器人",
+  },
+  "work-wechat": {
+    label: "企业微信",
+    botName: "QM 企业微信智能机器人",
+    kind: "wecom-aibot",
+    docsUrl: "https://developer.work.weixin.qq.com/document/path/98960",
+    hint: "已有机器人请填写 Bot ID 和 Secret 直接绑定；仅在需要新机器人时打开企业微信扫码创建窗口。",
+    setupMode: "provision-qr",
+    setupTitle: "扫码创建企业微信智能机器人",
+    setupSteps: [
+      "打开企业微信扫码创建窗口",
+      "在手机端点击一键创建智能机器人并确认授权",
+      "平台验证长连接后完成绑定并开始对话",
+    ],
+    credentialFields: ["Bot ID", "Secret"],
+    manualSetupSteps: [
+      "在企业微信电脑客户端打开已有 API 模式智能机器人",
+      "确认机器人使用长连接方式并取得 Bot ID 和 Secret",
+      "在这里填写 Bot ID 和 Secret，验证成功后即可对话",
+    ],
+    manualSetupTitle: "手动填写企业微信智能机器人",
+  },
+  qq: {
+    label: "QQ",
+    botName: "QQ Bot",
+    kind: "qq-bot",
+    docsUrl: "https://q.qq.com/wiki/",
+    hint: "使用手机 QQ 扫码后选择并授权已有 Bot；没有 Bot 时再按平台流程创建。也可以直接填写已有凭据。",
+    setupMode: "provision-qr",
+    setupTitle: "QQ 扫码连接",
+    setupSteps: ["使用手机 QQ 扫描二维码", "优先选择并授权已有机器人", "没有可用机器人时再创建并完成授权"],
+    credentialFields: ["AppID", "AppSecret"],
+    manualSetupSteps: ["在 QQ 开放平台打开已有机器人并取得 AppID 和 AppSecret", "在这里填写凭据，验证成功后即可对话"],
+    manualSetupTitle: "绑定已有 QQ Bot",
+    primaryActionLabel: "打开 QQ 开放平台",
+    primaryActionUrl: "https://q.qq.com",
+  },
+  dingtalk: {
+    label: "钉钉",
+    botName: "QM 钉钉机器人",
+    kind: "dingtalk-appbot",
+    docsUrl: "https://open.dingtalk.com/?spm=a219a.7629140.0.0.95ChxP",
+    hint: "扫码授权页支持选择已有机器人时请直接绑定；否则填写已有 ClientID 和 ClientSecret，只有需要时才创建新机器人。",
+    setupMode: "provision-qr",
+    setupTitle: "扫码选择或创建钉钉机器人",
+    setupSteps: [
+      "使用钉钉扫描二维码并确认授权",
+      "优先选择已有机器人，没有时再创建",
+      "平台验证 Stream 连接后完成绑定",
+    ],
+    credentialFields: ["ClientID", "ClientSecret"],
+    manualSetupSteps: [
+      "在钉钉开放平台打开已有企业内部应用",
+      "确认应用已添加机器人能力、选择 Stream 长连接并完成发布",
+      "在这里填写 ClientID 和 ClientSecret，验证成功后完成配对",
+    ],
+    manualSetupTitle: "绑定已有钉钉机器人",
+    primaryActionLabel: "打开钉钉开放平台",
+    primaryActionUrl: "https://open.dingtalk.com/?spm=a219a.7629140.0.0.95ChxP",
+  },
+};
+
+interface ImBindingRecord {
+  provider: ImProviderId;
+  status: "pending" | "connected";
+  qrPayload?: string;
+  botName?: string;
+  channelKind?: string;
+  setupMode?: ImSetupMode;
+  quickSetupAvailable?: boolean;
+  setupTitle?: string;
+  setupSteps?: string[];
+  credentialFields?: string[];
+  manualSetupSteps?: string[];
+  primaryActionLabel?: string;
+  primaryActionUrl?: string;
+  manualSetupTitle?: string;
+  docsUrl?: string;
+  hint?: string;
+  externalUserId?: string;
+  externalChatId?: string;
+  externalDisplayName?: string;
+  resourceId?: string;
+  authorizationState?: ImAuthorizationState;
+  authorizationMessage?: string;
+  verificationRequired?: boolean;
+  authorizationExpiresAt?: number;
+  authorizationPollIntervalMs?: number;
+  providerQrCode?: string;
+  providerBaseUrl?: string;
+  verifyCode?: string;
+  qrGenerationId?: string;
+  createdAt?: number;
+  connectedAt?: number;
+  updatedAt: number;
+}
+
+interface ImResourceRecord {
+  provider: ImProviderId;
+  resourceId: string;
+  botName: string;
+  externalUserId?: string;
+  externalChatId?: string;
+  externalDisplayName?: string;
+  encryptedSecret?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface ImBindingsState {
+  bindings: Partial<Record<ImProviderId, ImBindingRecord>>;
+  resources: Partial<Record<ImProviderId, ImResourceRecord>>;
+  revision: number;
+}
+
+interface WeixinResourceSecret {
+  token: string;
+  botId: string;
+  userId: string;
+  baseUrl: string;
+  cursor?: string;
+  contextToken?: string;
+}
+
+interface ImSdkResourceSecret {
+  provider: Exclude<ImProviderId, "wechat">;
+  credentials: Record<string, string>;
+  replyTargets?: Record<string, string>;
+}
+
+interface ImSdkRuntime {
+  resourceId: string;
+  fingerprint: string;
+  stop: () => void;
+  send: (target: string, text: string, idempotencyKey?: string, editRef?: string) => Promise<void>;
+}
+
+interface ImQrFlow {
+  release: () => void;
+  stop: () => void;
+}
+
+interface WeixinQrStatusResponse {
+  status?:
+    | "wait"
+    | "scaned"
+    | "confirmed"
+    | "expired"
+    | "scaned_but_redirect"
+    | "need_verifycode"
+    | "verify_code_blocked"
+    | "binded_redirect";
+  bot_token?: string;
+  ilink_bot_id?: string;
+  baseurl?: string;
+  ilink_user_id?: string;
+  redirect_host?: string;
+}
+
+interface ImResourceOwnerRecord {
+  user: string;
+  provider: ImProviderId;
+  resourceId: string;
+  claimId?: string;
+  claimExpiresAt?: number;
+  committed?: boolean;
+  createdAt: number;
+}
+
+interface ImResourceReservation {
+  user: string;
+  provider: ImProviderId;
+  resourceId: string;
+  claimId: string;
+  restoreOnFailure: boolean;
+}
+
+class ImResourceConflictError extends Error {}
+
+interface ImBridgeReadyRecord {
+  owner: string;
+  resourceId: string;
+  fingerprint: string;
+  expiresAt: number;
+}
+
+function isImProviderId(value: string): value is ImProviderId {
+  return Object.prototype.hasOwnProperty.call(IM_PROVIDER_META, value);
+}
+
+function isImSetupMode(value: string): value is ImSetupMode {
+  return value === "wechat-qr" || value === "provision-qr" || value === "manual-credentials";
+}
+
+function imStringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  return items.length ? items.slice(0, 8) : undefined;
+}
+
+function truncateUtf8(value: string, maxBytes: number, suffix: string): string {
+  if (Buffer.byteLength(value) <= maxBytes) return value;
+  const bytes = Buffer.from(value).subarray(0, maxBytes - Buffer.byteLength(suffix));
+  return `${bytes.toString("utf8").replace(/\uFFFD$/, "")}${suffix}`;
+}
+
+function imCredentialKey(secret: string): Buffer {
+  return createHash("sha256").update(`web-ui-im-resource-v2\0${secret}`).digest();
+}
+
+function encryptImSecret(value: unknown): string {
+  if (!IM_CREDENTIALS_SECRET) throw new Error("CONNECTOR_SECRET_KEY 未配置，无法保存 Bot 凭据");
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", imCredentialKey(IM_CREDENTIALS_SECRET), iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
+  return [
+    "v2",
+    iv.toString("base64url"),
+    cipher.getAuthTag().toString("base64url"),
+    encrypted.toString("base64url"),
+  ].join(".");
+}
+
+function decryptImSecret<T>(sealed: string): T | null {
+  const [version, ivRaw, tagRaw, encryptedRaw] = sealed.split(".");
+  if (version !== "v2" || !ivRaw || !tagRaw || !encryptedRaw || !IM_CREDENTIALS_SECRET) return null;
+  try {
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      imCredentialKey(IM_CREDENTIALS_SECRET),
+      Buffer.from(ivRaw, "base64url"),
+    );
+    decipher.setAuthTag(Buffer.from(tagRaw, "base64url"));
+    return JSON.parse(
+      Buffer.concat([decipher.update(Buffer.from(encryptedRaw, "base64url")), decipher.final()]).toString("utf8"),
+    ) as T;
+  } catch {
+    return null;
+  }
+}
+
+function imProviderMeta(provider: ImProviderId): (typeof IM_PROVIDER_META)[ImProviderId] {
+  return IM_PROVIDER_META[provider];
+}
+
+interface UiStateRecord {
+  value: unknown;
+  updatedAt: number;
+}
+
+async function readUiStateRecord(principalId: string, key: string): Promise<UiStateRecord> {
+  const qs = new URLSearchParams({ principalId, key });
+  const r = await coreFetch("GET", `/v1/ui-state?${qs.toString()}`);
+  if (r.status !== 200) throw new Error(`ui-state read failed (${r.status})`);
+  try {
+    const parsed = JSON.parse(r.text) as { value?: unknown; updatedAt?: unknown };
+    if (typeof parsed.updatedAt !== "number") throw new Error("invalid ui-state response");
+    return { value: parsed.value ?? null, updatedAt: parsed.updatedAt };
+  } catch {
+    throw new Error("ui-state returned malformed JSON");
+  }
+}
+
+async function writeUiStateValue(
+  principalId: string,
+  key: string,
+  value: unknown,
+  expectedUpdatedAt?: number,
+): Promise<number> {
+  const updatedAt = Math.max(Date.now(), (expectedUpdatedAt ?? 0) + 1);
+  const r = await coreFetch(
+    "PUT",
+    "/v1/ui-state",
+    JSON.stringify({
+      principalId,
+      key,
+      value,
+      updatedAt,
+      ...(expectedUpdatedAt === undefined ? {} : { expectedUpdatedAt }),
+    }),
+  );
+  if (r.status !== 200) throw new Error(`ui-state write failed (${r.status})`);
+  const body = JSON.parse(r.text) as { ok?: unknown; updatedAt?: unknown };
+  if (body.ok === false) throw new Error("ui-state write conflict");
+  if (typeof body.updatedAt !== "number") throw new Error("ui-state write returned malformed JSON");
+  return body.updatedAt;
+}
+
+async function deleteUiStateValue(principalId: string, key: string, expectedUpdatedAt: number): Promise<boolean> {
+  const r = await coreFetch("DELETE", "/v1/ui-state", JSON.stringify({ principalId, key, expectedUpdatedAt }));
+  if (r.status !== 200) throw new Error(`ui-state delete failed (${r.status})`);
+  const body = JSON.parse(r.text) as { ok?: unknown };
+  return body.ok === true;
+}
+
+async function listUiStateRecords(key: string): Promise<Array<{ principalId: string; record: UiStateRecord }>> {
+  const r = await coreFetch("GET", `/v1/ui-state/entries?key=${encodeURIComponent(key)}`);
+  if (r.status !== 200) throw new Error(`ui-state list failed (${r.status})`);
+  const parsed = JSON.parse(r.text) as { states?: unknown };
+  if (!Array.isArray(parsed.states)) throw new Error("ui-state list returned malformed JSON");
+  return parsed.states.flatMap((item) => {
+    if (typeof item !== "object" || item === null) return [];
+    const state = item as { principalId?: unknown; value?: unknown; updatedAt?: unknown };
+    return typeof state.principalId === "string" && typeof state.updatedAt === "number"
+      ? [{ principalId: state.principalId, record: { value: state.value ?? null, updatedAt: state.updatedAt } }]
+      : [];
+  });
+}
+
+function parseImBindings(value: unknown, revision = 0): ImBindingsState {
+  const state: ImBindingsState = { bindings: {}, resources: {}, revision };
+  const rawBindings =
+    typeof value === "object" && value !== null && typeof (value as { bindings?: unknown }).bindings === "object"
+      ? ((value as { bindings: Record<string, unknown> }).bindings ?? {})
+      : {};
+  for (const [provider, record] of Object.entries(rawBindings)) {
+    if (!isImProviderId(provider) || typeof record !== "object" || record === null) continue;
+    const r = record as Partial<ImBindingRecord>;
+    if (r.status !== "pending" && r.status !== "connected") continue;
+    const setupMode = typeof r.setupMode === "string" && isImSetupMode(r.setupMode) ? r.setupMode : undefined;
+    const qrPayload = typeof r.qrPayload === "string" ? r.qrPayload : undefined;
+    const quickSetupAvailable = typeof r.quickSetupAvailable === "boolean" ? r.quickSetupAvailable : undefined;
+    const authorizationState =
+      r.authorizationState === "waiting" ||
+      r.authorizationState === "scanned" ||
+      r.authorizationState === "verification-required" ||
+      r.authorizationState === "blocked" ||
+      r.authorizationState === "expired" ||
+      r.authorizationState === "unrecoverable" ||
+      r.authorizationState === "error"
+        ? r.authorizationState
+        : undefined;
+    state.bindings[provider] = {
+      provider,
+      status: r.status,
+      ...(qrPayload ? { qrPayload } : {}),
+      ...(typeof r.botName === "string" ? { botName: r.botName } : {}),
+      ...(typeof r.channelKind === "string" ? { channelKind: r.channelKind } : {}),
+      ...(setupMode ? { setupMode } : {}),
+      ...(typeof quickSetupAvailable === "boolean" ? { quickSetupAvailable } : {}),
+      ...(typeof r.setupTitle === "string" ? { setupTitle: r.setupTitle } : {}),
+      ...(imStringList(r.setupSteps) ? { setupSteps: imStringList(r.setupSteps) } : {}),
+      ...(imStringList(r.credentialFields) ? { credentialFields: imStringList(r.credentialFields) } : {}),
+      ...(imStringList(r.manualSetupSteps) ? { manualSetupSteps: imStringList(r.manualSetupSteps) } : {}),
+      ...(typeof r.primaryActionLabel === "string" ? { primaryActionLabel: r.primaryActionLabel } : {}),
+      ...(typeof r.primaryActionUrl === "string" ? { primaryActionUrl: r.primaryActionUrl } : {}),
+      ...(typeof r.manualSetupTitle === "string" ? { manualSetupTitle: r.manualSetupTitle } : {}),
+      ...(typeof r.docsUrl === "string" ? { docsUrl: r.docsUrl } : {}),
+      ...(typeof r.hint === "string" ? { hint: r.hint } : {}),
+      ...(typeof r.externalUserId === "string" ? { externalUserId: r.externalUserId } : {}),
+      ...(typeof r.externalChatId === "string" ? { externalChatId: r.externalChatId } : {}),
+      ...(typeof r.externalDisplayName === "string" ? { externalDisplayName: r.externalDisplayName } : {}),
+      ...(typeof r.resourceId === "string" ? { resourceId: r.resourceId } : {}),
+      ...(authorizationState ? { authorizationState } : {}),
+      ...(typeof r.authorizationMessage === "string" ? { authorizationMessage: r.authorizationMessage } : {}),
+      ...(typeof r.verificationRequired === "boolean" ? { verificationRequired: r.verificationRequired } : {}),
+      ...(typeof r.authorizationExpiresAt === "number" ? { authorizationExpiresAt: r.authorizationExpiresAt } : {}),
+      ...(typeof r.authorizationPollIntervalMs === "number"
+        ? { authorizationPollIntervalMs: r.authorizationPollIntervalMs }
+        : {}),
+      ...(typeof r.providerQrCode === "string" ? { providerQrCode: r.providerQrCode } : {}),
+      ...(typeof r.providerBaseUrl === "string" ? { providerBaseUrl: r.providerBaseUrl } : {}),
+      ...(typeof r.verifyCode === "string" ? { verifyCode: r.verifyCode } : {}),
+      ...(typeof r.qrGenerationId === "string" ? { qrGenerationId: r.qrGenerationId } : {}),
+      ...(typeof r.createdAt === "number" ? { createdAt: r.createdAt } : {}),
+      ...(typeof r.connectedAt === "number" ? { connectedAt: r.connectedAt } : {}),
+      updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
+    };
+  }
+  const rawResources =
+    typeof value === "object" && value !== null && typeof (value as { resources?: unknown }).resources === "object"
+      ? ((value as { resources: Record<string, unknown> }).resources ?? {})
+      : {};
+  for (const [provider, record] of Object.entries(rawResources)) {
+    if (!isImProviderId(provider) || typeof record !== "object" || record === null) continue;
+    const r = record as Partial<ImResourceRecord>;
+    if (typeof r.resourceId !== "string" || !r.resourceId.trim()) continue;
+    state.resources[provider] = {
+      provider,
+      resourceId: r.resourceId.slice(0, 256),
+      botName:
+        typeof r.botName === "string" && r.botName.trim() ? r.botName.slice(0, 256) : imProviderMeta(provider).botName,
+      ...(typeof r.externalUserId === "string" && r.externalUserId.trim()
+        ? { externalUserId: r.externalUserId.slice(0, 256) }
+        : {}),
+      ...(typeof r.externalChatId === "string" ? { externalChatId: r.externalChatId.slice(0, 256) } : {}),
+      ...(typeof r.externalDisplayName === "string"
+        ? { externalDisplayName: r.externalDisplayName.slice(0, 256) }
+        : {}),
+      ...(typeof r.encryptedSecret === "string" ? { encryptedSecret: r.encryptedSecret } : {}),
+      createdAt: typeof r.createdAt === "number" ? r.createdAt : 0,
+      updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
+    };
+  }
+  const wechatBinding = state.bindings.wechat;
+  if (
+    wechatBinding?.status === "pending" &&
+    (!wechatBinding.providerQrCode || !wechatBinding.providerBaseUrl || !wechatBinding.qrPayload)
+  ) {
+    delete state.bindings.wechat;
+  }
+  if (wechatBinding?.status === "connected" && !readWeixinSecret(state.resources.wechat)) {
+    delete state.bindings.wechat;
+  }
+  for (const provider of Object.keys(state.bindings).filter(isImProviderId)) {
+    if (state.bindings[provider]?.status === "connected" && !state.resources[provider]) delete state.bindings[provider];
+  }
+  return state;
+}
+
+function publicImBinding(binding: ImBindingRecord): ImBindingRecord {
+  const {
+    providerQrCode: _providerQrCode,
+    providerBaseUrl: _providerBaseUrl,
+    verifyCode: _verifyCode,
+    qrGenerationId: _qrGenerationId,
+    ...publicBinding
+  } = binding;
+  return publicBinding;
+}
+
+function publicImBindings(state: ImBindingsState): {
+  bindings: Partial<Record<ImProviderId, ImBindingRecord>>;
+  reusableProviders: ImProviderId[];
+} {
+  return {
+    bindings: Object.fromEntries(
+      Object.entries(state.bindings).map(([provider, binding]) => [provider, publicImBinding(binding)]),
+    ),
+    reusableProviders: Object.keys(state.resources).filter(isImProviderId),
+  };
+}
+
+async function readImBindings(user: string): Promise<ImBindingsState> {
+  const record = await readUiStateRecord(user, IM_BINDINGS_KEY);
+  return parseImBindings(record.value, record.updatedAt);
+}
+
+async function writeImBindings(user: string, state: ImBindingsState): Promise<void> {
+  const { revision, ...value } = state;
+  state.revision = await writeUiStateValue(user, IM_BINDINGS_KEY, value, revision);
+}
+
+function imStateKey(prefix: string, value: string): string {
+  return `${prefix}-${createHash("sha256").update(value).digest("hex").slice(0, 48)}`;
+}
+
+function imResourceOwnerKey(provider: ImProviderId, resourceId: string): string {
+  return imStateKey("resource", `${provider}\0${resourceId}`);
+}
+
+function parseImResourceOwner(value: unknown): ImResourceOwnerRecord | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Partial<ImResourceOwnerRecord>;
+  if (
+    typeof record.user !== "string" ||
+    typeof record.provider !== "string" ||
+    !isImProviderId(record.provider) ||
+    typeof record.resourceId !== "string"
+  )
+    return null;
+  return {
+    user: record.user,
+    provider: record.provider,
+    resourceId: record.resourceId,
+    ...(typeof record.claimId === "string" ? { claimId: record.claimId } : {}),
+    ...(typeof record.claimExpiresAt === "number" ? { claimExpiresAt: record.claimExpiresAt } : {}),
+    ...(typeof record.committed === "boolean" ? { committed: record.committed } : {}),
+    createdAt: typeof record.createdAt === "number" ? record.createdAt : 0,
+  };
+}
+
+function imResourceReservationActive(owner: ImResourceOwnerRecord, now = Date.now()): boolean {
+  return typeof owner.claimExpiresAt === "number" && owner.claimExpiresAt > now;
+}
+
+async function claimImResourceOwner(user: string, provider: ImProviderId, resourceId: string): Promise<void> {
+  const key = imResourceOwnerKey(provider, resourceId);
+  const stored = await readUiStateRecord(IM_TOKENS_PRINCIPAL, key);
+  const owner = parseImResourceOwner(stored.value);
+  if (owner?.user === user) return;
+  if (owner) throw new ImResourceConflictError(`这个${imProviderMeta(provider).label}机器人已经绑定到其他用户`);
+  try {
+    await writeUiStateValue(
+      IM_TOKENS_PRINCIPAL,
+      key,
+      {
+        user,
+        provider,
+        resourceId,
+        claimId: randomUUID(),
+        committed: true,
+        createdAt: Date.now(),
+      } satisfies ImResourceOwnerRecord,
+      stored.updatedAt,
+    );
+  } catch (error) {
+    if (error instanceof Error && error.message === "ui-state write conflict") {
+      const current = parseImResourceOwner((await readUiStateRecord(IM_TOKENS_PRINCIPAL, key)).value);
+      if (current?.user === user) return;
+      if (current)
+        throw new ImResourceConflictError(`这个${imProviderMeta(provider).label}机器人已经绑定到其他用户`, {
+          cause: error,
+        });
+    }
+    throw error;
+  }
+}
+
+async function reserveImResourceOwner(
+  user: string,
+  provider: ImProviderId,
+  resourceId: string,
+  discarding = false,
+): Promise<ImResourceReservation> {
+  const key = imResourceOwnerKey(provider, resourceId);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const stored = await readUiStateRecord(IM_TOKENS_PRINCIPAL, key);
+    const owner = parseImResourceOwner(stored.value);
+    const now = Date.now();
+    const active = owner ? imResourceReservationActive(owner, now) : false;
+    if (owner && owner.user !== user && (owner.committed !== false || active))
+      throw new ImResourceConflictError(`这个${imProviderMeta(provider).label}机器人已经绑定到其他用户`);
+    if (owner?.user === user && active)
+      throw new Error(`这个${imProviderMeta(provider).label}机器人正在绑定，请稍后重试`);
+    const claimId = randomUUID();
+    const restoreOnFailure = owner?.user === user && owner.committed !== false;
+    try {
+      await writeUiStateValue(
+        IM_TOKENS_PRINCIPAL,
+        key,
+        {
+          user,
+          provider,
+          resourceId,
+          claimId,
+          claimExpiresAt: now + IM_RESOURCE_RESERVATION_MS,
+          committed: discarding ? false : restoreOnFailure,
+          createdAt: owner?.user === user ? owner.createdAt : now,
+        } satisfies ImResourceOwnerRecord,
+        stored.updatedAt,
+      );
+      return { user, provider, resourceId, claimId, restoreOnFailure };
+    } catch (error) {
+      if (!(error instanceof Error && error.message === "ui-state write conflict") || attempt === 2) throw error;
+    }
+  }
+  throw new Error("机器人资源归属写入失败");
+}
+
+async function discardImResourceReservation(reservation: ImResourceReservation): Promise<void> {
+  const key = imResourceOwnerKey(reservation.provider, reservation.resourceId);
+  const stored = await readUiStateRecord(IM_TOKENS_PRINCIPAL, key);
+  const owner = parseImResourceOwner(stored.value);
+  if (owner?.user !== reservation.user || owner.claimId !== reservation.claimId)
+    throw new Error("机器人资源归属已经改变");
+  if (!(await deleteUiStateValue(IM_TOKENS_PRINCIPAL, key, stored.updatedAt)))
+    throw new Error("机器人资源归属已经改变");
+}
+
+async function commitImResourceReservation(reservation: ImResourceReservation): Promise<void> {
+  const key = imResourceOwnerKey(reservation.provider, reservation.resourceId);
+  const stored = await readUiStateRecord(IM_TOKENS_PRINCIPAL, key);
+  const owner = parseImResourceOwner(stored.value);
+  if (owner?.user !== reservation.user || owner.claimId !== reservation.claimId)
+    throw new Error("机器人资源归属已经改变");
+  await writeUiStateValue(
+    IM_TOKENS_PRINCIPAL,
+    key,
+    {
+      user: reservation.user,
+      provider: reservation.provider,
+      resourceId: reservation.resourceId,
+      claimId: randomUUID(),
+      committed: true,
+      createdAt: owner.createdAt,
+    } satisfies ImResourceOwnerRecord,
+    stored.updatedAt,
+  );
+}
+
+async function releaseImResourceReservation(reservation: ImResourceReservation): Promise<void> {
+  const key = imResourceOwnerKey(reservation.provider, reservation.resourceId);
+  const stored = await readUiStateRecord(IM_TOKENS_PRINCIPAL, key);
+  const owner = parseImResourceOwner(stored.value);
+  if (owner?.user !== reservation.user || owner.claimId !== reservation.claimId) return;
+  if (!reservation.restoreOnFailure) {
+    await deleteUiStateValue(IM_TOKENS_PRINCIPAL, key, stored.updatedAt);
+    return;
+  }
+  await writeUiStateValue(
+    IM_TOKENS_PRINCIPAL,
+    key,
+    {
+      user: reservation.user,
+      provider: reservation.provider,
+      resourceId: reservation.resourceId,
+      claimId: randomUUID(),
+      committed: true,
+      createdAt: owner.createdAt,
+    } satisfies ImResourceOwnerRecord,
+    stored.updatedAt,
+  );
+}
+
+function imBindingBase(provider: ImProviderId, now: number): Omit<ImBindingRecord, "status" | "updatedAt"> {
+  const meta = imProviderMeta(provider);
+  return {
+    provider,
+    botName: meta.botName,
+    channelKind: meta.kind,
+    setupMode: meta.setupMode,
+    setupTitle: meta.setupTitle,
+    setupSteps: [...meta.setupSteps],
+    ...(meta.credentialFields ? { credentialFields: [...meta.credentialFields] } : {}),
+    ...(meta.manualSetupSteps ? { manualSetupSteps: [...meta.manualSetupSteps] } : {}),
+    ...(meta.primaryActionLabel ? { primaryActionLabel: meta.primaryActionLabel } : {}),
+    ...(meta.primaryActionUrl ? { primaryActionUrl: meta.primaryActionUrl } : {}),
+    ...(meta.manualSetupTitle ? { manualSetupTitle: meta.manualSetupTitle } : {}),
+    ...(meta.docsUrl ? { docsUrl: meta.docsUrl } : {}),
+    hint: meta.hint,
+    createdAt: now,
+  };
+}
+
+function bindingFromResource(resource: ImResourceRecord, existing?: ImBindingRecord): ImBindingRecord {
+  const now = Date.now();
+  return {
+    ...imBindingBase(resource.provider, existing?.createdAt ?? now),
+    provider: resource.provider,
+    status: "connected",
+    botName: resource.botName,
+    resourceId: resource.resourceId,
+    ...(resource.externalUserId ? { externalUserId: resource.externalUserId } : {}),
+    ...(resource.externalChatId ? { externalChatId: resource.externalChatId } : {}),
+    ...(resource.externalDisplayName ? { externalDisplayName: resource.externalDisplayName } : {}),
+    connectedAt: existing?.connectedAt ?? now,
+    updatedAt: now,
+  };
+}
+
+function weixinBaseUrl(value: string | undefined): string {
+  const trimmed = value?.trim();
+  if (!trimmed) return WEIXIN_ILINK_BASE_URL;
+  return /^https?:\/\//i.test(trimmed) ? trimmed.replace(/\/$/, "") : `https://${trimmed.replace(/\/$/, "")}`;
+}
+
+function weixinHeaders(token?: string): Record<string, string> {
+  const uint32 = randomBytes(4).readUInt32BE(0);
+  return {
+    "content-type": "application/json",
+    "iLink-App-Id": "bot",
+    "iLink-App-ClientVersion": "132102",
+    AuthorizationType: "ilink_bot_token",
+    "X-WECHAT-UIN": Buffer.from(String(uint32), "utf8").toString("base64"),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+async function weixinJson<T>(
+  baseUrl: string,
+  endpoint: string,
+  method: "GET" | "POST",
+  body?: unknown,
+  token?: string,
+  timeoutMs = WEIXIN_API_TIMEOUT_MS,
+): Promise<T> {
+  const response = await fetch(new URL(endpoint, `${baseUrl.replace(/\/$/, "")}/`), {
+    method,
+    headers: weixinHeaders(token),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`Weixin iLink ${response.status}: ${text.slice(0, 300)}`);
+  return JSON.parse(text) as T;
+}
+
+function readWeixinSecret(resource: ImResourceRecord | undefined): WeixinResourceSecret | null {
+  if (resource?.provider !== "wechat" || !resource.encryptedSecret) return null;
+  const secret = decryptImSecret<Partial<WeixinResourceSecret>>(resource.encryptedSecret);
+  if (!secret?.token || !secret.botId || !secret.userId || !secret.baseUrl) return null;
+  return secret as WeixinResourceSecret;
+}
+
+function readImSdkSecret(resource: ImResourceRecord | undefined): ImSdkResourceSecret | null {
+  if (!resource || resource.provider === "wechat" || !resource.encryptedSecret) return null;
+  const secret = decryptImSecret<Partial<ImSdkResourceSecret>>(resource.encryptedSecret);
+  if (secret?.provider !== resource.provider || typeof secret.credentials !== "object" || !secret.credentials)
+    return null;
+  const credentials = Object.fromEntries(
+    Object.entries(secret.credentials).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string" && Boolean(entry[1].trim()),
+    ),
+  );
+  if (!Object.keys(credentials).length) return null;
+  return {
+    provider: secret.provider,
+    credentials,
+    ...(typeof secret.replyTargets === "object" && secret.replyTargets
+      ? {
+          replyTargets: Object.fromEntries(
+            Object.entries(secret.replyTargets).filter(
+              (entry): entry is [string, string] => typeof entry[1] === "string" && Boolean(entry[1]),
+            ),
+          ),
+        }
+      : {}),
+  };
+}
+
+const imSdkRuntimes = new Map<string, ImSdkRuntime>();
+const imSdkActivations = new Map<string, Promise<void>>();
+const imQrFlows = new Map<string, ImQrFlow>();
+const imBridgeLeases = new Map<string, number>();
+const imBridgeClaims = new Map<string, Promise<boolean>>();
+
+function createImKeyedQueue(): <T>(key: string, fn: () => Promise<T>) => Promise<T> {
+  const tails = new Map<string, Promise<void>>();
+  return (key, fn) => {
+    const previous = tails.get(key) ?? Promise.resolve();
+    const run = previous.then(fn, fn);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    tails.set(key, tail);
+    void tail.then(() => {
+      if (tails.get(key) === tail) tails.delete(key);
+    });
+    return run;
+  };
+}
+
+const queueImSdkMessage = createImKeyedQueue();
+
+function imRuntimeKey(user: string, provider: ImProviderId): string {
+  return `${user}\0${provider}`;
+}
+
+function imBridgeKey(user: string, provider: ImProviderId, resourceId: string): string {
+  return `${user}\0${provider}\0${resourceId}`;
+}
+
+function imBridgeStateKey(user: string, provider: ImProviderId, resourceId: string): string {
+  return imStateKey("lease", imBridgeKey(user, provider, resourceId));
+}
+
+function imBridgeReadyStateKey(user: string, provider: ImProviderId, resourceId: string): string {
+  return imStateKey("ready", imBridgeKey(user, provider, resourceId));
+}
+
+function ownsImBridge(user: string, provider: ImProviderId, resourceId: string): boolean {
+  return (imBridgeLeases.get(imBridgeKey(user, provider, resourceId)) ?? 0) > Date.now();
+}
+
+async function renewImBridge(user: string, provider: ImProviderId, resourceId: string): Promise<boolean> {
+  const key = imBridgeKey(user, provider, resourceId);
+  const stateKey = imBridgeStateKey(user, provider, resourceId);
+  const stored = await readUiStateRecord(IM_TOKENS_PRINCIPAL, stateKey);
+  const lease =
+    typeof stored.value === "object" && stored.value !== null
+      ? (stored.value as { owner?: unknown; expiresAt?: unknown })
+      : {};
+  if (
+    typeof lease.owner === "string" &&
+    lease.owner !== IM_BRIDGE_INSTANCE_ID &&
+    typeof lease.expiresAt === "number" &&
+    lease.expiresAt > Date.now()
+  ) {
+    imBridgeLeases.delete(key);
+    return false;
+  }
+  const expiresAt = Date.now() + IM_BRIDGE_LEASE_MS;
+  try {
+    await writeUiStateValue(
+      IM_TOKENS_PRINCIPAL,
+      stateKey,
+      { owner: IM_BRIDGE_INSTANCE_ID, expiresAt },
+      stored.updatedAt,
+    );
+    imBridgeLeases.set(key, expiresAt);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.message === "ui-state write conflict") {
+      imBridgeLeases.delete(key);
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function claimImBridge(user: string, provider: ImProviderId, resourceId: string): Promise<boolean> {
+  const key = imBridgeKey(user, provider, resourceId);
+  const current = imBridgeClaims.get(key);
+  if (current) return current;
+  const claim = renewImBridge(user, provider, resourceId);
+  imBridgeClaims.set(key, claim);
+  try {
+    return await claim;
+  } finally {
+    if (imBridgeClaims.get(key) === claim) imBridgeClaims.delete(key);
+  }
+}
+
+function imSdkFingerprint(secret: ImSdkResourceSecret): string {
+  return createHash("sha256").update(JSON.stringify(secret.credentials)).digest("base64url");
+}
+
+async function markImBridgeReady(user: string, resource: ImResourceRecord): Promise<void> {
+  const secret = readImSdkSecret(resource);
+  if (!secret) throw new Error("平台 Bot 凭据缺失，请重新绑定");
+  const leaseExpiresAt = imBridgeLeases.get(imBridgeKey(user, resource.provider, resource.resourceId)) ?? 0;
+  if (leaseExpiresAt <= Date.now()) throw new Error("机器人连接租约已失效");
+  const key = imBridgeReadyStateKey(user, resource.provider, resource.resourceId);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const stored = await readUiStateRecord(IM_TOKENS_PRINCIPAL, key);
+    try {
+      await writeUiStateValue(
+        IM_TOKENS_PRINCIPAL,
+        key,
+        {
+          owner: IM_BRIDGE_INSTANCE_ID,
+          resourceId: resource.resourceId,
+          fingerprint: imSdkFingerprint(secret),
+          expiresAt: leaseExpiresAt,
+        } satisfies ImBridgeReadyRecord,
+        stored.updatedAt,
+      );
+      return;
+    } catch (error) {
+      if (!(error instanceof Error && error.message === "ui-state write conflict") || attempt === 2) throw error;
+    }
+  }
+}
+
+async function hasReadyImBridge(user: string, resource: ImResourceRecord): Promise<boolean> {
+  const secret = readImSdkSecret(resource);
+  if (!secret) return false;
+  const stored = await readUiStateRecord(
+    IM_TOKENS_PRINCIPAL,
+    imBridgeReadyStateKey(user, resource.provider, resource.resourceId),
+  );
+  if (typeof stored.value !== "object" || stored.value === null) return false;
+  const ready = stored.value as Partial<ImBridgeReadyRecord>;
+  return (
+    ready.resourceId === resource.resourceId &&
+    ready.fingerprint === imSdkFingerprint(secret) &&
+    typeof ready.expiresAt === "number" &&
+    ready.expiresAt > Date.now()
+  );
+}
+
+function waitForImConnection(start: (resolve: () => void, reject: (error: Error) => void) => void): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(
+      () => finish(new Error("连接平台超时，请检查凭据和网络后重试")),
+      IM_SDK_CONNECT_TIMEOUT_MS,
+    );
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    };
+    start(
+      () => finish(),
+      (error) => finish(error),
+    );
+  });
+}
+
+async function postImSdkMessageNow(
+  user: string,
+  provider: Exclude<ImProviderId, "wechat">,
+  input: {
+    externalUserId: string;
+    externalChatId: string;
+    externalDisplayName: string;
+    text: string;
+    messageId?: string;
+    replyWebhook?: string;
+    deliveryEditRef?: string;
+  },
+): Promise<{ runId?: string; reply?: string; replayed?: true }> {
+  const state = await readImBindings(user);
+  const binding = state.bindings[provider];
+  const resource = state.resources[provider];
+  const secret = readImSdkSecret(resource);
+  if (binding?.status !== "connected" || !resource || !secret) return {};
+  if (provider === "dingtalk" && input.replyWebhook) {
+    secret.replyTargets = { ...secret.replyTargets, [input.externalChatId]: input.replyWebhook };
+    resource.encryptedSecret = encryptImSecret(secret);
+    resource.updatedAt = Date.now();
+    await writeImBindings(user, state);
+  }
+  const { turn } = imTurn(provider, { user, binding }, input);
+  const posted = await coreFetch("POST", "/v1/turns?async=1", JSON.stringify(turn), IM_SDK_CONNECT_TIMEOUT_MS);
+  if (posted.status < 200 || posted.status >= 300) throw new Error(`core turn failed (${posted.status})`);
+  let body: { runId?: unknown; status?: unknown; reply?: unknown; reason?: unknown };
+  try {
+    body = JSON.parse(posted.text) as typeof body;
+  } catch {
+    return {};
+  }
+  const runId = typeof body.runId === "string" ? body.runId : undefined;
+  if (posted.status === 200 && runId) return { runId, replayed: true };
+  if (body.status === "queued") return runId ? { runId } : {};
+  let reply = "消息已处理。";
+  if (typeof body.reply === "string" && body.reply) reply = body.reply;
+  else if (body.status === "failed" && typeof body.reason === "string")
+    reply = `⚠️ I couldn't finish that turn: ${body.reason}`;
+  return { ...(runId ? { runId } : {}), reply };
+}
+
+function postImSdkMessage(
+  user: string,
+  provider: Exclude<ImProviderId, "wechat">,
+  input: {
+    externalUserId: string;
+    externalChatId: string;
+    externalDisplayName: string;
+    text: string;
+    messageId?: string;
+    replyWebhook?: string;
+    deliveryEditRef?: string;
+  },
+): Promise<{ runId?: string; reply?: string; replayed?: true }> {
+  return queueImSdkMessage(imRuntimeKey(user, provider), () => postImSdkMessageNow(user, provider, input));
+}
+
+function larkText(data: unknown): {
+  externalUserId: string;
+  externalChatId: string;
+  externalDisplayName: string;
+  text: string;
+  messageId?: string;
+} | null {
+  if (typeof data !== "object" || data === null) return null;
+  const event = data as {
+    sender?: { sender_id?: { open_id?: unknown } };
+    message?: {
+      message_id?: unknown;
+      chat_id?: unknown;
+      chat_type?: unknown;
+      message_type?: unknown;
+      content?: unknown;
+    };
+  };
+  const externalUserId = typeof event.sender?.sender_id?.open_id === "string" ? event.sender.sender_id.open_id : "";
+  const externalChatId = typeof event.message?.chat_id === "string" ? event.message.chat_id : "";
+  if (!externalUserId || !externalChatId || event.message?.message_type !== "text") return null;
+  let text = "";
+  try {
+    const content = JSON.parse(typeof event.message.content === "string" ? event.message.content : "{}") as {
+      text?: unknown;
+    };
+    if (typeof content.text === "string") text = content.text.trim().slice(0, 40_000);
+  } catch {
+    return null;
+  }
+  if (!text) return null;
+  return {
+    externalUserId,
+    externalChatId,
+    externalDisplayName: externalUserId,
+    text,
+    ...(typeof event.message.message_id === "string" ? { messageId: event.message.message_id } : {}),
+  };
+}
+
+async function startImSdkResource(user: string, resource: ImResourceRecord): Promise<void> {
+  if (resource.provider === "wechat") return;
+  const key = imRuntimeKey(user, resource.provider);
+  const current = imSdkRuntimes.get(key);
+  const secret = readImSdkSecret(resource);
+  if (!secret) throw new Error("平台 Bot 凭据缺失，请重新绑定");
+  const fingerprint = imSdkFingerprint(secret);
+  if (current?.resourceId === resource.resourceId && current.fingerprint === fingerprint) return;
+  const credentials = secret.credentials;
+  let runtime: ImSdkRuntime;
+  if (resource.provider === "feishu") {
+    const appId = credentials.appId;
+    const appSecret = credentials.appSecret;
+    if (!appId || !appSecret) throw new Error("App ID 和 App Secret 不能为空");
+    const client = new Lark.Client({ appId, appSecret });
+    const dispatcher = new Lark.EventDispatcher({}).register({
+      "im.message.receive_v1": async (data: unknown) => {
+        if (!ownsImBridge(user, resource.provider, resource.resourceId)) return;
+        const message = larkText(data);
+        if (message) await postImSdkMessage(user, "feishu", message);
+      },
+    });
+    let wsClient: Lark.WSClient | undefined;
+    await waitForImConnection((resolve, reject) => {
+      wsClient = new Lark.WSClient({
+        appId,
+        appSecret,
+        autoReconnect: true,
+        handshakeTimeoutMs: IM_SDK_CONNECT_TIMEOUT_MS,
+        onReady: resolve,
+        onError: reject,
+      });
+      void wsClient.start({ eventDispatcher: dispatcher }).catch(reject);
+    }).catch((error) => {
+      wsClient?.close({ force: true });
+      throw error;
+    });
+    runtime = {
+      resourceId: resource.resourceId,
+      fingerprint,
+      stop: () => wsClient?.close({ force: true }),
+      send: async (target, text) => {
+        const response = await client.im.message.create({
+          params: { receive_id_type: "chat_id" },
+          data: { receive_id: target, content: JSON.stringify({ text }), msg_type: "text" },
+        });
+        if (typeof response.code === "number" && response.code !== 0)
+          throw new Error(response.msg || `飞书发送失败 (${response.code})`);
+      },
+    };
+  } else if (resource.provider === "qq") {
+    const appId = credentials.appId;
+    const appSecret = credentials.appSecret;
+    if (!appId || !appSecret) throw new Error("AppID 和 AppSecret 不能为空");
+    const bot = new QQBot({ appId, appSecret, accountId: resource.resourceId, tokenPrefetch: "sync" });
+    bot.on("message", (_context, message: QQBotInboundMessage) => {
+      if (!ownsImBridge(user, resource.provider, resource.resourceId)) return;
+      const text = message.content.trim().slice(0, 40_000);
+      if (!text || (message.kind !== "c2c" && message.kind !== "group")) return;
+      void postImSdkMessage(user, "qq", {
+        externalUserId: message.senderId,
+        externalChatId: `${message.replyTarget.scope}|${message.replyTarget.targetId}`,
+        externalDisplayName: message.senderName || message.senderId,
+        text,
+        messageId: message.messageId,
+      }).catch((error: unknown) => console.error("[web-ui] QQ message failed:", String(error)));
+    });
+    await waitForImConnection((resolve, reject) => {
+      bot.on("ready", resolve);
+      bot.on("error", reject);
+      void bot.start().catch(reject);
+    }).catch((error) => {
+      bot.stop();
+      throw error;
+    });
+    runtime = {
+      resourceId: resource.resourceId,
+      fingerprint,
+      stop: () => bot.stop(),
+      send: async (target, text) => {
+        const separator = target.indexOf("|");
+        const scope = target.slice(0, separator);
+        const targetId = target.slice(separator + 1);
+        if ((scope !== "c2c" && scope !== "group") || !targetId) throw new Error("QQ 消息目标无效");
+        await bot.sendText({ scope, targetId } satisfies ReplyTarget, text);
+      },
+    };
+  } else if (resource.provider === "work-wechat") {
+    const botId = credentials.botId;
+    const botSecret = credentials.secret;
+    if (!botId || !botSecret) throw new Error("Bot ID 和 Secret 不能为空");
+    const client = new WeComWSClient({
+      botId,
+      secret: botSecret,
+      maxAuthFailureAttempts: 1,
+      maxReconnectAttempts: -1,
+    });
+    type PendingReply = { frame: WsFrameHeaders; streamId: string; expiresAt: number; runId?: string };
+    const pendingRepliesByRun = new Map<string, PendingReply>();
+    const completedMessageIds = new LRUCache<string, true>({ max: 10_000, ttl: 10 * 60_000 });
+    const inFlightMessageIds = new Set<string>();
+    const retryMessageFrames = new Map<string, WsFrame<WeComTextMessage>>();
+    const sentDeliveryKeys = new LRUCache<string, true>({ max: 100_000 });
+    const pendingRunMappings = new Set<Promise<void>>();
+    const removePendingReply = (pending: PendingReply): void => {
+      if (pending.runId) pendingRepliesByRun.delete(pending.runId);
+    };
+    const handleWeComText = (frame: WsFrame<WeComTextMessage>): void => {
+      if (!ownsImBridge(user, resource.provider, resource.resourceId)) return;
+      const body = frame.body;
+      if (!body) return;
+      const text = body.text.content.trim().slice(0, 40_000);
+      if (!text) return;
+      if (completedMessageIds.has(body.msgid)) return;
+      if (inFlightMessageIds.has(body.msgid)) {
+        retryMessageFrames.set(body.msgid, frame);
+        return;
+      }
+      inFlightMessageIds.add(body.msgid);
+      const target = body.chatid || body.from.userid;
+      const streamId = `qm-${randomUUID()}`;
+      let finishRunMapping!: () => void;
+      const runMapping = new Promise<void>((resolve) => {
+        finishRunMapping = resolve;
+      });
+      pendingRunMappings.add(runMapping);
+      void (async () => {
+        const pending: PendingReply = {
+          frame: { headers: frame.headers },
+          streamId,
+          expiresAt: Date.now() + 5 * 60_000,
+        };
+        const posted = await postImSdkMessage(user, "work-wechat", {
+          externalUserId: body.from.userid,
+          externalChatId: target,
+          externalDisplayName: body.from.userid,
+          text,
+          messageId: body.msgid,
+          deliveryEditRef: JSON.stringify({
+            kind: "wecom-stream",
+            reqId: frame.headers.req_id,
+            streamId,
+            expiresAt: pending.expiresAt,
+          }),
+        });
+        if (posted.replayed) return;
+        if (posted.runId && !posted.reply) {
+          await client.replyStream(frame, streamId, "正在思考...", false);
+          pending.runId = posted.runId;
+          pendingRepliesByRun.set(posted.runId, pending);
+        } else if (posted.reply) {
+          await client.replyStream(
+            pending.frame,
+            pending.streamId,
+            truncateUtf8(posted.reply, 20_480, "\n\n[企业微信单条回复上限，内容已截断]"),
+            true,
+          );
+        }
+      })()
+        .then(() => completedMessageIds.set(body.msgid, true))
+        .catch((error: unknown) => {
+          console.error("[web-ui] WeCom message failed:", String(error));
+        })
+        .finally(() => {
+          finishRunMapping();
+          pendingRunMappings.delete(runMapping);
+          inFlightMessageIds.delete(body.msgid);
+          const retry = retryMessageFrames.get(body.msgid);
+          retryMessageFrames.delete(body.msgid);
+          if (retry && !completedMessageIds.has(body.msgid)) handleWeComText(retry);
+        });
+    };
+    client.on("message.text", handleWeComText);
+    await waitForImConnection((resolve, reject) => {
+      client.on("authenticated", resolve);
+      client.on("error", reject);
+      client.connect();
+    }).catch((error) => {
+      client.disconnect();
+      throw error;
+    });
+    runtime = {
+      resourceId: resource.resourceId,
+      fingerprint,
+      stop: () => {
+        pendingRepliesByRun.clear();
+        completedMessageIds.clear();
+        inFlightMessageIds.clear();
+        retryMessageFrames.clear();
+        sentDeliveryKeys.clear();
+        client.disconnect();
+      },
+      send: async (target, text, idempotencyKey, editRef) => {
+        if (idempotencyKey && sentDeliveryKeys.has(idempotencyKey)) return;
+        const runId = idempotencyKey?.startsWith("run:") ? idempotencyKey.slice("run:".length) : undefined;
+        let pending = runId ? pendingRepliesByRun.get(runId) : undefined;
+        while (runId && !pending && pendingRunMappings.size) {
+          await Promise.race(pendingRunMappings);
+          pending = pendingRepliesByRun.get(runId);
+        }
+        if (pending && pending.expiresAt <= Date.now()) {
+          removePendingReply(pending);
+          pending = undefined;
+        }
+        const content = truncateUtf8(text, 20_480, "\n\n[企业微信单条回复上限，内容已截断]");
+        let frame = pending?.frame;
+        let streamId = pending?.streamId;
+        if (!frame && editRef) {
+          try {
+            const stored = JSON.parse(editRef) as {
+              kind?: unknown;
+              reqId?: unknown;
+              streamId?: unknown;
+              expiresAt?: unknown;
+            };
+            if (
+              stored.kind === "wecom-stream" &&
+              typeof stored.reqId === "string" &&
+              typeof stored.streamId === "string" &&
+              typeof stored.expiresAt === "number" &&
+              stored.expiresAt > Date.now()
+            ) {
+              frame = { headers: { req_id: stored.reqId } };
+              streamId = stored.streamId;
+            }
+          } catch {
+            frame = undefined;
+          }
+        }
+        if (frame && streamId) {
+          await client.replyStream(frame, streamId, content, true);
+          if (pending) removePendingReply(pending);
+          if (idempotencyKey) {
+            sentDeliveryKeys.set(idempotencyKey, true);
+            const acked = await coreFetch(
+              "POST",
+              "/v1/deliveries/ack-by-key",
+              JSON.stringify({ idempotencyKey }),
+              IM_SDK_CONNECT_TIMEOUT_MS,
+            );
+            if (acked.status !== 200) throw new Error(`core delivery ack failed (${acked.status})`);
+          }
+          return;
+        }
+        await client.sendMessage(target, { msgtype: "markdown", markdown: { content } });
+        if (idempotencyKey) sentDeliveryKeys.set(idempotencyKey, true);
+      },
+    };
+  } else {
+    const clientId = credentials.clientId;
+    const clientSecret = credentials.clientSecret;
+    if (!clientId || !clientSecret) throw new Error("ClientID 和 ClientSecret 不能为空");
+    const client = new DWClient({ clientId, clientSecret, keepAlive: true });
+    let accessToken = "";
+    client.registerCallbackListener(TOPIC_ROBOT, (frame: DWClientDownStream) => {
+      void (async () => {
+        try {
+          if (!ownsImBridge(user, resource.provider, resource.resourceId)) return;
+          const message = JSON.parse(frame.data) as RobotMessage;
+          if (message.msgtype !== "text" || !message.text.content.trim()) return;
+          await postImSdkMessage(user, "dingtalk", {
+            externalUserId: message.senderStaffId || message.senderId,
+            externalChatId: message.conversationId,
+            externalDisplayName: message.senderNick || message.senderStaffId || message.senderId,
+            text: message.text.content.trim().slice(0, 40_000),
+            messageId: message.msgId,
+            replyWebhook: message.sessionWebhook,
+          });
+        } finally {
+          client.socketCallBackResponse(frame.headers.messageId, {});
+        }
+      })().catch((error: unknown) => console.error("[web-ui] DingTalk message failed:", String(error)));
+    });
+    await waitForImConnection((_resolve, reject) => {
+      void (async () => {
+        accessToken = String(await client.getAccessToken());
+        await client.connect();
+        if (!client.connected) throw new Error("钉钉 Stream 连接失败");
+        _resolve();
+      })().catch(reject);
+    }).catch((error) => {
+      client.disconnect();
+      throw error;
+    });
+    runtime = {
+      resourceId: resource.resourceId,
+      fingerprint,
+      stop: () => client.disconnect(),
+      send: async (target, text) => {
+        const latest = await readImBindings(user);
+        const webhook = readImSdkSecret(latest.resources.dingtalk)?.replyTargets?.[target];
+        if (!webhook) throw new Error("钉钉会话已失效，请先从钉钉向 Bot 发送一条消息");
+        const response = await fetch(webhook, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-acs-dingtalk-access-token": accessToken },
+          body: JSON.stringify({ msgtype: "text", text: { content: text } }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!response.ok) throw new Error(`钉钉发送失败 (${response.status})`);
+      },
+    };
+  }
+  current?.stop();
+  imSdkRuntimes.set(key, runtime);
+}
+
+async function activateImSdkResource(user: string, resource: ImResourceRecord): Promise<void> {
+  const key = imRuntimeKey(user, resource.provider);
+  const current = imSdkActivations.get(key);
+  if (current) {
+    await current;
+    return activateImSdkResource(user, resource);
+  }
+  const secret = readImSdkSecret(resource);
+  const runtime = imSdkRuntimes.get(key);
+  if (secret && runtime?.resourceId === resource.resourceId && runtime.fingerprint === imSdkFingerprint(secret)) return;
+  const activation = startImSdkResource(user, resource);
+  imSdkActivations.set(key, activation);
+  try {
+    await activation;
+  } finally {
+    if (imSdkActivations.get(key) === activation) imSdkActivations.delete(key);
+  }
+}
+
+async function saveImSdkResource(
+  user: string,
+  provider: Exclude<ImProviderId, "wechat">,
+  credentials: Record<string, string>,
+  resourceId: string,
+  externalUserId?: string,
+  expectedQrGenerationId?: string,
+): Promise<ImBindingRecord> {
+  const state = await readImBindings(user);
+  const existing = state.bindings[provider];
+  if (expectedQrGenerationId && existing?.qrGenerationId !== expectedQrGenerationId) throw new Error("绑定流程已取消");
+  const now = Date.now();
+  const resource: ImResourceRecord = {
+    provider,
+    resourceId: resourceId.slice(0, 256),
+    botName: imProviderMeta(provider).botName,
+    ...(externalUserId ? { externalUserId: externalUserId.slice(0, 256) } : {}),
+    encryptedSecret: encryptImSecret({
+      provider,
+      credentials,
+    } satisfies ImSdkResourceSecret),
+    createdAt: state.resources[provider]?.createdAt ?? now,
+    updatedAt: now,
+  };
+  const ownerReservation = await reserveImResourceOwner(user, provider, resource.resourceId);
+  try {
+    state.resources[provider] = resource;
+    state.bindings[provider] = {
+      ...imBindingBase(provider, existing?.createdAt ?? now),
+      status: "pending",
+      botName: resource.botName,
+      resourceId: resource.resourceId,
+      authorizationState: "waiting",
+      authorizationMessage: `${imProviderMeta(provider).label}机器人凭据已获取，正在验证消息连接`,
+      updatedAt: now,
+    };
+    await writeImBindings(user, state);
+    const binding = await connectImSdkResource(user, provider);
+    await commitImResourceReservation(ownerReservation);
+    imQrFlows.delete(imRuntimeKey(user, provider));
+    return binding;
+  } catch (error) {
+    await releaseImResourceReservation(ownerReservation).catch((releaseError: unknown) =>
+      console.error("[web-ui] IM resource owner release failed:", String(releaseError)),
+    );
+    throw error;
+  }
+}
+
+async function connectImSdkResource(user: string, provider: Exclude<ImProviderId, "wechat">): Promise<ImBindingRecord> {
+  let state = await readImBindings(user);
+  let resource = state.resources[provider];
+  if (!resource || !readImSdkSecret(resource)) throw new Error("平台 Bot 凭据缺失，请重新绑定");
+  await claimImResourceOwner(user, provider, resource.resourceId);
+  try {
+    if (await claimImBridge(user, provider, resource.resourceId)) {
+      await activateImSdkResource(user, resource);
+      await markImBridgeReady(user, resource);
+    } else if (!(await hasReadyImBridge(user, resource))) {
+      throw new Error(`${imProviderMeta(provider).label}机器人正在由其他服务实例启动，请稍后重试`);
+    }
+  } catch (error) {
+    state = await readImBindings(user);
+    const failed = state.bindings[provider];
+    if (failed && state.resources[provider]?.resourceId === resource.resourceId) {
+      failed.authorizationState = "error";
+      failed.authorizationMessage = `${imProviderMeta(provider).label}机器人连接验证失败：${error instanceof Error ? error.message : String(error)}`;
+      failed.updatedAt = Date.now();
+      await writeImBindings(user, state);
+    }
+    throw error;
+  }
+  state = await readImBindings(user);
+  resource = state.resources[provider];
+  if (!resource) throw new Error("平台 Bot 凭据已被删除");
+  const existing = state.bindings[provider];
+  const binding = bindingFromResource(resource, existing);
+  state.bindings[provider] = binding;
+  await writeImBindings(user, state);
+  return binding;
+}
+
+function imCredentials(
+  provider: Exclude<ImProviderId, "wechat">,
+  value: unknown,
+): { credentials: Record<string, string>; resourceId: string } | null {
+  if (typeof value !== "object" || value === null) return null;
+  const raw = value as Record<string, unknown>;
+  const fields: Record<Exclude<ImProviderId, "wechat">, string[]> = {
+    feishu: ["appId", "appSecret"],
+    "work-wechat": ["botId", "secret"],
+    qq: ["appId", "appSecret"],
+    dingtalk: ["clientId", "clientSecret"],
+  };
+  const credentials: Record<string, string> = {};
+  for (const field of fields[provider]) {
+    const item = raw[field];
+    if (typeof item !== "string" || !item.trim() || item.length > 512) return null;
+    credentials[field] = item.trim();
+  }
+  return { credentials, resourceId: credentials[fields[provider][0]!]! };
+}
+
+type DirectImQrProvider = "feishu" | "qq" | "dingtalk";
+
+interface DingtalkRegistration {
+  deviceCode: string;
+  verificationUrl: string;
+  expiresAt: number;
+  pollIntervalMs: number;
+}
+
+async function dingtalkRegistrationRequest<T extends Record<string, unknown>>(
+  path: string,
+  body: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<T> {
+  const response = await fetch(`${DINGTALK_REGISTRATION_BASE_URL}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+  });
+  const data = (await response.json()) as T & { errcode?: unknown; errmsg?: unknown };
+  if (!response.ok || data.errcode !== 0) {
+    throw new Error(typeof data.errmsg === "string" ? data.errmsg : `钉钉授权接口失败 (${response.status})`);
+  }
+  return data;
+}
+
+async function beginDingtalkRegistration(signal: AbortSignal): Promise<DingtalkRegistration> {
+  const initialized = await dingtalkRegistrationRequest<{ nonce?: unknown; expires_in?: unknown }>(
+    "/app/registration/init",
+    { source: DINGTALK_REGISTRATION_SOURCE },
+    signal,
+  );
+  const nonce = typeof initialized.nonce === "string" ? initialized.nonce.trim() : "";
+  if (!nonce) throw new Error("钉钉授权未返回 nonce");
+  const started = await dingtalkRegistrationRequest<{
+    device_code?: unknown;
+    verification_uri_complete?: unknown;
+    expires_in?: unknown;
+    interval?: unknown;
+  }>("/app/registration/begin", { nonce }, signal);
+  const deviceCode = typeof started.device_code === "string" ? started.device_code.trim() : "";
+  const verificationUrl =
+    typeof started.verification_uri_complete === "string" ? started.verification_uri_complete.trim() : "";
+  if (!deviceCode || !verificationUrl) throw new Error("钉钉授权未返回有效二维码");
+  const expiresInSeconds = Number(started.expires_in ?? 7_200);
+  const intervalSeconds = Number(started.interval ?? 3);
+  return {
+    deviceCode,
+    verificationUrl,
+    expiresAt:
+      Date.now() + (Number.isFinite(expiresInSeconds) && expiresInSeconds > 0 ? expiresInSeconds : 7_200) * 1_000,
+    pollIntervalMs: (Number.isFinite(intervalSeconds) && intervalSeconds > 0 ? intervalSeconds : 3) * 1_000,
+  };
+}
+
+async function pollDingtalkRegistration(
+  deviceCode: string,
+  signal: AbortSignal,
+): Promise<{ status: string; clientId?: string; clientSecret?: string; reason?: string }> {
+  const result = await dingtalkRegistrationRequest<{
+    status?: unknown;
+    client_id?: unknown;
+    client_secret?: unknown;
+    fail_reason?: unknown;
+  }>("/app/registration/poll", { device_code: deviceCode }, signal);
+  return {
+    status: typeof result.status === "string" ? result.status.trim().toUpperCase() : "UNKNOWN",
+    ...(typeof result.client_id === "string" ? { clientId: result.client_id.trim() } : {}),
+    ...(typeof result.client_secret === "string" ? { clientSecret: result.client_secret.trim() } : {}),
+    ...(typeof result.fail_reason === "string" ? { reason: result.fail_reason.trim() } : {}),
+  };
+}
+
+async function updateImQrBinding(
+  user: string,
+  provider: DirectImQrProvider,
+  qrGenerationId: string,
+  qrPayload: string,
+  message: string,
+  dingtalk?: DingtalkRegistration,
+): Promise<ImBindingRecord> {
+  const state = await readImBindings(user);
+  const binding = state.bindings[provider];
+  if (!binding || binding.status !== "pending" || binding.qrGenerationId !== qrGenerationId)
+    throw new Error("绑定流程已取消");
+  binding.qrPayload = qrPayload;
+  binding.quickSetupAvailable = true;
+  binding.authorizationState = "waiting";
+  binding.authorizationMessage = message;
+  if (dingtalk) {
+    binding.providerQrCode = dingtalk.deviceCode;
+    binding.providerBaseUrl = DINGTALK_REGISTRATION_BASE_URL;
+    binding.authorizationExpiresAt = dingtalk.expiresAt;
+    binding.authorizationPollIntervalMs = dingtalk.pollIntervalMs;
+  }
+  binding.updatedAt = Date.now();
+  await writeImBindings(user, state);
+  return binding;
+}
+
+async function failImQrBinding(
+  user: string,
+  provider: DirectImQrProvider,
+  qrGenerationId: string,
+  error: unknown,
+): Promise<void> {
+  const state = await readImBindings(user);
+  const binding = state.bindings[provider];
+  if (!binding || binding.status !== "pending" || binding.qrGenerationId !== qrGenerationId) return;
+  binding.authorizationState = "error";
+  binding.authorizationMessage = error instanceof Error ? error.message : "平台授权失败，请重试";
+  binding.updatedAt = Date.now();
+  await writeImBindings(user, state);
+  imQrFlows.delete(imRuntimeKey(user, provider));
+}
+
+function beginImQrBinding(
+  user: string,
+  provider: DirectImQrProvider,
+  qrGenerationId: string,
+): Promise<ImBindingRecord> {
+  const key = imRuntimeKey(user, provider);
+  imQrFlows.get(key)?.stop();
+  return new Promise<ImBindingRecord>((resolve, reject) => {
+    let ready = false;
+    let terminal = false;
+    let dispose = (): void => {};
+    let leaseTimer: ReturnType<typeof setInterval> | undefined;
+    const flow: ImQrFlow = {
+      release: () => {
+        if (leaseTimer) clearInterval(leaseTimer);
+        leaseTimer = undefined;
+        if (imQrFlows.get(key) === flow) imQrFlows.delete(key);
+      },
+      stop: () => {
+        flow.release();
+        dispose();
+      },
+    };
+    const timer = setTimeout(() => {
+      fail(new Error("生成平台授权二维码超时，请重试"));
+      dispose();
+    }, IM_SDK_CONNECT_TIMEOUT_MS);
+    const fail = (error: unknown): void => {
+      if (terminal) return;
+      terminal = true;
+      clearTimeout(timer);
+      flow.release();
+      const reason = error instanceof Error ? error : new Error(String(error));
+      void failImQrBinding(user, provider, qrGenerationId, reason).finally(() => {
+        if (!ready) {
+          ready = true;
+          reject(reason);
+        }
+      });
+    };
+    const show = (url: string, message: string): void => {
+      clearTimeout(timer);
+      void updateImQrBinding(user, provider, qrGenerationId, url, message)
+        .then((binding) => {
+          if (!ready) {
+            ready = true;
+            resolve(binding);
+          }
+        })
+        .catch(fail);
+    };
+    const complete = (credentials: Record<string, string>, resourceId: string, externalUserId?: string): void => {
+      if (terminal) return;
+      terminal = true;
+      clearTimeout(timer);
+      void saveImSdkResource(user, provider, credentials, resourceId, externalUserId, qrGenerationId)
+        .catch((error) => failImQrBinding(user, provider, qrGenerationId, error))
+        .finally(() => flow.release());
+    };
+    if (provider === "feishu") {
+      const controller = new AbortController();
+      dispose = () => controller.abort();
+      imQrFlows.set(key, flow);
+      void Lark.registerApp({
+        signal: controller.signal,
+        createOnly: false,
+        source: "qm",
+        appPreset: { name: "{user} 的 QM 智能机器人", desc: "{user} 的专属 QM 对话机器人" },
+        addons: {
+          scopes: { tenant: ["im:message:send_as_bot"] },
+          events: { items: { tenant: ["im.message.receive_v1"] } },
+        },
+        onQRCodeReady: ({ url }) => show(url, "请使用飞书扫描二维码，优先选择已有应用"),
+      })
+        .then((result) => {
+          complete(
+            { appId: result.client_id, appSecret: result.client_secret },
+            result.client_id,
+            result.user_info?.open_id,
+          );
+        })
+        .catch(fail);
+    } else if (provider === "qq") {
+      dispose = startQrConnect(
+        {
+          onQrDisplayed: (url) => show(url, "请使用手机 QQ 扫描二维码，优先选择并授权已有机器人"),
+          onFailure: fail,
+          onSuccess: (results) => {
+            const result = results[0];
+            if (!result) return fail(new Error("QQ 未返回 Bot 凭据"));
+            complete({ appId: result.appId, appSecret: result.appSecret }, result.appId, result.userOpenid);
+          },
+        },
+        { displayQrCodeToConsole: false, source: "qm" },
+      );
+      imQrFlows.set(key, flow);
+    } else {
+      const controller = new AbortController();
+      dispose = () => controller.abort();
+      imQrFlows.set(key, flow);
+      void (async () => {
+        const current = (await readImBindings(user)).bindings.dingtalk;
+        const reusable =
+          current?.providerQrCode &&
+          current.qrPayload &&
+          typeof current.authorizationExpiresAt === "number" &&
+          current.authorizationExpiresAt > Date.now();
+        const registration: DingtalkRegistration = reusable
+          ? {
+              deviceCode: current.providerQrCode!,
+              verificationUrl: current.qrPayload!,
+              expiresAt: current.authorizationExpiresAt!,
+              pollIntervalMs: current.authorizationPollIntervalMs ?? 3_000,
+            }
+          : await beginDingtalkRegistration(controller.signal);
+        await updateImQrBinding(
+          user,
+          provider,
+          qrGenerationId,
+          registration.verificationUrl,
+          "请使用钉钉扫描二维码并一键创建或绑定机器人",
+          registration,
+        ).then((binding) => {
+          if (!ready) {
+            ready = true;
+            resolve(binding);
+          }
+        });
+        while (!controller.signal.aborted && Date.now() < registration.expiresAt) {
+          await sleep(registration.pollIntervalMs);
+          if (controller.signal.aborted) return;
+          const result = await pollDingtalkRegistration(registration.deviceCode, controller.signal);
+          if (result.status === "WAITING") continue;
+          if (result.status === "SUCCESS" && result.clientId && result.clientSecret) {
+            complete({ clientId: result.clientId, clientSecret: result.clientSecret }, result.clientId);
+            return;
+          }
+          if (result.status === "FAIL") throw new Error(result.reason || "钉钉授权失败");
+          if (result.status === "EXPIRED") throw new Error("钉钉授权二维码已过期，请重试");
+        }
+        throw new Error("钉钉授权二维码已过期，请重试");
+      })().catch(fail);
+    }
+    leaseTimer = setInterval(
+      () => {
+        void readImBindings(user)
+          .then((state) => {
+            if (state.bindings[provider]?.qrGenerationId !== qrGenerationId) return false;
+            return renewImBridge(user, provider, IM_QR_LEASE_RESOURCE_ID);
+          })
+          .then((owned) => {
+            if (!owned) flow.stop();
+          })
+          .catch(() => flow.stop());
+      },
+      Math.max(1_000, Math.floor(IM_BRIDGE_LEASE_MS / 3)),
+    );
+  });
+}
+
+async function createWeixinQr(state: ImBindingsState): Promise<{ qrcode: string; image: string }> {
+  const tokens = Object.values(state.resources)
+    .map((resource) => readWeixinSecret(resource)?.token)
+    .filter((token): token is string => Boolean(token))
+    .slice(0, 10);
+  const response = await weixinJson<{ qrcode?: string; qrcode_img_content?: string }>(
+    WEIXIN_ILINK_BASE_URL,
+    `ilink/bot/get_bot_qrcode?bot_type=${WEIXIN_ILINK_BOT_TYPE}`,
+    "POST",
+    { local_token_list: tokens },
+    undefined,
+    15_000,
+  );
+  if (!response.qrcode?.trim() || !response.qrcode_img_content?.trim()) {
+    throw new Error("微信 iLink 没有返回有效二维码");
+  }
+  return { qrcode: response.qrcode, image: response.qrcode_img_content };
+}
+
+async function startImBinding(user: string, provider: ImProviderId): Promise<ImBindingRecord> {
+  const state = await readImBindings(user);
+  const existing = state.bindings[provider];
+  const directQr = provider === "feishu" || provider === "qq" || provider === "dingtalk";
+  const retryable =
+    existing?.status === "pending" &&
+    (existing.authorizationState === "expired" ||
+      existing.authorizationState === "blocked" ||
+      existing.authorizationState === "unrecoverable" ||
+      existing.authorizationState === "error" ||
+      (directQr && !imQrFlows.has(imRuntimeKey(user, provider))));
+  if (existing && !retryable) {
+    return existing;
+  }
+  const resource = state.resources[provider];
+  const reusable = resource && (provider !== "wechat" || readWeixinSecret(resource));
+  if (reusable) {
+    await claimImResourceOwner(user, provider, resource.resourceId);
+    if (provider !== "wechat" && readImSdkSecret(resource)) return connectImSdkResource(user, provider);
+    const restored = bindingFromResource(resource, existing);
+    state.bindings[provider] = restored;
+    await writeImBindings(user, state);
+    return restored;
+  }
+  if (provider === "wechat") {
+    const qr = await createWeixinQr(state);
+    const now = Date.now();
+    const record: ImBindingRecord = {
+      ...imBindingBase(provider, now),
+      status: "pending",
+      quickSetupAvailable: true,
+      qrPayload: qr.image,
+      providerQrCode: qr.qrcode,
+      providerBaseUrl: WEIXIN_ILINK_BASE_URL,
+      authorizationState: "waiting",
+      authorizationMessage: "等待微信扫码",
+      updatedAt: now,
+    };
+    state.bindings[provider] = record;
+    await writeImBindings(user, state);
+    return record;
+  }
+  if (provider === "work-wechat") {
+    const now = Date.now();
+    const record: ImBindingRecord = {
+      ...imBindingBase(provider, now),
+      status: "pending",
+      quickSetupAvailable: true,
+      authorizationState: "waiting",
+      authorizationMessage: "请打开企业微信扫码创建窗口",
+      updatedAt: now,
+    };
+    state.bindings[provider] = record;
+    await writeImBindings(user, state);
+    return record;
+  }
+  if (directQr) {
+    const key = imRuntimeKey(user, provider);
+    if (imQrFlows.has(key)) return existing!;
+    if (!(await claimImBridge(user, provider, IM_QR_LEASE_RESOURCE_ID))) {
+      const current = (await readImBindings(user)).bindings[provider];
+      if (current) return current;
+      throw new Error("平台授权二维码正在生成，请稍后重试");
+    }
+    const now = Date.now();
+    const qrGenerationId = randomUUID();
+    const record: ImBindingRecord = {
+      ...imBindingBase(provider, now),
+      status: "pending",
+      quickSetupAvailable: false,
+      authorizationState: "waiting",
+      authorizationMessage: "正在生成平台授权二维码",
+      qrGenerationId,
+      updatedAt: now,
+    };
+    state.bindings[provider] = record;
+    await writeImBindings(user, state);
+    return beginImQrBinding(user, provider, qrGenerationId);
+  }
+  throw new Error("不支持的 IM 平台");
+}
+
+async function removeImBinding(user: string, provider: ImProviderId, forgetResource = false): Promise<boolean> {
+  const state = await readImBindings(user);
+  const binding = state.bindings[provider];
+  const resource = state.resources[provider];
+  if (!binding && !(forgetResource && resource)) return false;
+  const resourceId = resource?.resourceId;
+  const ownerReservation =
+    forgetResource && resourceId ? await reserveImResourceOwner(user, provider, resourceId, true) : undefined;
+  delete state.bindings[provider];
+  if (forgetResource) delete state.resources[provider];
+  try {
+    await writeImBindings(user, state);
+  } catch (error) {
+    if (ownerReservation) await releaseImResourceReservation(ownerReservation);
+    throw error;
+  }
+  if (ownerReservation) await discardImResourceReservation(ownerReservation);
+  imQrFlows.get(imRuntimeKey(user, provider))?.stop();
+  imQrFlows.delete(imRuntimeKey(user, provider));
+  imSdkRuntimes.get(imRuntimeKey(user, provider))?.stop();
+  imSdkRuntimes.delete(imRuntimeKey(user, provider));
+  if (resourceId) imBridgeLeases.delete(imBridgeKey(user, provider, resourceId));
+  return true;
+}
+
+async function connectWeixinBinding(
+  user: string,
+  state: ImBindingsState,
+  status: WeixinQrStatusResponse,
+): Promise<ImBindingRecord> {
+  const existing = state.bindings.wechat;
+  const token = status.bot_token?.trim();
+  const botId = status.ilink_bot_id?.trim();
+  const userId = status.ilink_user_id?.trim();
+  if (!token || !botId || !userId) throw new Error("微信授权成功，但返回的 Bot 凭据不完整");
+  const now = Date.now();
+  const baseUrl = weixinBaseUrl(status.baseurl || existing?.providerBaseUrl);
+  const prior = state.resources.wechat;
+  const priorSecret = readWeixinSecret(prior);
+  const secret: WeixinResourceSecret = {
+    token,
+    botId,
+    userId,
+    baseUrl,
+    ...(priorSecret?.cursor ? { cursor: priorSecret.cursor } : {}),
+  };
+  const resource: ImResourceRecord = {
+    provider: "wechat",
+    resourceId: botId.slice(0, 256),
+    botName: "微信 Bot",
+    externalUserId: userId.slice(0, 256),
+    externalChatId: userId.slice(0, 256),
+    externalDisplayName: "微信用户",
+    encryptedSecret: encryptImSecret(secret),
+    createdAt: prior?.createdAt ?? now,
+    updatedAt: now,
+  };
+  const ownerReservation = await reserveImResourceOwner(user, "wechat", resource.resourceId);
+  const binding = bindingFromResource(resource, existing);
+  state.resources.wechat = resource;
+  state.bindings.wechat = binding;
+  try {
+    await writeImBindings(user, state);
+    await commitImResourceReservation(ownerReservation);
+  } catch (error) {
+    await releaseImResourceReservation(ownerReservation).catch((releaseError: unknown) =>
+      console.error("[web-ui] IM resource owner release failed:", String(releaseError)),
+    );
+    throw error;
+  }
+  return binding;
+}
+
+const weixinBindingRefreshes = new Map<string, Promise<ImBindingRecord | null>>();
+
+async function refreshWeixinBindingNow(user: string): Promise<ImBindingRecord | null> {
+  const state = await readImBindings(user);
+  const binding = state.bindings.wechat;
+  if (!binding || binding.status === "connected") return binding ?? null;
+  if (!binding.providerQrCode || !binding.providerBaseUrl) return binding;
+  if (Date.now() - (binding.createdAt ?? 0) >= WEIXIN_QR_TTL_MS) {
+    binding.authorizationState = "expired";
+    binding.authorizationMessage = "二维码已过期，请重新生成";
+    binding.verificationRequired = false;
+    binding.updatedAt = Date.now();
+    await writeImBindings(user, state);
+    return binding;
+  }
+  let status: WeixinQrStatusResponse;
+  try {
+    const query = new URLSearchParams({ qrcode: binding.providerQrCode });
+    if (binding.verifyCode) query.set("verify_code", binding.verifyCode);
+    status = await weixinJson<WeixinQrStatusResponse>(
+      binding.providerBaseUrl,
+      `ilink/bot/get_qrcode_status?${query.toString()}`,
+      "GET",
+      undefined,
+      undefined,
+      WEIXIN_API_TIMEOUT_MS,
+    );
+  } catch (error) {
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) return binding;
+    binding.authorizationState = "error";
+    binding.authorizationMessage = "暂时无法连接微信授权服务，请重试";
+    binding.updatedAt = Date.now();
+    await writeImBindings(user, state);
+    return binding;
+  }
+  const now = Date.now();
+  if (status.status === "confirmed") return connectWeixinBinding(user, state, status);
+  const previousBaseUrl = binding.providerBaseUrl;
+  const previousAuthorizationState = binding.authorizationState;
+  const previousAuthorizationMessage = binding.authorizationMessage;
+  const previousVerificationRequired = binding.verificationRequired;
+  const previousVerifyCode = binding.verifyCode;
+  if (status.status === "binded_redirect") {
+    const resource = state.resources.wechat;
+    if (resource && readWeixinSecret(resource)) {
+      const restored = bindingFromResource(resource, binding);
+      state.bindings.wechat = restored;
+      await writeImBindings(user, state);
+      return restored;
+    }
+    binding.authorizationState = "unrecoverable";
+    binding.authorizationMessage = "微信确认这个 Bot 已创建，但本平台没有可复用凭据，请联系管理员恢复原数据";
+  } else if (status.status === "scaned_but_redirect") {
+    binding.providerBaseUrl = weixinBaseUrl(status.redirect_host);
+    binding.authorizationState = "scanned";
+    binding.authorizationMessage = "已扫码，正在切换微信授权服务";
+  } else if (status.status === "scaned") {
+    binding.verifyCode = undefined;
+    binding.authorizationState = "scanned";
+    binding.authorizationMessage = "已扫码，等待手机确认";
+    binding.verificationRequired = false;
+  } else if (status.status === "need_verifycode") {
+    binding.authorizationState = "verification-required";
+    binding.authorizationMessage = binding.verifyCode ? "验证码不匹配，请重新输入" : "请输入手机微信显示的数字";
+    binding.verificationRequired = true;
+    binding.verifyCode = undefined;
+  } else if (status.status === "verify_code_blocked") {
+    binding.authorizationState = "blocked";
+    binding.authorizationMessage = "验证码错误次数过多，请重新生成二维码";
+    binding.verificationRequired = false;
+    binding.verifyCode = undefined;
+  } else if (status.status === "expired") {
+    binding.authorizationState = "expired";
+    binding.authorizationMessage = "二维码已过期，请重新生成";
+    binding.verificationRequired = false;
+  } else {
+    binding.authorizationState = "waiting";
+    binding.authorizationMessage = "等待微信扫码";
+  }
+  if (
+    binding.providerBaseUrl === previousBaseUrl &&
+    binding.authorizationState === previousAuthorizationState &&
+    binding.authorizationMessage === previousAuthorizationMessage &&
+    binding.verificationRequired === previousVerificationRequired &&
+    binding.verifyCode === previousVerifyCode
+  ) {
+    return binding;
+  }
+  binding.updatedAt = now;
+  await writeImBindings(user, state);
+  return binding;
+}
+
+async function refreshWeixinBinding(user: string): Promise<ImBindingRecord | null> {
+  const current = weixinBindingRefreshes.get(user);
+  if (current) return current;
+  const refresh = refreshWeixinBindingNow(user);
+  weixinBindingRefreshes.set(user, refresh);
+  try {
+    return await refresh;
+  } finally {
+    if (weixinBindingRefreshes.get(user) === refresh) weixinBindingRefreshes.delete(user);
+  }
+}
+
+async function verifyWeixinBinding(user: string, code: string): Promise<ImBindingRecord | null> {
+  const state = await readImBindings(user);
+  const binding = state.bindings.wechat;
+  if (!binding || binding.status !== "pending" || !binding.verificationRequired) return null;
+  if (!/^\d{1,8}$/.test(code)) return null;
+  binding.verifyCode = code;
+  binding.verificationRequired = false;
+  binding.authorizationState = "waiting";
+  binding.authorizationMessage = "正在校验验证码";
+  binding.updatedAt = Date.now();
+  await writeImBindings(user, state);
+  return binding;
+}
 
 function ownerOfWebThread(threadRef: string): string | null {
   if (!threadRef.startsWith("web:")) return null;
@@ -217,10 +2268,7 @@ async function gateManageDeployment(res: ServerResponse, user: string, id: strin
 }
 
 function callbackHtml(query: string): string {
-  const safe = query.replace(
-    /[&<>"']/g,
-    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c,
-  );
+  const safe = query.replaceAll("&", "&amp;");
   return `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=../../../?${safe}"><title>Connector</title>`;
 }
 
@@ -493,6 +2541,357 @@ async function readJson<T extends object>(
     if (e instanceof PayloadTooLargeError) throw e;
     json(res, 400, { error: "bad_request" });
     return null;
+  }
+}
+
+function imRoutePrefix(provider: ImProviderId, user: string, binding: ImBindingRecord): string {
+  const namespace = createHash("sha256")
+    .update(`${user}\0${provider}\0${binding.resourceId ?? ""}`)
+    .digest("hex")
+    .slice(0, 20);
+  return `im:${provider}:${namespace}:`;
+}
+
+function imTurn(
+  provider: ImProviderId,
+  found: { user: string; binding: ImBindingRecord },
+  input: {
+    externalUserId: string;
+    externalChatId: string;
+    externalDisplayName: string;
+    text: string;
+    messageId?: string;
+    deliveryEditRef?: string;
+  },
+): { turn: unknown; threadRef: string } {
+  const meta = imProviderMeta(provider);
+  const routePrefix = imRoutePrefix(provider, found.user, found.binding);
+  const namespace = routePrefix.slice(`im:${provider}:`.length, -1);
+  const threadRef = `${routePrefix}${input.externalChatId}`;
+  return {
+    threadRef,
+    turn: {
+      surface: `im:${provider}`,
+      actor: { externalId: found.user, displayName: input.externalDisplayName },
+      conversation: {
+        kind: "dm",
+        threadRef,
+        channelName: `${meta.label} ${input.externalDisplayName}`.slice(0, 200),
+        audience: [{ externalId: found.user, displayName: input.externalDisplayName }],
+      },
+      liveActor: true,
+      deliveryTarget: threadRef,
+      ...(input.deliveryEditRef ? { deliveryEditRef: input.deliveryEditRef } : {}),
+      text: input.text,
+      origin: {
+        kind: "human",
+        ...(input.messageId ? { messageTs: input.messageId, entryTs: input.messageId } : {}),
+      },
+      gatewayContext: {
+        location: meta.label,
+        botHandle: found.binding.botName ?? meta.botName,
+        details: {
+          provider,
+          externalUserId: input.externalUserId,
+          externalChatId: input.externalChatId,
+        },
+      },
+      ...(input.messageId ? { idempotencyKey: `im:${provider}:${namespace}:${input.messageId}` } : {}),
+    },
+  };
+}
+
+interface WeixinMessageItem {
+  type?: number;
+  msg_id?: string;
+  text_item?: { text?: string };
+}
+
+interface WeixinMessage {
+  message_id?: number;
+  client_id?: string;
+  from_user_id?: string;
+  message_type?: number;
+  item_list?: WeixinMessageItem[];
+  context_token?: string;
+}
+
+interface WeixinUpdatesResponse {
+  ret?: number;
+  errcode?: number;
+  errmsg?: string;
+  msgs?: WeixinMessage[];
+  get_updates_buf?: string;
+}
+
+interface PendingImDelivery {
+  id: string;
+  idempotencyKey?: string;
+  text?: string;
+  destination?: { target?: string; editRef?: string };
+}
+
+function weixinMessageText(message: WeixinMessage): string {
+  return (message.item_list ?? [])
+    .filter((item) => item.type === 1 && typeof item.text_item?.text === "string")
+    .map((item) => item.text_item!.text!.trim())
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, 40_000);
+}
+
+function weixinMessageId(message: WeixinMessage): string | undefined {
+  if (message.message_id !== undefined) return String(message.message_id);
+  const itemId = message.item_list?.find((item) => item.msg_id)?.msg_id;
+  return itemId || message.client_id || undefined;
+}
+
+const weixinPolls = new Set<string>();
+let weixinDeliveriesInFlight = false;
+
+export async function pollWeixinAccount(user: string, expectedResourceId: string, requireLease = false): Promise<void> {
+  const state = await readImBindings(user);
+  const binding = state.bindings.wechat;
+  const resource = state.resources.wechat;
+  const secret = readWeixinSecret(resource);
+  if (binding?.status !== "connected" || resource?.resourceId !== expectedResourceId || !secret) return;
+  const response = await weixinJson<WeixinUpdatesResponse>(
+    secret.baseUrl,
+    "ilink/bot/getupdates",
+    "POST",
+    {
+      get_updates_buf: secret.cursor ?? "",
+      base_info: { channel_version: "0.1.0", bot_agent: "QM/0.1.0" },
+    },
+    secret.token,
+    WEIXIN_API_TIMEOUT_MS,
+  );
+  if ((response.ret ?? 0) !== 0 || (response.errcode ?? 0) !== 0) {
+    throw new Error(`Weixin getupdates failed: ${response.errcode ?? response.ret} ${response.errmsg ?? ""}`);
+  }
+  if (requireLease && !ownsImBridge(user, "wechat", expectedResourceId)) return;
+  const messages = (response.msgs ?? []).filter(
+    (message) =>
+      message.message_type === 1 && message.from_user_id === resource.externalUserId && weixinMessageText(message),
+  );
+  for (const message of messages) {
+    const externalChatId = binding.externalChatId ?? secret.userId;
+    const { turn } = imTurn(
+      "wechat",
+      { user, binding },
+      {
+        externalUserId: secret.userId,
+        externalChatId,
+        externalDisplayName: binding.externalDisplayName ?? "微信用户",
+        text: weixinMessageText(message),
+        ...(weixinMessageId(message) ? { messageId: weixinMessageId(message)! } : {}),
+      },
+    );
+    const posted = await coreFetch("POST", "/v1/turns?async=1", JSON.stringify(turn));
+    if (posted.status < 200 || posted.status >= 300) throw new Error(`core turn failed (${posted.status})`);
+  }
+  const latest = await readImBindings(user);
+  const latestResource = latest.resources.wechat;
+  const latestSecret = readWeixinSecret(latestResource);
+  if (
+    latest.bindings.wechat?.status !== "connected" ||
+    latestResource?.resourceId !== expectedResourceId ||
+    !latestSecret
+  ) {
+    return;
+  }
+  const contextToken = [...messages].reverse().find((message) => message.context_token)?.context_token;
+  latestResource.encryptedSecret = encryptImSecret({
+    ...latestSecret,
+    ...(response.get_updates_buf !== undefined ? { cursor: response.get_updates_buf } : {}),
+    ...(contextToken ? { contextToken } : {}),
+  } satisfies WeixinResourceSecret);
+  latestResource.updatedAt = Date.now();
+  await writeImBindings(user, latest);
+}
+
+interface StoredImBindings {
+  user: string;
+  state: ImBindingsState;
+}
+
+async function listStoredImBindings(): Promise<StoredImBindings[]> {
+  return (await listUiStateRecords(IM_BINDINGS_KEY)).map(({ principalId, record }) => ({
+    user: principalId,
+    state: parseImBindings(record.value, record.updatedAt),
+  }));
+}
+
+export async function drainWeixinDeliveries(stored?: StoredImBindings[]): Promise<void> {
+  if (weixinDeliveriesInFlight) return;
+  weixinDeliveriesInFlight = true;
+  try {
+    const bindings = stored ?? (await listStoredImBindings());
+    for (const { user, state } of bindings) {
+      const binding = state.bindings.wechat;
+      const resource = state.resources.wechat;
+      if (!binding || binding.status !== "connected" || !resource) continue;
+      if (!(await claimImBridge(user, "wechat", resource.resourceId))) continue;
+      const targetPrefix = imRoutePrefix("wechat", user, binding);
+      const claimed = await coreFetch(
+        "GET",
+        `/v1/deliveries?type=im%3Awechat&claimMs=45000&targetPrefix=${encodeURIComponent(targetPrefix)}`,
+      );
+      if (claimed.status !== 200) continue;
+      const deliveries = (JSON.parse(claimed.text) as { deliveries?: PendingImDelivery[] }).deliveries ?? [];
+      const secret = readWeixinSecret(resource);
+      if (!secret) continue;
+      for (const delivery of deliveries) {
+        const target = (delivery.destination?.target ?? "").slice(targetPrefix.length);
+        if (target !== binding.externalChatId) continue;
+        const sent = await weixinJson<{ ret?: number; errmsg?: string }>(
+          secret.baseUrl,
+          "ilink/bot/sendmessage",
+          "POST",
+          {
+            msg: {
+              from_user_id: "",
+              to_user_id: secret.userId,
+              client_id: `qm-${randomUUID()}`,
+              message_type: 2,
+              message_state: 2,
+              ...(delivery.text
+                ? { item_list: [{ type: 1, text_item: { text: delivery.text.slice(0, 40_000) } }] }
+                : {}),
+              ...(secret.contextToken ? { context_token: secret.contextToken } : {}),
+              ...(delivery.idempotencyKey?.startsWith("run:")
+                ? { run_id: delivery.idempotencyKey.slice("run:".length) }
+                : {}),
+            },
+            base_info: { channel_version: "0.1.0", bot_agent: "QM/0.1.0" },
+          },
+          secret.token,
+          15_000,
+        );
+        if ((sent.ret ?? 0) !== 0) throw new Error(`Weixin sendmessage failed: ${sent.ret} ${sent.errmsg ?? ""}`);
+        await coreFetch("POST", `/v1/deliveries/${encodeURIComponent(delivery.id)}/ack`);
+      }
+    }
+  } finally {
+    weixinDeliveriesInFlight = false;
+  }
+}
+
+async function syncWeixinBridge(): Promise<void> {
+  const stored = await listStoredImBindings();
+  for (const { user, state } of stored) {
+    const resourceId = state.resources.wechat?.resourceId;
+    if (!resourceId || state.bindings.wechat?.status !== "connected") continue;
+    try {
+      await claimImResourceOwner(user, "wechat", resourceId);
+    } catch (error) {
+      console.error("[web-ui] Weixin resource owner conflict:", String(error));
+      continue;
+    }
+    const key = `${user}\0${resourceId}`;
+    if (!(await claimImBridge(user, "wechat", resourceId))) continue;
+    if (weixinPolls.has(key)) continue;
+    weixinPolls.add(key);
+    void pollWeixinAccount(user, resourceId, true)
+      .catch((error: unknown) => console.error("[web-ui] Weixin poll failed:", String(error)))
+      .finally(() => weixinPolls.delete(key));
+  }
+  await drainWeixinDeliveries(stored);
+}
+
+const imSdkDeliveriesInFlight = new Set<string>();
+
+export async function drainImSdkDeliveries(
+  provider: Exclude<ImProviderId, "wechat">,
+  stored?: StoredImBindings[],
+): Promise<void> {
+  if (![...imSdkRuntimes.keys()].some((key) => key.endsWith(`\0${provider}`))) return;
+  const bindings = stored ?? (await listStoredImBindings());
+  await Promise.all(
+    bindings.map(async ({ user, state }) => {
+      const binding = state.bindings[provider];
+      if (!binding || binding.status !== "connected") return;
+      const runtime = imSdkRuntimes.get(imRuntimeKey(user, provider));
+      if (!runtime) return;
+      const inFlightKey = imRuntimeKey(user, provider);
+      if (imSdkDeliveriesInFlight.has(inFlightKey)) return;
+      imSdkDeliveriesInFlight.add(inFlightKey);
+      try {
+        const targetPrefix = imRoutePrefix(provider, user, binding);
+        const claimed = await coreFetch(
+          "GET",
+          `/v1/deliveries?type=${encodeURIComponent(`im:${provider}`)}&claimMs=45000&targetPrefix=${encodeURIComponent(targetPrefix)}`,
+        );
+        if (claimed.status !== 200) return;
+        const deliveries = (JSON.parse(claimed.text) as { deliveries?: PendingImDelivery[] }).deliveries ?? [];
+        for (const delivery of deliveries) {
+          const target = (delivery.destination?.target ?? "").slice(targetPrefix.length);
+          await runtime.send(
+            target,
+            (delivery.text ?? "").slice(0, 40_000),
+            delivery.idempotencyKey,
+            delivery.destination?.editRef,
+          );
+          const acked = await coreFetch("POST", `/v1/deliveries/${encodeURIComponent(delivery.id)}/ack`);
+          if (acked.status !== 200) throw new Error(`core delivery ack failed (${acked.status})`);
+        }
+      } finally {
+        imSdkDeliveriesInFlight.delete(inFlightKey);
+      }
+    }),
+  );
+}
+
+async function syncImSdkBridges(): Promise<void> {
+  const stored = await listStoredImBindings();
+  const active = new Set<string>();
+  for (const { user, state } of stored) {
+    for (const provider of ["feishu", "work-wechat", "qq", "dingtalk"] as const) {
+      const resource = state.resources[provider];
+      if (!resource || !state.bindings[provider] || !readImSdkSecret(resource)) continue;
+      const key = imRuntimeKey(user, provider);
+      try {
+        await claimImResourceOwner(user, provider, resource.resourceId);
+      } catch (error) {
+        console.error(`[web-ui] ${provider} resource owner conflict:`, String(error));
+        continue;
+      }
+      active.add(key);
+      if (!(await claimImBridge(user, provider, resource.resourceId))) {
+        imSdkRuntimes.get(key)?.stop();
+        imSdkRuntimes.delete(key);
+        continue;
+      }
+      await activateImSdkResource(user, resource).catch((error: unknown) =>
+        console.error(`[web-ui] ${provider} connection failed:`, String(error)),
+      );
+      if (imSdkRuntimes.has(key)) {
+        await markImBridgeReady(user, resource).catch((error: unknown) =>
+          console.error(`[web-ui] ${provider} ready heartbeat failed:`, String(error)),
+        );
+      }
+    }
+  }
+  for (const [key, runtime] of imSdkRuntimes) {
+    if (active.has(key)) continue;
+    runtime.stop();
+    imSdkRuntimes.delete(key);
+  }
+  await Promise.all(
+    (["feishu", "work-wechat", "qq", "dingtalk"] as const).map((provider) => drainImSdkDeliveries(provider, stored)),
+  );
+}
+
+let imBridgeSyncInFlight: Promise<void> | null = null;
+
+async function syncImBridges(): Promise<void> {
+  if (imBridgeSyncInFlight) return imBridgeSyncInFlight;
+  const sync = Promise.all([syncWeixinBridge(), syncImSdkBridges()]).then(() => undefined);
+  imBridgeSyncInFlight = sync;
+  try {
+    await sync;
+  } finally {
+    if (imBridgeSyncInFlight === sync) imBridgeSyncInFlight = null;
   }
 }
 
@@ -993,6 +3392,101 @@ const apiRoutes: readonly WebRoute[] = [
       const body = await readJson<Record<string, unknown>>(req, res);
       if (!body) return;
       return relayCore(res, "PUT", "/v1/ui-state", JSON.stringify({ ...body, principalId: user }));
+    },
+  },
+  {
+    method: "GET",
+    path: "/api/im-bindings",
+    handle: async (c) => {
+      const { res, user } = c;
+      return json(res, 200, publicImBindings(await readImBindings(user)));
+    },
+  },
+  {
+    method: "GET",
+    path: "/api/im-bindings/status",
+    handle: async (c) => {
+      const { res, url, user } = c;
+      const provider = url.searchParams.get("provider") ?? "";
+      if (!isImProviderId(provider)) return json(res, 400, { error: "bad_request", message: "provider required" });
+      try {
+        const binding =
+          provider === "wechat" ? await refreshWeixinBinding(user) : (await readImBindings(user)).bindings[provider];
+        return json(res, 200, { binding: binding ? publicImBinding(binding) : null });
+      } catch (error) {
+        if (error instanceof ImResourceConflictError)
+          return json(res, 409, { error: "resource_conflict", message: error.message });
+        throw error;
+      }
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/im-bindings/start",
+    handle: async (c) => {
+      const { req, res, user } = c;
+      const body = await readJson<{ provider?: unknown }>(req, res, false);
+      if (!body) return;
+      const provider = typeof body.provider === "string" ? body.provider : "";
+      if (!isImProviderId(provider)) return json(res, 400, { error: "bad_request", message: "unknown provider" });
+      try {
+        return json(res, 200, { binding: publicImBinding(await startImBinding(user, provider)) });
+      } catch (error) {
+        if (error instanceof ImResourceConflictError)
+          return json(res, 409, { error: "resource_conflict", message: error.message });
+        throw error;
+      }
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/im-bindings/wechat/verify",
+    handle: async (c) => {
+      const { req, res, user } = c;
+      const body = await readJson<{ code?: unknown }>(req, res, false);
+      if (!body) return;
+      const code = typeof body.code === "string" ? body.code.trim() : "";
+      const binding = await verifyWeixinBinding(user, code);
+      if (!binding) return json(res, 400, { error: "bad_request", message: "valid verification code required" });
+      return json(res, 200, { binding: publicImBinding(binding) });
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/im-bindings/:provider/credentials",
+    handle: async (c) => {
+      const { req, res, user } = c;
+      const provider = c.params.provider ?? "";
+      if (!isImProviderId(provider) || provider === "wechat") {
+        return json(res, 400, { error: "bad_request", message: "unknown provider" });
+      }
+      const body = await readJson<{ credentials?: unknown }>(req, res, false);
+      if (!body) return;
+      const parsed = imCredentials(provider, body.credentials);
+      if (!parsed) return json(res, 400, { error: "bad_request", message: "请完整填写平台凭据" });
+      try {
+        const binding = await saveImSdkResource(user, provider, parsed.credentials, parsed.resourceId);
+        return json(res, 200, { binding: publicImBinding(binding) });
+      } catch (error) {
+        if (error instanceof ImResourceConflictError)
+          return json(res, 409, { error: "resource_conflict", message: error.message });
+        return json(res, 400, {
+          error: "invalid_credentials",
+          message: error instanceof Error ? error.message : "平台凭据验证失败",
+        });
+      }
+    },
+  },
+  {
+    method: "DELETE",
+    path: "/api/im-bindings/:provider",
+    handle: async (c) => {
+      const { res, url, user } = c;
+      const provider = c.params.provider ?? "";
+      if (!isImProviderId(provider)) return json(res, 400, { error: "bad_request", message: "unknown provider" });
+      const removed = await removeImBinding(user, provider, url.searchParams.get("forget") === "1");
+      const state = await readImBindings(user);
+      return json(res, 200, { removed, reusable: Boolean(state.resources[provider]) });
     },
   },
   {
@@ -2227,6 +4721,11 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
           console.warn("[web-ui] WEB_UI_PRINCIPALS unset — any principal id may sign in (dev only)");
         const t = setInterval(() => void drainWebDeliveries(), WEB_DELIVERY_POLL_MS);
         t.unref?.();
+        const weixinTimer = setInterval(() => {
+          void syncImBridges().catch((error: unknown) => console.error("[web-ui] IM bridge failed:", String(error)));
+        }, WEIXIN_BRIDGE_SYNC_MS);
+        weixinTimer.unref?.();
+        void syncImBridges().catch((error: unknown) => console.error("[web-ui] IM bridge failed:", String(error)));
         void runStateFeed();
       });
     })

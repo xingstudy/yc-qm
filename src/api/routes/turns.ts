@@ -117,9 +117,10 @@ async function postRunWithdraw(ctx: ApiCtx): Promise<void> {
 async function listDeliveries(ctx: ApiCtx): Promise<void> {
   const { res, app, url } = ctx;
   const type = url.searchParams.get("type") ?? "";
+  const targetPrefix = url.searchParams.get("targetPrefix") ?? undefined;
   const claimMsRaw = Number(url.searchParams.get("claimMs") ?? 0);
   const claimMs = Number.isFinite(claimMsRaw) && claimMsRaw > 0 ? claimMsRaw : 0;
-  return sendJson(res, 200, { deliveries: await app.pendingDeliveries(type, claimMs) });
+  return sendJson(res, 200, { deliveries: await app.pendingDeliveries(type, claimMs, targetPrefix) });
 }
 
 async function ackDelivery(ctx: ApiCtx): Promise<void> {

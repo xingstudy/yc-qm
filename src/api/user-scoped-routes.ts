@@ -109,6 +109,8 @@ const SYSTEM: Rule[] = [
   pat("POST", "/v1/surface-context"),
   pat("POST", "/v1/surface-file"),
   pat("POST", "/v1/triggers/:id/consent"),
+  pat("PUT", "/v1/ui-state"),
+  pat("DELETE", "/v1/ui-state"),
 ];
 
 const WRITE = new Set(["POST", "PUT", "DELETE", "PATCH"]);

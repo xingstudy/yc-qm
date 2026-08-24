@@ -134,6 +134,7 @@ test("spine ON: a re-delivered @mention (same idempotencyKey) spawns ONE sub-con
   const key = "evt-abc";
   const first = await built.app.turn({ ...mention("!post once", channel, root), idempotencyKey: key });
   const second = await built.app.turn({ ...mention("!post once", channel, root), idempotencyKey: key });
+  assert.equal(typeof first.runId, "string");
   assert.equal(first.runId, second.runId, "the second delivery dedups to the same sub run");
   assert.equal(
     await built.sessions.getByThread(`slack/${channel}`),

@@ -23,6 +23,7 @@ import { contentTypeWithUtf8Charset, pipeToResponse, sendJson } from "../http.ts
 import { resolveBranding } from "../../resolution/branding.ts";
 import { audit, isObj, orgScope } from "./shared.ts";
 import {
+  deleteUiState,
   UI_STATE_KEY_PATTERN,
   UI_STATE_MAX_BYTES,
   UI_STATE_MAX_FUTURE_SKEW_MS,
@@ -508,9 +509,29 @@ async function getUiState(ctx: ApiCtx): Promise<void> {
   return sendJson(res, 200, rec ?? { value: null, updatedAt: 0 });
 }
 
+async function listUiState(ctx: ApiCtx): Promise<void> {
+  const { res, deps, url } = ctx;
+  const key = url.searchParams.get("key") ?? "";
+  if (!UI_STATE_KEY_PATTERN.test(key)) {
+    return sendJson(res, 400, { error: "bad_request", message: "a valid key is required" });
+  }
+  if (!deps.uiState) return sendJson(res, 404, { error: "not_found" });
+  const suffix = `#${key}`;
+  const states = (await deps.uiState.entries())
+    .filter(([id]) => id.endsWith(suffix))
+    .map(([id, record]) => ({ principalId: id.slice(0, -suffix.length), ...record }));
+  return sendJson(res, 200, { states });
+}
+
 async function putUiState(ctx: ApiCtx): Promise<void> {
   const { res, deps, body } = ctx;
-  const b = body as { principalId?: unknown; key?: unknown; value?: unknown; updatedAt?: unknown };
+  const b = body as {
+    principalId?: unknown;
+    key?: unknown;
+    value?: unknown;
+    updatedAt?: unknown;
+    expectedUpdatedAt?: unknown;
+  };
   const principalId = typeof b.principalId === "string" ? b.principalId : "";
   const key = typeof b.key === "string" ? b.key : "";
   if (!principalId || !UI_STATE_KEY_PATTERN.test(key))
@@ -521,8 +542,29 @@ async function putUiState(ctx: ApiCtx): Promise<void> {
   if (!deps.uiState) return sendJson(res, 404, { error: "not_found" });
   const claimed = typeof b.updatedAt === "number" && Number.isFinite(b.updatedAt) ? b.updatedAt : Date.now();
   const updatedAt = Math.min(claimed, Date.now() + UI_STATE_MAX_FUTURE_SKEW_MS);
-  const result = await storeUiState(deps.uiState, uiStateId(principalId, key), { value: b.value, updatedAt });
+  const expectedUpdatedAt =
+    typeof b.expectedUpdatedAt === "number" && Number.isFinite(b.expectedUpdatedAt) ? b.expectedUpdatedAt : undefined;
+  const result = await storeUiState(
+    deps.uiState,
+    uiStateId(principalId, key),
+    { value: b.value, updatedAt },
+    expectedUpdatedAt,
+  );
   return sendJson(res, 200, result);
+}
+
+async function deleteUiStateRecord(ctx: ApiCtx): Promise<void> {
+  const { res, deps, body } = ctx;
+  const b = body as { principalId?: unknown; key?: unknown; expectedUpdatedAt?: unknown };
+  const principalId = typeof b.principalId === "string" ? b.principalId : "";
+  const key = typeof b.key === "string" ? b.key : "";
+  const expectedUpdatedAt =
+    typeof b.expectedUpdatedAt === "number" && Number.isFinite(b.expectedUpdatedAt) ? b.expectedUpdatedAt : -1;
+  if (!principalId || !UI_STATE_KEY_PATTERN.test(key) || expectedUpdatedAt < 0) {
+    return sendJson(res, 400, { error: "bad_request", message: "principalId, key and expectedUpdatedAt required" });
+  }
+  if (!deps.uiState) return sendJson(res, 404, { error: "not_found" });
+  return sendJson(res, 200, await deleteUiState(deps.uiState, uiStateId(principalId, key), expectedUpdatedAt));
 }
 
 async function getSelfMemory(ctx: ApiCtx): Promise<void> {
@@ -1424,7 +1466,9 @@ export const surfaceRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/contexts", auth: "source", handle: listContexts },
   { method: "GET", path: "/v1/scope-resources", auth: "source", handle: listScopeResources },
   { method: "GET", path: "/v1/ui-state", auth: "source", handle: getUiState },
+  { method: "GET", path: "/v1/ui-state/entries", auth: "source", handle: listUiState },
   { method: "PUT", path: "/v1/ui-state", auth: "source", handle: putUiState },
+  { method: "DELETE", path: "/v1/ui-state", auth: "source", handle: deleteUiStateRecord },
   { method: "GET", path: "/v1/memory", auth: "source", handle: getSelfMemory },
   { method: "PUT", path: "/v1/memory", auth: "source", handle: putSelfMemory },
   { method: "GET", path: "/v1/memory/history", auth: "either", handle: getSelfMemoryHistory },

@@ -5,12 +5,14 @@ import { personKey, samePerson } from "../../../directory/person.ts";
 import type { AdminRole } from "../../../admin/admin-grant-store.ts";
 import type { DirectoryMember } from "../../../directory/directory-store.ts";
 import { computeUsers } from "../../../admin/users.ts";
+import { adminImBindingsByPrincipal, parseAdminImBindings } from "../../../admin/im-bindings.ts";
 import { forEachAttributedTurn } from "../../../admin/attribution.ts";
 import { detectOnboardingStatus, setOnboardingStatus, type OnboardingStatus } from "../../../onboarding/onboarding.ts";
 import { sendJson } from "../../http.ts";
 import { audit, authorizeAdmin, orgScope } from "../shared.ts";
 import { type ApiCtx } from "../route.ts";
 import { FILES_PAGE_SIZE } from "./common.ts";
+import { uiStateId } from "../../../surfaces/ui-state.ts";
 
 const USER_CONVERSATIONS_MAX = 100;
 const USER_FILES_MAX = 200;
@@ -21,10 +23,17 @@ export async function listUsers(ctx: ApiCtx): Promise<void> {
   const actor = await authorizeAdmin(ctx, scope);
   if (!actor) return;
   audit(deps, { principalId: actor.id, action: "users.read", resource: "users", scopeLabel: scope });
-  const participants = (await deps.sessions?.listParticipants()) ?? [];
-  const turns = (await deps.sessions?.attributedTurns()) ?? [];
-  const grants = (await deps.admin?.listGrants()) ?? [];
-  const users = computeUsers({ participants, turns, grants });
+  const [participants, turns, grants, uiStateEntries] = await Promise.all([
+    deps.sessions?.listParticipants() ?? Promise.resolve([]),
+    deps.sessions?.attributedTurns() ?? Promise.resolve([]),
+    deps.admin?.listGrants() ?? Promise.resolve([]),
+    deps.uiState?.entries() ?? Promise.resolve([]),
+  ]);
+  const imBindings = adminImBindingsByPrincipal(uiStateEntries);
+  const users = computeUsers({ participants, turns, grants, principalIds: [...imBindings.keys()] }).map((user) => ({
+    ...user,
+    imBindings: imBindings.get(user.principalId) ?? [],
+  }));
   return sendJson(res, 200, { scopeId: scope, users, grants });
 }
 
@@ -224,6 +233,9 @@ export async function getUserDetail(ctx: ApiCtx): Promise<void> {
       }
     : null;
   const onboarding = deps.memory ? detectOnboardingStatus(await deps.memory.read(personal)) : null;
+  const imBindings = deps.uiState
+    ? parseAdminImBindings((await deps.uiState.get(uiStateId(principalId, "im-bindings")))?.value)
+    : [];
 
   return sendJson(res, 200, {
     principalId,
@@ -237,6 +249,7 @@ export async function getUserDetail(ctx: ApiCtx): Promise<void> {
     crons,
     config,
     onboarding,
+    imBindings,
   });
 }
 

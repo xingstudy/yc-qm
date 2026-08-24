@@ -11,8 +11,8 @@ export interface DeliveryStore {
     idempotencyKey: string;
     shadow?: boolean;
   }): Promise<Delivery>;
-  pending(type: string): Promise<Delivery[]>;
-  claimPending(type: string, ttlMs: number): Promise<Delivery[]>;
+  pending(type: string, targetPrefix?: string): Promise<Delivery[]>;
+  claimPending(type: string, ttlMs: number, targetPrefix?: string): Promise<Delivery[]>;
   listShadow(opts?: { limit?: number }): Promise<Delivery[]>;
   ack(id: string, at: number, slackApiMs?: number): Promise<void>;
   ackByKey(idempotencyKey: string, at: number): Promise<void>;
@@ -52,14 +52,24 @@ export function createDeliveryStore(): DeliveryStore {
       if (!delivery.shadow) for (const l of enqueueListeners) l();
       return delivery;
     },
-    async pending(type) {
-      return [...deliveries.values()].filter((d) => d.deliveredAt === null && !d.shadow && d.destination.type === type);
+    async pending(type, targetPrefix) {
+      return [...deliveries.values()].filter(
+        (d) =>
+          d.deliveredAt === null &&
+          !d.shadow &&
+          d.destination.type === type &&
+          (targetPrefix === undefined || d.destination.target.startsWith(targetPrefix)),
+      );
     },
-    async claimPending(type, ttlMs) {
+    async claimPending(type, ttlMs, targetPrefix) {
       const now = Date.now();
       const rows = [...deliveries.values()].filter(
         (d) =>
-          d.deliveredAt === null && !d.shadow && d.destination.type === type && (claimedUntil.get(d.id) ?? 0) <= now,
+          d.deliveredAt === null &&
+          !d.shadow &&
+          d.destination.type === type &&
+          (targetPrefix === undefined || d.destination.target.startsWith(targetPrefix)) &&
+          (claimedUntil.get(d.id) ?? 0) <= now,
       );
       for (const d of rows) claimedUntil.set(d.id, now + ttlMs);
       return rows;

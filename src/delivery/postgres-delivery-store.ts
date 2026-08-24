@@ -78,27 +78,31 @@ export function createPostgresDeliveryStore(connectionString: string): DeliveryS
       if (!existing[0]) throw new Error(`delivery enqueue lost a race for key ${input.idempotencyKey}`);
       return rowToDelivery(existing[0]);
     },
-    async pending(type) {
+    async pending(type, targetPrefix) {
       const rows = await q(
-        "SELECT * FROM deliveries WHERE delivered_at IS NULL AND NOT shadow AND destination->>'type' = $1 ORDER BY created_at",
-        [type],
+        `SELECT * FROM deliveries
+          WHERE delivered_at IS NULL AND NOT shadow AND destination->>'type' = $1
+            AND ($2::text IS NULL OR left(destination->>'target', length($2)) = $2)
+          ORDER BY created_at`,
+        [type, targetPrefix ?? null],
       );
       return rows.map(rowToDelivery);
     },
-    async claimPending(type, ttlMs) {
+    async claimPending(type, ttlMs, targetPrefix) {
       const rows = await q(
         `UPDATE deliveries
-            SET claim_expires_at = (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT + $2
+            SET claim_expires_at = (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT + $3
           WHERE id IN (
             SELECT id FROM deliveries
              WHERE delivered_at IS NULL AND NOT shadow AND destination->>'type' = $1
+               AND ($2::text IS NULL OR left(destination->>'target', length($2)) = $2)
                AND (claim_expires_at IS NULL
                  OR claim_expires_at <= (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT)
              ORDER BY created_at
                FOR UPDATE SKIP LOCKED
           )
           RETURNING *`,
-        [type, ttlMs],
+        [type, targetPrefix ?? null, ttlMs],
       );
       return rows.map(rowToDelivery).sort((a, b) => a.createdAt - b.createdAt);
     },
