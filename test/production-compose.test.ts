@@ -89,6 +89,7 @@ test("the production example is a complete fail-closed template without organiza
   }
   assert.equal(values.get("NODE_ENV"), "production");
   assert.equal(values.get("PORTAL_LOCAL_AUTH_BYPASS"), "0");
+  assert.equal(values.get("PORTAL_DEPLOYMENTS_ENABLED"), "1");
   assert.equal(values.get("AUTH_EMAIL_TRANSPORT"), "smtp");
   assert.equal(values.get("QM_COMPOSE_PROJECT"), "qm");
   assert.equal(values.get("QM_RELEASE_TAG"), "prod-v0.0.0");
@@ -130,6 +131,7 @@ test("the image manifest pins every pull-only first-party image to Docker Hub", 
 
 test("the production Compose stack is image-only and exposes only the edge", () => {
   const compose = readFileSync("compose.production.yaml", "utf8");
+  const developmentCompose = readFileSync("docker-compose.yaml", "utf8");
 
   assert.doesNotMatch(compose, /^\s*build:/m);
   assert.doesNotMatch(compose, /^\s*context:/m);
@@ -157,6 +159,11 @@ test("the production Compose stack is image-only and exposes only the edge", () 
   assert.match(compose, /edge:[\s\S]*?ports:/);
   assert.match(serviceBlock(compose, "edge"), /QM_BIND_ADDRESS:-127\.0\.0\.1[^\n]*QM_HTTP_PORT:-8088/);
   assert.doesNotMatch(serviceBlock(compose, "auth"), /^\s*profiles:/m);
+  assert.match(serviceBlock(compose, "portal"), /PORTAL_DEPLOYMENTS_ENABLED: \$\{PORTAL_DEPLOYMENTS_ENABLED:-1\}/);
+  assert.match(
+    serviceBlock(developmentCompose, "portal"),
+    /PORTAL_DEPLOYMENTS_ENABLED: \$\{PORTAL_DEPLOYMENTS_ENABLED:-1\}/,
+  );
   for (const service of ["web-ui", "admin", "portal", "auth"]) {
     const block = serviceBlock(compose, service);
     assert.doesNotMatch(block, /^\s*ports:/m, `${service} must stay behind the edge`);
@@ -192,10 +199,15 @@ test("literal production volume names survive Compose project overrides", () => 
         ],
         { env: { ...process.env, COMPOSE_PROJECT_NAME: "shell-project" } },
       ).toString(),
-    ) as { name: string; volumes: Record<string, { name: string }> };
+    ) as {
+      name: string;
+      services: Record<string, { environment?: Record<string, string> }>;
+      volumes: Record<string, { name: string }>;
+    };
     assert.equal(rendered.name, "cli-project");
     assert.equal(rendered.volumes["postgres-data"]?.name, "qm_postgres-data");
     assert.equal(rendered.volumes["core-data"]?.name, "qm_core-data");
+    assert.equal(rendered.services.portal?.environment?.PORTAL_DEPLOYMENTS_ENABLED, "1");
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }

@@ -135,6 +135,101 @@ test("reachDeployment: a provider without resolveEndpoint returns the frozen sto
   assert.equal(reach.status === "ok" && reach.endpoint.host, "frozen");
 });
 
+test("reachDeployment: an archive holding the deployment lock makes a concurrent reach not_found", async () => {
+  let markDestroyStarted!: () => void;
+  const destroyStarted = new Promise<void>((resolve) => (markDestroyStarted = resolve));
+  let releaseDestroy!: () => void;
+  const provider: DeployProvider = {
+    profile: { managedScaleToZero: false },
+    apply: async () => ({ host: "initial", port: 8080 }),
+    resolveEndpoint: async () => ({ host: "initial", port: 8080 }),
+    destroy: async () => {
+      markDestroyStarted();
+      await new Promise<void>((resolve) => (releaseDestroy = resolve));
+    },
+  };
+  const { deploy, deployStore } = serviceWithProvider(provider);
+  const d = await deploy.deploy({
+    ownerScopeId: scopeId("org", "default-org"),
+    createdBy: "U1",
+    entrypoint: "x",
+    files: [],
+  });
+  const archiving = deploy.archiveDeployment(d.id);
+  await destroyStarted;
+  const reaching = deploy.reachDeployment(d.id, "U-any");
+  releaseDestroy!();
+  await archiving;
+  const reach = await reaching;
+  const archived = (await deployStore.get(d.id))!;
+  assert.equal(reach.status, "not_found");
+  assert.equal(archived.status, "archived");
+  assert.equal(archived.endpoint, null);
+  assert.equal(archived.lastAccessAt, undefined);
+});
+
+test("reachDeployment: a reach holding the deployment lock finishes before archive leaves it archived", async () => {
+  let markResolveStarted!: () => void;
+  const resolveStarted = new Promise<void>((resolve) => (markResolveStarted = resolve));
+  let releaseResolve!: () => void;
+  const provider: DeployProvider = {
+    profile: { managedScaleToZero: false },
+    apply: async () => ({ host: "initial", port: 8080 }),
+    resolveEndpoint: async () => {
+      markResolveStarted();
+      await new Promise<void>((resolve) => (releaseResolve = resolve));
+      return { host: "initial", port: 8080 };
+    },
+    destroy: async () => {},
+  };
+  const { deploy, deployStore } = serviceWithProvider(provider);
+  const d = await deploy.deploy({
+    ownerScopeId: scopeId("org", "default-org"),
+    createdBy: "U1",
+    entrypoint: "x",
+    files: [],
+  });
+  const reaching = deploy.reachDeployment(d.id, "U-any");
+  await resolveStarted;
+  const archiving = deploy.archiveDeployment(d.id);
+  releaseResolve!();
+  assert.equal((await reaching).status, "ok");
+  await archiving;
+  const archived = (await deployStore.get(d.id))!;
+  assert.equal(archived.status, "archived");
+  assert.equal(archived.endpoint, null);
+});
+
+test("reachDeployment: an equal endpoint still resolves under the deployment lock", async () => {
+  let markResolveStarted!: () => void;
+  const resolveStarted = new Promise<void>((resolve) => (markResolveStarted = resolve));
+  let releaseResolve!: () => void;
+  const provider: DeployProvider = {
+    profile: { managedScaleToZero: false },
+    apply: async () => ({ host: "same", port: 8080 }),
+    resolveEndpoint: async () => {
+      markResolveStarted();
+      await new Promise<void>((resolve) => (releaseResolve = resolve));
+      return { host: "same", port: 8080 };
+    },
+    destroy: async () => {},
+  };
+  const { deploy, deployStore } = serviceWithProvider(provider);
+  const d = await deploy.deploy({
+    ownerScopeId: scopeId("org", "default-org"),
+    createdBy: "U1",
+    entrypoint: "x",
+    files: [],
+  });
+  const reaching = deploy.reachDeployment(d.id, "U-any");
+  await resolveStarted;
+  const archiving = deploy.archiveDeployment(d.id);
+  releaseResolve!();
+  assert.equal((await reaching).status, "ok");
+  await archiving;
+  assert.equal((await deployStore.get(d.id))!.status, "archived");
+});
+
 function appServingUpstream(upstreamPort: number) {
   const deployStore = createDeployStore();
   const deploy = createDeployService({
