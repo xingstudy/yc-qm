@@ -103,7 +103,7 @@ test("each IM platform uses its official authorization and message client", () =
   assert.match(server, /"\/app\/registration\/poll"/);
   assert.match(server, /new QQBot\(/);
   assert.match(server, /new WeComWSClient\(/);
-  assert.match(server, /new DWClient\(/);
+  assert.match(server, /new DingTalkStreamClient\(/);
   assert.match(server, /path: "\/api\/im-bindings\/:provider\/credentials"/);
   assert.match(server, /path: "\/api\/im-bindings\/:provider\/locate"/);
   assert.match(server, /async function locateImBot\(user: string, provider: ImProviderId\)/);

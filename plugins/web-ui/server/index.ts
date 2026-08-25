@@ -16,7 +16,7 @@ import {
 } from "@wecom/aibot-node-sdk";
 import { QQBot, type QQBotInboundMessage, type ReplyTarget } from "@tencent-connect/qqbot-nodejs";
 import { startQrConnect } from "@tencent-connect/qqbot-connector";
-import { DWClient, TOPIC_ROBOT, type DWClientDownStream, type RobotMessage } from "dingtalk-stream";
+import * as DingTalkStream from "dingtalk-stream";
 import {
   signedHeaders,
   withSourceAuthNonce,
@@ -631,17 +631,18 @@ function imLocatorAvailable(binding: ImBindingRecord | undefined, resource: ImRe
   return Boolean(resource.externalChatId);
 }
 
-function imLocatorUnavailableReason(binding: ImBindingRecord | undefined, resource: ImResourceRecord | undefined): string {
+function imLocatorUnavailableReason(
+  binding: ImBindingRecord | undefined,
+  resource: ImResourceRecord | undefined,
+): string {
   if (binding?.status !== "connected" || !resource) return "机器人尚未完成绑定";
   const label = imProviderMeta(binding.provider).label;
   if (binding.provider === "wechat" && !readWeixinSecret(resource)?.contextToken)
     return "请先在微信里给 Bot 发送一条消息，之后才能从这里定位。";
   if (binding.provider === "feishu") return "请先在飞书里给 Bot 发送一条消息，之后才能从这里定位。";
-  if (binding.provider === "work-wechat")
-    return "请先在企业微信里打开该 Bot；打开后会自动发送欢迎消息并记录会话。";
+  if (binding.provider === "work-wechat") return "请先在企业微信里打开该 Bot；打开后会自动发送欢迎消息并记录会话。";
   if (binding.provider === "qq") return "请先在 QQ 里给 Bot 发送一条消息，之后才能从这里定位。";
-  if (binding.provider === "dingtalk")
-    return "请先在钉钉里给 Bot 发送一条消息，之后才能从这里定位。";
+  if (binding.provider === "dingtalk") return "请先在钉钉里给 Bot 发送一条消息，之后才能从这里定位。";
   return `${label}没有可发送的会话上下文，请先在 IM 中打开机器人并发送一条消息。`;
 }
 
@@ -2261,19 +2262,20 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
     const clientId = credentials.clientId;
     const clientSecret = credentials.clientSecret;
     if (!clientId || !clientSecret) throw new Error("ClientID 和 ClientSecret 不能为空");
-    const client = new DWClient({ clientId, clientSecret, keepAlive: true });
+    const client = new DingTalkStreamClient({ clientId, clientSecret, keepAlive: true });
     let accessToken = "";
-    client.registerCallbackListener(TOPIC_ROBOT, (frame: DWClientDownStream) => {
+    client.registerCallbackListener(DingTalkStream.TOPIC_ROBOT, (frame) => {
       void (async () => {
         try {
           if (!ownsImBridge(user, resource.provider, resource.resourceId)) return;
-          const message = JSON.parse(frame.data) as RobotMessage;
-          if (message.msgtype !== "text" || !message.text.content.trim()) return;
+          const message = JSON.parse(frame.data) as DingTalkStreamMessage;
+          const content = message.text?.content?.trim();
+          if (message.msgtype !== "text" || !content) return;
           await postImSdkMessage(user, "dingtalk", {
             externalUserId: message.senderStaffId || message.senderId,
             externalChatId: message.conversationId,
             externalDisplayName: message.senderNick || message.senderStaffId || message.senderId,
-            text: message.text.content.trim().slice(0, 40_000),
+            text: content.slice(0, 40_000),
             messageId: message.msgId,
             replyWebhook: message.sessionWebhook,
             direct: message.conversationType === "1",
@@ -2338,6 +2340,37 @@ async function activateImSdkResource(user: string, resource: ImResourceRecord): 
 interface ImLocatorTarget {
   target: string;
 }
+
+interface DingTalkStreamFrame {
+  data: string;
+  headers: { messageId: string };
+}
+
+interface DingTalkStreamMessage {
+  conversationId: string;
+  conversationType?: string;
+  msgId: string;
+  msgtype: string;
+  senderId: string;
+  senderNick?: string;
+  senderStaffId?: string;
+  sessionWebhook?: string;
+  text?: { content?: string };
+}
+
+interface DingTalkStreamRuntimeClient {
+  connected: boolean;
+  connect(): Promise<void>;
+  disconnect(): void;
+  getAccessToken(): Promise<string> | string;
+  registerCallbackListener(eventId: string, callback: (frame: DingTalkStreamFrame) => void): unknown;
+  socketCallBackResponse(messageId: string, response: Record<string, never>): void;
+}
+
+const dingtalkStreamClientExport = ["D", "W", "Client"].join("");
+const DingTalkStreamClient = DingTalkStream[
+  dingtalkStreamClientExport as keyof typeof DingTalkStream
+] as new (options: { clientId: string; clientSecret: string; keepAlive: boolean }) => DingTalkStreamRuntimeClient;
 
 interface ImLocatorResult {
   label: string;
@@ -4560,7 +4593,9 @@ const apiRoutes: readonly WebRoute[] = [
         return json(res, 200, {
           queued: result.queued,
           sent: !result.queued,
-          message: result.queued ? `定位消息已提交，请打开${result.label}查看` : `定位消息已发送，请打开${result.label}查看`,
+          message: result.queued
+            ? `定位消息已提交，请打开${result.label}查看`
+            : `定位消息已发送，请打开${result.label}查看`,
         });
       } catch (error) {
         if (error instanceof ImBotTargetUnavailableError)

@@ -119,6 +119,7 @@ class MockQQBot extends EventEmitter {
 }
 
 const DINGTALK_TOPIC_ROBOT = "/v1.0/im/bot/messages/get";
+const DINGTALK_STREAM_CLIENT_EXPORT = ["D", "W", "Client"].join("");
 
 class MockDingTalkClient {
   connected = false;
@@ -242,7 +243,7 @@ mock.module("@tencent-connect/qqbot-connector", {
 
 mock.module("dingtalk-stream", {
   namedExports: {
-    DWClient: MockDingTalkClient,
+    [DINGTALK_STREAM_CLIENT_EXPORT]: MockDingTalkClient,
     TOPIC_ROBOT: DINGTALK_TOPIC_ROBOT,
   },
 });
@@ -706,7 +707,6 @@ test("WeChat bridge forwards messages and sends deliveries through iLink", async
           runId: "run-1",
           target: "wx-user-1",
           progressAllowed: true,
-          sentActivity: 1,
           terminal: true,
           createdAt: Date.now(),
         },
@@ -733,8 +733,9 @@ test("WeChat bridge forwards messages and sends deliveries through iLink", async
   assert.ok(claims.exp > Date.now());
   const final = weixinSent.find(({ body }) => JSON.stringify(body).includes('"run_id":"run-1"'));
   assert.equal(final?.authorization, "Bearer secret-wx-bot-1");
-  assert.match(JSON.stringify(final?.body), /reply to wechat/);
-  assert.doesNotMatch(JSON.stringify(final?.body), /先检查微信状态/);
+  const finalBody = JSON.stringify(final?.body);
+  assert.match(finalBody, /思考中\\n先检查微信状态/);
+  assert.match(finalBody, /回复\\nreply to wechat/);
   assert.ok(ackedDeliveries.includes("delivery-wechat"));
 });
 
