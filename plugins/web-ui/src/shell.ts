@@ -1,4 +1,4 @@
-import { nothing, render, type TemplateResult } from "lit";
+import { nothing, render, svg, type TemplateResult } from "lit";
 import {
   Box,
   Brain,
@@ -6,6 +6,7 @@ import {
   Clock,
   Files,
   Folder,
+  ExternalLink,
   KeyRound,
   LogOut,
   MessageSquare,
@@ -15,6 +16,8 @@ import {
   Rocket,
   Search,
   ShieldCheck,
+  Trash2,
+  X,
   type IconNode,
 } from "lucide";
 import "@mariozechner/mini-lit/dist/ThemeToggle.js";
@@ -71,6 +74,8 @@ import { contextsState, ensureContexts, renderContexts, resetContextsState, reso
 import { appState, can, isView, type AuthMode, type Me, type View } from "./shell-state";
 import { trapDialogFocus } from "./dialog-focus";
 import { currentLocale, html, setLocale, t } from "./i18n.ts";
+import { qrDataUrl } from "./qr";
+import WecomAIBotSDK from "@wecom/wecom-aibot-sdk";
 export { appState, can, type Me, type View } from "./shell-state";
 
 let authMode: AuthMode = "portal";
@@ -183,6 +188,914 @@ const ICON = {
   memory: Brain,
   skills: Box,
 };
+
+type ImProviderId = "wechat" | "feishu" | "work-wechat" | "qq" | "dingtalk";
+type ImSetupMode = "wechat-qr" | "provision-qr" | "manual-credentials";
+type ImAuthorizationState =
+  "waiting" | "scanned" | "verification-required" | "blocked" | "expired" | "unrecoverable" | "error";
+const wecomLogo = new URL("./wecom-logo.png", import.meta.url).href;
+
+const IM_PROVIDER_OPTIONS: Array<{
+  id: ImProviderId;
+  label: string;
+  className: string;
+  viewBox: string;
+  path: string | string[];
+  image?: string;
+  colors?: string[];
+}> = [
+  {
+    id: "wechat",
+    label: "WeChat",
+    className: "wechat",
+    viewBox: "0 0 24 24",
+    path: "M8.691 2.188C3.891 2.188 0 5.476 0 9.53c0 2.212 1.17 4.203 3.002 5.55a.59.59 0 0 1 .213.665l-.39 1.48c-.019.07-.048.141-.048.213 0 .163.13.295.29.295a.326.326 0 0 0 .167-.054l1.903-1.114a.864.864 0 0 1 .717-.098 10.16 10.16 0 0 0 2.837.403c.276 0 .543-.027.811-.05-.857-2.578.157-4.972 1.932-6.446 1.703-1.415 3.882-1.98 5.853-1.838-.576-3.583-4.196-6.348-8.596-6.348zM5.785 5.991c.642 0 1.162.529 1.162 1.18a1.17 1.17 0 0 1-1.162 1.178A1.17 1.17 0 0 1 4.623 7.17c0-.651.52-1.18 1.162-1.18zm5.813 0c.642 0 1.162.529 1.162 1.18a1.17 1.17 0 0 1-1.162 1.178 1.17 1.17 0 0 1-1.162-1.178c0-.651.52-1.18 1.162-1.18zm5.34 2.867c-1.797-.052-3.746.512-5.28 1.786-1.72 1.428-2.687 3.72-1.78 6.22.942 2.453 3.666 4.229 6.884 4.229.826 0 1.622-.12 2.361-.336a.722.722 0 0 1 .598.082l1.584.926a.272.272 0 0 0 .14.047c.134 0 .24-.111.24-.247 0-.06-.023-.12-.038-.177l-.327-1.233a.582.582 0 0 1-.023-.156.49.49 0 0 1 .201-.398C23.024 18.48 24 16.82 24 14.98c0-3.21-2.931-5.837-6.656-6.088V8.89c-.135-.01-.27-.027-.407-.03zm-2.53 3.274c.535 0 .969.44.969.982a.976.976 0 0 1-.969.983.976.976 0 0 1-.969-.983c0-.542.434-.982.97-.982zm4.844 0c.535 0 .969.44.969.982a.976.976 0 0 1-.969.983.976.976 0 0 1-.969-.983c0-.542.434-.982.969-.982z",
+  },
+  {
+    id: "feishu",
+    label: "Feishu",
+    className: "feishu",
+    viewBox: "0 0 100 100",
+    path: [
+      "M20 10h36c7 0 11 5 14 11l5 11c-7 8-14 14-22 19L20 10Z",
+      "M53 50c14-11 24-19 32-20 6-1 10 1 14 5L82 57c-7 9-15 13-22 12-7-1-13-6-18-12l11-7Z",
+      "M5 30l46 31c10 7 20 7 31-3-8 16-22 27-39 27-16 0-30-5-38-13V30Z",
+    ],
+    colors: ["#00d6b9", "#133c9a", "#3370ff"],
+  },
+  {
+    id: "work-wechat",
+    label: "WeCom",
+    className: "work-wechat",
+    image: wecomLogo,
+    viewBox: "0 0 24 24",
+    path: "M12 1c6.075 0 11 4.925 11 11s-4.925 11-11 11S1 18.075 1 12 5.925 1 12 1Zm3.52 15.49a.35.35 0 0 0-.24.1c-.14.13-.16.34.02.53l.07.07c.44.44.74.99.85 1.57l.04.23c.05.19.15.37.29.5.21.21.51.34.82.34.3 0 .59-.12.8-.33.44-.44.44-1.16 0-1.61-.15-.15-.34-.26-.53-.3l-.15-.03a3.1 3.1 0 0 1-1.62-.86l-.1-.11a.34.34 0 0 0-.25-.1ZM11 4.75c-2.117 0-4.264.77-5.75 2.31C4.111 8.246 3.5 9.72 3.5 11.24c0 1.06.3 2.12.88 3.06.47.695.993 1.371 1.66 1.89l-.384 1.624a.6.6 0 0 0 .856.673L8.64 17.41c.53.166 1.08.234 1.63.3a8.3 8.3 0 0 0 1.7-.03l.38-.05q.283-.046.564-.112a2.33 2.33 0 0 1-.92-1.605l-.254.037c-.62.067-1.232.03-1.85-.04-.43-.057-.838-.185-1.25-.31l-1.02.5.23-.67-.74-.6c-.513-.401-.917-.934-1.28-1.47-.4-.65-.61-1.38-.61-2.11 0-1.08.456-2.119 1.26-2.97 1.158-1.198 2.854-1.78 4.5-1.78 1.54 0 3.108.513 4.24 1.58.365.365.707.75.95 1.21.177.354.338.722.424 1.107a2.34 2.34 0 0 1 1.811.123c-.075-.716-.33-1.4-.665-2.04-.329-.62-.776-1.155-1.27-1.65-1.468-1.38-3.471-2.08-5.47-2.08Zm9.37 9.77a1.136 1.136 0 0 0-1.1.86l-.03.15a3.1 3.1 0 0 1-.86 1.63l-.11.1a.35.35 0 0 0 .26.59c.07 0 .15-.02.26-.13l.07-.07c.44-.44.99-.74 1.57-.85l.23-.04c.2-.06.37-.16.5-.3.44-.44.44-1.17 0-1.61-.21-.21-.5-.33-.8-.33Zm-4.21-1.07c-.08 0-.16.03-.27.14l-.07.07c-.44.44-.99.74-1.57.85l-.23.04c-.2.06-.37.16-.5.3-.44.44-.44 1.17 0 1.61.21.21.51.34.82.34.3 0 .59-.12.8-.33.15-.16.25-.34.29-.53l.03-.16c.11-.61.41-1.18.86-1.63l.1-.09a.35.35 0 0 0-.26-.61Zm1.18-1.97c-.3 0-.59.12-.8.33-.44.44-.44 1.16 0 1.61.15.15.34.26.53.3l.15.03c.61.12 1.17.41 1.62.86l.1.11c.08.08.16.1.25.1.1 0 .16-.04.23-.11.12-.13.14-.32-.02-.52l-.08-.08c-.44-.44-.74-.99-.85-1.57l-.04-.23c-.05-.19-.15-.37-.29-.5-.21-.21-.5-.33-.8-.33Z",
+  },
+  {
+    id: "qq",
+    label: "QQ",
+    className: "qq",
+    viewBox: "0 0 24 25",
+    path: "M6.795 3.035C8.052 1.24 10.013.042 12.75.042s4.697 1.197 5.954 2.994c1.24 1.773 1.775 4.097 1.775 6.372 0 .137-.004.334-.007.497l-.004.2.99 2.479c.284.74.568 1.519.777 2.193.498 1.6.677 2.76.691 3.547.008.39-.025.71-.09.951a1.2 1.2 0 0 1-.153.355.68.68 0 0 1-.479.311c-.269.033-.49-.096-.603-.171a2.5 2.5 0 0 1-.384-.332 8.5 8.5 0 0 1-.752-.922 7.1 7.1 0 0 1-1.605 2.86c.386.159.771.352 1.074.577.288.215.47.474.533.76a.97.97 0 0 1-.102.7.8.8 0 0 1-.341.304c-.104.052-.219.09-.328.119a5 5 0 0 1-.786.127 23 23 0 0 1-2.136.08c-1.528-.003-3.206-.092-4.02-.179-.815.087-2.492.176-4.02.178-.784.002-1.544-.02-2.137-.079a5 5 0 0 1-.786-.127 1.7 1.7 0 0 1-.328-.12.8.8 0 0 1-.34-.302.97.97 0 0 1-.104-.702c.063-.287.246-.546.534-.76a5.2 5.2 0 0 1 1.073-.575 7.1 7.1 0 0 1-1.606-2.862l-.036.05a8.5 8.5 0 0 1-.715.873c-.118.121-.25.241-.385.332-.112.075-.334.204-.602.171H3.3a.68.68 0 0 1-.477-.31 1.2 1.2 0 0 1-.155-.355q-.1-.366-.092-.952c.014-.787.192-1.948.688-3.547.21-.674.493-1.453.777-2.194l.003-.007.988-2.47-.011-.698c0-2.275.535-4.6 1.775-6.373Z",
+  },
+  {
+    id: "dingtalk",
+    label: "DingTalk",
+    className: "dingtalk",
+    viewBox: "0 0 1024 1024",
+    path: "M573.7 252.5C422.5 197.4 201.3 96.7 201.3 96.7c-15.7-4.1-17.9 11.1-17.9 11.1-5 61.1 33.6 160.5 53.6 182.8 19.9 22.3 319.1 113.7 319.1 113.7S326 357.9 270.5 341.9c-55.6-16-37.9 17.8-37.9 17.8 11.4 61.7 64.9 131.8 107.2 138.4 42.2 6.6 220.1 4 220.1 4s-35.5 4.1-93.2 11.9c-42.7 5.8-97 12.5-111.1 17.8-33.1 12.5 24 62.6 24 62.6 84.7 76.8 129.7 50.5 129.7 50.5 33.3-10.7 61.4-18.5 85.2-24.2L565 743.1h84.6L603 928l205.3-271.9H700.8l22.3-38.7.4.8s76.3-122.1 105.5-184.4l.6-1h-.1c5-10.8 8.6-19.7 10-25.8 17-71.3-114.5-99.4-265.8-154.5Z",
+  },
+];
+const VISIBLE_IM_PROVIDER_OPTIONS = IM_PROVIDER_OPTIONS.filter((option) => option.id === "work-wechat");
+
+interface ImBindingRecord {
+  provider: ImProviderId;
+  status: "pending" | "connected";
+  qrPayload?: string;
+  botName?: string;
+  channelKind?: string;
+  setupMode?: ImSetupMode;
+  quickSetupAvailable?: boolean;
+  setupTitle?: string;
+  setupSteps?: string[];
+  credentialFields?: string[];
+  manualSetupSteps?: string[];
+  primaryActionLabel?: string;
+  primaryActionUrl?: string;
+  manualSetupTitle?: string;
+  docsUrl?: string;
+  hint?: string;
+  externalUserId?: string;
+  externalChatId?: string;
+  externalDisplayName?: string;
+  resourceId?: string;
+  locatorAvailable?: boolean;
+  locatorUnavailableReason?: string;
+  authorizationState?: ImAuthorizationState;
+  authorizationMessage?: string;
+  verificationRequired?: boolean;
+  createdAt?: number;
+  connectedAt?: number;
+  updatedAt: number;
+}
+
+let imPanelOpen = false;
+let imProviderMenuOpen = false;
+let imBindingsLoaded = false;
+let imBindingsLoading = false;
+let imBindingsError = "";
+let imLocateNotice = "";
+let imBindings: Partial<Record<ImProviderId, ImBindingRecord>> = {};
+let reusableImProviders = new Set<ImProviderId>();
+let activeImProvider: ImProviderId | null = null;
+let imPollTimer: ReturnType<typeof setInterval> | null = null;
+let imPollInFlight = false;
+let imVerificationCode = "";
+const imCredentialValues: Partial<Record<ImProviderId, Record<string, string>>> = {};
+
+const IM_CREDENTIAL_KEYS: Record<Exclude<ImProviderId, "wechat">, string[]> = {
+  feishu: ["appId", "appSecret"],
+  "work-wechat": ["botId", "secret"],
+  qq: ["appId", "appSecret"],
+  dingtalk: ["clientId", "clientSecret"],
+};
+
+function isImProviderId(value: string): value is ImProviderId {
+  return IM_PROVIDER_OPTIONS.some((option) => option.id === value);
+}
+
+function imProvider(id: ImProviderId): (typeof IM_PROVIDER_OPTIONS)[number] {
+  return IM_PROVIDER_OPTIONS.find((option) => option.id === id)!;
+}
+
+function isImSetupMode(value: string): value is ImSetupMode {
+  return value === "wechat-qr" || value === "provision-qr" || value === "manual-credentials";
+}
+
+function imStringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  return items.length ? items.slice(0, 8) : undefined;
+}
+
+function normalizeImBindings(raw: unknown): Partial<Record<ImProviderId, ImBindingRecord>> {
+  const out: Partial<Record<ImProviderId, ImBindingRecord>> = {};
+  const bindings =
+    typeof raw === "object" && raw !== null && typeof (raw as { bindings?: unknown }).bindings === "object"
+      ? ((raw as { bindings: Record<string, unknown> }).bindings ?? {})
+      : {};
+  for (const [id, value] of Object.entries(bindings)) {
+    if (!isImProviderId(id) || typeof value !== "object" || value === null) continue;
+    const record = value as Partial<ImBindingRecord>;
+    if (record.status !== "pending" && record.status !== "connected") continue;
+    out[id] = {
+      provider: id,
+      status: record.status,
+      ...(typeof record.qrPayload === "string" ? { qrPayload: record.qrPayload } : {}),
+      ...(typeof record.botName === "string" ? { botName: record.botName } : {}),
+      ...(typeof record.channelKind === "string" ? { channelKind: record.channelKind } : {}),
+      ...(typeof record.setupMode === "string" && isImSetupMode(record.setupMode)
+        ? { setupMode: record.setupMode }
+        : {}),
+      ...(typeof record.quickSetupAvailable === "boolean" ? { quickSetupAvailable: record.quickSetupAvailable } : {}),
+      ...(typeof record.setupTitle === "string" ? { setupTitle: record.setupTitle } : {}),
+      ...(imStringList(record.setupSteps) ? { setupSteps: imStringList(record.setupSteps) } : {}),
+      ...(imStringList(record.credentialFields) ? { credentialFields: imStringList(record.credentialFields) } : {}),
+      ...(imStringList(record.manualSetupSteps) ? { manualSetupSteps: imStringList(record.manualSetupSteps) } : {}),
+      ...(typeof record.primaryActionLabel === "string" ? { primaryActionLabel: record.primaryActionLabel } : {}),
+      ...(typeof record.primaryActionUrl === "string" ? { primaryActionUrl: record.primaryActionUrl } : {}),
+      ...(typeof record.manualSetupTitle === "string" ? { manualSetupTitle: record.manualSetupTitle } : {}),
+      ...(typeof record.docsUrl === "string" ? { docsUrl: record.docsUrl } : {}),
+      ...(typeof record.hint === "string" ? { hint: record.hint } : {}),
+      ...(typeof record.externalUserId === "string" ? { externalUserId: record.externalUserId } : {}),
+      ...(typeof record.externalChatId === "string" ? { externalChatId: record.externalChatId } : {}),
+      ...(typeof record.externalDisplayName === "string" ? { externalDisplayName: record.externalDisplayName } : {}),
+      ...(typeof record.resourceId === "string" ? { resourceId: record.resourceId } : {}),
+      ...(typeof record.locatorAvailable === "boolean" ? { locatorAvailable: record.locatorAvailable } : {}),
+      ...(typeof record.locatorUnavailableReason === "string"
+        ? { locatorUnavailableReason: record.locatorUnavailableReason }
+        : {}),
+      ...(record.authorizationState === "waiting" ||
+      record.authorizationState === "scanned" ||
+      record.authorizationState === "verification-required" ||
+      record.authorizationState === "blocked" ||
+      record.authorizationState === "expired" ||
+      record.authorizationState === "unrecoverable" ||
+      record.authorizationState === "error"
+        ? { authorizationState: record.authorizationState }
+        : {}),
+      ...(typeof record.authorizationMessage === "string" ? { authorizationMessage: record.authorizationMessage } : {}),
+      ...(typeof record.verificationRequired === "boolean"
+        ? { verificationRequired: record.verificationRequired }
+        : {}),
+      ...(typeof record.createdAt === "number" ? { createdAt: record.createdAt } : {}),
+      ...(typeof record.connectedAt === "number" ? { connectedAt: record.connectedAt } : {}),
+      updatedAt: typeof record.updatedAt === "number" ? record.updatedAt : 0,
+    };
+  }
+  return out;
+}
+
+function imChannelIds(status: ImBindingRecord["status"]): ImProviderId[] {
+  return VISIBLE_IM_PROVIDER_OPTIONS.map((option) => option.id).filter((id) => imBindings[id]?.status === status);
+}
+
+async function loadImBindings(): Promise<void> {
+  if (imBindingsLoading) return;
+  imBindingsLoading = true;
+  imBindingsError = "";
+  renderImPanel();
+  try {
+    const raw = await api<{ bindings?: unknown; reusableProviders?: unknown }>("/api/im-bindings");
+    imBindings = normalizeImBindings(raw);
+    reusableImProviders = new Set(
+      Array.isArray(raw.reusableProviders)
+        ? raw.reusableProviders.filter((provider): provider is ImProviderId =>
+            typeof provider === "string" ? isImProviderId(provider) : false,
+          )
+        : [],
+    );
+    imBindingsLoaded = true;
+  } catch (error) {
+    imBindingsError = errMessage(error, t("Could not load chat channel bindings."));
+  }
+  imBindingsLoading = false;
+  renderImPanel();
+}
+
+function stopImPolling(): void {
+  if (imPollTimer) clearInterval(imPollTimer);
+  imPollTimer = null;
+}
+
+async function refreshImBinding(provider: ImProviderId): Promise<void> {
+  if (imPollInFlight) return;
+  imPollInFlight = true;
+  try {
+    const r = await api<{ binding?: ImBindingRecord | null }>(
+      `/api/im-bindings/status?provider=${encodeURIComponent(provider)}`,
+    );
+    if (r.binding) {
+      imBindings[provider] = r.binding;
+      if (r.binding.status === "connected") stopImPolling();
+    } else {
+      delete imBindings[provider];
+      if (activeImProvider === provider) activeImProvider = null;
+      stopImPolling();
+    }
+    renderImPanel();
+  } catch {
+    void 0;
+  } finally {
+    imPollInFlight = false;
+  }
+}
+
+function startImPolling(provider: ImProviderId): void {
+  stopImPolling();
+  imPollTimer = setInterval(() => void refreshImBinding(provider), 2000);
+}
+
+async function startImBinding(provider: ImProviderId): Promise<void> {
+  imProviderMenuOpen = false;
+  activeImProvider = provider;
+  imBindingsLoading = true;
+  imBindingsError = "";
+  renderImPanel();
+  try {
+    const r = await api<{ binding: ImBindingRecord }>("/api/im-bindings/start", {
+      method: "POST",
+      body: JSON.stringify({ provider }),
+    });
+    imBindings[provider] = r.binding;
+    if (r.binding.status === "pending") startImPolling(provider);
+    else stopImPolling();
+  } catch (error) {
+    imBindingsError = errMessage(error, t("Could not start chat channel setup."));
+  }
+  imBindingsLoading = false;
+  renderImPanel();
+}
+
+async function startWeComBinding(): Promise<void> {
+  const provider = "work-wechat";
+  if (reusableImProviders.has(provider) || imBindings[provider]?.resourceId) {
+    await startImBinding(provider);
+    return;
+  }
+  imProviderMenuOpen = false;
+  activeImProvider = provider;
+  imBindingsLoading = true;
+  imBindingsError = "";
+  renderImPanel();
+  const authWindow = window.open(
+    "about:blank",
+    "WecomAIBotAuthWindow",
+    "width=950,height=640,resizable=false,scrollbars=false,status=no,toolbar=no,menubar=no,location=no",
+  );
+  if (!authWindow) {
+    imBindingsLoading = false;
+    imBindingsError = t("WeCom authorization window was blocked.");
+    renderImPanel();
+    return;
+  }
+  const startRequest = api<{ binding: ImBindingRecord }>("/api/im-bindings/start", {
+    method: "POST",
+    body: JSON.stringify({ provider }),
+  });
+  try {
+    const started = await startRequest;
+    imBindings[provider] = started.binding;
+    renderImPanel();
+    if (started.binding.resourceId || started.binding.status === "connected") {
+      authWindow.close();
+      reusableImProviders.add(provider);
+      if (started.binding.status === "pending") startImPolling(provider);
+      else stopImPolling();
+    } else {
+      const authorization = WecomAIBotSDK.openBotInfoAuthWindow({ source: "qm" }).then(
+        (bot) => ({ bot }),
+        (error: unknown) => ({ error }),
+      );
+      const outcome = await authorization;
+      if ("error" in outcome) throw outcome.error;
+      const result = await api<{ binding: ImBindingRecord }>(
+        `/api/im-bindings/${encodeURIComponent(provider)}/credentials`,
+        {
+          method: "POST",
+          body: JSON.stringify({ credentials: { botId: outcome.bot.botid, secret: outcome.bot.secret } }),
+        },
+      );
+      imBindings[provider] = result.binding;
+      reusableImProviders.add(provider);
+      if (result.binding.status === "pending") startImPolling(provider);
+      else stopImPolling();
+    }
+  } catch (error) {
+    authWindow.close();
+    WecomAIBotSDK.closeWindow();
+    imBindingsError = errMessage(error, t("Could not authorize WeCom bot."));
+  }
+  imBindingsLoading = false;
+  renderImPanel();
+}
+
+async function deleteImBinding(provider: ImProviderId): Promise<void> {
+  if (!window.confirm(t("Unbind this chat channel? The existing platform Bot will be kept for reuse."))) return;
+  imBindingsLoading = true;
+  imBindingsError = "";
+  renderImPanel();
+  try {
+    const result = await api<{ reusable?: boolean }>(`/api/im-bindings/${encodeURIComponent(provider)}`, {
+      method: "DELETE",
+    });
+    delete imBindings[provider];
+    if (result.reusable) reusableImProviders.add(provider);
+    activeImProvider = null;
+    stopImPolling();
+  } catch (error) {
+    imBindingsError = errMessage(error, t("Could not unbind chat channel."));
+  }
+  imBindingsLoading = false;
+  renderImPanel();
+}
+
+async function forgetAndStartImBinding(provider: ImProviderId): Promise<void> {
+  if (!window.confirm(t("Discard the saved Bot credentials and create a new Bot?"))) return;
+  imBindingsLoading = true;
+  imBindingsError = "";
+  renderImPanel();
+  try {
+    await api<{ reusable?: boolean }>(`/api/im-bindings/${encodeURIComponent(provider)}?forget=1`, {
+      method: "DELETE",
+    });
+    delete imBindings[provider];
+    reusableImProviders.delete(provider);
+    stopImPolling();
+  } catch (error) {
+    imBindingsError = errMessage(error, t("Could not discard the saved Bot."));
+    imBindingsLoading = false;
+    renderImPanel();
+    return;
+  }
+  imBindingsLoading = false;
+  renderImPanel();
+  if (provider === "work-wechat") await startWeComBinding();
+  else await startImBinding(provider);
+}
+
+async function locateImBot(provider: ImProviderId): Promise<void> {
+  imBindingsLoading = true;
+  imBindingsError = "";
+  imLocateNotice = "";
+  renderImPanel();
+  try {
+    const result = await api<{ queued?: boolean; message?: string }>(
+      `/api/im-bindings/${encodeURIComponent(provider)}/locate`,
+      { method: "POST" },
+    );
+    imLocateNotice = result.message ?? t("Locator message queued. Open the IM app to find your Bot.");
+  } catch (error) {
+    imBindingsError = errMessage(error, t("Could not send the Bot locator message."));
+  }
+  imBindingsLoading = false;
+  renderImPanel();
+}
+
+async function verifyWeixinCode(): Promise<void> {
+  const code = imVerificationCode.trim();
+  if (!/^\d{1,8}$/.test(code)) return;
+  imBindingsLoading = true;
+  renderImPanel();
+  try {
+    const result = await api<{ binding: ImBindingRecord }>("/api/im-bindings/wechat/verify", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    });
+    imBindings.wechat = result.binding;
+    imVerificationCode = "";
+    startImPolling("wechat");
+  } catch (error) {
+    imBindingsError = errMessage(error, t("Could not verify WeChat code."));
+  }
+  imBindingsLoading = false;
+  renderImPanel();
+}
+
+async function submitImCredentials(provider: Exclude<ImProviderId, "wechat">): Promise<void> {
+  const values = imCredentialValues[provider] ?? {};
+  const credentials = Object.fromEntries(IM_CREDENTIAL_KEYS[provider].map((key) => [key, values[key]?.trim() ?? ""]));
+  if (Object.values(credentials).some((value) => !value)) return;
+  imBindingsLoading = true;
+  imBindingsError = "";
+  renderImPanel();
+  try {
+    const result = await api<{ binding: ImBindingRecord }>(
+      `/api/im-bindings/${encodeURIComponent(provider)}/credentials`,
+      { method: "POST", body: JSON.stringify({ credentials }) },
+    );
+    imBindings[provider] = result.binding;
+    delete imCredentialValues[provider];
+    reusableImProviders.add(provider);
+    if (result.binding.status === "pending") startImPolling(provider);
+    else stopImPolling();
+  } catch (error) {
+    imBindingsError = errMessage(error, t("Platform credentials could not be verified."));
+  }
+  imBindingsLoading = false;
+  renderImPanel();
+}
+
+function showImBinding(provider: ImProviderId): void {
+  imProviderMenuOpen = false;
+  activeImProvider = provider;
+  imLocateNotice = "";
+  const binding = imBindings[provider];
+  if (
+    binding?.status === "pending" &&
+    (binding.setupMode === "provision-qr" || provider === "dingtalk") &&
+    !binding.resourceId &&
+    (provider === "feishu" || provider === "qq" || provider === "dingtalk")
+  ) {
+    void startImBinding(provider);
+    return;
+  }
+  if (binding?.status === "pending") startImPolling(provider);
+  else stopImPolling();
+  renderImPanel();
+}
+
+function closeImQr(): void {
+  activeImProvider = null;
+  imLocateNotice = "";
+  stopImPolling();
+  renderImPanel();
+}
+
+function setImPanelOpen(open: boolean, focusPill = false): boolean {
+  if (imPanelOpen === open && (!open || !imProviderMenuOpen)) return false;
+  imPanelOpen = open;
+  if (!open) {
+    imProviderMenuOpen = false;
+    activeImProvider = null;
+    imLocateNotice = "";
+    stopImPolling();
+  } else if (!imBindingsLoaded) {
+    void loadImBindings();
+  }
+  renderImPanel();
+  const pill = (appEl as HTMLElement).querySelector<HTMLButtonElement>(".user-pill");
+  pill?.setAttribute("aria-expanded", imPanelOpen ? "true" : "false");
+  if (focusPill) pill?.focus();
+  return true;
+}
+
+function toggleImPanel(event: Event): void {
+  event.stopPropagation();
+  setImPanelOpen(!imPanelOpen);
+}
+
+function toggleImProviderMenu(event: Event): void {
+  event.stopPropagation();
+  imProviderMenuOpen = !imProviderMenuOpen;
+  renderImPanel();
+}
+
+function imLogo(option: (typeof IM_PROVIDER_OPTIONS)[number]): TemplateResult {
+  if (option.image)
+    return html`<span class=${`im-logo ${option.className}`} aria-hidden="true"
+      ><img src=${option.image} alt=""
+    /></span>`;
+  const paths = typeof option.path === "string" ? [option.path] : option.path;
+  return html`<span class=${`im-logo ${option.className}`} aria-hidden="true"
+    ><svg viewBox=${option.viewBox} focusable="false">
+      ${paths.map((path, index) => svg`<path d=${path} fill=${option.colors?.[index] ?? "currentColor"}></path>`)}
+    </svg></span
+  >`;
+}
+
+function imQrSrc(url: string): string {
+  try {
+    return qrDataUrl(url);
+  } catch {
+    return "";
+  }
+}
+
+function imSetupModeLabel(mode: ImSetupMode): string {
+  if (mode === "wechat-qr") return t("WeChat QR setup");
+  if (mode === "provision-qr") return t("Scan to create or bind a bot");
+  return t("Manual credential setup");
+}
+
+function imSetupSteps(binding: ImBindingRecord): string[] {
+  if (binding.setupMode === "provision-qr" && !binding.quickSetupAvailable && binding.manualSetupSteps?.length) {
+    return binding.manualSetupSteps;
+  }
+  return binding.setupSteps?.length
+    ? binding.setupSteps
+    : [binding.hint ?? t("Follow the setup guide for this channel.")];
+}
+
+function imManualSetup(binding: ImBindingRecord): TemplateResult {
+  return html`<div class="im-setup-flow">
+    <div class="im-setup-mode">
+      ${binding.setupMode === "provision-qr" ? t("Manual fallback") : imSetupModeLabel(binding.setupMode ?? "manual-credentials")}
+    </div>
+    ${
+      binding.setupMode === "provision-qr" && !binding.quickSetupAvailable
+        ? html`<div class="im-setup-warning">${t("Quick scan setup is temporarily unavailable.")}</div>`
+        : nothing
+    }
+    ${binding.hint ? html`<div class="im-setup-copy">${binding.hint}</div>` : nothing}
+    ${binding.manualSetupTitle ? html`<div class="im-setup-subtitle">${binding.manualSetupTitle}</div>` : nothing}
+    <ol class="im-setup-steps">
+      ${imSetupSteps(binding).map((step) => html`<li>${step}</li>`)}
+    </ol>
+    ${imCredentialForm(binding)}
+    ${
+      binding.setupMode === "provision-qr"
+        ? nothing
+        : html`<div class="im-qr-note">${t("No QR code is used for this channel.")}</div>`
+    }
+  </div>`;
+}
+
+function imWeComProvisionSetup(binding: ImBindingRecord): TemplateResult {
+  return html`<div class="im-setup-flow">
+    <div class="im-setup-mode">${imSetupModeLabel("provision-qr")}</div>
+    ${binding.hint ? html`<div class="im-setup-copy">${binding.hint}</div>` : nothing}
+    <ol class="im-setup-steps">
+      ${imSetupSteps(binding).map((step) => html`<li>${step}</li>`)}
+    </ol>
+    <button class="btn primary" type="button" ?disabled=${imBindingsLoading} @click=${() => void startWeComBinding()}>
+      ${t("Create a new WeCom Bot")}
+    </button>
+    ${imCredentialForm(binding)}
+  </div>`;
+}
+
+function imCredentialForm(binding: ImBindingRecord): TemplateResult | typeof nothing {
+  if (binding.provider === "wechat" || binding.resourceId || !binding.credentialFields?.length) return nothing;
+  const provider = binding.provider;
+  const keys = IM_CREDENTIAL_KEYS[provider];
+  const values = imCredentialValues[provider] ?? {};
+  const complete = keys.every((key) => Boolean(values[key]?.trim()));
+  return html`<form
+    class="im-credential-form"
+    @submit=${(event: Event) => {
+      event.preventDefault();
+      void submitImCredentials(provider);
+    }}
+  >
+    <div class="im-setup-subtitle">${t("Bind an existing Bot")}</div>
+    ${binding.credentialFields.map(
+      (field, index) =>
+        html`<label>
+          <span>${field}</span>
+          <input
+            type="password"
+            autocomplete="off"
+            maxlength="512"
+            .value=${values[keys[index]!] ?? ""}
+            @input=${(event: Event) => {
+              imCredentialValues[provider] = {
+                ...imCredentialValues[provider],
+                [keys[index]!]: (event.target as HTMLInputElement).value,
+              };
+            }}
+          />
+        </label>`,
+    )}
+    <button class="btn primary" type="submit" ?disabled=${!complete || imBindingsLoading}>
+      ${t("Verify and bind")}
+    </button>
+  </form>`;
+}
+
+function imProvisionSetup(binding: ImBindingRecord): TemplateResult {
+  const src = imQrSrc(binding.qrPayload ?? "");
+  return html`<div class="im-setup-flow">
+    <div class="im-setup-mode">${imSetupModeLabel("provision-qr")}</div>
+    ${binding.hint ? html`<div class="im-setup-copy">${binding.hint}</div>` : nothing}
+    <div class="im-qr-box">
+      ${src ? html`<img class="im-qr-img" alt=${t("Provisioning QR code")} src=${src} />` : nothing}
+    </div>
+    <ol class="im-setup-steps">
+      ${imSetupSteps(binding).map((step) => html`<li>${step}</li>`)}
+    </ol>
+    <div class="im-qr-note">${t("Waiting for bot authorization")}</div>
+  </div>`;
+}
+
+function imQrSetup(binding: ImBindingRecord): TemplateResult {
+  if (!binding.quickSetupAvailable || !binding.qrPayload) {
+    return html`<div class="im-setup-flow">
+      <div class="im-setup-mode">${imSetupModeLabel("wechat-qr")}</div>
+      <div class="im-setup-warning">${t("Quick scan setup is temporarily unavailable.")}</div>
+      ${binding.hint ? html`<div class="im-setup-copy">${binding.hint}</div>` : nothing}
+    </div>`;
+  }
+  const src = imQrSrc(binding.qrPayload);
+  const retryable =
+    binding.authorizationState === "expired" ||
+    binding.authorizationState === "blocked" ||
+    binding.authorizationState === "unrecoverable" ||
+    binding.authorizationState === "error";
+  return html`<div class="im-qr-box">
+      ${src ? html`<img class="im-qr-img" alt=${t("Binding QR code")} src=${src} />` : nothing}
+    </div>
+    <div class="im-qr-state">
+      ${binding.authorizationMessage ?? binding.hint ?? t("Use the matching app to scan this QR code.")}
+    </div>
+    ${
+      binding.verificationRequired
+        ? html`<form
+            class="im-verify"
+            @submit=${(event: Event) => {
+              event.preventDefault();
+              void verifyWeixinCode();
+            }}
+          >
+            <label for="im-weixin-code">${t("WeChat verification code")}</label>
+            <div>
+              <input
+                id="im-weixin-code"
+                type="text"
+                inputmode="numeric"
+                autocomplete="one-time-code"
+                maxlength="8"
+                .value=${imVerificationCode}
+                @input=${(event: Event) => {
+                  imVerificationCode = (event.target as HTMLInputElement).value.replace(/\D/g, "").slice(0, 8);
+                }}
+              />
+              <button class="btn primary" type="submit" ?disabled=${!/^\d{1,8}$/.test(imVerificationCode.trim())}>
+                ${t("Verify")}
+              </button>
+            </div>
+          </form>`
+        : nothing
+    }
+    ${
+      retryable
+        ? html`<button class="btn im-retry" type="button" @click=${() => void startImBinding("wechat")}>
+            ${icon(RefreshCw, 15)}<span>${t("Generate a new QR code")}</span>
+          </button>`
+        : html`<div class="im-qr-note">${t("Waiting for platform authorization")}</div>`
+    }`;
+}
+
+function imSetupPanel(): TemplateResult | typeof nothing {
+  if (!activeImProvider) return nothing;
+  const option = imProvider(activeImProvider);
+  const binding = imBindings[activeImProvider];
+  if (!binding) {
+    const reusable = reusableImProviders.has(activeImProvider);
+    return html`<div class="im-qr-backdrop" @click=${closeImQr}>
+      <section
+        class="im-qr-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label=${t("Binding QR code")}
+        @click=${(event: Event) => event.stopPropagation()}
+      >
+        <div class="im-qr-head">
+          <div class="im-qr-title">
+            ${imLogo(option)}
+            <div class="im-qr-copy">
+              <strong>${t(option.label)}</strong>
+              <span>${t("Chat channels")}</span>
+            </div>
+          </div>
+          <button class="im-qr-close" type="button" aria-label=${t("Close")} @click=${closeImQr}>${icon(X, 16)}</button>
+        </div>
+        ${
+          reusable
+            ? html`<div class="im-setup-flow">
+                <button
+                  class="btn primary im-retry"
+                  type="button"
+                  ?disabled=${imBindingsLoading}
+                  @click=${() => void startImBinding(activeImProvider!)}
+                >
+                  ${icon(RefreshCw, 15)}<span>${t("Rebind existing Bot")}</span>
+                </button>
+                <button
+                  class="btn danger im-forget"
+                  type="button"
+                  ?disabled=${imBindingsLoading}
+                  @click=${() => void forgetAndStartImBinding(activeImProvider!)}
+                >
+                  ${icon(Trash2, 15)}<span>${t("Bind a new Bot")}</span>
+                </button>
+              </div>`
+            : html`<div class="im-qr-loading">${t("Preparing chat channel setup…")}</div>`
+        }
+      </section>
+    </div>`;
+  }
+  const connected = binding.status === "connected";
+  const botName = binding.botName ?? `${t(option.label)} Bot`;
+  const setupMode = binding.setupMode ?? "wechat-qr";
+  let setupContent: TemplateResult;
+  if (connected) {
+    const locateAvailable = binding.locatorAvailable === true;
+    const locatorUnavailableReason =
+      binding.locatorUnavailableReason ?? t("Open this Bot once in the IM app to enable locator messages.");
+    const displayName = binding.externalDisplayName
+      ? html`<div class="im-qr-note">${binding.externalDisplayName}</div>`
+      : nothing;
+    setupContent = html`<div class="im-qr-state connected">${t("Binding complete")}</div>
+      ${displayName}
+      ${
+        binding.resourceId
+          ? html`<div class="im-resource-id"><span>Bot ID</span><code>${binding.resourceId}</code></div>`
+          : nothing
+      }
+      <button
+        class="btn primary im-locate"
+        type="button"
+        title=${locateAvailable ? t("Find Bot in IM") : locatorUnavailableReason}
+        ?disabled=${imBindingsLoading || !locateAvailable}
+        @click=${() => void locateImBot(activeImProvider!)}
+      >
+        ${icon(MessageSquare, 15)}<span>${t("Find Bot in IM")}</span>
+      </button>
+      ${locateAvailable ? nothing : html`<div class="im-qr-note">${locatorUnavailableReason}</div>`}
+      ${imLocateNotice ? html`<div class="im-locate-notice">${imLocateNotice}</div>` : nothing}`;
+  } else if (setupMode === "wechat-qr") {
+    setupContent = imQrSetup(binding);
+  } else if (binding.provider === "work-wechat" && setupMode === "provision-qr" && !binding.resourceId) {
+    setupContent = imWeComProvisionSetup(binding);
+  } else if (setupMode === "provision-qr" && binding.quickSetupAvailable && binding.qrPayload) {
+    setupContent = html`${imProvisionSetup(binding)}${imCredentialForm(binding)}`;
+  } else {
+    setupContent = imManualSetup(binding);
+  }
+  return html`<div class="im-qr-backdrop" @click=${closeImQr}>
+    <section
+      class="im-qr-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-label=${t("Binding QR code")}
+      @click=${(event: Event) => event.stopPropagation()}
+    >
+      <div class="im-qr-head">
+        <div class="im-qr-title">
+          ${imLogo(option)}
+          <div class="im-qr-copy">
+            <strong>${botName}</strong>
+            <span>${t(option.label)}</span>
+          </div>
+        </div>
+        <button class="im-qr-close" type="button" aria-label=${t("Close")} @click=${closeImQr}>${icon(X, 16)}</button>
+      </div>
+      ${setupContent}
+      ${
+        connected
+          ? html`<button
+              class="btn danger im-unbind"
+              type="button"
+              @click=${() => void deleteImBinding(activeImProvider!)}
+            >
+              ${icon(Trash2, 15)}<span>${t("Unbind")}</span>
+            </button>`
+          : nothing
+      }
+      ${
+        binding.primaryActionUrl
+          ? html`<a class="im-doc-link" href=${binding.primaryActionUrl} target="_blank" rel="noreferrer">
+              ${icon(ExternalLink, 14)}<span>${binding.primaryActionLabel ?? t("Open provider console")}</span>
+            </a>`
+          : nothing
+      }
+      ${
+        binding.docsUrl
+          ? html`<a class="im-doc-link" href=${binding.docsUrl} target="_blank" rel="noreferrer">
+              ${icon(ExternalLink, 14)}<span>${t("Setup guide")}</span>
+            </a>`
+          : nothing
+      }
+    </section>
+  </div>`;
+}
+
+function imBindingRow(id: ImProviderId): TemplateResult {
+  const option = imProvider(id);
+  const pending = imBindings[id]?.status === "pending";
+  return html`<button class="im-channel-row" type="button" @click=${() => showImBinding(id)}>
+    ${imLogo(option)}<span>${t(option.label)}</span>
+    <span class=${pending ? "im-channel-state pending" : "im-channel-state"}>
+      ${pending ? t("Continue setup") : t("Bound")}
+    </span>
+  </button>`;
+}
+
+function imPanel(): TemplateResult {
+  const connectedIds = imChannelIds("connected");
+  const pendingIds = imChannelIds("pending");
+  return html`<div
+    id="im-panel"
+    class="im-panel"
+    role="dialog"
+    aria-label=${t("Chat channels")}
+    ?hidden=${!imPanelOpen}
+    @click=${(event: Event) => event.stopPropagation()}
+  >
+    <div class="im-panel-title">${t("Chat channels")}</div>
+    <div class="im-panel-section">
+      <div class="im-panel-section-label">${t("Connected chat channels")}</div>
+      <div class="im-channel-list">
+        ${
+          connectedIds.length
+            ? connectedIds.map(imBindingRow)
+            : html`<div class="im-panel-empty">${t("No connected chat channels.")}</div>`
+        }
+      </div>
+    </div>
+    ${
+      pendingIds.length
+        ? html`<div class="im-panel-section">
+            <div class="im-panel-section-label">${t("Setup in progress")}</div>
+            <div class="im-channel-list">${pendingIds.map(imBindingRow)}</div>
+          </div>`
+        : nothing
+    }
+    <div class="im-panel-section">
+      <div class="im-panel-section-label">${t("Available chat platforms")}</div>
+      <div class="im-channel-list">
+        <button
+          class="im-add"
+          type="button"
+          aria-haspopup="menu"
+          aria-expanded=${imProviderMenuOpen ? "true" : "false"}
+          @click=${toggleImProviderMenu}
+        >
+          ${icon(Plus, 16)}<span>${t("Connect chat channel")}</span>
+        </button>
+      </div>
+    </div>
+    ${
+      imProviderMenuOpen
+        ? html`<div class="im-add-wrap">
+            <div class="im-provider-menu" role="menu">
+              ${VISIBLE_IM_PROVIDER_OPTIONS.map((option) => {
+                const binding = imBindings[option.id];
+                const connected = binding?.status === "connected";
+                const pending = binding?.status === "pending";
+                let stateLabel = t("Start setup");
+                if (connected) stateLabel = t("Bound");
+                else if (pending) stateLabel = t("Continue setup");
+                else if (reusableImProviders.has(option.id)) stateLabel = t("Rebind existing Bot");
+                return html`<button
+                  class="im-provider-option"
+                  type="button"
+                  role="menuitem"
+                  ?disabled=${connected}
+                  @click=${() => {
+                    if (pending) showImBinding(option.id);
+                    else if (reusableImProviders.has(option.id)) showImBinding(option.id);
+                    else void startImBinding(option.id);
+                  }}
+                >
+                  ${imLogo(option)}<span>${t(option.label)}</span>
+                  <span class=${pending ? "im-provider-state pending" : "im-provider-state"}> ${stateLabel} </span>
+                </button>`;
+              })}
+            </div>
+          </div>`
+        : nothing
+    }
+    ${imSetupPanel()} ${imBindingsLoading ? html`<div class="im-panel-note">${t("Loading…")}</div>` : nothing}
+    ${imBindingsError ? html`<div class="im-panel-error" role="alert">${imBindingsError}</div>` : nothing}
+  </div>`;
+}
+
+function renderImPanel(): void {
+  const host = (appEl as HTMLElement).querySelector<HTMLElement>("#im-panel-host");
+  if (host) render(imPanel(), host);
+}
 
 export async function signOut(): Promise<void> {
   const portal = authMode === "portal";
@@ -444,10 +1357,19 @@ export function mountShell(): void {
           <div id="sidebar-top"></div>
           <div class="list" id="sidebar-body"></div>
           <div class="sidebar-footer">
-            <div class="user-pill" title=${appState.me?.user ?? ""}>
+            <button
+              class="user-pill"
+              type="button"
+              title=${appState.me?.user ?? ""}
+              aria-label=${t("Open IM channel settings")}
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              @click=${toggleImPanel}
+            >
               <span class="avatar">${initials(appState.me?.user ?? "?")}</span>
               <span class="user-name">${appState.me?.user ?? ""}</span>
-            </div>
+            </button>
+            <div id="im-panel-host"></div>
             <a class="icon-btn subtle" href=${ADMIN_HOME_URL} title="Back to admin" aria-label="Back to admin"
               >${icon(ShieldCheck, 17)}</a
             >
@@ -488,6 +1410,7 @@ export function mountShell(): void {
   appState.listEl = (appEl as HTMLElement).querySelector("#sidebar-body");
   appState.mainEl = (appEl as HTMLElement).querySelector("#main");
   renderSidebarTop();
+  renderImPanel();
   updateSidebarToggleLabels();
   syncSidebarAccessibility(false);
   shellMounted = true;
@@ -706,6 +1629,7 @@ narrowViewport.addEventListener("change", (event) => {
 
 function setSidebarOpen(open: boolean, moveFocus = true): void {
   sidebarOpen = open;
+  if (!open) setImPanelOpen(false);
   (appEl as HTMLElement).querySelector(".layout")?.classList.toggle("sidebar-closed", !sidebarOpen);
   updateSidebarToggleLabels();
   syncSidebarAccessibility(moveFocus);
@@ -807,6 +1731,20 @@ function warmDeferredChunks(): void {
   if (ric) ric(warm);
   else setTimeout(warm, 1500);
 }
+
+window.addEventListener("click", (event) => {
+  if (!imPanelOpen) return;
+  const target = event.target as Node | null;
+  const footer = (appEl as HTMLElement).querySelector<HTMLElement>(".sidebar-footer");
+  if (target && footer?.contains(target)) return;
+  setImPanelOpen(false);
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !imPanelOpen) return;
+  event.preventDefault();
+  setImPanelOpen(false, true);
+});
 
 function openAppEditChat(slug: string): void {
   const user = appState.me?.user ?? "anon";

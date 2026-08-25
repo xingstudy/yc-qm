@@ -131,6 +131,12 @@ test("runResultDelivery carries the surface's edit checkpoint into the destinati
   assert.equal(d?.destination.editRef, "171.002");
 });
 
+test("runResultDelivery carries the request's durable edit checkpoint into the destination", () => {
+  const request = { ...turn("hi", "C9:171.001"), deliveryEditRef: "wecom-stream" };
+  const d = runResultDelivery(run({ request }));
+  assert.equal(d?.destination.editRef, "wecom-stream");
+});
+
 test("runResultDelivery carries a durable terminal task projection", () => {
   const d = runResultDelivery(run({ deliveryState: { editRef: "171.002" } }), [
     {
@@ -179,6 +185,19 @@ test("runResultDelivery skips terminal results that cannot be safely replayed", 
     { status: "ok" } as TurnResult,
   ]) {
     assert.equal(runResultDelivery(run({ result })), null, `skips ${result.status}`);
+  }
+});
+
+test("runResultDelivery closes Enterprise WeChat streams for terminal results without reply text", () => {
+  for (const [result, text] of [
+    [{ status: "refused", reason: "internal reason" } as TurnResult, "消息无法处理。"],
+    [{ status: "react", reactions: ["thumbsup"] } as TurnResult, "消息已处理。"],
+    [{ status: "silent" } as TurnResult, "消息已处理。"],
+    [{ status: "ok" } as TurnResult, "消息已处理。"],
+  ] as const) {
+    const terminal = run({ result });
+    terminal.request = { ...terminal.request, surface: "im:work-wechat" };
+    assert.equal(runResultDelivery(terminal)?.text, text);
   }
 });
 

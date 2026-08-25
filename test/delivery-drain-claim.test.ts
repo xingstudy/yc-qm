@@ -12,6 +12,7 @@ import { buildApp } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";
 
 const SECRET = "test-signing-secret".repeat(3);
+let sourceNonce = 0;
 
 function start(): { base: string; app: ReturnType<typeof buildApp>["app"]; close: () => Promise<void> } {
   const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "claim-")) }));
@@ -30,12 +31,81 @@ function sign(method: string, pathWithQuery: string, body: string): Record<strin
   };
 }
 
-async function fetchPending(base: string, query: string): Promise<{ id: string }[]> {
+interface PendingDelivery {
+  id: string;
+  destination: { type: string; target: string; editRef?: string };
+  text: string;
+  idempotencyKey: string;
+}
+
+async function fetchPending(base: string, query: string): Promise<PendingDelivery[]> {
   const path = `/v1/deliveries?${query}`;
   const res = await fetch(`${base}${path}`, { headers: sign("GET", path, "") });
   assert.equal(res.status, 200);
-  return ((await res.json()) as { deliveries?: { id: string }[] }).deliveries ?? [];
+  return ((await res.json()) as { deliveries?: PendingDelivery[] }).deliveries ?? [];
 }
+
+async function postDelivery(
+  base: string,
+  input: {
+    destination?: { type: string; target: string; editRef?: string };
+    text?: string;
+    idempotencyKey?: string;
+  },
+): Promise<Response> {
+  sourceNonce += 1;
+  const path = `/v1/deliveries?_sourceAuthNonce=${sourceNonce}`;
+  const body = JSON.stringify(input);
+  return fetch(`${base}${path}`, { method: "POST", headers: sign("POST", path, body), body });
+}
+
+test("POST /v1/deliveries enqueues a source-auth delivery once", async () => {
+  const srv = start();
+  try {
+    const first = await postDelivery(srv.base, {
+      destination: { type: "im:wechat", target: "im:wechat:n:U1", editRef: "checkpoint" },
+      text: "locator",
+      idempotencyKey: "im-locate:one",
+    });
+    assert.equal(first.status, 202);
+    assert.deepEqual(await first.json(), { queued: true });
+
+    const duplicate = await postDelivery(srv.base, {
+      destination: { type: "im:wechat", target: "im:wechat:n:U1", editRef: "checkpoint" },
+      text: "locator",
+      idempotencyKey: "im-locate:one",
+    });
+    assert.equal(duplicate.status, 202);
+
+    const pending = await fetchPending(srv.base, "type=im%3Awechat");
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0]!.destination.target, "im:wechat:n:U1");
+    assert.equal(pending[0]!.destination.editRef, "checkpoint");
+    assert.equal(pending[0]!.text, "locator");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("POST /v1/deliveries rejects malformed source deliveries", async () => {
+  const srv = start();
+  try {
+    const missingTarget = await postDelivery(srv.base, {
+      destination: { type: "im:wechat", target: "" },
+      text: "locator",
+      idempotencyKey: "im-locate:bad",
+    });
+    assert.equal(missingTarget.status, 400);
+
+    const missingText = await postDelivery(srv.base, {
+      destination: { type: "im:wechat", target: "im:wechat:n:U1" },
+      idempotencyKey: "im-locate:bad-text",
+    });
+    assert.equal(missingText.status, 400);
+  } finally {
+    await srv.close();
+  }
+});
 
 test("two overlapping drain pollers with claimMs can't both receive the same delivery", async () => {
   const srv = start();

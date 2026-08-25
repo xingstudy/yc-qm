@@ -5803,6 +5803,17 @@
         Revoke: "撤销",
         "Impersonate ↗": "模拟身份 ↗",
         "Make admin": "设为管理员",
+        "IM channels": "IM 平台",
+        "Chat platforms currently linked to this user.": "当前绑定到该用户的聊天平台。",
+        "No IM channels.": "暂无绑定的 IM 平台。",
+        Platform: "平台",
+        Bot: "机器人",
+        "Connected at": "绑定时间",
+        Pending: "接入中",
+        WeChat: "微信",
+        Feishu: "飞书",
+        WeCom: "企业微信",
+        DingTalk: "钉钉",
         member: "成员",
         "org admin": "组织管理员",
         ", newest shown": "，仅显示最新项",
@@ -12569,6 +12580,21 @@
         };
         drawLists();
       }
+      const IM_PROVIDER_LABELS = {
+        wechat: "WeChat",
+        feishu: "Feishu",
+        "work-wechat": "WeCom",
+        qq: "QQ",
+        dingtalk: "DingTalk",
+      };
+      const imProviderLabel = (provider) => adminTr(IM_PROVIDER_LABELS[provider] || provider || "Unknown");
+      const imBindingSummary = (bindings) => {
+        const active = (bindings || []).filter((binding) => binding.status === "connected");
+        const pending = (bindings || []).filter((binding) => binding.status === "pending");
+        const activeText = active.map((binding) => imProviderLabel(binding.provider)).join(" · ");
+        const pendingText = pending.map((binding) => imProviderLabel(binding.provider)).join(" · ");
+        return stacked(activeText || adminTr("None"), pendingText ? adminTr("Pending") + ": " + pendingText : "");
+      };
       function renderUsers(root, d) {
         const users = d.users || [];
         const grants = d.grants || [];
@@ -12713,7 +12739,12 @@
           lists.textContent = "";
           const filteredGrants = grants.filter((g) => matches([g.principalId, g.role, g.scopeId, g.grantedBy || ""]));
           const filteredUsers = users.filter((u) =>
-            matches([u.principalId, u.admin?.role || "", u.admin?.scopeId || "member"]),
+            matches([
+              u.principalId,
+              u.admin?.role || "",
+              u.admin?.scopeId || "member",
+              ...(u.imBindings || []).map((binding) => imProviderLabel(binding.provider)),
+            ]),
           );
 
           const admins = actionTable(
@@ -12741,11 +12772,12 @@
           );
 
           const roster = openableTable(
-            ["Principal", "Role", "Last seen", "Sessions", "Turns", "", ""],
+            ["Principal", "Role", "IM channels", "Last seen", "Sessions", "Turns", "", ""],
             filteredUsers,
             (u) => [
               { text: u.principalId, cls: "mono" },
               nodeCell(mutedText(u.admin?.isAdmin ? labelRole(u.admin.role) : adminTr("member"))),
+              nodeCell(imBindingSummary(u.imBindings)),
               u.lastSeenAt ? timeCell(u.lastSeenAt) : { text: "-", cls: "num" },
               { text: String(u.sessionCount), cls: "num" },
               { text: String(u.turnCount), cls: "num" },
@@ -13669,6 +13701,22 @@
             [stats.firstSeenAt ? fmtTime(stats.firstSeenAt) : "—", "First seen"],
             [stats.lastSeenAt ? fmtTime(stats.lastSeenAt) : "—", "Last seen"],
           ]),
+        );
+
+        const imBindings = d.imBindings || [];
+        const imRows = imBindings.map((binding) => [
+          imProviderLabel(binding.provider),
+          nodeCell(mutedText(adminTr(binding.status === "connected" ? "Connected" : "Pending"))),
+          binding.botName || "—",
+          binding.externalDisplayName || "—",
+          binding.connectedAt ? fmtTime(binding.connectedAt) : "—",
+        ]);
+        detail.appendChild(
+          dataCard(
+            "IM channels",
+            "Chat platforms currently linked to this user.",
+            table(["Platform", "Status", "Bot", "Account", "Connected at"], imRows, "No IM channels."),
+          ),
         );
 
         const convs = d.conversations || [];

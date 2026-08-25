@@ -17,7 +17,7 @@ export function runResultDelivery(run: Run, taskList: Task[] = []): RunResultDel
   const target = run.request.deliveryTarget;
   const surface = run.request.surface;
   if (!target || !surface) return null;
-  const editRef = run.deliveryState?.editRef;
+  const editRef = run.deliveryState?.editRef ?? run.request.deliveryEditRef;
   const destination: Destination = {
     type: surface,
     target,
@@ -44,6 +44,19 @@ export function runResultDelivery(run: Run, taskList: Task[] = []): RunResultDel
       destination,
       text: run.result.reply ?? "",
       ...(run.result.attachments?.length ? { attachments: run.result.attachments } : {}),
+      idempotencyKey,
+    };
+  }
+  if (
+    surface === "im:work-wechat" &&
+    (run.result?.status === "ok" ||
+      run.result?.status === "refused" ||
+      run.result?.status === "silent" ||
+      run.result?.status === "react")
+  ) {
+    return {
+      destination,
+      text: run.result.status === "refused" ? "消息无法处理。" : "消息已处理。",
       idempotencyKey,
     };
   }

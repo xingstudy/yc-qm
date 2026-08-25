@@ -196,8 +196,10 @@ export function createMessagingMethods(
     setCronRecipientConsent(id, recipientConsent) {
       return deps.crons.setRecipientConsent(id, recipientConsent);
     },
-    pendingDeliveries(type, claimMs) {
-      return claimMs && claimMs > 0 ? deps.deliveries.claimPending(type, claimMs) : deps.deliveries.pending(type);
+    pendingDeliveries(type, claimMs, targetPrefix) {
+      return claimMs && claimMs > 0
+        ? deps.deliveries.claimPending(type, claimMs, targetPrefix)
+        : deps.deliveries.pending(type, targetPrefix);
     },
     async enqueueDelivery(input) {
       await deps.deliveries.enqueue(input);

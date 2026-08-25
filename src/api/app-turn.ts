@@ -224,6 +224,7 @@ export function createTurnMethods(
       const input = {
         surface: req.surface,
         ...(req.deliveryTarget ? { deliveryTarget: req.deliveryTarget } : {}),
+        ...(req.deliveryEditRef ? { deliveryEditRef: req.deliveryEditRef } : {}),
         ...(req.deliveryCandidates?.length ? { deliveryCandidates: req.deliveryCandidates } : {}),
         actor,
         conversation,
@@ -433,7 +434,9 @@ export function createTurnMethods(
       }
       if (spineRouted && !deduped) markTriggerHandled(input as OrchestratorInput);
       if (spineRouted) deps.engaged?.engage(conversation.threadRef);
-      if (deduped && run.result && isTerminal(run.status)) return withAdminLink(run.result);
+      if (deduped && run.result && isTerminal(run.status)) {
+        return { ...(await withAdminLink(run.result)), runId: run.id };
+      }
       if (req.async) return { status: "queued", runId: run.id };
       return drive(run.id);
     },

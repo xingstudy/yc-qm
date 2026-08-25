@@ -32,6 +32,7 @@ describe("user-scoped routes require a portal-verified actor when enforcement is
       portalIdentitySecret: PID,
       requireSignedPortalIdentity: true,
       scheduler: built.scheduler,
+      uiState: built.uiState,
     });
     await new Promise<void>((resolve) => server.listen(0, resolve));
     base = `http://localhost:${(server.address() as AddressInfo).port}`;
@@ -301,9 +302,23 @@ describe("user-scoped routes require a portal-verified actor when enforcement is
     assert.equal(claims?.actorId, "U1");
     assert.equal(claims?.scopeId, "personal:U1");
   });
+
+  it("source-authenticated UI state writes do not require a portal session", async () => {
+    const response = await fetch(`${base}/v1/ui-state`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ principalId: "web-ui-im", key: "lease-test", value: { owner: "instance-1" } }),
+    });
+    assert.equal(response.status, 200);
+  });
 });
 
 describe("service-to-service writes are classified", () => {
+  it("allows source-authenticated UI state persistence without a portal session", () => {
+    assert.equal(isUnclassifiedWrite("PUT", "/v1/ui-state"), false);
+    assert.equal(isUnclassifiedWrite("DELETE", "/v1/ui-state"), false);
+  });
+
   it("every auth:source write route is classified, so production gating cannot demand a portal identity from a plugin", () => {
     const unclassified = authBrokerRoutes
       .filter((route) => "path" in route && route.auth === "source")
