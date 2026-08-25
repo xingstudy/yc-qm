@@ -20,12 +20,15 @@ RUN npm install -g --allow-scripts=@anthropic-ai/claude-code \
   && npm install --prefix /tmp/npm-fixes --ignore-scripts --omit=dev \
       brace-expansion@5.0.9 \
       ip-address@10.3.1 \
+      tar@7.5.22 \
   && rm -rf \
       /usr/local/lib/node_modules/npm/node_modules/brace-expansion \
       /usr/local/lib/node_modules/npm/node_modules/ip-address \
+      /usr/local/lib/node_modules/npm/node_modules/tar \
   && cp -a \
       /tmp/npm-fixes/node_modules/brace-expansion \
       /tmp/npm-fixes/node_modules/ip-address \
+      /tmp/npm-fixes/node_modules/tar \
       /usr/local/lib/node_modules/npm/node_modules/ \
   && rm -rf /root/.npm /tmp/npm-fixes /tmp/node-compile-cache
 
@@ -84,6 +87,7 @@ RUN claude --version \
   && codex --version \
   && node --version \
   && npm --version \
+  && node -e 'const tar = require("/usr/local/lib/node_modules/npm/node_modules/tar"); const { version } = require("/usr/local/lib/node_modules/npm/node_modules/tar/package.json"); if (!tar || version !== "7.5.22") throw new Error(`unexpected tar version ${version}`)' \
   && aws --version \
   && gh --version
 
