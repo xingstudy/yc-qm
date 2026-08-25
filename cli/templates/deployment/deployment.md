@@ -235,6 +235,11 @@ Never paste any provider key into chat or terminal output. `.env` is the one
 place a deployment key belongs, and `qm secrets push` moves it without printing
 it.
 
+When upgrading a deployment that previously delivered `CONNECTOR_SECRET_KEY`
+to web-ui, run `qm setup` before the next secrets push. If the dedicated IM
+credentials key is absent, setup derives the compatible scoped value from the
+existing connector key instead of replacing it with a random value.
+
 Open `webUiUrl`, sign in as the seeded administrator, send a message, and
 receive a real model response. Use a specific request rather than a greeting,
 then confirm its generated sidebar title replaces the `Web chat` fallback. A

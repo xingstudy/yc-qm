@@ -72,7 +72,7 @@ A chunk whose score is at or above its threshold resolves to Strict, and any Str
 
 First-party services publish a typed `SecretSpec` schema. The CLI combines the enabled services and feature predicates with plugin `secrets` and `sandbox.secretEnv` to form the computed secret set. That same schema determines which task receives each secret. Core validates its own required runtime secrets at production boot.
 
-`init` renders the set as `.env.example`; that file has names and descriptions, never values, and is not an input to deployment. Operators place values in gitignored `.env`. Docker reads the file locally. `qm secrets push` uploads supplied operator-managed values to Fly secrets or AWS Secrets Manager without printing them. Terraform owns `DATABASE_URL` on AWS because it owns RDS. `doctor` treats missing and placeholder required values as failures and reports absent optional plugin secrets without blocking deployment.
+`init` renders the set as `.env.example`; that file has names and descriptions, never values, and is not an input to deployment. Operators place values in gitignored `.env`. Docker reads the file locally. `qm secrets push` uploads supplied operator-managed values to Fly secrets or AWS Secrets Manager without printing them. Terraform owns `DATABASE_URL` on AWS because it owns RDS. `doctor` treats missing and placeholder required values as failures and reports absent optional plugin secrets without blocking deployment. Fly secret delivery removes the legacy core `CONNECTOR_SECRET_KEY` from web-ui after staging `WEB_UI_IM_CREDENTIALS_KEY`; rolling back to an older web-ui image requires restoring that legacy secret for the rollback window.
 
 ## Tool descriptors
 

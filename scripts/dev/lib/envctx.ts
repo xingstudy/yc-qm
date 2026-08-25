@@ -19,12 +19,17 @@ const DEV_SECURITY_SECRET_KEYS = [
   "CAPABILITY_SECRET",
   "PORTAL_IDENTITY_SECRET",
   "CONNECTOR_SECRET_KEY",
+  "WEB_UI_IM_CREDENTIALS_KEY",
   "PORTAL_SESSION_SECRET",
 ] as const;
 
 export function completeDevSecuritySecrets(env: Record<string, string>, seed: string): void {
   for (const key of DEV_SECURITY_SECRET_KEYS) {
+    if (key === "WEB_UI_IM_CREDENTIALS_KEY") continue;
     if (!env[key]) env[key] = sha256Hex(`qm-dev\0${seed}\0${key}`);
+  }
+  if (!env.WEB_UI_IM_CREDENTIALS_KEY) {
+    env.WEB_UI_IM_CREDENTIALS_KEY = sha256Hex(`web-ui-im-resource-v2\0${env.CONNECTOR_SECRET_KEY!.trim()}`);
   }
   const seen = new Set(DEV_SECURITY_SECRET_KEYS.map((key) => env[key]));
   if (seen.size !== DEV_SECURITY_SECRET_KEYS.length) {

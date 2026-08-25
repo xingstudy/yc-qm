@@ -6,7 +6,13 @@ import { Writable } from "node:stream";
 import { CONFIG_FILENAME, configPathInDir, loadConfigAt, validOrgId, type Target, type QmConfig } from "../config.ts";
 import { bold, die, dim, header, note, ok, warn } from "../log.ts";
 import { HOSTING_PROVIDER_IDS, isTarget } from "../providers.ts";
-import { computedSecrets, MINT_JWK, MINT_LOCALLY, type ComputedSecret } from "../secrets.ts";
+import {
+  computedSecrets,
+  MINT_JWK,
+  MINT_LOCALLY,
+  resolveWebUiImCredentialsKey,
+  type ComputedSecret,
+} from "../secrets.ts";
 import { isInvalidSecret, readEnvFile } from "../util.ts";
 import { runInit } from "./init.ts";
 
@@ -242,6 +248,19 @@ export async function runSetup(opts: { dir: string }): Promise<void> {
       note(`${bold(secret.name)} ${dim(`(${secret.services.join(", ")})`)}`);
       note(`  ${secret.description}`);
       for (const line of playbookFor(secret.name, config)) note(`  ${dim(line)}`);
+
+      const existingConnectorKey = env.get("CONNECTOR_SECRET_KEY");
+      if (
+        secret.name === "WEB_UI_IM_CREDENTIALS_KEY" &&
+        !isInvalidSecret("CONNECTOR_SECRET_KEY", existingConnectorKey)
+      ) {
+        collected.set(
+          secret.name,
+          resolveWebUiImCredentialsKey((name) => env.get(name))!,
+        );
+        ok(`  derived from the existing connector key\n`);
+        continue;
+      }
 
       if (secret.generate === MINT_LOCALLY) {
         collected.set(secret.name, randomBytes(32).toString("hex"));

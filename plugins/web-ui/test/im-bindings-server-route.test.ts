@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -481,7 +482,10 @@ process.env.CORE_API_URL = coreBase;
 process.env.NODE_ENV = "test";
 process.env.ALLOW_UNSIGNED_TEST_IDENTITY = "1";
 process.env.WEB_UI_PUBLIC_URL = "http://web.test";
-process.env.CONNECTOR_SECRET_KEY = "connector-secret-0123456789abcdef";
+const legacyImCredentialsKey = createHash("sha256")
+  .update("web-ui-im-resource-v2\0connector-secret-0123456789abcdef")
+  .digest();
+process.env.WEB_UI_IM_CREDENTIALS_KEY = legacyImCredentialsKey.toString("hex");
 process.env.PORTAL_IDENTITY_SECRET = "portal-identity-test-secret";
 delete process.env.CORE_SIGNING_SECRET;
 
@@ -507,6 +511,27 @@ test.after(async () => {
 
 function headers(user = "alice"): Record<string, string> {
   return { cookie: `webuiuser=${user}`, "content-type": "application/json" };
+}
+
+function legacyEncryptImSecret(value: unknown): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", legacyImCredentialsKey, iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
+  return [
+    "v2",
+    iv.toString("base64url"),
+    cipher.getAuthTag().toString("base64url"),
+    encrypted.toString("base64url"),
+  ].join(".");
+}
+
+function legacyDecryptImSecret(sealed: string): unknown {
+  const [, ivRaw, tagRaw, encryptedRaw] = sealed.split(".");
+  const decipher = createDecipheriv("aes-256-gcm", legacyImCredentialsKey, Buffer.from(ivRaw!, "base64url"));
+  decipher.setAuthTag(Buffer.from(tagRaw!, "base64url"));
+  return JSON.parse(
+    Buffer.concat([decipher.update(Buffer.from(encryptedRaw!, "base64url")), decipher.final()]).toString("utf8"),
+  ) as unknown;
 }
 
 test("IM progress includes visible thinking, tool activity, and partial replies", () => {
@@ -962,6 +987,16 @@ test("saved WeCom Bot credentials reconnect after unbind", async () => {
     body: JSON.stringify({ credentials: { botId: "wecom-reused-bot", secret: "wecom-reused-secret" } }),
   });
   assert.equal(credentials.status, 200);
+
+  const saved = uiState.get(`${user}#im-bindings`)?.value as {
+    resources: { "work-wechat": { encryptedSecret: string } };
+  };
+  const expectedSecret = {
+    provider: "work-wechat",
+    credentials: { botId: "wecom-reused-bot", secret: "wecom-reused-secret" },
+  };
+  assert.deepEqual(legacyDecryptImSecret(saved.resources["work-wechat"].encryptedSecret), expectedSecret);
+  saved.resources["work-wechat"].encryptedSecret = legacyEncryptImSecret(expectedSecret);
 
   const remove = await fetch(`${base}/api/im-bindings/work-wechat`, { method: "DELETE", headers: headers(user) });
   assert.deepEqual(await remove.json(), { removed: true, reusable: true });

@@ -83,6 +83,11 @@ Run every command from this directory.
 5. \`npm exec qm -- secrets push\` uploads the \`.env\` values to the deploy target.
    The docker target reads \`.env\` directly and does not need it.
 
+After upgrading a deployment that previously delivered \`CONNECTOR_SECRET_KEY\` to
+web-ui, run \`npm exec qm -- setup\` before the next secrets push. When the dedicated
+IM credentials key is absent, setup derives its compatible scoped value from the
+existing connector key instead of replacing it with a random value.
+
 \`npm exec qm -- help\` lists everything else, including \`sandbox build\` and
 \`rollback\`.
 `;

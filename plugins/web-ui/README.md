@@ -40,7 +40,8 @@ the front-end on :5173 and proxies `/signin`, `/me`, `/api/*` to the node server
 Env (see `.env.example`): `CORE_API_URL` (default `http://localhost:8080`),
 `CORE_ORG_ID` (default `acme`), `PORT` (default 8096), `WEB_UI_PUBLIC_URL`,
 `WEB_UI_PRINCIPALS` (csv allowlist; empty = any id, **dev only**),
-and `CORE_SIGNING_SECRET` (same value as the core when source-auth is enabled).
+`CORE_SIGNING_SECRET` (same value as the core when source-auth is enabled), and
+`WEB_UI_IM_CREDENTIALS_KEY` (a dedicated 32-byte hexadecimal key for IM Bot credentials).
 
 ## What you get
 
