@@ -27,6 +27,10 @@ test("the footer user pill opens the IM channel popover", () => {
   assert.match(shell, /image: wecomLogo/);
   assert.match(shell, /id: "qq",\s+label: "QQ"/);
   assert.match(shell, /id: "dingtalk",\s+label: "DingTalk"/);
+  assert.match(
+    shell,
+    /const VISIBLE_IM_PROVIDER_OPTIONS = IM_PROVIDER_OPTIONS\.filter\(\(option\) => option\.id === "work-wechat"\)/,
+  );
   assert.match(shell, /<svg viewBox=\$\{option\.viewBox\}/);
   assert.match(shell, /=> svg`<path d=\$\{path\}/);
   assert.doesNotMatch(imLogoSource, /icon\(MessageSquare/);
@@ -57,12 +61,14 @@ test("the footer user pill opens the IM channel popover", () => {
   assert.match(shell, /function showImBinding\(provider: ImProviderId\): void/);
   assert.match(shell, /binding\.setupMode === "provision-qr"[\s\S]*void startImBinding\(provider\)/);
   assert.match(shell, /function imChannelIds\(status: ImBindingRecord\["status"\]\): ImProviderId\[\]/);
+  assert.match(shell, /VISIBLE_IM_PROVIDER_OPTIONS\.map\(\(option\) => option\.id\)/);
   assert.match(shell, /filter\(\(id\) => imBindings\[id\]\?\.status === status\)/);
   assert.match(shell, /imChannelIds\("connected"\)/);
   assert.match(shell, /imChannelIds\("pending"\)/);
   assert.match(shell, /t\("Connected chat channels"\)/);
   assert.match(shell, /t\("Setup in progress"\)/);
   assert.match(shell, /t\("Available chat platforms"\)/);
+  assert.match(shell, /VISIBLE_IM_PROVIDER_OPTIONS\.map\(\(option\) => \{/);
   assert.match(shell, /delete imBindings\[provider\]/);
   assert.match(shell, /const authWindow = window\.open\(/);
   assert.match(shell, /const startRequest = api<\{ binding: ImBindingRecord \}>\("\/api\/im-bindings\/start"/);
@@ -70,7 +76,6 @@ test("the footer user pill opens the IM channel popover", () => {
   assert.match(shell, /else \{\s+const authorization = WecomAIBotSDK\.openBotInfoAuthWindow/);
   assert.ok(shell.indexOf("const authWindow = window.open") < shell.indexOf("const started = await startRequest"));
   assert.ok(shell.indexOf("const started = await startRequest") < shell.indexOf("WecomAIBotSDK.openBotInfoAuthWindow"));
-  assert.doesNotMatch(shell, /option\.id === "work-wechat"[\s\S]*startWeComBinding\(\)/);
   assert.match(shell, /class="im-resource-id"><span>Bot ID<\/span><code>\$\{binding\.resourceId\}<\/code>/);
   assert.match(shell, /class="user-pill"[\s\S]*aria-haspopup="dialog"[\s\S]*@click=\$\{toggleImPanel\}/);
   assert.match(shell, /<div id="im-panel-host"><\/div>/);
