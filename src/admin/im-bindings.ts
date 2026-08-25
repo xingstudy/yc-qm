@@ -1,6 +1,6 @@
 import type { PersistedUiState } from "../surfaces/ui-state.ts";
 
-export type AdminImProviderId = "wechat" | "feishu" | "work-wechat" | "qq" | "dingtalk";
+type AdminImProviderId = "wechat" | "feishu" | "work-wechat" | "qq" | "dingtalk";
 
 export interface AdminImBinding {
   provider: AdminImProviderId;

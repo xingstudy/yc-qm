@@ -887,9 +887,7 @@ function imSetupPanel(): TemplateResult | typeof nothing {
               <span>${t("Chat channels")}</span>
             </div>
           </div>
-          <button class="im-qr-close" type="button" aria-label=${t("Close")} @click=${closeImQr}>
-            ${icon(X, 16)}
-          </button>
+          <button class="im-qr-close" type="button" aria-label=${t("Close")} @click=${closeImQr}>${icon(X, 16)}</button>
         </div>
         ${
           reusable
@@ -943,11 +941,7 @@ function imSetupPanel(): TemplateResult | typeof nothing {
       >
         ${icon(MessageSquare, 15)}<span>${t("Find Bot in IM")}</span>
       </button>
-      ${
-        locateAvailable
-          ? nothing
-          : html`<div class="im-qr-note">${locatorUnavailableReason}</div>`
-      }
+      ${locateAvailable ? nothing : html`<div class="im-qr-note">${locatorUnavailableReason}</div>`}
       ${imLocateNotice ? html`<div class="im-locate-notice">${imLocateNotice}</div>` : nothing}`;
   } else if (setupMode === "wechat-qr") {
     setupContent = imQrSetup(binding);

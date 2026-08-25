@@ -233,9 +233,7 @@ mock.module("@tencent-connect/qqbot-nodejs", {
 
 mock.module("@tencent-connect/qqbot-connector", {
   namedExports: {
-    startQrConnect: (options: {
-      onQrDisplayed?: (url: string) => void;
-    }): (() => void) => {
+    startQrConnect: (options: { onQrDisplayed?: (url: string) => void }): (() => void) => {
       queueMicrotask(() => options.onQrDisplayed?.("https://qq.test/qr"));
       return () => undefined;
     },
@@ -386,7 +384,10 @@ const core = createServer((req: IncomingMessage, res) => {
     if (req.method === "POST" && url.pathname === "/ding-reply") {
       const body = JSON.parse(raw) as { text?: { content?: unknown } };
       dingtalkSent.push({
-        token: typeof req.headers["x-acs-dingtalk-access-token"] === "string" ? req.headers["x-acs-dingtalk-access-token"] : "",
+        token:
+          typeof req.headers["x-acs-dingtalk-access-token"] === "string"
+            ? req.headers["x-acs-dingtalk-access-token"]
+            : "",
         text: typeof body.text?.content === "string" ? body.text.content : "",
       });
       send(200, { ok: true });
@@ -846,14 +847,18 @@ test("QQ locator requires a real direct conversation before sending", async () =
   const turnsBefore = coreTurns.length;
   const bot = qqBots.at(-1);
   if (!bot) throw new Error("missing QQ bot");
-  bot.emit("message", {}, {
-    content: "hello from qq",
-    kind: "c2c",
-    senderId: "qq-user-id",
-    senderName: "QQ User",
-    messageId: "qq-message",
-    replyTarget: { scope: "c2c", targetId: "qq-user-id" },
-  });
+  bot.emit(
+    "message",
+    {},
+    {
+      content: "hello from qq",
+      kind: "c2c",
+      senderId: "qq-user-id",
+      senderName: "QQ User",
+      messageId: "qq-message",
+      replyTarget: { scope: "c2c", targetId: "qq-user-id" },
+    },
+  );
   await waitFor(() => coreTurns.length === turnsBefore + 1);
   await waitFor(() => {
     const stored = uiState.get(`${user}#im-bindings`)?.value as
@@ -887,7 +892,10 @@ test("DingTalk locator requires a real conversation webhook before sending", asy
   assert.equal(connected.binding.locatorAvailable, false);
   assert.match(connected.binding.locatorUnavailableReason, /钉钉里给 Bot 发送一条消息/);
 
-  const earlyLocate = await fetch(`${base}/api/im-bindings/dingtalk/locate`, { method: "POST", headers: headers(user) });
+  const earlyLocate = await fetch(`${base}/api/im-bindings/dingtalk/locate`, {
+    method: "POST",
+    headers: headers(user),
+  });
   assert.equal(earlyLocate.status, 409);
 
   const turnsBefore = coreTurns.length;

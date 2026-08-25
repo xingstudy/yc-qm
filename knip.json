@@ -24,6 +24,15 @@
         "scripts/mine-slack-scenarios.ts",
         "scripts/skills-materialize-smoke.ts",
         "scripts/slack-user-token.ts"
+      ],
+      "ignoreDependencies": [
+        "@larksuiteoapi/node-sdk",
+        "@tencent-connect/qqbot-connector",
+        "@tencent-connect/qqbot-nodejs",
+        "@wecom/aibot-node-sdk",
+        "@wecom/wecom-aibot-sdk",
+        "dingtalk-stream",
+        "qrcode-generator"
       ]
     },
     "cli": { "entry": ["bin/qm.ts"] },
