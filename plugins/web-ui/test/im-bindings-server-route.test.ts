@@ -35,6 +35,7 @@ let weixinStatusDelayMs = 0;
 let coreTurnDelayMs = 0;
 let coreTurnDropResponse = false;
 let coreTurnRejectBeforeRequest = false;
+let coreRunRejectBeforeRequest = false;
 let ackByKeyFailures = 0;
 let imProgressReadDelayMs = 0;
 let uiStateWriteConflicts = 0;
@@ -263,6 +264,10 @@ globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
     coreTurnRejectBeforeRequest = false;
     return Promise.reject(new TypeError("core unavailable"));
   }
+  if (url.origin === coreBase && url.pathname.startsWith("/v1/runs/") && coreRunRejectBeforeRequest) {
+    coreRunRejectBeforeRequest = false;
+    return Promise.reject(new TypeError("run unavailable"));
+  }
   if (url.origin === "https://ilinkai.weixin.qq.com") {
     const target = new URL(`${url.pathname}${url.search}`, coreBase);
     return nativeFetch(target, init);
@@ -440,11 +445,6 @@ test("WeChat bridge forwards messages and sends deliveries through iLink", async
   coreTurns.length = 0;
   coreRunResponses.set("run-1", [
     {
-      status: "running",
-      partial: "先给阶段回复",
-      activity: [{ type: "thinking", payload: { thinking: "先检查微信状态" } }],
-    },
-    {
       status: "done",
       partial: "微信状态正常",
       activity: [{ type: "thinking", payload: { thinking: "先检查微信状态" } }],
@@ -469,6 +469,23 @@ test("WeChat bridge forwards messages and sends deliveries through iLink", async
   assert.equal(turn.actor.externalId, "alice");
   assert.equal(turn.text, "hello from wechat");
   assert.match(turn.deliveryTarget, /^im:wechat:[a-f0-9]{20}:wx-user-1$/);
+  uiState.set("alice#im-progress-wechat", {
+    value: {
+      runs: {
+        "wechat:run-1": {
+          provider: "wechat",
+          resourceId: "wx-bot-1",
+          runId: "run-1",
+          target: "wx-user-1",
+          progressAllowed: true,
+          sentActivity: 1,
+          terminal: true,
+          createdAt: Date.now(),
+        },
+      },
+    },
+    updatedAt: Date.now(),
+  });
 
   imDeliveries.push({
     id: "delivery-wechat",
@@ -478,12 +495,6 @@ test("WeChat bridge forwards messages and sends deliveries through iLink", async
     createdAt: Date.now(),
   });
   await drainWeixinDeliveries();
-  const progressText = weixinSent
-    .map(({ body }) => JSON.stringify(body))
-    .filter((text) => !text.includes('"run_id":"run-1"'))
-    .join("\n");
-  assert.match(progressText, /思考中/);
-  assert.match(progressText, /先给阶段回复/);
   const identity = coreRunIdentityHeaders.at(-1) ?? "";
   assert.match(identity, /^[^.]+\.[^.]+$/);
   const claims = JSON.parse(Buffer.from(identity.split(".")[0]!, "base64url").toString("utf8")) as {
@@ -495,6 +506,7 @@ test("WeChat bridge forwards messages and sends deliveries through iLink", async
   const final = weixinSent.find(({ body }) => JSON.stringify(body).includes('"run_id":"run-1"'));
   assert.equal(final?.authorization, "Bearer secret-wx-bot-1");
   assert.match(JSON.stringify(final?.body), /reply to wechat/);
+  assert.doesNotMatch(JSON.stringify(final?.body), /先检查微信状态/);
   assert.ok(ackedDeliveries.includes("delivery-wechat"));
 });
 
@@ -632,8 +644,14 @@ test("WeCom matches concurrent replies to their original streams", async () => {
     const value = uiState.get(`${user}#im-progress-work-wechat`)?.value as
       | { runs?: Record<string, { sentActivity?: number; partialLength?: number; partialHash?: string }> }
       | undefined;
-    const cursor = Object.values(value?.runs ?? {})[0];
-    return cursor?.sentActivity === 2 && cursor.partialLength === 6 && typeof cursor.partialHash === "string";
+    const entries = Object.entries(value?.runs ?? {});
+    const cursor = entries[0]?.[1];
+    return (
+      entries[0]?.[0].startsWith("work-wechat:") === true &&
+      cursor?.sentActivity === 2 &&
+      cursor.partialLength === 6 &&
+      typeof cursor.partialHash === "string"
+    );
   });
   imDeliveries.push({
     id: "delivery-wecom-progress",
@@ -647,6 +665,83 @@ test("WeCom matches concurrent replies to their original streams", async () => {
   assert.match(progressReply?.content ?? "", /思考中\n先检查企业微信状态/);
   assert.match(progressReply?.content ?? "", /已完成: read/);
   assert.match(progressReply?.content ?? "", /回复\n企业微信状态正常/);
+
+  const recoveredRunId = "run-recovered-progress";
+  coreRunResponses.set(recoveredRunId, [
+    {
+      status: "done",
+      activity: [{ type: "thinking", payload: { thinking: "恢复持久化进度" } }],
+    },
+  ]);
+  uiState.set(`${user}#im-progress-work-wechat`, {
+    value: {
+      runs: {
+        [`work-wechat${recoveredRunId}`]: {
+          provider: "work-wechat",
+          resourceId: "wecom-bot",
+          runId: recoveredRunId,
+          target: "wecom-user-id",
+          progressAllowed: true,
+          createdAt: Date.now(),
+        },
+      },
+    },
+    updatedAt: Date.now(),
+  });
+  await syncImRunProgress();
+  imDeliveries.push({
+    id: "delivery-wecom-recovered-progress",
+    destination: {
+      type: "im:work-wechat",
+      target: turn.deliveryTarget,
+      editRef: JSON.stringify({
+        kind: "wecom-stream",
+        reqId: "wecom-request-recovered-progress",
+        streamId: "wecom-stream-recovered-progress",
+        expiresAt: Date.now() + 60_000,
+      }),
+    },
+    text: "恢复后的最终回复",
+    idempotencyKey: `run:${recoveredRunId}`,
+    createdAt: Date.now(),
+  });
+  const recoveredStartedAt = Date.now();
+  await drainImSdkDeliveries("work-wechat");
+  assert.ok(Date.now() - recoveredStartedAt < 1_500);
+  const recoveredReply = wecomReplies.findLast(
+    ({ reqId, finish }) => reqId === "wecom-request-recovered-progress" && finish,
+  );
+  assert.match(recoveredReply?.content ?? "", /思考中\n恢复持久化进度/);
+  assert.match(recoveredReply?.content ?? "", /回复\n恢复后的最终回复/);
+  await waitFor(() => {
+    const value = uiState.get(`${user}#im-progress-work-wechat`)?.value as
+      { runs?: Record<string, unknown> } | undefined;
+    return !Object.keys(value?.runs ?? {}).some((key) => key.includes(recoveredRunId));
+  });
+
+  coreRunRejectBeforeRequest = true;
+  imDeliveries.push({
+    id: "delivery-wecom-run-unavailable",
+    destination: {
+      type: "im:work-wechat",
+      target: turn.deliveryTarget,
+      editRef: JSON.stringify({
+        kind: "wecom-stream",
+        reqId: "wecom-request-run-unavailable",
+        streamId: "wecom-stream-run-unavailable",
+        expiresAt: Date.now() + 60_000,
+      }),
+    },
+    text: "活动查询失败时仍发送回复",
+    idempotencyKey: "run:run-unavailable-activity",
+    createdAt: Date.now(),
+  });
+  await drainImSdkDeliveries("work-wechat");
+  assert.deepEqual(
+    { reqId: wecomReplies.at(-1)?.reqId, content: wecomReplies.at(-1)?.content },
+    { reqId: "wecom-request-run-unavailable", content: "活动查询失败时仍发送回复" },
+  );
+  assert.ok(ackedDeliveries.includes("delivery-wecom-run-unavailable"));
 
   const concurrentStart = coreTurns.length;
   const conflictsBefore = uiStateWriteConflicts;

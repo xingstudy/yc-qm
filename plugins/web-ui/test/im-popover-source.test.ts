@@ -114,7 +114,7 @@ test("each IM platform uses its official authorization and message client", () =
   assert.match(server, /formatImRunProgress\(snapshot\)/);
   assert.match(
     server,
-    /startImRunProgress\(\s+user,\s+provider,\s+resource\.resourceId,\s+input\.externalChatId,\s+runId,/,
+    /startImRunProgress\(\s*user,\s*provider,\s*resource\.resourceId,\s*input\.externalChatId,\s*runId,/,
   );
   assert.match(server, /const queueImProgressStateUpdate = createImKeyedQueue\(\)/);
   assert.match(server, /return queueImProgressStateUpdate\(imRuntimeKey\(user, provider\),/);

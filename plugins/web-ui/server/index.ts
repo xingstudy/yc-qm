@@ -127,8 +127,9 @@ const WEIXIN_ILINK_BOT_TYPE = "3";
 const WEIXIN_QR_TTL_MS = 5 * 60_000;
 const WEIXIN_API_TIMEOUT_MS = 35_000;
 const WEIXIN_BRIDGE_SYNC_MS = 2_500;
-const IM_RUN_PROGRESS_POLL_MS = 500;
+const IM_RUN_PROGRESS_POLL_MS = 1_000;
 const IM_RUN_PROGRESS_REQUEST_TIMEOUT_MS = 5_000;
+const IM_RUN_FINAL_REQUEST_TIMEOUT_MS = 5_000;
 const IM_DELIVERY_POLL_MS = WEIXIN_BRIDGE_SYNC_MS;
 const IM_PARTIAL_PROGRESS_MS = 2_000;
 const IM_RUN_PROGRESS_MAX_AGE_MS = 24 * 60 * 60_000;
@@ -324,14 +325,14 @@ interface ImSdkRuntime {
   resourceId: string;
   fingerprint: string;
   stop: () => void;
-  send: (target: string, text: string, idempotencyKey?: string, editRef?: string) => Promise<void>;
-  progress?: (
+  send: (
     target: string,
     text: string,
-    activityText: string,
-    runId: string,
-    messageId?: string,
-  ) => Promise<boolean>;
+    idempotencyKey?: string,
+    editRef?: string,
+    activityIncluded?: boolean,
+  ) => Promise<void>;
+  progress?: (target: string, text: string, activityText: string, runId: string) => Promise<boolean>;
 }
 
 interface ImQrFlow {
@@ -1099,6 +1100,7 @@ interface StoredImRunProgress {
   pendingMessageId?: string;
   pendingOwner?: string;
   pendingExpiresAt?: number;
+  terminal?: boolean;
   createdAt: number;
 }
 
@@ -1112,7 +1114,7 @@ function parseStoredImRunProgress(value: unknown): Record<string, StoredImRunPro
   const candidate = (value as { runs?: unknown }).runs;
   const runs = typeof candidate === "object" && candidate !== null ? candidate : {};
   return Object.fromEntries(
-    Object.entries(runs).flatMap(([key, value]) => {
+    Object.values(runs).flatMap((value) => {
       if (typeof value !== "object" || value === null) return [];
       const run = value as Partial<StoredImRunProgress>;
       if (
@@ -1128,7 +1130,7 @@ function parseStoredImRunProgress(value: unknown): Record<string, StoredImRunPro
         return [];
       return [
         [
-          key,
+          storedImRunProgressKey(run.provider, run.runId),
           {
             provider: run.provider,
             resourceId: run.resourceId,
@@ -1153,6 +1155,7 @@ function parseStoredImRunProgress(value: unknown): Record<string, StoredImRunPro
             ...(typeof run.pendingExpiresAt === "number" && Number.isFinite(run.pendingExpiresAt)
               ? { pendingExpiresAt: run.pendingExpiresAt }
               : {}),
+            ...(typeof run.terminal === "boolean" ? { terminal: run.terminal } : {}),
             createdAt: run.createdAt,
           },
         ],
@@ -1162,7 +1165,7 @@ function parseStoredImRunProgress(value: unknown): Record<string, StoredImRunPro
 }
 
 function storedImRunProgressKey(provider: ImProviderId, runId: string): string {
-  return `${provider}\0${runId}`;
+  return `${provider}:${runId}`;
 }
 
 function imProgressStateKey(provider: ImProviderId): string {
@@ -1433,28 +1436,29 @@ function imRunProgressKey(user: string, provider: ImProviderId, runId: string): 
   return `${user}\0${provider}\0${runId}`;
 }
 
-async function waitForImRunProgress(user: string, provider: ImProviderId, runId: string): Promise<void> {
+async function finishImRunProgress(
+  user: string,
+  provider: ImProviderId,
+  runId: string,
+): Promise<StoredImRunProgress | undefined> {
   const key = imRunProgressKey(user, provider, runId);
-  let follower = imRunProgressFollowers.get(key);
-  if (!follower) {
-    const progress = await readStoredImRunProgress(user, provider, runId);
-    if (progress && Date.now() - progress.createdAt <= IM_RUN_PROGRESS_MAX_AGE_MS) {
-      launchImRunProgress(user, progress, false);
-      follower = imRunProgressFollowers.get(key);
-    }
-  }
+  const follower = imRunProgressFollowers.get(key);
   if (follower) {
     follower.finalizing = true;
+    follower.canceled = true;
     await follower.promise;
   }
   const progress = await readStoredImRunProgress(user, provider, runId);
   if (progress && !ownsImBridge(user, provider, progress.resourceId)) throw new ImProgressLeaseLostError();
-  await removeStoredImRunProgress(user, provider, runId);
+  return progress;
 }
 
-function fetchImRun(user: string, runId: string): Promise<{ status: number; text: string }> {
-  const request = () =>
-    coreFetch("GET", `/v1/runs/${encodeURIComponent(runId)}`, "", IM_RUN_PROGRESS_REQUEST_TIMEOUT_MS);
+function fetchImRun(
+  user: string,
+  runId: string,
+  timeoutMs = IM_RUN_PROGRESS_REQUEST_TIMEOUT_MS,
+): Promise<{ status: number; text: string }> {
+  const request = () => coreFetch("GET", `/v1/runs/${encodeURIComponent(runId)}`, "", timeoutMs);
   if (!PORTAL_IDENTITY_SECRET) return request();
   const token = mintPortalIdentity({ p: user, exp: Date.now() + 60_000 }, PORTAL_IDENTITY_SECRET);
   return portalTokenStore.run(token, request);
@@ -1465,7 +1469,6 @@ async function followImRunProgress(
   provider: ImProviderId,
   target: string,
   runId: string,
-  messageId?: string,
   progressAllowed = true,
   canceled: () => boolean = () => false,
   finalizing: () => boolean = () => false,
@@ -1488,12 +1491,22 @@ async function followImRunProgress(
       if (canceled()) return;
       if (progressState && !ownsImBridge(user, provider, progressState.resourceId))
         throw new ImProgressLeaseLostError();
-      if (response.status === 404) return;
+      if (response.status === 404) {
+        if (progressState) await removeStoredImRunProgress(user, provider, runId);
+        return;
+      }
       if (response.status < 200 || response.status >= 300) throw new Error(`core run failed (${response.status})`);
       const snapshot = JSON.parse(response.text) as ImRunSnapshot;
       if (!snapshot.status || !["pending", "running", "done", "failed"].includes(snapshot.status)) return;
       const terminal = snapshot.status === "done" || snapshot.status === "failed";
       const activity = Array.isArray(snapshot.activity) ? snapshot.activity : [];
+      if (terminal) {
+        if (progressState) {
+          progressState.terminal = true;
+          await saveStoredImRunProgress(user, progressState);
+        }
+        return;
+      }
       const runtime = provider === "wechat" ? undefined : imSdkRuntimes.get(imRuntimeKey(user, provider));
       if (!progressAllowed) {
         sentActivity = activity.length;
@@ -1525,7 +1538,7 @@ async function followImRunProgress(
                 throw new ImProgressLeaseLostError();
               }
               try {
-                streamed = await runtime.progress(target, progress.text, progress.activityText, runId, messageId);
+                streamed = await runtime.progress(target, progress.text, progress.activityText, runId);
               } catch (error) {
                 if (progressState) await releaseStoredImProgressMessage(user, progressState, progressId);
                 throw error;
@@ -1614,7 +1627,6 @@ async function followImRunProgress(
         }
       }
       failures = 0;
-      if (terminal) return;
       await sleep(IM_RUN_PROGRESS_POLL_MS);
     } catch (error) {
       failures += 1;
@@ -1624,12 +1636,41 @@ async function followImRunProgress(
   }
 }
 
+async function imFinalDeliveryText(
+  user: string,
+  provider: ImProviderId,
+  runId: string,
+  text: string,
+  sentActivity: number,
+): Promise<{ text: string; activityIncluded: boolean }> {
+  try {
+    const response = await fetchImRun(user, runId, IM_RUN_FINAL_REQUEST_TIMEOUT_MS);
+    if (response.status !== 200) return { text, activityIncluded: false };
+    const snapshot = JSON.parse(response.text) as ImRunSnapshot;
+    const activity = Array.isArray(snapshot.activity) ? snapshot.activity : [];
+    const activityText = activity
+      .slice(provider === "work-wechat" ? 0 : sentActivity)
+      .map(imProgressActivityText)
+      .filter((value): value is string => Boolean(value))
+      .join("\n\n");
+    const activityLimit = provider === "work-wechat" ? 8_000 : 12_000;
+    const replyLimit = provider === "work-wechat" ? 12_000 : 27_000;
+    const finalActivity = truncateUtf8(activityText, activityLimit, "\n\n[较早进度已截断]");
+    const finalReply = truncateUtf8(text, replyLimit, "\n\n[最终回复已截断]");
+    return {
+      text: [finalActivity, finalReply ? `回复\n${finalReply}` : ""].filter(Boolean).join("\n\n") || text,
+      activityIncluded: true,
+    };
+  } catch {
+    return { text, activityIncluded: false };
+  }
+}
+
 function launchImRunProgress(user: string, progress: StoredImRunProgress, persist: boolean): void {
-  const { provider, target, runId, messageId, progressAllowed } = progress;
+  const { provider, target, runId, progressAllowed } = progress;
   const key = imRunProgressKey(user, provider, runId);
   if (imRunProgressFollowers.has(key)) return;
   const follower: ImRunProgressFollower = { promise: Promise.resolve(), canceled: false, finalizing: false };
-  let completed = false;
   follower.promise = (persist ? saveStoredImRunProgress(user, progress) : Promise.resolve())
     .then(() =>
       followImRunProgress(
@@ -1637,24 +1678,16 @@ function launchImRunProgress(user: string, progress: StoredImRunProgress, persis
         provider,
         target,
         runId,
-        messageId,
         progressAllowed,
         () => follower.canceled,
         () => follower.finalizing,
         progress,
       ),
     )
-    .then(() => {
-      completed = true;
-    })
     .catch((error: unknown) => console.error(`[web-ui] ${provider} progress failed:`, String(error)));
   imRunProgressFollowers.set(key, follower);
   void follower.promise.finally(() => {
     if (imRunProgressFollowers.get(key) === follower) imRunProgressFollowers.delete(key);
-    if (completed)
-      void removeStoredImRunProgress(user, provider, runId).catch((error: unknown) =>
-        console.error(`[web-ui] ${provider} progress cleanup failed:`, String(error)),
-      );
     void drainImDeliveriesAfterProgress().catch((error: unknown) =>
       console.error("[web-ui] IM delivery after progress failed:", String(error)),
     );
@@ -2022,18 +2055,19 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         pending.activityText = activityText;
         return true;
       },
-      send: async (target, text, idempotencyKey, editRef) => {
+      send: async (target, text, idempotencyKey, editRef, activityIncluded = false) => {
         if (idempotencyKey && sentDeliveryKeys.has(idempotencyKey)) return;
         const runId = idempotencyKey?.startsWith("run:") ? idempotencyKey.slice("run:".length) : undefined;
         const pending = runId ? await pendingReplyForRun(runId) : undefined;
         const finalText = truncateUtf8(
           text,
-          pending?.activityText ? 12_000 : 20_480,
+          pending?.activityText && !activityIncluded ? 12_000 : 20_480,
           "\n\n[企业微信单条回复上限，内容已截断]",
         );
-        const content = pending?.activityText
-          ? `${truncateUtf8(pending.activityText, 8_000, "\n\n[较早进度已截断]")}\n\n回复\n${finalText}`
-          : finalText;
+        const content =
+          pending?.activityText && !activityIncluded
+            ? `${truncateUtf8(pending.activityText, 8_000, "\n\n[较早进度已截断]")}\n\n回复\n${finalText}`
+            : finalText;
         let frame = pending?.frame;
         let streamId = pending?.streamId;
         if (!frame && editRef) {
@@ -3465,7 +3499,10 @@ export async function drainWeixinDeliveries(stored?: StoredImBindings[]): Promis
           const target = (delivery.destination?.target ?? "").slice(targetPrefix.length);
           if (target !== binding.externalChatId) continue;
           const runId = imDeliveryRunId(delivery);
-          if (runId) await waitForImRunProgress(user, "wechat", runId);
+          const progress = runId ? await finishImRunProgress(user, "wechat", runId) : undefined;
+          const finalDelivery = runId
+            ? await imFinalDeliveryText(user, "wechat", runId, delivery.text ?? "", progress?.sentActivity ?? 0)
+            : { text: delivery.text, activityIncluded: false };
           const sent = await weixinJson<{ ret?: number; errmsg?: string }>(
             secret.baseUrl,
             "ilink/bot/sendmessage",
@@ -3477,8 +3514,8 @@ export async function drainWeixinDeliveries(stored?: StoredImBindings[]): Promis
                 client_id: `qm-${randomUUID()}`,
                 message_type: 2,
                 message_state: 2,
-                ...(delivery.text
-                  ? { item_list: [{ type: 1, text_item: { text: delivery.text.slice(0, 40_000) } }] }
+                ...(finalDelivery.text
+                  ? { item_list: [{ type: 1, text_item: { text: finalDelivery.text.slice(0, 40_000) } }] }
                   : {}),
                 ...(secret.contextToken ? { context_token: secret.contextToken } : {}),
                 ...(runId ? { run_id: runId } : {}),
@@ -3490,7 +3527,9 @@ export async function drainWeixinDeliveries(stored?: StoredImBindings[]): Promis
           );
           if ((sent.ret ?? 0) !== 0)
             throw new Error(`Weixin sendmessage failed: ${sent.ret} ${sent.errmsg ?? ""}`);
-          await coreFetch("POST", `/v1/deliveries/${encodeURIComponent(delivery.id)}/ack`);
+          const acked = await coreFetch("POST", `/v1/deliveries/${encodeURIComponent(delivery.id)}/ack`);
+          if (acked.status !== 200) throw new Error(`core delivery ack failed (${acked.status})`);
+          if (runId) await removeStoredImRunProgress(user, "wechat", runId);
         }
       });
     }),
@@ -3527,11 +3566,13 @@ export async function drainImSdkDeliveries(
   await Promise.all(
     bindings.map(async ({ user, state }) => {
       const binding = state.bindings[provider];
-      if (!binding || binding.status !== "connected") return;
+      const resource = state.resources[provider];
+      if (!binding || binding.status !== "connected" || !resource) return;
       const runtime = imSdkRuntimes.get(imRuntimeKey(user, provider));
       if (!runtime) return;
       const inFlightKey = imRuntimeKey(user, provider);
       await queueImDeliveryDrain(inFlightKey, async () => {
+        if (!ownsImBridge(user, provider, resource.resourceId)) return;
         const targetPrefix = imRoutePrefix(provider, user, binding);
         const claimed = await coreFetch(
           "GET",
@@ -3542,15 +3583,20 @@ export async function drainImSdkDeliveries(
         for (const delivery of deliveries) {
           const target = (delivery.destination?.target ?? "").slice(targetPrefix.length);
           const runId = imDeliveryRunId(delivery);
-          if (runId) await waitForImRunProgress(user, provider, runId);
+          const progress = runId ? await finishImRunProgress(user, provider, runId) : undefined;
+          const finalDelivery = runId
+            ? await imFinalDeliveryText(user, provider, runId, delivery.text ?? "", progress?.sentActivity ?? 0)
+            : { text: delivery.text, activityIncluded: false };
           await runtime.send(
             target,
-            (delivery.text ?? "").slice(0, 40_000),
+            (finalDelivery.text ?? "").slice(0, 40_000),
             delivery.idempotencyKey,
             delivery.destination?.editRef,
+            finalDelivery.activityIncluded,
           );
           const acked = await coreFetch("POST", `/v1/deliveries/${encodeURIComponent(delivery.id)}/ack`);
           if (acked.status !== 200) throw new Error(`core delivery ack failed (${acked.status})`);
+          if (runId) await removeStoredImRunProgress(user, provider, runId);
         }
       });
     }),
@@ -3625,6 +3671,7 @@ export async function syncImRunProgress(): Promise<void> {
         );
         continue;
       }
+      if (progress.terminal) continue;
       if (!ownsImBridge(user, progress.provider, progress.resourceId)) continue;
       if (progress.provider !== "wechat" && !imSdkRuntimes.has(imRuntimeKey(user, progress.provider))) continue;
       launchImRunProgress(user, progress, false);
