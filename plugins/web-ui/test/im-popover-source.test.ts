@@ -10,6 +10,14 @@ const refreshImBinding = shell.slice(
   shell.indexOf("async function refreshImBinding"),
   shell.indexOf("function startImPolling"),
 );
+const syncWeixinBridge = server.slice(
+  server.indexOf("async function syncWeixinBridge"),
+  server.indexOf("export async function drainImSdkDeliveries"),
+);
+const syncImSdkBridges = server.slice(
+  server.indexOf("async function syncImSdkBridges"),
+  server.indexOf("export async function drainImDeliveries"),
+);
 
 test("the footer user pill opens the IM channel popover", () => {
   assert.match(shell, /id: "wechat",\s+label: "WeChat"/);
@@ -93,6 +101,24 @@ test("each IM platform uses its official authorization and message client", () =
   assert.match(server, /encryptedSecret: encryptImSecret/);
   assert.match(server, /process\.env\.CONNECTOR_SECRET_KEY/);
   assert.doesNotMatch(server, /WEB_UI_IM_|\/im\/gateway|\/im\/pair|pairCode/);
+  assert.match(server, /const IM_DELIVERY_POLL_MS = WEIXIN_BRIDGE_SYNC_MS/);
+  assert.match(server, /setInterval\(\(\) => \{\s+void drainImDeliveries\(\)/);
+  assert.doesNotMatch(server, /for \(const delay of \[0, 100, 400, 1_000\]\)/);
+  assert.doesNotMatch(server, /imDeliveryDrainInFlight/);
+  assert.match(server, /const IM_PROGRESS_KEY = "im-progress"/);
+  assert.match(server, /syncImRunProgress\(\)/);
+  assert.match(server, /imProgressMessageId\(user, provider, runId, content\)/);
+  assert.match(server, /formatImRunProgress\(snapshot\)/);
+  assert.match(
+    server,
+    /startImRunProgress\(\s+user,\s+provider,\s+resource\.resourceId,\s+input\.externalChatId,\s+runId,/,
+  );
+  assert.match(server, /progressAllowed: event\.message\.chat_type === "p2p"/);
+  assert.match(server, /progressAllowed: message\.kind === "c2c"/);
+  assert.match(server, /progressAllowed: body\.chattype === "single"/);
+  assert.match(server, /progressAllowed: message\.conversationType === "1"/);
+  assert.doesNotMatch(syncWeixinBridge, /drainWeixinDeliveries/);
+  assert.doesNotMatch(syncImSdkBridges, /drainImSdkDeliveries/);
 });
 
 test("the IM channel picker has its own panel, provider menu, provider setup flow, and Chinese labels", () => {
