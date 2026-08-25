@@ -1351,7 +1351,7 @@ export function bootChecks(): void {
     }
     if (DEPLOYMENTS_ENABLED) {
       problems.push(
-        "PORTAL_PLAYGROUND requires PORTAL_DEPLOYMENTS_ENABLED unset — anonymous visitors must not reach deployed apps",
+        "PORTAL_PLAYGROUND requires PORTAL_DEPLOYMENTS_ENABLED=0 — anonymous visitors must not reach deployed apps",
       );
     }
   }

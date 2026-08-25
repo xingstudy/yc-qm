@@ -12,7 +12,10 @@ import {
   type MicrovmLifecycleState,
 } from "../src/sandbox/aws-microvm-api.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
-import type { Deployment, DeploymentVersion } from "../src/deploy/deploy-store.ts";
+import { createMemoryAdvisoryLock } from "../src/persistence/advisory-lock.ts";
+import { createDeployStore, type Deployment, type DeploymentVersion } from "../src/deploy/deploy-store.ts";
+import { createDeployService } from "../src/deploy/deploy-service.ts";
+import { createAclStore } from "../src/acl/acl-store.ts";
 import { scopeId } from "../src/types.ts";
 
 const REGION = "us-west-2";
@@ -688,6 +691,50 @@ test("app data: a warm reach past the snapshot interval snapshots /data and stam
     "pointer stamped so concurrent reaches don't stack snapshots",
   );
   assert.ok(objects.has(`deploy-data/${ID}.tar`), "the reach-path snapshot landed in S3");
+});
+
+test("reachDeployment releases the shared deployment lock before periodic snapshot and Litestream refresh acquire it", async () => {
+  const { api } = fakeApi();
+  const { fetchImpl, execs } = fakeDaemon({
+    readB64: (path) => (path.startsWith("/tmp/qm-data-") ? Buffer.from("LIVE").toString("base64") : ""),
+  });
+  const { s3, objects } = fakeS3();
+  const { sts, assumes } = fakeSts();
+  const store = createMemoryMap<StoredDeployBody>();
+  const advisoryLock = createMemoryAdvisoryLock();
+  const p = provider(api, fetchImpl, store, {
+    dataBucket: "bkt",
+    s3,
+    sts,
+    dataRoleArn: "arn:aws:iam::1:role/data",
+    snapshotIntervalMs: 0,
+    advisoryLock,
+  });
+  const deployStore = createDeployStore();
+  const deploy = createDeployService({
+    deployStore,
+    provider: p,
+    deployDir: mkdtempSync(join(tmpdir(), "aws-reach-lock-")),
+    advisoryLock,
+    acl: createAclStore(),
+    auditLog: { record() {}, recordOnce: async () => {}, events: async () => [], tail: async () => [] },
+  });
+  const d = await deploy.deploy({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    entrypoint: "node server.js",
+    files: [{ path: "server.js", data: "console.log('ok')" }],
+  });
+  await store.put(d.id, { ...(await store.get(d.id))!, lastSnapshotMs: 0, dataCredsAtMs: 1 });
+  const before = execs.length;
+  assert.equal((await deploy.reachDeployment(d.id, "U1")).status, "ok");
+  for (let attempt = 0; attempt < 40; attempt++) {
+    if (objects.has(`deploy-data/${d.id}.tar`) && assumes.length === 2) break;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(objects.has(`deploy-data/${d.id}.tar`), "the deferred snapshot acquired the shared lock after reach");
+  assert.equal(assumes.length, 2, "the deferred Litestream refresh acquired the shared lock after reach");
+  assert.ok(execs.slice(before).some((cmd) => cmd.includes("litestream replicate")));
 });
 
 test("app data: a failed rotate snapshot defers the rotation — the stale body keeps serving instead of losing its /data", async () => {

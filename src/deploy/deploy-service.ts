@@ -180,26 +180,26 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     await deps.deployStore.setAppliedVersion(id, version);
   };
 
-  const liveEndpoint = async (d: Deployment): Promise<DeployEndpoint> => {
-    if (!deps.provider.resolveEndpoint || d.endpoint == null) return d.endpoint!;
-    const version = d.versions.find((v) => v.version === d.currentVersion);
-    if (!version) return d.endpoint;
-    const resolved = await deps.provider.resolveEndpoint(d, version);
-    if (resolved) {
-      if (!endpointsEqual(resolved, d.endpoint)) await deps.deployStore.setEndpoint(d.id, resolved);
-      return resolved;
-    }
+  const liveEndpoint = async (d: Deployment): Promise<DeployEndpoint | null> => {
     return withDeployLock(d.id, async () => {
-      const cur = (await deps.deployStore.get(d.id)) ?? d;
-      const v = cur.versions.find((x) => x.version === cur.currentVersion) ?? version;
-      const again = await deps.provider.resolveEndpoint!(cur, v);
-      if (again) {
-        if (!endpointsEqual(again, cur.endpoint)) await deps.deployStore.setEndpoint(cur.id, again);
-        return again;
+      const cur = await deps.deployStore.get(d.id);
+      if (!cur || cur.status !== "running" || cur.endpoint == null) return null;
+      const v = cur.versions.find((x) => x.version === cur.currentVersion);
+      if (!v) return null;
+      let endpoint = cur.endpoint;
+      if (deps.provider.resolveEndpoint) {
+        const resolved = await deps.provider.resolveEndpoint(cur, v);
+        if (resolved) {
+          if (!endpointsEqual(resolved, cur.endpoint)) await deps.deployStore.setEndpoint(cur.id, resolved);
+          endpoint = resolved;
+        } else {
+          const fresh = await applyVersion(cur.id, v, cur.appliedVersion ?? cur.currentVersion);
+          await markVersionRunning(cur.id, v.version, fresh);
+          endpoint = fresh;
+        }
       }
-      const fresh = await applyVersion(cur.id, v, cur.appliedVersion ?? cur.currentVersion);
-      await markVersionRunning(cur.id, v.version, fresh);
-      return fresh;
+      await deps.deployStore.touch(cur.id, Date.now());
+      return endpoint;
     });
   };
 
@@ -496,7 +496,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       if (!d || d.status !== "running" || d.endpoint == null) return { status: "not_found" };
       if (!opts.bypassAcl && !(await reachAllowed(d, principalId))) return { status: "denied" };
       const endpoint = await liveEndpoint(d);
-      await deps.deployStore.touch(d.id, Date.now());
+      if (!endpoint) return { status: "not_found" };
       return { status: "ok", endpoint };
     },
 

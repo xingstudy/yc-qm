@@ -1168,6 +1168,7 @@ test("an org admin's turn carries org-notebook write (token claim + prompt hint)
     adminTurn({ text: "!sysprompt", conversation: { kind: "dm", threadRef: "dm:admin-alice:t2" } }),
   );
   assert.match(adminPrompt.reply ?? "", /## Acting for an org admin/);
+  assert.match(adminPrompt.reply ?? "", /person-owned keychain metadata and admin grant changes are portal-only/);
   assert.match(adminPrompt.reply ?? "", /"scope":"org"/, "the org-notebook option rides in the admin hint");
 
   captured = undefined;

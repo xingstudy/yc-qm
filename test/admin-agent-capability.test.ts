@@ -342,7 +342,7 @@ test("content reads need a DM-scoped token", async () => {
       headers: { "x-agent-capability": fromChannel },
     });
     assert.equal(keychainFromChannel.status, 403);
-    assert.match(((await keychainFromChannel.json()) as any).message, /ask the agent in a DM/);
+    assert.match(((await keychainFromChannel.json()) as any).message, /portal-only/);
     const mirrorFromChannel = await fetch(`${s.base}/v1/admin/slack-mirror`, {
       headers: { "x-agent-capability": fromChannel },
     });
@@ -380,7 +380,8 @@ test("content reads need a DM-scoped token", async () => {
     });
     assert.equal(dmUser.status, 200);
     const dmKeychain = await fetch(`${s.base}/v1/admin/keychain`, { headers: { "x-agent-capability": fromDm } });
-    assert.equal(dmKeychain.status, 200);
+    assert.equal(dmKeychain.status, 403);
+    assert.match(((await dmKeychain.json()) as any).message, /portal-only/);
   } finally {
     await s.close();
   }

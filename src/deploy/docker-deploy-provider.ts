@@ -8,30 +8,12 @@ const LEGACY_NETWORK = "agent-deploynet";
 export interface DockerDeployProviderOptions {
   image?: string;
   docker?: string;
-  basePort?: number;
   dockerExec?: DockerExec;
 }
 
 export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {}): DeployProvider {
   const docker = opts.docker ?? "docker";
   const image = opts.image ?? "node:24-alpine";
-  let nextPort = opts.basePort ?? 9200;
-  const ports = new Map<string, number>();
-  const freed: number[] = [];
-  const allocPort = (n: string): number => {
-    const existing = ports.get(n);
-    if (existing !== undefined) return existing;
-    const port = freed.pop() ?? nextPort++;
-    ports.set(n, port);
-    return port;
-  };
-  const freePort = (n: string): void => {
-    const p = ports.get(n);
-    if (p !== undefined) {
-      freed.push(p);
-      ports.delete(n);
-    }
-  };
 
   const dexec = opts.dockerExec ?? spawnDockerExec(docker);
 
@@ -79,6 +61,42 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
       return migrateContainer(container);
     }
   };
+  const cleanup = async (d: Deployment): Promise<void> => {
+    await dexec(["rm", "-f", name(d)]);
+    await dexec(["network", "rm", network(d)]);
+  };
+  const inspectEndpoint = async (d: Deployment): Promise<DeployEndpoint | null> => {
+    const r = await dexec([
+      "inspect",
+      "--format",
+      '{{json .State.Running}} {{json (index .NetworkSettings.Ports "8080/tcp")}}',
+      name(d),
+    ]);
+    if (r.code !== 0) {
+      if (/no such (?:object|container)|not found/i.test(r.stderr)) return null;
+      throw new Error(`docker inspect ${name(d)} failed: ${r.stderr.trim()}`);
+    }
+    const separator = r.stdout.indexOf(" ");
+    if (separator === -1) throw new Error(`docker inspect ${name(d)} returned invalid endpoint state`);
+    let running: unknown;
+    let bindings: unknown;
+    try {
+      running = JSON.parse(r.stdout.slice(0, separator));
+      bindings = JSON.parse(r.stdout.slice(separator + 1));
+    } catch {
+      throw new Error(`docker inspect ${name(d)} returned invalid endpoint state`);
+    }
+    if (running !== true) return null;
+    if (!Array.isArray(bindings)) throw new Error(`docker inspect ${name(d)} returned invalid endpoint state`);
+    const binding = bindings.find(
+      (value): value is { HostIp?: unknown; HostPort?: unknown } =>
+        typeof value === "object" && value !== null && value.HostIp === "127.0.0.1",
+    );
+    const port = binding && typeof binding.HostPort === "string" ? Number(binding.HostPort) : NaN;
+    if (!Number.isInteger(port) || port < 1 || port > 65535)
+      throw new Error(`docker inspect ${name(d)} returned invalid endpoint state`);
+    return { host: "127.0.0.1", port };
+  };
 
   return {
     profile: { managedScaleToZero: false },
@@ -86,11 +104,9 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
     async apply(d: Deployment, version: DeploymentVersion): Promise<DeployEndpoint> {
       const net = await ensureNetwork(network(d));
       await dexec(["rm", "-f", name(d)]);
-      const hostPort = allocPort(name(d));
       const envArgs = Object.entries(version.env ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
-      const r = await dexec([
-        "run",
-        "-d",
+      const created = await dexec([
+        "create",
         "--name",
         name(d),
         "--network",
@@ -102,9 +118,7 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
         "--pids-limit",
         "256",
         "-p",
-        `127.0.0.1:${hostPort}:${APP_PORT}`,
-        "-v",
-        `${version.snapshotDir}:/app:ro`,
+        `127.0.0.1::${APP_PORT}`,
         "-w",
         "/app",
         "-e",
@@ -115,13 +129,28 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
         "-c",
         version.entrypoint,
       ]);
-      if (r.code !== 0) {
-        await dexec(["rm", "-f", name(d)]);
-        await dexec(["network", "rm", net]);
-        freePort(name(d));
-        throw new Error(`deploy run failed: ${r.stderr.trim()}`);
+      if (created.code !== 0) {
+        await cleanup(d);
+        throw new Error(`deploy create failed: ${created.stderr.trim()}`);
       }
-      return { host: "127.0.0.1", port: hostPort };
+      const copied = await dexec(["cp", `${version.snapshotDir}/.`, `${name(d)}:/app`]);
+      if (copied.code !== 0) {
+        await cleanup(d);
+        throw new Error(`deploy copy failed: ${copied.stderr.trim()}`);
+      }
+      const started = await dexec(["start", name(d)]);
+      if (started.code !== 0) {
+        await cleanup(d);
+        throw new Error(`deploy start failed: ${started.stderr.trim()}`);
+      }
+      try {
+        const endpoint = await inspectEndpoint(d);
+        if (!endpoint) throw new Error(`docker container ${name(d)} did not start`);
+        return endpoint;
+      } catch (error) {
+        await cleanup(d);
+        throw error;
+      }
     },
 
     async logs(d: Deployment, opts: { tailLines: number }): Promise<string | null> {
@@ -135,11 +164,11 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
     async destroy(d: Deployment): Promise<void> {
       await dexec(["rm", "-f", name(d)]);
       await dexec(["network", "rm", network(d)]);
-      freePort(name(d));
     },
 
     async resolveEndpoint(d): Promise<DeployEndpoint | null> {
-      return (await migrateTarget(name(d))) ? d.endpoint : null;
+      if (!(await migrateTarget(name(d)))) return null;
+      return inspectEndpoint(d);
     },
   };
 }

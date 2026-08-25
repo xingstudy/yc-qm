@@ -11,8 +11,13 @@ test("the canonical and packaged MicroVM Dockerfiles stay snapshot-safe and exec
     readFileSync(new URL("../../aws/microvm-agent/agent.mjs", import.meta.url), "utf8"),
   );
   assert.match(canonical, /^FROM public\.ecr\.aws\/lambda\/microvms:al2023-minimal@sha256:[a-f0-9]{64}$/m);
+  assert.match(canonical, /^FROM golang:1\.26\.6-alpine@sha256:[a-f0-9]{64} AS gh-builder$/m);
+  assert.match(canonical, /ARG GH_VERSION=2\.98\.0/);
+  assert.match(canonical, /ARG X_MOD_VERSION=0\.40\.0/);
+  assert.match(canonical, /go get "golang\.org\/x\/mod@v\$\{X_MOD_VERSION\}"/);
+  assert.match(canonical, /go version -m \/usr\/local\/bin\/gh \| grep -Eq/);
+  assert.match(canonical, /COPY --from=gh-builder \/usr\/local\/bin\/gh \/usr\/local\/bin\/gh/);
   assert.match(canonical, /dnf install -y[\s\\]+curl-minimal\b/);
-  assert.match(canonical, /dnf install -y gh-\d+\.\d+\.\d+-\d+/);
   assert.match(canonical, /awscli-exe-linux-aarch64-\d+\.\d+\.\d+\.zip/);
   assert.match(canonical, /[a-f0-9]{64} {2}\/tmp\/awscliv2\.zip" \| sha256sum -c -/);
   assert.match(canonical, /rpm -q openssl-snapsafe-libs/);

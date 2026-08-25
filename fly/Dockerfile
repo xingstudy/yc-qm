@@ -1,10 +1,15 @@
 FROM golang:1.26.6-alpine@sha256:af8d6740070b8906d12eae1c3e3ea0957fb63f492051ea05e354c38ef9fe88df AS gh-builder
 
-ARG GH_VERSION=2.97.0
+ARG GH_VERSION=2.98.0
+ARG X_MOD_VERSION=0.40.0
 RUN go mod download "github.com/cli/cli/v2@v${GH_VERSION}" \
-  && cd "/go/pkg/mod/github.com/cli/cli/v2@v${GH_VERSION}" \
+  && mkdir /tmp/gh \
+  && cp -a "/go/pkg/mod/github.com/cli/cli/v2@v${GH_VERSION}/." /tmp/gh \
+  && cd /tmp/gh \
+  && go get "golang.org/x/mod@v${X_MOD_VERSION}" \
   && GH_VERSION="$GH_VERSION" SOURCE_DATE_EPOCH=1785456000 go run script/build.go bin/gh \
-  && install bin/gh /usr/local/bin/gh
+  && install bin/gh /usr/local/bin/gh \
+  && go version -m /usr/local/bin/gh | grep -Eq "golang.org/x/mod[[:space:]]+v${X_MOD_VERSION}([[:space:]]|$)"
 
 FROM node:24-trixie-slim@sha256:0711b541c1c33a8a530ac4f0d391baa9a15b3d804695b1b24a47daa5fb60e74d AS node-runtime
 

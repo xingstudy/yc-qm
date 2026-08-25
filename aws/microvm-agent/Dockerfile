@@ -1,3 +1,16 @@
+FROM golang:1.26.6-alpine@sha256:af8d6740070b8906d12eae1c3e3ea0957fb63f492051ea05e354c38ef9fe88df AS gh-builder
+
+ARG GH_VERSION=2.98.0
+ARG X_MOD_VERSION=0.40.0
+RUN go mod download "github.com/cli/cli/v2@v${GH_VERSION}" \
+  && mkdir /tmp/gh \
+  && cp -a "/go/pkg/mod/github.com/cli/cli/v2@v${GH_VERSION}/." /tmp/gh \
+  && cd /tmp/gh \
+  && go get "golang.org/x/mod@v${X_MOD_VERSION}" \
+  && GH_VERSION="$GH_VERSION" SOURCE_DATE_EPOCH=1785456000 go run script/build.go bin/gh \
+  && install bin/gh /usr/local/bin/gh \
+  && go version -m /usr/local/bin/gh | grep -Eq "golang.org/x/mod[[:space:]]+v${X_MOD_VERSION}([[:space:]]|$)"
+
 FROM public.ecr.aws/lambda/microvms:al2023-minimal@sha256:05cb9b38d841e7ff1b693dc9e894909612f340bf99ec97d426e8000a5bbe96c3
 
 RUN dnf install -y \
@@ -12,11 +25,9 @@ RUN dnf install -y \
   && setsid --version \
   && seq 1 1
 
-RUN curl -fsSL https://cli.github.com/packages/rpm/gh-cli.repo \
-       -o /etc/yum.repos.d/gh-cli.repo \
-  && dnf install -y gh-2.97.0-1 \
-  && dnf clean all \
-  && gh --version
+COPY --from=gh-builder /usr/local/bin/gh /usr/local/bin/gh
+
+RUN gh --version
 
 RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64-2.36.5.zip" -o /tmp/awscliv2.zip \
   && echo "2662774cf3e70e2203ca1e6b85b84ff8438f6638523ea9d474f9731472740d85  /tmp/awscliv2.zip" | sha256sum -c - \

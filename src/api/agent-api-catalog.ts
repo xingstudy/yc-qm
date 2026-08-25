@@ -539,7 +539,7 @@ const FAMILIES: AgentApiFamily[] = [
     match: (_m, p) => p.startsWith("/v1/admin/"),
     when: (v) => v.isAdmin && v.claims.liveActor === true,
     guidance:
-      "Admin plane: you act AS this org admin — live-authorized per call, audited under their name; confirm before any mutation (bodies/params in the admin skill). Enforced limits: content reads work only from a DM with the admin; bulk config imports also require a DM; other mutations work anywhere; admin grant changes are portal-only and refuse agent tokens.",
+      "Admin plane: you act AS this org admin — live-authorized per call, audited under their name; confirm before any mutation (bodies/params in the admin skill). Enforced limits: content reads work only from a DM with the admin; bulk config imports also require a DM; other mutations work anywhere; person-owned keychain metadata and admin grant changes are portal-only and refuse agent tokens.",
     routes: [
       { method: "GET", path: "/v1/admin/whoami", summary: "this user's admin status" },
       {
@@ -602,11 +602,6 @@ const FAMILIES: AgentApiFamily[] = [
         method: "GET",
         path: "/v1/admin/directory?q=",
         summary: "resolve a name or principal id to org-directory candidates (incl. members who've never messaged)",
-      },
-      {
-        method: "GET",
-        path: "/v1/admin/keychain",
-        summary: "person-owned keychain metadata, grants, and asks (DM only)",
       },
     ],
   },
