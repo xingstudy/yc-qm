@@ -36,6 +36,8 @@ let coreTurnDelayMs = 0;
 let coreTurnDropResponse = false;
 let coreTurnRejectBeforeRequest = false;
 let ackByKeyFailures = 0;
+let imProgressReadDelayMs = 0;
+let uiStateWriteConflicts = 0;
 const wecomReplies: Array<{ reqId: string; streamId: string; content: string; finish: boolean }> = [];
 const wecomSent: Array<{ target: string; content: string }> = [];
 const wecomReplyFailures = new Set<string>();
@@ -198,7 +200,9 @@ const core = createServer((req: IncomingMessage, res) => {
     }
     if (req.method === "GET" && url.pathname === "/v1/ui-state") {
       const key = `${url.searchParams.get("principalId") ?? ""}#${url.searchParams.get("key") ?? ""}`;
-      send(200, uiState.get(key) ?? { value: null, updatedAt: 0 });
+      const respond = (): void => send(200, uiState.get(key) ?? { value: null, updatedAt: 0 });
+      if (key.includes("#im-progress-") && imProgressReadDelayMs) setTimeout(respond, imProgressReadDelayMs);
+      else respond();
       return;
     }
     if (req.method === "GET" && url.pathname === "/v1/ui-state/entries") {
@@ -225,6 +229,7 @@ const core = createServer((req: IncomingMessage, res) => {
       const id = `${body.principalId ?? ""}#${body.key ?? ""}`;
       const current = uiState.get(id)?.updatedAt ?? 0;
       if (body.expectedUpdatedAt !== undefined && body.expectedUpdatedAt !== current) {
+        uiStateWriteConflicts += 1;
         send(200, { ok: false, updatedAt: current });
         return;
       }
@@ -273,8 +278,14 @@ process.env.CONNECTOR_SECRET_KEY = "connector-secret-0123456789abcdef";
 process.env.PORTAL_IDENTITY_SECRET = "portal-identity-test-secret";
 delete process.env.CORE_SIGNING_SECRET;
 
-const { handler, pollWeixinAccount, drainWeixinDeliveries, drainImSdkDeliveries, formatImRunProgress } =
-  await import("../server/index.ts");
+const {
+  handler,
+  pollWeixinAccount,
+  drainWeixinDeliveries,
+  drainImSdkDeliveries,
+  formatImRunProgress,
+  syncImRunProgress,
+} = await import("../server/index.ts");
 const surface = createServer((req, res) => void handler(req, res));
 await new Promise<void>((resolve) => surface.listen(0, "127.0.0.1", resolve));
 const base = `http://127.0.0.1:${(surface.address() as AddressInfo).port}`;
@@ -308,6 +319,28 @@ test("IM progress includes visible thinking, tool activity, and partial replies"
   assert.match(progress.text, /回复中\n阶段回复/);
   assert.doesNotMatch(progress.text, /secret/);
   assert.doesNotMatch(progress.text, /\/tmp\/config/);
+});
+
+test("legacy shared IM progress state is discarded instead of migrated", async () => {
+  uiState.set("legacy-user#im-progress", { value: { runs: {} }, updatedAt: Date.now() });
+  uiState.set("active-legacy-user#im-progress", {
+    value: {
+      runs: {
+        active: {
+          provider: "wechat",
+          resourceId: "legacy-bot",
+          runId: "legacy-run",
+          target: "legacy-target",
+          progressAllowed: true,
+          createdAt: Date.now(),
+        },
+      },
+    },
+    updatedAt: Date.now(),
+  });
+  await syncImRunProgress();
+  assert.equal(uiState.has("legacy-user#im-progress"), false);
+  assert.equal(uiState.has("active-legacy-user#im-progress"), true);
 });
 
 async function startWechat(user: string): Promise<Response> {
@@ -465,7 +498,7 @@ test("WeChat bridge forwards messages and sends deliveries through iLink", async
   assert.ok(ackedDeliveries.includes("delivery-wechat"));
 });
 
-test("Enterprise WeChat starts an official direct scan flow", async () => {
+test("WeCom starts an official direct scan flow", async () => {
   const response = await fetch(`${base}/api/im-bindings/start`, {
     method: "POST",
     headers: headers(),
@@ -478,7 +511,7 @@ test("Enterprise WeChat starts an official direct scan flow", async () => {
   assert.equal(body.binding.quickSetupAvailable, true);
 });
 
-test("saved Enterprise WeChat Bot credentials reconnect after unbind", async () => {
+test("saved WeCom Bot credentials reconnect after unbind", async () => {
   const user = "wecom-reuse-user";
   const start = await fetch(`${base}/api/im-bindings/start`, {
     method: "POST",
@@ -507,7 +540,7 @@ test("saved Enterprise WeChat Bot credentials reconnect after unbind", async () 
   assert.equal(body.binding.resourceId, "wecom-reused-bot");
 });
 
-test("Enterprise WeChat matches concurrent replies to their original streams", async () => {
+test("WeCom matches concurrent replies to their original streams", async () => {
   const user = "wecom-user";
   const start = await fetch(`${base}/api/im-bindings/start`, {
     method: "POST",
@@ -582,8 +615,8 @@ test("Enterprise WeChat matches concurrent replies to their original streams", a
     body: {
       msgid: "wecom-message-progress",
       msgtype: "text",
-      chattype: "single",
-      chatid: "",
+      chattype: "group",
+      chatid: "wecom-group-id",
       from: { userid: "wecom-user-id" },
       text: { content: "show progress" },
     },
@@ -596,7 +629,7 @@ test("Enterprise WeChat matches concurrent replies to their original streams", a
     ),
   );
   await waitFor(() => {
-    const value = uiState.get(`${user}#im-progress`)?.value as
+    const value = uiState.get(`${user}#im-progress-work-wechat`)?.value as
       | { runs?: Record<string, { sentActivity?: number; partialLength?: number; partialHash?: string }> }
       | undefined;
     const cursor = Object.values(value?.runs ?? {})[0];
@@ -616,6 +649,8 @@ test("Enterprise WeChat matches concurrent replies to their original streams", a
   assert.match(progressReply?.content ?? "", /回复\n企业微信状态正常/);
 
   const concurrentStart = coreTurns.length;
+  const conflictsBefore = uiStateWriteConflicts;
+  imProgressReadDelayMs = 25;
   client.emit("message.text", {
     headers: { req_id: "wecom-request-a" },
     body: {
@@ -646,6 +681,14 @@ test("Enterprise WeChat matches concurrent replies to their original streams", a
           (reqId === "wecom-request-a" || reqId === "wecom-request-b") && finish === false,
       ).length === 2,
   );
+  await waitFor(() => {
+    const value = uiState.get(`${user}#im-progress-work-wechat`)?.value as
+      | { runs?: Record<string, unknown> }
+      | undefined;
+    return Object.keys(value?.runs ?? {}).length === 0;
+  });
+  imProgressReadDelayMs = 0;
+  assert.equal(uiStateWriteConflicts, conflictsBefore);
   const repliesBeforePush = wecomReplies.length;
   imDeliveries.push({
     id: "delivery-wecom-proactive",

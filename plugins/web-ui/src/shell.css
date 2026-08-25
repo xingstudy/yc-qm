@@ -1084,6 +1084,11 @@ a.chat-row-open {
   height: 13px;
   fill: currentColor;
 }
+.im-logo img {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
 .im-logo.wechat {
   --im-logo-color: #07c160;
 }
@@ -1095,7 +1100,7 @@ a.chat-row-open {
   height: 18px;
 }
 .im-logo.work-wechat {
-  --im-logo-color: #239bff;
+  --im-logo-color: transparent;
 }
 .im-logo.qq {
   --im-logo-color: #111827;

@@ -115,9 +115,11 @@ type ImAuthorizationState =
   "waiting" | "scanned" | "verification-required" | "blocked" | "expired" | "unrecoverable" | "error";
 
 const IM_SDK_PROVIDERS = ["feishu", "work-wechat", "qq", "dingtalk"] as const;
+const IM_PROVIDERS = ["wechat", ...IM_SDK_PROVIDERS] as const;
 
 const IM_BINDINGS_KEY = "im-bindings";
-const IM_PROGRESS_KEY = "im-progress";
+const IM_PROGRESS_LEGACY_KEY = "im-progress";
+const IM_PROGRESS_KEY_PREFIX = `${IM_PROGRESS_LEGACY_KEY}-`;
 const IM_TOKENS_PRINCIPAL = "web-ui-im";
 const IM_CREDENTIALS_SECRET = process.env.CONNECTOR_SECRET_KEY?.trim();
 const WEIXIN_ILINK_BASE_URL = "https://ilinkai.weixin.qq.com";
@@ -930,6 +932,7 @@ function createImKeyedQueue(): <T>(key: string, fn: () => Promise<T>) => Promise
 }
 
 const queueImSdkMessage = createImKeyedQueue();
+const queueImProgressStateUpdate = createImKeyedQueue();
 
 function imRuntimeKey(user: string, provider: ImProviderId): string {
   return `${user}\0${provider}`;
@@ -1162,25 +1165,33 @@ function storedImRunProgressKey(provider: ImProviderId, runId: string): string {
   return `${provider}\0${runId}`;
 }
 
-async function updateStoredImRunProgress(
+function imProgressStateKey(provider: ImProviderId): string {
+  return `${IM_PROGRESS_KEY_PREFIX}${provider}`;
+}
+
+function updateStoredImRunProgress(
   user: string,
+  provider: ImProviderId,
   update: (runs: Record<string, StoredImRunProgress>) => void,
 ): Promise<void> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const stored = await readUiStateRecord(user, IM_PROGRESS_KEY);
-    const runs = parseStoredImRunProgress(stored.value);
-    update(runs);
-    try {
-      await writeUiStateValue(user, IM_PROGRESS_KEY, { runs }, stored.updatedAt);
-      return;
-    } catch (error) {
-      if (!(error instanceof Error && error.message === "ui-state write conflict") || attempt === 2) throw error;
+  return queueImProgressStateUpdate(imRuntimeKey(user, provider), async () => {
+    const key = imProgressStateKey(provider);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const stored = await readUiStateRecord(user, key);
+      const runs = parseStoredImRunProgress(stored.value);
+      update(runs);
+      try {
+        await writeUiStateValue(user, key, { runs }, stored.updatedAt);
+        return;
+      } catch (error) {
+        if (!(error instanceof Error && error.message === "ui-state write conflict") || attempt === 2) throw error;
+      }
     }
-  }
+  });
 }
 
 function saveStoredImRunProgress(user: string, progress: StoredImRunProgress): Promise<void> {
-  return updateStoredImRunProgress(user, (runs) => {
+  return updateStoredImRunProgress(user, progress.provider, (runs) => {
     runs[storedImRunProgressKey(progress.provider, progress.runId)] = progress;
   });
 }
@@ -1192,7 +1203,7 @@ async function claimStoredImProgressMessage(
 ): Promise<"claimed" | "sent" | "busy"> {
   let result: "claimed" | "sent" | "busy" = "busy";
   let expiresAt = 0;
-  await updateStoredImRunProgress(user, (runs) => {
+  await updateStoredImRunProgress(user, progress.provider, (runs) => {
     result = "busy";
     const key = storedImRunProgressKey(progress.provider, progress.runId);
     const stored = runs[key];
@@ -1219,7 +1230,7 @@ async function releaseStoredImProgressMessage(
   progress: StoredImRunProgress,
   messageId: string,
 ): Promise<void> {
-  await updateStoredImRunProgress(user, (runs) => {
+  await updateStoredImRunProgress(user, progress.provider, (runs) => {
     const key = storedImRunProgressKey(progress.provider, progress.runId);
     const stored = runs[key];
     if (
@@ -1244,7 +1255,7 @@ async function commitStoredImProgressMessage(
   cursor: ImRunProgressCursor,
 ): Promise<void> {
   let committed = false;
-  await updateStoredImRunProgress(user, (runs) => {
+  await updateStoredImRunProgress(user, progress.provider, (runs) => {
     committed = false;
     const key = storedImRunProgressKey(progress.provider, progress.runId);
     const stored = runs[key];
@@ -1273,7 +1284,7 @@ async function commitStoredImProgressMessage(
 }
 
 function removeStoredImRunProgress(user: string, provider: ImProviderId, runId: string): Promise<void> {
-  return updateStoredImRunProgress(user, (runs) => {
+  return updateStoredImRunProgress(user, provider, (runs) => {
     delete runs[storedImRunProgressKey(provider, runId)];
   });
 }
@@ -1283,7 +1294,7 @@ async function readStoredImRunProgress(
   provider: ImProviderId,
   runId: string,
 ): Promise<StoredImRunProgress | undefined> {
-  const stored = await readUiStateRecord(user, IM_PROGRESS_KEY);
+  const stored = await readUiStateRecord(user, imProgressStateKey(provider));
   return parseStoredImRunProgress(stored.value)[storedImRunProgressKey(provider, runId)];
 }
 
@@ -1685,7 +1696,6 @@ async function postImSdkMessageNow(
     messageId?: string;
     replyWebhook?: string;
     deliveryEditRef?: string;
-    progressAllowed?: boolean;
   },
 ): Promise<{ runId?: string; reply?: string; replayed?: true }> {
   const state = await readImBindings(user);
@@ -1718,7 +1728,6 @@ async function postImSdkMessageNow(
       input.externalChatId,
       runId,
       input.messageId,
-      input.progressAllowed !== false,
     );
   if (posted.status === 200 && runId) return { runId, replayed: true };
   if (body.status === "queued") return runId ? { runId } : {};
@@ -1740,7 +1749,6 @@ function postImSdkMessage(
     messageId?: string;
     replyWebhook?: string;
     deliveryEditRef?: string;
-    progressAllowed?: boolean;
   },
 ): Promise<{ runId?: string; reply?: string; replayed?: true }> {
   return queueImSdkMessage(imRuntimeKey(user, provider), () => postImSdkMessageNow(user, provider, input));
@@ -1752,7 +1760,6 @@ function larkText(data: unknown): {
   externalDisplayName: string;
   text: string;
   messageId?: string;
-  progressAllowed: boolean;
 } | null {
   if (typeof data !== "object" || data === null) return null;
   const event = data as {
@@ -1783,7 +1790,6 @@ function larkText(data: unknown): {
     externalChatId,
     externalDisplayName: externalUserId,
     text,
-    progressAllowed: event.message.chat_type === "p2p",
     ...(typeof event.message.message_id === "string" ? { messageId: event.message.message_id } : {}),
   };
 }
@@ -1858,7 +1864,6 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         externalDisplayName: message.senderName || message.senderId,
         text,
         messageId: message.messageId,
-        progressAllowed: message.kind === "c2c",
       }).catch((error: unknown) => console.error("[web-ui] QQ message failed:", String(error)));
     });
     await waitForImConnection((resolve, reject) => {
@@ -1952,7 +1957,6 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
           externalDisplayName: body.from.userid,
           text,
           messageId: body.msgid,
-          progressAllowed: body.chattype === "single",
           deliveryEditRef: JSON.stringify({
             kind: "wecom-stream",
             reqId: frame.headers.req_id,
@@ -2092,7 +2096,6 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
             text: message.text.content.trim().slice(0, 40_000),
             messageId: message.msgId,
             replyWebhook: message.sessionWebhook,
-            progressAllowed: message.conversationType === "1",
           });
         } finally {
           client.socketCallBackResponse(frame.headers.messageId, {});
@@ -3591,18 +3594,27 @@ async function syncImSdkBridges(): Promise<void> {
   }
 }
 
-async function syncImRunProgress(): Promise<void> {
-  const [records, bindings] = await Promise.all([
-    listUiStateRecords(IM_PROGRESS_KEY),
+export async function syncImRunProgress(): Promise<void> {
+  const [recordsByProvider, legacyRecords, bindings] = await Promise.all([
+    Promise.all(IM_PROVIDERS.map((provider) => listUiStateRecords(imProgressStateKey(provider)))),
+    listUiStateRecords(IM_PROGRESS_LEGACY_KEY),
     listStoredImBindings(),
   ]);
+  const now = Date.now();
+  await Promise.all(
+    legacyRecords.map(({ principalId, record }) => {
+      const progress = Object.values(parseStoredImRunProgress(record.value));
+      if (progress.some((run) => now - run.createdAt <= IM_RUN_PROGRESS_MAX_AGE_MS)) return Promise.resolve(false);
+      return deleteUiStateValue(principalId, IM_PROGRESS_LEGACY_KEY, record.updatedAt);
+    }),
+  );
   const states = new Map(bindings.map(({ user, state }) => [user, state]));
-  for (const { principalId: user, record } of records) {
+  for (const { principalId: user, record } of recordsByProvider.flat()) {
     for (const progress of Object.values(parseStoredImRunProgress(record.value))) {
       const binding = states.get(user)?.bindings[progress.provider];
       const resource = states.get(user)?.resources[progress.provider];
       const invalid =
-        Date.now() - progress.createdAt > IM_RUN_PROGRESS_MAX_AGE_MS ||
+        now - progress.createdAt > IM_RUN_PROGRESS_MAX_AGE_MS ||
         binding?.status !== "connected" ||
         resource?.resourceId !== progress.resourceId;
       if (invalid) {

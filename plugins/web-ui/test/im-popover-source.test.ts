@@ -22,7 +22,8 @@ const syncImSdkBridges = server.slice(
 test("the footer user pill opens the IM channel popover", () => {
   assert.match(shell, /id: "wechat",\s+label: "WeChat"/);
   assert.match(shell, /id: "feishu",\s+label: "Feishu"/);
-  assert.match(shell, /id: "work-wechat",\s+label: "Enterprise WeChat"/);
+  assert.match(shell, /id: "work-wechat",\s+label: "WeCom"/);
+  assert.match(shell, /image: wecomLogo/);
   assert.match(shell, /id: "qq",\s+label: "QQ"/);
   assert.match(shell, /id: "dingtalk",\s+label: "DingTalk"/);
   assert.match(shell, /<svg viewBox=\$\{option\.viewBox\}/);
@@ -105,7 +106,9 @@ test("each IM platform uses its official authorization and message client", () =
   assert.match(server, /setInterval\(\(\) => \{\s+void drainImDeliveries\(\)/);
   assert.doesNotMatch(server, /for \(const delay of \[0, 100, 400, 1_000\]\)/);
   assert.doesNotMatch(server, /imDeliveryDrainInFlight/);
-  assert.match(server, /const IM_PROGRESS_KEY = "im-progress"/);
+  assert.match(server, /const IM_PROGRESS_LEGACY_KEY = "im-progress"/);
+  assert.match(server, /const IM_PROGRESS_KEY_PREFIX = `\$\{IM_PROGRESS_LEGACY_KEY\}-`/);
+  assert.match(server, /imProgressStateKey\(provider\)/);
   assert.match(server, /syncImRunProgress\(\)/);
   assert.match(server, /imProgressMessageId\(user, provider, runId, content\)/);
   assert.match(server, /formatImRunProgress\(snapshot\)/);
@@ -113,10 +116,9 @@ test("each IM platform uses its official authorization and message client", () =
     server,
     /startImRunProgress\(\s+user,\s+provider,\s+resource\.resourceId,\s+input\.externalChatId,\s+runId,/,
   );
-  assert.match(server, /progressAllowed: event\.message\.chat_type === "p2p"/);
-  assert.match(server, /progressAllowed: message\.kind === "c2c"/);
-  assert.match(server, /progressAllowed: body\.chattype === "single"/);
-  assert.match(server, /progressAllowed: message\.conversationType === "1"/);
+  assert.match(server, /const queueImProgressStateUpdate = createImKeyedQueue\(\)/);
+  assert.match(server, /return queueImProgressStateUpdate\(imRuntimeKey\(user, provider\),/);
+  assert.doesNotMatch(server, /progressAllowed: .*===/);
   assert.doesNotMatch(syncWeixinBridge, /drainWeixinDeliveries/);
   assert.doesNotMatch(syncImSdkBridges, /drainImSdkDeliveries/);
 });
@@ -145,7 +147,7 @@ test("the IM channel picker has its own panel, provider menu, provider setup flo
   assert.match(i18n, /"Setup in progress": "接入中"/);
   assert.match(i18n, /"Available chat platforms": "可接入"/);
   assert.match(i18n, /"Continue setup": "继续接入"/);
-  assert.match(i18n, /"Enterprise WeChat": "企业微信"/);
+  assert.match(i18n, /WeCom: "企业微信"/);
   assert.match(i18n, /"Binding complete": "绑定完成"/);
   assert.match(i18n, /"Waiting for platform authorization": "等待平台授权"/);
   assert.match(i18n, /"Scan to create or bind a bot": "扫码创建或绑定机器人"/);

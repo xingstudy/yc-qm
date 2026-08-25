@@ -193,6 +193,7 @@ type ImProviderId = "wechat" | "feishu" | "work-wechat" | "qq" | "dingtalk";
 type ImSetupMode = "wechat-qr" | "provision-qr" | "manual-credentials";
 type ImAuthorizationState =
   "waiting" | "scanned" | "verification-required" | "blocked" | "expired" | "unrecoverable" | "error";
+const wecomLogo = new URL("./wecom-logo.png", import.meta.url).href;
 
 const IM_PROVIDER_OPTIONS: Array<{
   id: ImProviderId;
@@ -200,6 +201,7 @@ const IM_PROVIDER_OPTIONS: Array<{
   className: string;
   viewBox: string;
   path: string | string[];
+  image?: string;
   colors?: string[];
 }> = [
   {
@@ -223,8 +225,9 @@ const IM_PROVIDER_OPTIONS: Array<{
   },
   {
     id: "work-wechat",
-    label: "Enterprise WeChat",
+    label: "WeCom",
     className: "work-wechat",
+    image: wecomLogo,
     viewBox: "0 0 24 24",
     path: "M12 1c6.075 0 11 4.925 11 11s-4.925 11-11 11S1 18.075 1 12 5.925 1 12 1Zm3.52 15.49a.35.35 0 0 0-.24.1c-.14.13-.16.34.02.53l.07.07c.44.44.74.99.85 1.57l.04.23c.05.19.15.37.29.5.21.21.51.34.82.34.3 0 .59-.12.8-.33.44-.44.44-1.16 0-1.61-.15-.15-.34-.26-.53-.3l-.15-.03a3.1 3.1 0 0 1-1.62-.86l-.1-.11a.34.34 0 0 0-.25-.1ZM11 4.75c-2.117 0-4.264.77-5.75 2.31C4.111 8.246 3.5 9.72 3.5 11.24c0 1.06.3 2.12.88 3.06.47.695.993 1.371 1.66 1.89l-.384 1.624a.6.6 0 0 0 .856.673L8.64 17.41c.53.166 1.08.234 1.63.3a8.3 8.3 0 0 0 1.7-.03l.38-.05q.283-.046.564-.112a2.33 2.33 0 0 1-.92-1.605l-.254.037c-.62.067-1.232.03-1.85-.04-.43-.057-.838-.185-1.25-.31l-1.02.5.23-.67-.74-.6c-.513-.401-.917-.934-1.28-1.47-.4-.65-.61-1.38-.61-2.11 0-1.08.456-2.119 1.26-2.97 1.158-1.198 2.854-1.78 4.5-1.78 1.54 0 3.108.513 4.24 1.58.365.365.707.75.95 1.21.177.354.338.722.424 1.107a2.34 2.34 0 0 1 1.811.123c-.075-.716-.33-1.4-.665-2.04-.329-.62-.776-1.155-1.27-1.65-1.468-1.38-3.471-2.08-5.47-2.08Zm9.37 9.77a1.136 1.136 0 0 0-1.1.86l-.03.15a3.1 3.1 0 0 1-.86 1.63l-.11.1a.35.35 0 0 0 .26.59c.07 0 .15-.02.26-.13l.07-.07c.44-.44.99-.74 1.57-.85l.23-.04c.2-.06.37-.16.5-.3.44-.44.44-1.17 0-1.61-.21-.21-.5-.33-.8-.33Zm-4.21-1.07c-.08 0-.16.03-.27.14l-.07.07c-.44.44-.99.74-1.57.85l-.23.04c-.2.06-.37.16-.5.3-.44.44-.44 1.17 0 1.61.21.21.51.34.82.34.3 0 .59-.12.8-.33.15-.16.25-.34.29-.53l.03-.16c.11-.61.41-1.18.86-1.63l.1-.09a.35.35 0 0 0-.26-.61Zm1.18-1.97c-.3 0-.59.12-.8.33-.44.44-.44 1.16 0 1.61.15.15.34.26.53.3l.15.03c.61.12 1.17.41 1.62.86l.1.11c.08.08.16.1.25.1.1 0 .16-.04.23-.11.12-.13.14-.32-.02-.52l-.08-.08c-.44-.44-.74-.99-.85-1.57l-.04-.23c-.05-.19-.15-.37-.29-.5-.21-.21-.5-.33-.8-.33Z",
   },
@@ -464,7 +467,7 @@ async function startWeComBinding(): Promise<void> {
   );
   if (!authWindow) {
     imBindingsLoading = false;
-    imBindingsError = t("Enterprise WeChat authorization window was blocked.");
+    imBindingsError = t("WeCom authorization window was blocked.");
     renderImPanel();
     return;
   }
@@ -503,7 +506,7 @@ async function startWeComBinding(): Promise<void> {
   } catch (error) {
     authWindow.close();
     WecomAIBotSDK.closeWindow();
-    imBindingsError = errMessage(error, t("Could not authorize Enterprise WeChat bot."));
+    imBindingsError = errMessage(error, t("Could not authorize WeCom bot."));
   }
   imBindingsLoading = false;
   renderImPanel();
@@ -626,6 +629,8 @@ function toggleImProviderMenu(event: Event): void {
 }
 
 function imLogo(option: (typeof IM_PROVIDER_OPTIONS)[number]): TemplateResult {
+  if (option.image)
+    return html`<span class=${`im-logo ${option.className}`} aria-hidden="true"><img src=${option.image} alt="" /></span>`;
   const paths = typeof option.path === "string" ? [option.path] : option.path;
   return html`<span class=${`im-logo ${option.className}`} aria-hidden="true"
     ><svg viewBox=${option.viewBox} focusable="false">
@@ -689,7 +694,7 @@ function imWeComProvisionSetup(binding: ImBindingRecord): TemplateResult {
       ${imSetupSteps(binding).map((step) => html`<li>${step}</li>`)}
     </ol>
     <button class="btn primary" type="button" ?disabled=${imBindingsLoading} @click=${() => void startWeComBinding()}>
-      ${t("Create a new Enterprise WeChat Bot")}
+      ${t("Create a new WeCom Bot")}
     </button>
     ${imCredentialForm(binding)}
   </div>`;
