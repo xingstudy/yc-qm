@@ -966,6 +966,23 @@ test("saved WeCom Bot credentials reconnect after unbind", async () => {
   const body = (await reuse.json()) as { binding: { status: string; resourceId: string } };
   assert.equal(body.binding.status, "connected");
   assert.equal(body.binding.resourceId, "wecom-reused-bot");
+
+  const forget = await fetch(`${base}/api/im-bindings/work-wechat?forget=1`, {
+    method: "DELETE",
+    headers: headers(user),
+  });
+  assert.deepEqual(await forget.json(), { removed: true, reusable: false });
+
+  const fresh = await fetch(`${base}/api/im-bindings/start`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ provider: "work-wechat" }),
+  });
+  assert.equal(fresh.status, 200);
+  const freshBody = (await fresh.json()) as { binding: { status: string; setupMode: string; resourceId?: string } };
+  assert.equal(freshBody.binding.status, "pending");
+  assert.equal(freshBody.binding.setupMode, "provision-qr");
+  assert.equal(freshBody.binding.resourceId, undefined);
 });
 
 test("WeCom remembers an opened direct chat and sends Bot locator messages", async () => {

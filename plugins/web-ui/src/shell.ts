@@ -539,6 +539,30 @@ async function deleteImBinding(provider: ImProviderId): Promise<void> {
   renderImPanel();
 }
 
+async function forgetAndStartImBinding(provider: ImProviderId): Promise<void> {
+  if (!window.confirm(t("Discard the saved Bot credentials and create a new Bot?"))) return;
+  imBindingsLoading = true;
+  imBindingsError = "";
+  renderImPanel();
+  try {
+    await api<{ reusable?: boolean }>(`/api/im-bindings/${encodeURIComponent(provider)}?forget=1`, {
+      method: "DELETE",
+    });
+    delete imBindings[provider];
+    reusableImProviders.delete(provider);
+    stopImPolling();
+  } catch (error) {
+    imBindingsError = errMessage(error, t("Could not discard the saved Bot."));
+    imBindingsLoading = false;
+    renderImPanel();
+    return;
+  }
+  imBindingsLoading = false;
+  renderImPanel();
+  if (provider === "work-wechat") await startWeComBinding();
+  else await startImBinding(provider);
+}
+
 async function locateImBot(provider: ImProviderId): Promise<void> {
   imBindingsLoading = true;
   imBindingsError = "";
@@ -846,6 +870,7 @@ function imSetupPanel(): TemplateResult | typeof nothing {
   const option = imProvider(activeImProvider);
   const binding = imBindings[activeImProvider];
   if (!binding) {
+    const reusable = reusableImProviders.has(activeImProvider);
     return html`<div class="im-qr-backdrop" @click=${closeImQr}>
       <section
         class="im-qr-modal"
@@ -854,7 +879,40 @@ function imSetupPanel(): TemplateResult | typeof nothing {
         aria-label=${t("Binding QR code")}
         @click=${(event: Event) => event.stopPropagation()}
       >
-        <div class="im-qr-loading">${t("Preparing chat channel setup…")}</div>
+        <div class="im-qr-head">
+          <div class="im-qr-title">
+            ${imLogo(option)}
+            <div class="im-qr-copy">
+              <strong>${t(option.label)}</strong>
+              <span>${t("Chat channels")}</span>
+            </div>
+          </div>
+          <button class="im-qr-close" type="button" aria-label=${t("Close")} @click=${closeImQr}>
+            ${icon(X, 16)}
+          </button>
+        </div>
+        ${
+          reusable
+            ? html`<div class="im-setup-flow">
+                <button
+                  class="btn primary im-retry"
+                  type="button"
+                  ?disabled=${imBindingsLoading}
+                  @click=${() => void startImBinding(activeImProvider!)}
+                >
+                  ${icon(RefreshCw, 15)}<span>${t("Rebind existing Bot")}</span>
+                </button>
+                <button
+                  class="btn danger im-forget"
+                  type="button"
+                  ?disabled=${imBindingsLoading}
+                  @click=${() => void forgetAndStartImBinding(activeImProvider!)}
+                >
+                  ${icon(Trash2, 15)}<span>${t("Bind a new Bot")}</span>
+                </button>
+              </div>`
+            : html`<div class="im-qr-loading">${t("Preparing chat channel setup…")}</div>`
+        }
       </section>
     </div>`;
   }
@@ -1022,6 +1080,7 @@ function imPanel(): TemplateResult {
                   ?disabled=${connected}
                   @click=${() => {
                     if (pending) showImBinding(option.id);
+                    else if (reusableImProviders.has(option.id)) showImBinding(option.id);
                     else void startImBinding(option.id);
                   }}
                 >

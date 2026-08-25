@@ -160,6 +160,7 @@ const ZH: Record<string, string> = {
   "Continue setup": "继续接入",
   "Start setup": "开始接入",
   "Rebind existing Bot": "重新绑定已有 Bot",
+  "Bind a new Bot": "换绑新的 Bot",
   Unbind: "解绑",
   "Unbind this chat channel? The existing platform Bot will be kept for reuse.":
     "确认解绑这个聊天频道？平台中已创建的 Bot 会保留，之后可以直接重新绑定。",

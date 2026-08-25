@@ -43,11 +43,16 @@ test("the footer user pill opens the IM channel popover", () => {
   assert.match(shell, /function imProvisionSetup\(binding: ImBindingRecord\): TemplateResult/);
   assert.match(shell, /function imManualSetup\(binding: ImBindingRecord\): TemplateResult/);
   assert.match(shell, /api<\{ reusable\?: boolean \}>\(`\/api\/im-bindings\/\$\{encodeURIComponent\(provider\)\}`/);
+  assert.match(shell, /function forgetAndStartImBinding\(provider: ImProviderId\): Promise<void>/);
+  assert.match(shell, /\/api\/im-bindings\/\$\{encodeURIComponent\(provider\)\}\?forget=1/);
+  assert.match(shell, /t\("Bind a new Bot"\)/);
+  assert.match(i18n, /"Bind a new Bot": "换绑新的 Bot"/);
   assert.match(shell, /"\/api\/im-bindings\/wechat\/verify"/);
   assert.match(shell, /\/api\/im-bindings\/\$\{encodeURIComponent\(provider\)\}\/credentials/);
   assert.match(shell, /function imCredentialForm\(binding: ImBindingRecord\)/);
   assert.match(shell, /html`\$\{imProvisionSetup\(binding\)\}\$\{imCredentialForm\(binding\)\}`/);
   assert.match(shell, /reusableImProviders\.has\(option\.id\)/);
+  assert.match(shell, /else if \(reusableImProviders\.has\(option\.id\)\) showImBinding\(option\.id\)/);
   assert.doesNotMatch(shell, /DEFAULT_IM_CHANNELS/);
   assert.match(shell, /function showImBinding\(provider: ImProviderId\): void/);
   assert.match(shell, /binding\.setupMode === "provision-qr"[\s\S]*void startImBinding\(provider\)/);
