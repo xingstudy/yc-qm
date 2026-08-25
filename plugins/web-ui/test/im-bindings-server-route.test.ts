@@ -39,9 +39,117 @@ let coreRunRejectBeforeRequest = false;
 let ackByKeyFailures = 0;
 let imProgressReadDelayMs = 0;
 let uiStateWriteConflicts = 0;
+let weixinSendFailures = 0;
+let wecomSendFailures = 0;
+const forcedUiStateConflicts = new Map<string, number>();
+const larkDispatchers: MockLarkEventDispatcher[] = [];
+const larkSent: Array<{ receiveIdType: string; receiveId: string; text: string; uuid?: string }> = [];
+const qqBots: MockQQBot[] = [];
+const qqSent: Array<{ target: { scope: string; targetId: string }; text: string }> = [];
+const dingtalkClients: MockDingTalkClient[] = [];
+const dingtalkSent: Array<{ token: string; text: string }> = [];
 const wecomReplies: Array<{ reqId: string; streamId: string; content: string; finish: boolean }> = [];
 const wecomSent: Array<{ target: string; content: string }> = [];
+const wecomWelcomes: Array<{ reqId: string; content: string }> = [];
 const wecomReplyFailures = new Set<string>();
+
+class MockLarkEventDispatcher {
+  handlers: Record<string, (data: unknown) => unknown> = {};
+
+  constructor(_config: unknown = {}) {}
+
+  register(handlers: Record<string, (data: unknown) => unknown>): this {
+    this.handlers = { ...this.handlers, ...handlers };
+    return this;
+  }
+}
+
+class MockLarkWsClient {
+  private readonly options: { onReady?: () => void };
+
+  constructor(options: { onReady?: () => void }) {
+    this.options = options;
+  }
+
+  async start(input: { eventDispatcher: MockLarkEventDispatcher }): Promise<void> {
+    larkDispatchers.push(input.eventDispatcher);
+    queueMicrotask(() => this.options.onReady?.());
+  }
+
+  close(): void {}
+}
+
+class MockLarkClient {
+  readonly im = {
+    message: {
+      create: async (request: {
+        params: { receive_id_type: string };
+        data: { receive_id: string; content: string; uuid?: string };
+      }): Promise<{ code: number }> => {
+        const content = JSON.parse(request.data.content) as { text?: unknown };
+        larkSent.push({
+          receiveIdType: request.params.receive_id_type,
+          receiveId: request.data.receive_id,
+          text: typeof content.text === "string" ? content.text : "",
+          ...(typeof request.data.uuid === "string" ? { uuid: request.data.uuid } : {}),
+        });
+        return { code: 0 };
+      },
+    },
+  };
+
+  constructor(_options: unknown) {}
+}
+
+class MockQQBot extends EventEmitter {
+  constructor(_options: unknown) {
+    super();
+    qqBots.push(this);
+  }
+
+  async start(): Promise<void> {
+    queueMicrotask(() => this.emit("ready"));
+  }
+
+  stop(): void {}
+
+  async sendText(target: { scope: string; targetId: string }, text: string): Promise<void> {
+    qqSent.push({ target, text });
+  }
+}
+
+const DINGTALK_TOPIC_ROBOT = "/v1.0/im/bot/messages/get";
+
+class MockDingTalkClient {
+  connected = false;
+  readonly callbacks = new Map<string, (frame: { headers: { messageId: string }; data: string }) => void>();
+
+  constructor(_options: unknown) {
+    dingtalkClients.push(this);
+  }
+
+  registerCallbackListener(
+    eventId: string,
+    callback: (frame: { headers: { messageId: string }; data: string }) => void,
+  ): this {
+    this.callbacks.set(eventId, callback);
+    return this;
+  }
+
+  async getAccessToken(): Promise<string> {
+    return "ding-token";
+  }
+
+  async connect(): Promise<void> {
+    this.connected = true;
+  }
+
+  disconnect(): void {
+    this.connected = false;
+  }
+
+  socketCallBackResponse(_messageId: string, _result: unknown): void {}
+}
 
 class MockWeComClient extends EventEmitter {
   connect(): void {
@@ -73,7 +181,19 @@ class MockWeComClient extends EventEmitter {
   }
 
   async sendMessage(target: string, body: { markdown: { content: string } }): Promise<Record<string, never>> {
+    if (wecomSendFailures > 0) {
+      wecomSendFailures -= 1;
+      throw new Error("wecom proactive send failed");
+    }
     wecomSent.push({ target, content: body.markdown.content });
+    return {};
+  }
+
+  async replyWelcome(
+    frame: { headers: { req_id: string } },
+    body: { text: { content: string } },
+  ): Promise<Record<string, never>> {
+    wecomWelcomes.push({ reqId: frame.headers.req_id, content: body.text.content });
     return {};
   }
 }
@@ -87,6 +207,45 @@ mock.module("@wecom/aibot-node-sdk", {
         wecomClients.push(this);
       }
     },
+  },
+});
+
+mock.module("@larksuiteoapi/node-sdk", {
+  namedExports: {
+    defaultHttpInstance: { defaults: {} },
+    Client: MockLarkClient,
+    EventDispatcher: MockLarkEventDispatcher,
+    WSClient: MockLarkWsClient,
+    registerApp: async (options: {
+      onQRCodeReady?: (input: { url: string }) => void;
+    }): Promise<{ client_id: string; client_secret: string; user_info: { open_id: string } }> => {
+      options.onQRCodeReady?.({ url: "https://feishu.test/qr" });
+      return { client_id: "feishu-qr-app", client_secret: "feishu-qr-secret", user_info: { open_id: "feishu-open" } };
+    },
+  },
+});
+
+mock.module("@tencent-connect/qqbot-nodejs", {
+  namedExports: {
+    QQBot: MockQQBot,
+  },
+});
+
+mock.module("@tencent-connect/qqbot-connector", {
+  namedExports: {
+    startQrConnect: (options: {
+      onQrDisplayed?: (url: string) => void;
+    }): (() => void) => {
+      queueMicrotask(() => options.onQrDisplayed?.("https://qq.test/qr"));
+      return () => undefined;
+    },
+  },
+});
+
+mock.module("dingtalk-stream", {
+  namedExports: {
+    DWClient: MockDingTalkClient,
+    TOPIC_ROBOT: DINGTALK_TOPIC_ROBOT,
   },
 });
 
@@ -131,6 +290,11 @@ const core = createServer((req: IncomingMessage, res) => {
           : req.headers.authorization,
         body: JSON.parse(raw) as Record<string, unknown>,
       });
+      if (weixinSendFailures > 0) {
+        weixinSendFailures -= 1;
+        send(200, { ret: -2, errmsg: "prepare failed" });
+        return;
+      }
       send(200, { ret: 0 });
       return;
     }
@@ -179,6 +343,26 @@ const core = createServer((req: IncomingMessage, res) => {
       });
       return;
     }
+    if (req.method === "POST" && url.pathname === "/v1/deliveries") {
+      const body = JSON.parse(raw) as {
+        destination?: Delivery["destination"];
+        text?: string;
+        idempotencyKey?: string;
+      };
+      if (!body.destination || typeof body.text !== "string" || !body.idempotencyKey) {
+        send(400, { error: "bad_request" });
+        return;
+      }
+      imDeliveries.push({
+        id: `im-delivery-${imDeliveries.length + 1}`,
+        destination: body.destination,
+        text: body.text,
+        idempotencyKey: body.idempotencyKey,
+        createdAt: Date.now(),
+      });
+      send(202, { queued: true });
+      return;
+    }
     const ackMatch = url.pathname.match(/^\/v1\/deliveries\/([^/]+)\/ack$/);
     if (req.method === "POST" && ackMatch) {
       const deliveryId = decodeURIComponent(ackMatch[1]!);
@@ -196,6 +380,15 @@ const core = createServer((req: IncomingMessage, res) => {
         return;
       }
       if (body.idempotencyKey) ackedDeliveryKeys.push(body.idempotencyKey);
+      send(200, { ok: true });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/ding-reply") {
+      const body = JSON.parse(raw) as { text?: { content?: unknown } };
+      dingtalkSent.push({
+        token: typeof req.headers["x-acs-dingtalk-access-token"] === "string" ? req.headers["x-acs-dingtalk-access-token"] : "",
+        text: typeof body.text?.content === "string" ? body.text.content : "",
+      });
       send(200, { ok: true });
       return;
     }
@@ -229,6 +422,13 @@ const core = createServer((req: IncomingMessage, res) => {
         : {};
       const id = `${body.principalId ?? ""}#${body.key ?? ""}`;
       const current = uiState.get(id)?.updatedAt ?? 0;
+      const forced = forcedUiStateConflicts.get(id) ?? 0;
+      if (forced > 0) {
+        forcedUiStateConflicts.set(id, forced - 1);
+        uiStateWriteConflicts += 1;
+        send(200, { ok: false, updatedAt: current });
+        return;
+      }
       if (body.expectedUpdatedAt !== undefined && body.expectedUpdatedAt !== current) {
         uiStateWriteConflicts += 1;
         send(200, { ok: false, updatedAt: current });
@@ -400,12 +600,39 @@ test("WeChat scan connects directly, persists encrypted credentials, and reuses 
   const connected = await confirmWechat("alice", "wx-bot-1", "wx-user-1");
   assert.equal(connected.status, 200);
   const connectedBody = (await connected.json()) as {
-    binding: { status: string; externalUserId: string; resourceId: string };
+    binding: { status: string; externalUserId: string; resourceId: string; locatorAvailable: boolean };
   };
   assert.equal(connectedBody.binding.status, "connected");
   assert.equal(connectedBody.binding.externalUserId, "wx-user-1");
   assert.equal(connectedBody.binding.resourceId, "wx-bot-1");
+  assert.equal(connectedBody.binding.locatorAvailable, false);
   assert.deepEqual(weixinVerifyCodes, ["2468"]);
+
+  const earlyLocate = await fetch(`${base}/api/im-bindings/wechat/locate`, { method: "POST", headers: headers() });
+  assert.equal(earlyLocate.status, 409);
+  assert.equal(((await earlyLocate.json()) as { error: string }).error, "target_unavailable");
+
+  weixinUpdates.push({
+    ret: 0,
+    get_updates_buf: "cursor-locator",
+    msgs: [
+      {
+        message_id: 2468,
+        from_user_id: "wx-user-1",
+        message_type: 1,
+        context_token: "context-locator",
+        item_list: [{ type: 1, text_item: { text: "open locator" } }],
+      },
+    ],
+  });
+  await pollWeixinAccount("alice", "wx-bot-1");
+  const ready = await fetch(`${base}/api/im-bindings/status?provider=wechat`, { headers: headers() });
+  assert.equal(((await ready.json()) as { binding: { locatorAvailable: boolean } }).binding.locatorAvailable, true);
+
+  const locate = await fetch(`${base}/api/im-bindings/wechat/locate`, { method: "POST", headers: headers() });
+  assert.equal(locate.status, 200);
+  assert.equal(((await locate.json()) as { queued: boolean }).queued, true);
+  await waitFor(() => JSON.stringify(weixinSent.at(-1)?.body ?? {}).includes("以后可以直接在这里向我提问"));
 
   const stored = uiState.get("alice#im-bindings")?.value as {
     resources: { wechat: { resourceId: string; encryptedSecret: string } };
@@ -510,6 +737,195 @@ test("WeChat bridge forwards messages and sends deliveries through iLink", async
   assert.ok(ackedDeliveries.includes("delivery-wechat"));
 });
 
+test("WeChat locator send failures are acknowledged after one attempt", async () => {
+  const user = "wechat-locator-fail";
+  await startWechat(user);
+  await confirmWechat(user, "wx-bot-locator-fail", "wx-user-locator-fail");
+  const turnStart = coreTurns.length;
+  weixinUpdates.push({
+    ret: 0,
+    get_updates_buf: "cursor-locator-fail",
+    msgs: [
+      {
+        message_id: 1357,
+        from_user_id: "wx-user-locator-fail",
+        message_type: 1,
+        context_token: "context-locator-fail",
+        item_list: [{ type: 1, text_item: { text: "ready" } }],
+      },
+    ],
+  });
+  await pollWeixinAccount(user, "wx-bot-locator-fail");
+  const turn = coreTurns[turnStart] as { deliveryTarget: string };
+  imDeliveries.push({
+    id: "delivery-wechat-locator-fail",
+    destination: { type: "im:wechat", target: turn.deliveryTarget },
+    text: "locator",
+    idempotencyKey: "im-locate:wechat:failed",
+    createdAt: Date.now(),
+  });
+  weixinSendFailures = 1;
+
+  await drainWeixinDeliveries();
+
+  assert.ok(ackedDeliveries.includes("delivery-wechat-locator-fail"));
+  assert.equal(
+    imDeliveries.some((delivery) => delivery.id === "delivery-wechat-locator-fail"),
+    false,
+  );
+});
+
+test("Feishu locator requires a real direct conversation before sending", async () => {
+  const user = "feishu-locate-user";
+  const credentials = await fetch(`${base}/api/im-bindings/feishu/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { appId: "feishu-app", appSecret: "feishu-secret" } }),
+  });
+  assert.equal(credentials.status, 200);
+  const connected = (await credentials.json()) as {
+    binding: { status: string; locatorAvailable: boolean; locatorUnavailableReason: string };
+  };
+  assert.equal(connected.binding.status, "connected");
+  assert.equal(connected.binding.locatorAvailable, false);
+  assert.match(connected.binding.locatorUnavailableReason, /飞书里给 Bot 发送一条消息/);
+
+  const earlyLocate = await fetch(`${base}/api/im-bindings/feishu/locate`, { method: "POST", headers: headers(user) });
+  assert.equal(earlyLocate.status, 409);
+
+  const turnsBefore = coreTurns.length;
+  const handler = larkDispatchers.at(-1)?.handlers["im.message.receive_v1"];
+  if (!handler) throw new Error("missing Feishu event handler");
+  await handler({
+    sender: { sender_id: { open_id: "feishu-open-id" } },
+    message: {
+      message_id: "feishu-message",
+      chat_id: "feishu-chat-id",
+      chat_type: "p2p",
+      message_type: "text",
+      content: JSON.stringify({ text: "hello from feishu" }),
+    },
+  });
+  await waitFor(() => coreTurns.length === turnsBefore + 1);
+  await waitFor(() => {
+    const stored = uiState.get(`${user}#im-bindings`)?.value as
+      { resources?: { feishu?: { externalChatId?: string } } } | undefined;
+    return stored?.resources?.feishu?.externalChatId === "feishu-chat-id";
+  });
+  const ready = await fetch(`${base}/api/im-bindings/status?provider=feishu`, { headers: headers(user) });
+  assert.equal(((await ready.json()) as { binding: { locatorAvailable: boolean } }).binding.locatorAvailable, true);
+
+  const locate = await fetch(`${base}/api/im-bindings/feishu/locate`, { method: "POST", headers: headers(user) });
+  assert.equal(locate.status, 200);
+  assert.deepEqual(await locate.json(), { queued: false, sent: true, message: "定位消息已发送，请打开飞书查看" });
+  assert.deepEqual(larkSent.at(-1), {
+    receiveIdType: "chat_id",
+    receiveId: "feishu-chat-id",
+    text: "你好，我是你的专属 飞书 Bot。以后可以直接在这里向我提问。",
+  });
+});
+
+test("QQ locator requires a real direct conversation before sending", async () => {
+  const user = "qq-locate-user";
+  const credentials = await fetch(`${base}/api/im-bindings/qq/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { appId: "qq-app", appSecret: "qq-secret" } }),
+  });
+  assert.equal(credentials.status, 200);
+  const connected = (await credentials.json()) as {
+    binding: { status: string; locatorAvailable: boolean; locatorUnavailableReason: string };
+  };
+  assert.equal(connected.binding.status, "connected");
+  assert.equal(connected.binding.locatorAvailable, false);
+  assert.match(connected.binding.locatorUnavailableReason, /QQ 里给 Bot 发送一条消息/);
+
+  const earlyLocate = await fetch(`${base}/api/im-bindings/qq/locate`, { method: "POST", headers: headers(user) });
+  assert.equal(earlyLocate.status, 409);
+
+  const turnsBefore = coreTurns.length;
+  const bot = qqBots.at(-1);
+  if (!bot) throw new Error("missing QQ bot");
+  bot.emit("message", {}, {
+    content: "hello from qq",
+    kind: "c2c",
+    senderId: "qq-user-id",
+    senderName: "QQ User",
+    messageId: "qq-message",
+    replyTarget: { scope: "c2c", targetId: "qq-user-id" },
+  });
+  await waitFor(() => coreTurns.length === turnsBefore + 1);
+  await waitFor(() => {
+    const stored = uiState.get(`${user}#im-bindings`)?.value as
+      { resources?: { qq?: { externalChatId?: string } } } | undefined;
+    return stored?.resources?.qq?.externalChatId === "c2c|qq-user-id";
+  });
+  const ready = await fetch(`${base}/api/im-bindings/status?provider=qq`, { headers: headers(user) });
+  assert.equal(((await ready.json()) as { binding: { locatorAvailable: boolean } }).binding.locatorAvailable, true);
+
+  const locate = await fetch(`${base}/api/im-bindings/qq/locate`, { method: "POST", headers: headers(user) });
+  assert.equal(locate.status, 200);
+  assert.deepEqual(await locate.json(), { queued: false, sent: true, message: "定位消息已发送，请打开QQ查看" });
+  assert.deepEqual(qqSent.at(-1), {
+    target: { scope: "c2c", targetId: "qq-user-id" },
+    text: "你好，我是你的专属 QQ Bot。以后可以直接在这里向我提问。",
+  });
+});
+
+test("DingTalk locator requires a real conversation webhook before sending", async () => {
+  const user = "dingtalk-locate-user";
+  const credentials = await fetch(`${base}/api/im-bindings/dingtalk/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { clientId: "ding-app", clientSecret: "ding-secret" } }),
+  });
+  assert.equal(credentials.status, 200);
+  const connected = (await credentials.json()) as {
+    binding: { status: string; locatorAvailable: boolean; locatorUnavailableReason: string };
+  };
+  assert.equal(connected.binding.status, "connected");
+  assert.equal(connected.binding.locatorAvailable, false);
+  assert.match(connected.binding.locatorUnavailableReason, /钉钉里给 Bot 发送一条消息/);
+
+  const earlyLocate = await fetch(`${base}/api/im-bindings/dingtalk/locate`, { method: "POST", headers: headers(user) });
+  assert.equal(earlyLocate.status, 409);
+
+  const turnsBefore = coreTurns.length;
+  const client = dingtalkClients.at(-1);
+  const callback = client?.callbacks.get(DINGTALK_TOPIC_ROBOT);
+  if (!callback) throw new Error("missing DingTalk callback");
+  callback({
+    headers: { messageId: "ding-frame" },
+    data: JSON.stringify({
+      msgtype: "text",
+      text: { content: "hello from dingtalk" },
+      senderStaffId: "ding-user-id",
+      senderId: "ding-open-id",
+      senderNick: "Ding User",
+      conversationId: "ding-conversation-id",
+      conversationType: "1",
+      msgId: "ding-message",
+      sessionWebhook: `${coreBase}/ding-reply`,
+    }),
+  });
+  await waitFor(() => coreTurns.length === turnsBefore + 1);
+  await waitFor(() => {
+    const stored = uiState.get(`${user}#im-bindings`)?.value as
+      { resources?: { dingtalk?: { externalChatId?: string } } } | undefined;
+    return stored?.resources?.dingtalk?.externalChatId === "ding-conversation-id";
+  });
+  const ready = await fetch(`${base}/api/im-bindings/status?provider=dingtalk`, { headers: headers(user) });
+  assert.equal(((await ready.json()) as { binding: { locatorAvailable: boolean } }).binding.locatorAvailable, true);
+
+  const locate = await fetch(`${base}/api/im-bindings/dingtalk/locate`, { method: "POST", headers: headers(user) });
+  assert.equal(locate.status, 200);
+  assert.deepEqual(await locate.json(), { queued: false, sent: true, message: "定位消息已发送，请打开钉钉查看" });
+  assert.deepEqual(dingtalkSent.at(-1), {
+    token: "ding-token",
+    text: "你好，我是你的专属 QM 钉钉机器人。以后可以直接在这里向我提问。",
+  });
+});
+
 test("WeCom starts an official direct scan flow", async () => {
   const response = await fetch(`${base}/api/im-bindings/start`, {
     method: "POST",
@@ -552,7 +968,124 @@ test("saved WeCom Bot credentials reconnect after unbind", async () => {
   assert.equal(body.binding.resourceId, "wecom-reused-bot");
 });
 
+test("WeCom remembers an opened direct chat and sends Bot locator messages", async () => {
+  const user = "wecom-locate-user";
+  await fetch(`${base}/api/im-bindings/start`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ provider: "work-wechat" }),
+  });
+  const credentials = await fetch(`${base}/api/im-bindings/work-wechat/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { botId: "wecom-locate-bot", secret: "wecom-locate-secret" } }),
+  });
+  assert.equal(credentials.status, 200);
+
+  const unavailable = await fetch(`${base}/api/im-bindings/work-wechat/locate`, {
+    method: "POST",
+    headers: headers(user),
+  });
+  assert.equal(unavailable.status, 409);
+  const unavailableBody = (await unavailable.json()) as { error: string; message: string };
+  assert.equal(unavailableBody.error, "target_unavailable");
+  assert.match(unavailableBody.message, /企业微信里打开该 Bot/);
+
+  const client = wecomClients.at(-1)!;
+  client.emit("event.enter_chat", {
+    headers: { req_id: "wecom-enter-locate" },
+    body: {
+      msgid: "wecom-enter-message",
+      msgtype: "event",
+      chattype: "single",
+      from: { userid: "wecom-locate-user-id" },
+      event: { eventtype: "enter_chat" },
+    },
+  });
+  await waitFor(() => wecomWelcomes.some(({ reqId }) => reqId === "wecom-enter-locate"));
+  assert.match(wecomWelcomes.at(-1)?.content ?? "", /以后可以直接在这里向我提问/);
+
+  await waitFor(() => {
+    const stored = uiState.get(`${user}#im-bindings`)?.value as
+      { resources?: { "work-wechat"?: { externalUserId?: string; externalChatId?: string } } } | undefined;
+    return stored?.resources?.["work-wechat"]?.externalUserId === "wecom-locate-user-id";
+  });
+  const stored = uiState.get(`${user}#im-bindings`)?.value as {
+    resources: { "work-wechat": { externalUserId: string; externalChatId: string } };
+  };
+  assert.equal(stored.resources["work-wechat"].externalUserId, "wecom-locate-user-id");
+  assert.equal(stored.resources["work-wechat"].externalChatId, "wecom-locate-user-id");
+
+  const locate = await fetch(`${base}/api/im-bindings/work-wechat/locate`, {
+    method: "POST",
+    headers: headers(user),
+  });
+  assert.equal(locate.status, 200);
+  assert.deepEqual(await locate.json(), { queued: false, sent: true, message: "定位消息已发送，请打开企业微信查看" });
+  await waitFor(() =>
+    wecomSent.some(
+      ({ target, content }) =>
+        target === "wecom-locate-user-id" &&
+        content === "你好，我是你的专属 QM 企业微信智能机器人。以后可以直接在这里向我提问。",
+    ),
+  );
+  assert.deepEqual(wecomSent.at(-1), {
+    target: "wecom-locate-user-id",
+    content: "你好，我是你的专属 QM 企业微信智能机器人。以后可以直接在这里向我提问。",
+  });
+  assert.equal(
+    imDeliveries.some((delivery) => delivery.destination.type === "im:work-wechat"),
+    false,
+  );
+
+  wecomSendFailures = 1;
+  const failedLocate = await fetch(`${base}/api/im-bindings/work-wechat/locate`, {
+    method: "POST",
+    headers: headers(user),
+  });
+  assert.equal(failedLocate.status, 502);
+  const failedBody = (await failedLocate.json()) as { error: string; message: string };
+  assert.equal(failedBody.error, "send_failed");
+  assert.match(failedBody.message, /wecom proactive send failed/);
+});
+
+test("WeCom direct messages do not wait for target persistence conflicts", async () => {
+  const user = "wecom-conflict-user";
+  await fetch(`${base}/api/im-bindings/start`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ provider: "work-wechat" }),
+  });
+  const credentials = await fetch(`${base}/api/im-bindings/work-wechat/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { botId: "wecom-conflict-bot", secret: "wecom-conflict-secret" } }),
+  });
+  assert.equal(credentials.status, 200);
+  const client = wecomClients.at(-1)!;
+  const conflictsBefore = uiStateWriteConflicts;
+  const turnsBefore = coreTurns.length;
+  forcedUiStateConflicts.set(`${user}#im-bindings`, 3);
+
+  client.emit("message.text", {
+    headers: { req_id: "wecom-conflict-request" },
+    body: {
+      msgid: "wecom-conflict-message",
+      msgtype: "text",
+      chattype: "single",
+      chatid: "",
+      from: { userid: "wecom-conflict-user-id" },
+      text: { content: "hello through conflict" },
+    },
+  });
+
+  await waitFor(() => coreTurns.length === turnsBefore + 1);
+  assert.equal((coreTurns.at(-1) as { text: string }).text, "hello through conflict");
+  await waitFor(() => uiStateWriteConflicts >= conflictsBefore + 3);
+});
+
 test("WeCom matches concurrent replies to their original streams", async () => {
+  wecomSent.length = 0;
   const user = "wecom-user";
   const start = await fetch(`${base}/api/im-bindings/start`, {
     method: "POST",
@@ -642,8 +1175,7 @@ test("WeCom matches concurrent replies to their original streams", async () => {
   );
   await waitFor(() => {
     const value = uiState.get(`${user}#im-progress-work-wechat`)?.value as
-      | { runs?: Record<string, { sentActivity?: number; partialLength?: number; partialHash?: string }> }
-      | undefined;
+      { runs?: Record<string, { sentActivity?: number; partialLength?: number; partialHash?: string }> } | undefined;
     const entries = Object.entries(value?.runs ?? {});
     const cursor = entries[0]?.[1];
     return (
@@ -772,14 +1304,12 @@ test("WeCom matches concurrent replies to their original streams", async () => {
   await waitFor(
     () =>
       wecomReplies.filter(
-        ({ reqId, finish }) =>
-          (reqId === "wecom-request-a" || reqId === "wecom-request-b") && finish === false,
+        ({ reqId, finish }) => (reqId === "wecom-request-a" || reqId === "wecom-request-b") && finish === false,
       ).length === 2,
   );
   await waitFor(() => {
     const value = uiState.get(`${user}#im-progress-work-wechat`)?.value as
-      | { runs?: Record<string, unknown> }
-      | undefined;
+      { runs?: Record<string, unknown> } | undefined;
     return Object.keys(value?.runs ?? {}).length === 0;
   });
   imProgressReadDelayMs = 0;

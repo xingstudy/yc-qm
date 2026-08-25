@@ -268,6 +268,8 @@ interface ImBindingRecord {
   externalChatId?: string;
   externalDisplayName?: string;
   resourceId?: string;
+  locatorAvailable?: boolean;
+  locatorUnavailableReason?: string;
   authorizationState?: ImAuthorizationState;
   authorizationMessage?: string;
   verificationRequired?: boolean;
@@ -281,6 +283,7 @@ let imProviderMenuOpen = false;
 let imBindingsLoaded = false;
 let imBindingsLoading = false;
 let imBindingsError = "";
+let imLocateNotice = "";
 let imBindings: Partial<Record<ImProviderId, ImBindingRecord>> = {};
 let reusableImProviders = new Set<ImProviderId>();
 let activeImProvider: ImProviderId | null = null;
@@ -347,6 +350,10 @@ function normalizeImBindings(raw: unknown): Partial<Record<ImProviderId, ImBindi
       ...(typeof record.externalChatId === "string" ? { externalChatId: record.externalChatId } : {}),
       ...(typeof record.externalDisplayName === "string" ? { externalDisplayName: record.externalDisplayName } : {}),
       ...(typeof record.resourceId === "string" ? { resourceId: record.resourceId } : {}),
+      ...(typeof record.locatorAvailable === "boolean" ? { locatorAvailable: record.locatorAvailable } : {}),
+      ...(typeof record.locatorUnavailableReason === "string"
+        ? { locatorUnavailableReason: record.locatorUnavailableReason }
+        : {}),
       ...(record.authorizationState === "waiting" ||
       record.authorizationState === "scanned" ||
       record.authorizationState === "verification-required" ||
@@ -532,6 +539,24 @@ async function deleteImBinding(provider: ImProviderId): Promise<void> {
   renderImPanel();
 }
 
+async function locateImBot(provider: ImProviderId): Promise<void> {
+  imBindingsLoading = true;
+  imBindingsError = "";
+  imLocateNotice = "";
+  renderImPanel();
+  try {
+    const result = await api<{ queued?: boolean; message?: string }>(
+      `/api/im-bindings/${encodeURIComponent(provider)}/locate`,
+      { method: "POST" },
+    );
+    imLocateNotice = result.message ?? t("Locator message queued. Open the IM app to find your Bot.");
+  } catch (error) {
+    imBindingsError = errMessage(error, t("Could not send the Bot locator message."));
+  }
+  imBindingsLoading = false;
+  renderImPanel();
+}
+
 async function verifyWeixinCode(): Promise<void> {
   const code = imVerificationCode.trim();
   if (!/^\d{1,8}$/.test(code)) return;
@@ -579,6 +604,7 @@ async function submitImCredentials(provider: Exclude<ImProviderId, "wechat">): P
 function showImBinding(provider: ImProviderId): void {
   imProviderMenuOpen = false;
   activeImProvider = provider;
+  imLocateNotice = "";
   const binding = imBindings[provider];
   if (
     binding?.status === "pending" &&
@@ -596,6 +622,7 @@ function showImBinding(provider: ImProviderId): void {
 
 function closeImQr(): void {
   activeImProvider = null;
+  imLocateNotice = "";
   stopImPolling();
   renderImPanel();
 }
@@ -606,6 +633,7 @@ function setImPanelOpen(open: boolean, focusPill = false): boolean {
   if (!open) {
     imProviderMenuOpen = false;
     activeImProvider = null;
+    imLocateNotice = "";
     stopImPolling();
   } else if (!imBindingsLoaded) {
     void loadImBindings();
@@ -630,7 +658,9 @@ function toggleImProviderMenu(event: Event): void {
 
 function imLogo(option: (typeof IM_PROVIDER_OPTIONS)[number]): TemplateResult {
   if (option.image)
-    return html`<span class=${`im-logo ${option.className}`} aria-hidden="true"><img src=${option.image} alt="" /></span>`;
+    return html`<span class=${`im-logo ${option.className}`} aria-hidden="true"
+      ><img src=${option.image} alt=""
+    /></span>`;
   const paths = typeof option.path === "string" ? [option.path] : option.path;
   return html`<span class=${`im-logo ${option.className}`} aria-hidden="true"
     ><svg viewBox=${option.viewBox} focusable="false">
@@ -833,6 +863,9 @@ function imSetupPanel(): TemplateResult | typeof nothing {
   const setupMode = binding.setupMode ?? "wechat-qr";
   let setupContent: TemplateResult;
   if (connected) {
+    const locateAvailable = binding.locatorAvailable === true;
+    const locatorUnavailableReason =
+      binding.locatorUnavailableReason ?? t("Open this Bot once in the IM app to enable locator messages.");
     const displayName = binding.externalDisplayName
       ? html`<div class="im-qr-note">${binding.externalDisplayName}</div>`
       : nothing;
@@ -842,7 +875,22 @@ function imSetupPanel(): TemplateResult | typeof nothing {
         binding.resourceId
           ? html`<div class="im-resource-id"><span>Bot ID</span><code>${binding.resourceId}</code></div>`
           : nothing
-      }`;
+      }
+      <button
+        class="btn primary im-locate"
+        type="button"
+        title=${locateAvailable ? t("Find Bot in IM") : locatorUnavailableReason}
+        ?disabled=${imBindingsLoading || !locateAvailable}
+        @click=${() => void locateImBot(activeImProvider!)}
+      >
+        ${icon(MessageSquare, 15)}<span>${t("Find Bot in IM")}</span>
+      </button>
+      ${
+        locateAvailable
+          ? nothing
+          : html`<div class="im-qr-note">${locatorUnavailableReason}</div>`
+      }
+      ${imLocateNotice ? html`<div class="im-locate-notice">${imLocateNotice}</div>` : nothing}`;
   } else if (setupMode === "wechat-qr") {
     setupContent = imQrSetup(binding);
   } else if (binding.provider === "work-wechat" && setupMode === "provision-qr" && !binding.resourceId) {

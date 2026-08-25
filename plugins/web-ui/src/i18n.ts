@@ -118,6 +118,10 @@ const ZH: Record<string, string> = {
   "Background activity": "后台活动",
   "Batch updates": "批量更新",
   "Binding complete": "绑定完成",
+  "Find Bot in IM": "在 IM 中找到 Bot",
+  "Locator message queued. Open the IM app to find your Bot.": "定位消息已提交，请打开 IM 查看你的 Bot。",
+  "Open this Bot once in the IM app to enable locator messages.":
+    "平台未返回扫码人的会话 ID，请先在 IM 中打开该 Bot 建立一次会话。",
   "Binding QR code": "绑定二维码",
   "Waiting for platform authorization": "等待平台授权",
   "Bot name": "机器人名称",
@@ -171,6 +175,7 @@ const ZH: Record<string, string> = {
   "Could not create the binding QR code.": "无法创建绑定二维码。",
   "Could not start chat channel setup.": "无法开始聊天频道接入。",
   "Could not authorize WeCom bot.": "无法创建或绑定企业微信智能机器人。",
+  "Could not send the Bot locator message.": "无法发送 Bot 定位消息。",
   "WeCom authorization window was blocked.": "企业微信授权窗口被浏览器拦截，请允许弹窗后重试。",
   "Discard the saved Bot credentials and create a new Bot?": "放弃已保存的机器人凭据并重新创建机器人？",
   "Could not discard the saved Bot.": "无法放弃旧机器人。",

@@ -6,6 +6,7 @@ const shell = readFileSync(new URL("../src/shell.ts", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/shell.css", import.meta.url), "utf8");
 const i18n = readFileSync(new URL("../src/i18n.ts", import.meta.url), "utf8");
 const server = readFileSync(new URL("../server/index.ts", import.meta.url), "utf8");
+const imLogoSource = shell.slice(shell.indexOf("function imLogo"), shell.indexOf("function imQrSrc"));
 const refreshImBinding = shell.slice(
   shell.indexOf("async function refreshImBinding"),
   shell.indexOf("function startImPolling"),
@@ -28,7 +29,7 @@ test("the footer user pill opens the IM channel popover", () => {
   assert.match(shell, /id: "dingtalk",\s+label: "DingTalk"/);
   assert.match(shell, /<svg viewBox=\$\{option\.viewBox\}/);
   assert.match(shell, /=> svg`<path d=\$\{path\}/);
-  assert.doesNotMatch(shell, /function imLogo[\s\S]*icon\(MessageSquare/);
+  assert.doesNotMatch(imLogoSource, /icon\(MessageSquare/);
   assert.match(shell, /import \{ qrDataUrl \} from "\.\/qr";/);
   assert.match(shell, /"\/api\/im-bindings"/);
   assert.match(shell, /api<\{ binding: ImBindingRecord \}>\("\/api\/im-bindings\/start"/);
@@ -94,6 +95,15 @@ test("each IM platform uses its official authorization and message client", () =
   assert.match(server, /new WeComWSClient\(/);
   assert.match(server, /new DWClient\(/);
   assert.match(server, /path: "\/api\/im-bindings\/:provider\/credentials"/);
+  assert.match(server, /path: "\/api\/im-bindings\/:provider\/locate"/);
+  assert.match(server, /async function locateImBot\(user: string, provider: ImProviderId\)/);
+  assert.match(server, /receive_id_type: "chat_id"/);
+  assert.match(server, /if \(binding\.provider === "feishu"\) return Boolean\(resource\.externalChatId\)/);
+  assert.match(server, /if \(binding\.provider === "qq"\) return Boolean\(resource\.externalChatId\)/);
+  assert.doesNotMatch(server, /receive_id_type: "open_id"/);
+  assert.doesNotMatch(server, /sendToUser/);
+  assert.match(server, /client\.on\("event\.enter_chat", handleWeComEnter\)/);
+  assert.match(server, /async function rememberImConversation/);
   assert.match(server, /await activateImSdkResource\(user, resource\)/);
   assert.match(
     server,
@@ -137,6 +147,7 @@ test("the IM channel picker has its own panel, provider menu, provider setup flo
   assert.match(css, /\.im-credential-form \{/);
   assert.match(css, /\.im-verify \{/);
   assert.match(css, /\.im-unbind/);
+  assert.match(css, /\.im-locate/);
   assert.match(css, /\.im-doc-link \{[\s\S]*?background: #fff;[\s\S]*?color: #202124;/);
   assert.match(css, /\.im-resource-id \{/);
   assert.match(css, /place-items: center/);
@@ -149,14 +160,20 @@ test("the IM channel picker has its own panel, provider menu, provider setup flo
   assert.match(i18n, /"Continue setup": "继续接入"/);
   assert.match(i18n, /WeCom: "企业微信"/);
   assert.match(i18n, /"Binding complete": "绑定完成"/);
+  assert.match(i18n, /"Find Bot in IM": "在 IM 中找到 Bot"/);
   assert.match(i18n, /"Waiting for platform authorization": "等待平台授权"/);
   assert.match(i18n, /"Scan to create or bind a bot": "扫码创建或绑定机器人"/);
-  assert.match(i18n, /"Quick scan setup is temporarily unavailable.": "快捷扫码当前不可用，请重试或手动绑定已有 Bot。"/);
+  assert.match(
+    i18n,
+    /"Quick scan setup is temporarily unavailable.": "快捷扫码当前不可用，请重试或手动绑定已有 Bot。"/,
+  );
   assert.match(i18n, /"Waiting for bot authorization": "等待机器人绑定并完成授权"/);
   assert.match(i18n, /"Verify and bind": "验证并绑定"/);
   assert.match(i18n, /"Setup guide": "接入文档"/);
   assert.match(i18n, /Bound: "已绑定"/);
   assert.match(i18n, /Unbind: "解绑"/);
+  assert.match(shell, /\/api\/im-bindings\/\$\{encodeURIComponent\(provider\)\}\/locate/);
+  assert.match(shell, /t\("Find Bot in IM"\)/);
   assert.doesNotMatch(shell, /OpenClaw|openclaw/);
   assert.doesNotMatch(i18n, /OpenClaw|openclaw/);
 });

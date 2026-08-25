@@ -123,6 +123,33 @@ async function listDeliveries(ctx: ApiCtx): Promise<void> {
   return sendJson(res, 200, { deliveries: await app.pendingDeliveries(type, claimMs, targetPrefix) });
 }
 
+async function postDelivery(ctx: ApiCtx): Promise<void> {
+  const { res, app, body } = ctx;
+  const destination = isObj(body) && isObj(body.destination) ? body.destination : undefined;
+  const type = destination && typeof destination.type === "string" ? destination.type.trim() : "";
+  const target = destination && typeof destination.target === "string" ? destination.target.trim() : "";
+  const editRef = destination && typeof destination.editRef === "string" ? destination.editRef : undefined;
+  const text = isObj(body) && typeof body.text === "string" ? body.text : undefined;
+  const idempotencyKey = isObj(body) && typeof body.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";
+  if (
+    !type ||
+    type.length > 100 ||
+    !target ||
+    target.length > 2_000 ||
+    text === undefined ||
+    text.length > 40_000 ||
+    !idempotencyKey
+  ) {
+    return sendJson(res, 400, { error: "bad_request", message: "valid destination and idempotencyKey required" });
+  }
+  await app.enqueueDelivery({
+    destination: { type, target, ...(editRef ? { editRef: editRef.slice(0, 2_000) } : {}) },
+    text,
+    idempotencyKey: idempotencyKey.slice(0, 1_000),
+  });
+  return sendJson(res, 202, { queued: true });
+}
+
 async function ackDelivery(ctx: ApiCtx): Promise<void> {
   const { res, app, body } = ctx;
   const id = ctx.params.id!;
@@ -175,6 +202,7 @@ export const turnRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/runs/:id", auth: "source", handle: getRun },
   { method: "GET", path: "/v1/runs", auth: "source", handle: getActiveRunForThread },
   { method: "GET", path: "/v1/deliveries", auth: "source", handle: listDeliveries },
+  { method: "POST", path: "/v1/deliveries", auth: "source", handle: postDelivery },
   { method: "POST", path: "/v1/deliveries/:id/ack", auth: "source", handle: ackDelivery },
   { method: "POST", path: "/v1/deliveries/ack-by-key", auth: "source", handle: ackDeliveryByKey },
 ];

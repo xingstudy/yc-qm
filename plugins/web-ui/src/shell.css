@@ -1411,6 +1411,7 @@ a.chat-row-open {
   font-size: 16px;
 }
 .im-retry,
+.im-locate,
 .im-unbind,
 .im-forget {
   display: flex;
@@ -1419,6 +1420,12 @@ a.chat-row-open {
   gap: 6px;
   width: 100%;
   margin-top: 12px;
+}
+.im-locate-notice {
+  margin-top: 8px;
+  color: #128a50;
+  font-size: 12px;
+  line-height: 1.5;
 }
 .im-doc-link {
   display: flex;

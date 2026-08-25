@@ -9,6 +9,7 @@ import { LRUCache } from "lru-cache";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import {
   WSClient as WeComWSClient,
+  type EventMessage as WeComEventMessage,
   type TextMessage as WeComTextMessage,
   type WsFrame,
   type WsFrameHeaders,
@@ -236,11 +237,7 @@ const IM_PROVIDER_META: Record<
     hint: "扫码授权页支持选择已有机器人时请直接绑定；否则填写已有 ClientID 和 ClientSecret，只有需要时才创建新机器人。",
     setupMode: "provision-qr",
     setupTitle: "扫码选择或创建钉钉机器人",
-    setupSteps: [
-      "使用钉钉扫描二维码并确认授权",
-      "优先选择已有机器人，没有时再创建",
-      "平台验证 Stream 连接后完成绑定",
-    ],
+    setupSteps: ["使用钉钉扫描二维码并确认授权", "优先选择已有机器人，没有时再创建", "平台验证 Stream 连接后完成绑定"],
     credentialFields: ["ClientID", "ClientSecret"],
     manualSetupSteps: [
       "在钉钉开放平台打开已有企业内部应用",
@@ -274,6 +271,8 @@ interface ImBindingRecord {
   externalChatId?: string;
   externalDisplayName?: string;
   resourceId?: string;
+  locatorAvailable?: boolean;
+  locatorUnavailableReason?: string;
   authorizationState?: ImAuthorizationState;
   authorizationMessage?: string;
   verificationRequired?: boolean;
@@ -333,6 +332,12 @@ interface ImSdkRuntime {
     activityIncluded?: boolean,
   ) => Promise<void>;
   progress?: (target: string, text: string, activityText: string, runId: string) => Promise<boolean>;
+}
+
+class ImBotTargetUnavailableError extends Error {}
+
+function imLocatorMessage(provider: ImProviderId, botName?: string): string {
+  return `你好，我是你的专属 ${botName?.trim() || imProviderMeta(provider).botName}。以后可以直接在这里向我提问。`;
 }
 
 interface ImQrFlow {
@@ -551,6 +556,10 @@ function parseImBindings(value: unknown, revision = 0): ImBindingsState {
       ...(typeof r.externalChatId === "string" ? { externalChatId: r.externalChatId } : {}),
       ...(typeof r.externalDisplayName === "string" ? { externalDisplayName: r.externalDisplayName } : {}),
       ...(typeof r.resourceId === "string" ? { resourceId: r.resourceId } : {}),
+      ...(typeof r.locatorAvailable === "boolean" ? { locatorAvailable: r.locatorAvailable } : {}),
+      ...(typeof r.locatorUnavailableReason === "string"
+        ? { locatorUnavailableReason: r.locatorUnavailableReason }
+        : {}),
       ...(authorizationState ? { authorizationState } : {}),
       ...(typeof r.authorizationMessage === "string" ? { authorizationMessage: r.authorizationMessage } : {}),
       ...(typeof r.verificationRequired === "boolean" ? { verificationRequired: r.verificationRequired } : {}),
@@ -608,15 +617,50 @@ function parseImBindings(value: unknown, revision = 0): ImBindingsState {
   return state;
 }
 
-function publicImBinding(binding: ImBindingRecord): ImBindingRecord {
+function imLocatorAvailable(binding: ImBindingRecord | undefined, resource: ImResourceRecord | undefined): boolean {
+  if (binding?.status !== "connected" || !resource) return false;
+  if (binding.provider === "wechat")
+    return Boolean(resource.externalChatId && readWeixinSecret(resource)?.contextToken);
+  if (binding.provider === "feishu") return Boolean(resource.externalChatId);
+  if (binding.provider === "qq") return Boolean(resource.externalChatId);
+  if (binding.provider === "work-wechat") return Boolean(resource.externalChatId);
+  if (binding.provider === "dingtalk") {
+    const secret = readImSdkSecret(resource);
+    return Boolean(resource.externalChatId && secret?.replyTargets?.[resource.externalChatId]);
+  }
+  return Boolean(resource.externalChatId);
+}
+
+function imLocatorUnavailableReason(binding: ImBindingRecord | undefined, resource: ImResourceRecord | undefined): string {
+  if (binding?.status !== "connected" || !resource) return "机器人尚未完成绑定";
+  const label = imProviderMeta(binding.provider).label;
+  if (binding.provider === "wechat" && !readWeixinSecret(resource)?.contextToken)
+    return "请先在微信里给 Bot 发送一条消息，之后才能从这里定位。";
+  if (binding.provider === "feishu") return "请先在飞书里给 Bot 发送一条消息，之后才能从这里定位。";
+  if (binding.provider === "work-wechat")
+    return "请先在企业微信里打开该 Bot；打开后会自动发送欢迎消息并记录会话。";
+  if (binding.provider === "qq") return "请先在 QQ 里给 Bot 发送一条消息，之后才能从这里定位。";
+  if (binding.provider === "dingtalk")
+    return "请先在钉钉里给 Bot 发送一条消息，之后才能从这里定位。";
+  return `${label}没有可发送的会话上下文，请先在 IM 中打开机器人并发送一条消息。`;
+}
+
+function publicImBinding(binding: ImBindingRecord, resource?: ImResourceRecord): ImBindingRecord {
   const {
     providerQrCode: _providerQrCode,
     providerBaseUrl: _providerBaseUrl,
     verifyCode: _verifyCode,
     qrGenerationId: _qrGenerationId,
+    locatorAvailable: _locatorAvailable,
+    locatorUnavailableReason: _locatorUnavailableReason,
     ...publicBinding
   } = binding;
-  return publicBinding;
+  const locatorAvailable = imLocatorAvailable(binding, resource);
+  return {
+    ...publicBinding,
+    locatorAvailable,
+    ...(locatorAvailable ? {} : { locatorUnavailableReason: imLocatorUnavailableReason(binding, resource) }),
+  };
 }
 
 function publicImBindings(state: ImBindingsState): {
@@ -625,7 +669,10 @@ function publicImBindings(state: ImBindingsState): {
 } {
   return {
     bindings: Object.fromEntries(
-      Object.entries(state.bindings).map(([provider, binding]) => [provider, publicImBinding(binding)]),
+      Object.entries(state.bindings).map(([provider, binding]) => [
+        provider,
+        publicImBinding(binding, state.resources[provider as ImProviderId]),
+      ]),
     ),
     reusableProviders: Object.keys(state.resources).filter(isImProviderId),
   };
@@ -934,6 +981,7 @@ function createImKeyedQueue(): <T>(key: string, fn: () => Promise<T>) => Promise
 
 const queueImSdkMessage = createImKeyedQueue();
 const queueImProgressStateUpdate = createImKeyedQueue();
+const queueImConversationUpdate = createImKeyedQueue();
 
 function imRuntimeKey(user: string, provider: ImProviderId): string {
   return `${user}\0${provider}`;
@@ -1403,7 +1451,8 @@ async function sendImProgress(
   const runtime = provider === "wechat" ? undefined : imSdkRuntimes.get(imRuntimeKey(user, provider));
   if (provider !== "wechat" && !runtime) throw new Error(`${provider} runtime unavailable`);
   if (sentImProgress.has(messageId)) return true;
-  const claim = progressState && cursor ? await claimStoredImProgressMessage(user, progressState, messageId) : "claimed";
+  const claim =
+    progressState && cursor ? await claimStoredImProgressMessage(user, progressState, messageId) : "claimed";
   if (claim === "sent") return true;
   if (claim === "busy") return false;
   if (progressState && !ownsImBridge(user, provider, progressState.resourceId)) {
@@ -1484,8 +1533,7 @@ async function followImRunProgress(
   if (provider === "wechat") await sleep(100);
   for (;;) {
     if (canceled()) return;
-    if (progressState && !ownsImBridge(user, provider, progressState.resourceId))
-      throw new ImProgressLeaseLostError();
+    if (progressState && !ownsImBridge(user, provider, progressState.resourceId)) throw new ImProgressLeaseLostError();
     try {
       const response = await fetchImRun(user, runId);
       if (canceled()) return;
@@ -1545,8 +1593,7 @@ async function followImRunProgress(
               }
               if (streamed && progressState)
                 await commitStoredImProgressMessage(user, progressState, progressId, nextCursor);
-              if (!streamed && progressState)
-                await releaseStoredImProgressMessage(user, progressState, progressId);
+              if (!streamed && progressState) await releaseStoredImProgressMessage(user, progressState, progressId);
             }
           }
           if (streamed) {
@@ -1718,6 +1765,83 @@ function startImRunProgress(
   );
 }
 
+interface ImConversationTarget {
+  externalUserId: string;
+  externalChatId: string;
+  externalDisplayName: string;
+  replyWebhook?: string;
+  direct?: boolean;
+}
+
+async function rememberImConversation(
+  user: string,
+  provider: Exclude<ImProviderId, "wechat">,
+  input: ImConversationTarget,
+): Promise<{ binding: ImBindingRecord; resource: ImResourceRecord } | undefined> {
+  const state = await readImBindings(user);
+  const binding = state.bindings[provider];
+  const resource = state.resources[provider];
+  if (binding?.status !== "connected" || !resource || !readImSdkSecret(resource)) return undefined;
+  void persistImConversation(user, provider, input).catch((error: unknown) =>
+    console.error(`[web-ui] ${provider} conversation target update failed:`, String(error)),
+  );
+  return { binding, resource };
+}
+
+function persistImConversation(
+  user: string,
+  provider: Exclude<ImProviderId, "wechat">,
+  input: ImConversationTarget,
+): Promise<void> {
+  return queueImConversationUpdate(imRuntimeKey(user, provider), async () => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const state = await readImBindings(user);
+      const binding = state.bindings[provider];
+      const resource = state.resources[provider];
+      const secret = readImSdkSecret(resource);
+      if (binding?.status !== "connected" || !resource || !secret) return;
+      let changed = false;
+      const directOwner = !resource.externalUserId || resource.externalUserId === input.externalUserId;
+      if (input.direct && directOwner) {
+        const externalUserId = resource.externalUserId ?? input.externalUserId;
+        if (
+          resource.externalUserId !== externalUserId ||
+          resource.externalChatId !== input.externalChatId ||
+          resource.externalDisplayName !== input.externalDisplayName
+        ) {
+          const now = Date.now();
+          resource.externalUserId = externalUserId;
+          resource.externalChatId = input.externalChatId;
+          resource.externalDisplayName = input.externalDisplayName;
+          resource.updatedAt = now;
+          binding.externalUserId = externalUserId;
+          binding.externalChatId = input.externalChatId;
+          binding.externalDisplayName = input.externalDisplayName;
+          binding.updatedAt = now;
+          changed = true;
+        }
+      }
+      if (
+        provider === "dingtalk" &&
+        input.replyWebhook &&
+        secret.replyTargets?.[input.externalChatId] !== input.replyWebhook
+      ) {
+        secret.replyTargets = { ...secret.replyTargets, [input.externalChatId]: input.replyWebhook };
+        resource.encryptedSecret = encryptImSecret(secret);
+        resource.updatedAt = Date.now();
+        changed = true;
+      }
+      if (!changed) return;
+      try {
+        await writeImBindings(user, state);
+        return;
+      } catch (error) {
+        if (!(error instanceof Error && error.message === "ui-state write conflict") || attempt === 2) throw error;
+      }
+    }
+  });
+}
+
 async function postImSdkMessageNow(
   user: string,
   provider: Exclude<ImProviderId, "wechat">,
@@ -1729,19 +1853,12 @@ async function postImSdkMessageNow(
     messageId?: string;
     replyWebhook?: string;
     deliveryEditRef?: string;
+    direct?: boolean;
   },
 ): Promise<{ runId?: string; reply?: string; replayed?: true }> {
-  const state = await readImBindings(user);
-  const binding = state.bindings[provider];
-  const resource = state.resources[provider];
-  const secret = readImSdkSecret(resource);
-  if (binding?.status !== "connected" || !resource || !secret) return {};
-  if (provider === "dingtalk" && input.replyWebhook) {
-    secret.replyTargets = { ...secret.replyTargets, [input.externalChatId]: input.replyWebhook };
-    resource.encryptedSecret = encryptImSecret(secret);
-    resource.updatedAt = Date.now();
-    await writeImBindings(user, state);
-  }
+  const remembered = await rememberImConversation(user, provider, input);
+  if (!remembered) return {};
+  const { binding, resource } = remembered;
   const { turn } = imTurn(provider, { user, binding }, input);
   const posted = await coreFetch("POST", "/v1/turns?async=1", JSON.stringify(turn), IM_SDK_CONNECT_TIMEOUT_MS);
   if (posted.status < 200 || posted.status >= 300) throw new Error(`core turn failed (${posted.status})`);
@@ -1754,14 +1871,7 @@ async function postImSdkMessageNow(
   const runId = typeof body.runId === "string" ? body.runId : undefined;
   const active = body.status === "queued" || body.status === "pending" || body.status === "running";
   if (runId && (posted.status !== 200 || active))
-    startImRunProgress(
-      user,
-      provider,
-      resource.resourceId,
-      input.externalChatId,
-      runId,
-      input.messageId,
-    );
+    startImRunProgress(user, provider, resource.resourceId, input.externalChatId, runId, input.messageId);
   if (posted.status === 200 && runId) return { runId, replayed: true };
   if (body.status === "queued") return runId ? { runId } : {};
   let reply = "消息已处理。";
@@ -1782,6 +1892,7 @@ function postImSdkMessage(
     messageId?: string;
     replyWebhook?: string;
     deliveryEditRef?: string;
+    direct?: boolean;
   },
 ): Promise<{ runId?: string; reply?: string; replayed?: true }> {
   return queueImSdkMessage(imRuntimeKey(user, provider), () => postImSdkMessageNow(user, provider, input));
@@ -1793,6 +1904,7 @@ function larkText(data: unknown): {
   externalDisplayName: string;
   text: string;
   messageId?: string;
+  direct?: boolean;
 } | null {
   if (typeof data !== "object" || data === null) return null;
   const event = data as {
@@ -1823,6 +1935,7 @@ function larkText(data: unknown): {
     externalChatId,
     externalDisplayName: externalUserId,
     text,
+    direct: event.message.chat_type === "p2p",
     ...(typeof event.message.message_id === "string" ? { messageId: event.message.message_id } : {}),
   };
 }
@@ -1897,6 +2010,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         externalDisplayName: message.senderName || message.senderId,
         text,
         messageId: message.messageId,
+        direct: message.kind === "c2c",
       }).catch((error: unknown) => console.error("[web-ui] QQ message failed:", String(error)));
     });
     await waitForImConnection((resolve, reject) => {
@@ -1941,6 +2055,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
     const pendingRepliesByRun = new Map<string, PendingReply>();
     const completedMessageIds = new LRUCache<string, true>({ max: 10_000, ttl: 10 * 60_000 });
     const inFlightMessageIds = new Set<string>();
+    const inFlightWelcomeIds = new Set<string>();
     const retryMessageFrames = new Map<string, WsFrame<WeComTextMessage>>();
     const sentDeliveryKeys = new LRUCache<string, true>({ max: 100_000 });
     const pendingRunMappings = new Set<Promise<void>>();
@@ -1990,6 +2105,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
           externalDisplayName: body.from.userid,
           text,
           messageId: body.msgid,
+          direct: body.chattype === "single",
           deliveryEditRef: JSON.stringify({
             kind: "wecom-stream",
             reqId: frame.headers.req_id,
@@ -2025,7 +2141,36 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
           if (retry && !completedMessageIds.has(body.msgid)) handleWeComText(retry);
         });
     };
+    const handleWeComEnter = (frame: WsFrame<WeComEventMessage>): void => {
+      if (!ownsImBridge(user, resource.provider, resource.resourceId)) return;
+      const body = frame.body;
+      if (
+        !body ||
+        body.chattype === "group" ||
+        completedMessageIds.has(body.msgid) ||
+        inFlightWelcomeIds.has(body.msgid)
+      )
+        return;
+      inFlightWelcomeIds.add(body.msgid);
+      const welcome = client.replyWelcome(frame, {
+        msgtype: "text",
+        text: {
+          content: imLocatorMessage("work-wechat", resource.botName),
+        },
+      });
+      void persistImConversation(user, "work-wechat", {
+        externalUserId: body.from.userid,
+        externalChatId: body.from.userid,
+        externalDisplayName: body.from.userid,
+        direct: true,
+      }).catch((error: unknown) => console.error("[web-ui] WeCom target persistence failed:", String(error)));
+      void welcome
+        .then(() => completedMessageIds.set(body.msgid, true))
+        .catch((error: unknown) => console.error("[web-ui] WeCom welcome failed:", String(error)))
+        .finally(() => inFlightWelcomeIds.delete(body.msgid));
+    };
     client.on("message.text", handleWeComText);
+    client.on("event.enter_chat", handleWeComEnter);
     await waitForImConnection((resolve, reject) => {
       client.on("authenticated", resolve);
       client.on("error", reject);
@@ -2041,6 +2186,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         pendingRepliesByRun.clear();
         completedMessageIds.clear();
         inFlightMessageIds.clear();
+        inFlightWelcomeIds.clear();
         retryMessageFrames.clear();
         sentDeliveryKeys.clear();
         client.disconnect();
@@ -2130,6 +2276,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
             text: message.text.content.trim().slice(0, 40_000),
             messageId: message.msgId,
             replyWebhook: message.sessionWebhook,
+            direct: message.conversationType === "1",
           });
         } finally {
           client.socketCallBackResponse(frame.headers.messageId, {});
@@ -2186,6 +2333,69 @@ async function activateImSdkResource(user: string, resource: ImResourceRecord): 
   } finally {
     if (imSdkActivations.get(key) === activation) imSdkActivations.delete(key);
   }
+}
+
+interface ImLocatorTarget {
+  target: string;
+}
+
+interface ImLocatorResult {
+  label: string;
+  queued: boolean;
+}
+
+function imLocatorTarget(provider: ImProviderId, resource: ImResourceRecord): ImLocatorTarget | null {
+  return resource.externalChatId ? { target: resource.externalChatId } : null;
+}
+
+async function sendImLocatorNow(
+  user: string,
+  provider: ImProviderId,
+  resource: ImResourceRecord,
+  locator: ImLocatorTarget,
+  text: string,
+): Promise<boolean> {
+  if (provider === "wechat") return false;
+  const runtime = imSdkRuntimes.get(imRuntimeKey(user, provider));
+  if (!runtime || runtime.resourceId !== resource.resourceId) return false;
+  await runtime.send(locator.target, text);
+  return true;
+}
+
+async function locateImBot(user: string, provider: ImProviderId): Promise<ImLocatorResult> {
+  const state = await readImBindings(user);
+  const binding = state.bindings[provider];
+  const resource = state.resources[provider];
+  if (binding?.status !== "connected" || !resource)
+    throw new ImBotTargetUnavailableError(`${imProviderMeta(provider).label}机器人尚未完成绑定`);
+  if (!imLocatorAvailable(binding, resource))
+    throw new ImBotTargetUnavailableError(imLocatorUnavailableReason(binding, resource));
+  const message = imLocatorMessage(provider, binding.botName);
+  const locator = imLocatorTarget(provider, resource);
+  if (!locator)
+    throw new ImBotTargetUnavailableError(
+      `${imProviderMeta(provider).label}没有返回扫码人的会话标识，请先在 IM 中打开机器人并发送一条消息`,
+    );
+  const label = imProviderMeta(provider).label;
+  if (await sendImLocatorNow(user, provider, resource, locator, message)) return { label, queued: false };
+  const routePrefix = imRoutePrefix(provider, user, binding);
+  const queued = await coreFetch(
+    "POST",
+    "/v1/deliveries",
+    JSON.stringify({
+      destination: {
+        type: `im:${provider}`,
+        target: `${routePrefix}${locator.target}`,
+      },
+      text: message,
+      idempotencyKey: `im-locate:${provider}:${randomUUID()}`,
+    }),
+  );
+  if (queued.status !== 202) throw new Error(`定位消息入队失败 (${queued.status})`);
+  void drainImDeliveries().catch((error: unknown) =>
+    console.error(`[web-ui] ${provider} locator delivery failed:`, String(error)),
+  );
+  return { label, queued: true };
 }
 
 async function saveImSdkResource(
@@ -3347,6 +3557,26 @@ function imDeliveryRunId(delivery: PendingImDelivery): string | undefined {
   return delivery.idempotencyKey?.startsWith("run:") ? delivery.idempotencyKey.slice("run:".length) : undefined;
 }
 
+function imLocatorDelivery(delivery: PendingImDelivery): boolean {
+  return delivery.idempotencyKey?.startsWith("im-locate:") === true;
+}
+
+async function ackImDelivery(delivery: PendingImDelivery): Promise<void> {
+  const acked = await coreFetch("POST", `/v1/deliveries/${encodeURIComponent(delivery.id)}/ack`);
+  if (acked.status !== 200) throw new Error(`core delivery ack failed (${acked.status})`);
+}
+
+async function ackFailedImLocatorDelivery(
+  provider: ImProviderId,
+  delivery: PendingImDelivery,
+  error: unknown,
+): Promise<boolean> {
+  if (!imLocatorDelivery(delivery)) return false;
+  console.error(`[web-ui] ${provider} locator delivery failed:`, String(error));
+  await ackImDelivery(delivery);
+  return true;
+}
+
 function weixinMessageText(message: WeixinMessage): string {
   return (message.item_list ?? [])
     .filter((item) => item.type === 1 && typeof item.text_item?.text === "string")
@@ -3456,11 +3686,25 @@ export async function pollWeixinAccount(user: string, expectedResourceId: string
     return;
   }
   const contextToken = [...messages].reverse().find((message) => message.context_token)?.context_token;
+  const nextCursor = response.get_updates_buf ?? latestSecret.cursor;
+  const nextContextToken = contextToken ?? latestSecret.contextToken;
+  const nextExternalChatId = contextToken ? latestSecret.userId.slice(0, 256) : latestResource.externalChatId;
+  if (
+    nextCursor === latestSecret.cursor &&
+    nextContextToken === latestSecret.contextToken &&
+    nextExternalChatId === latestResource.externalChatId
+  ) {
+    return;
+  }
   latestResource.encryptedSecret = encryptImSecret({
     ...latestSecret,
-    ...(response.get_updates_buf !== undefined ? { cursor: response.get_updates_buf } : {}),
-    ...(contextToken ? { contextToken } : {}),
+    ...(nextCursor !== undefined ? { cursor: nextCursor } : {}),
+    ...(nextContextToken ? { contextToken: nextContextToken } : {}),
   } satisfies WeixinResourceSecret);
+  if (nextExternalChatId) {
+    latestResource.externalChatId = nextExternalChatId;
+    if (latest.bindings.wechat) latest.bindings.wechat.externalChatId = nextExternalChatId;
+  }
   latestResource.updatedAt = Date.now();
   await writeImBindings(user, latest);
 }
@@ -3497,38 +3741,44 @@ export async function drainWeixinDeliveries(stored?: StoredImBindings[]): Promis
         if (!secret) return;
         for (const delivery of deliveries) {
           const target = (delivery.destination?.target ?? "").slice(targetPrefix.length);
-          if (target !== binding.externalChatId) continue;
+          if (target !== binding.externalChatId) {
+            if (imLocatorDelivery(delivery)) await ackImDelivery(delivery);
+            continue;
+          }
           const runId = imDeliveryRunId(delivery);
           const progress = runId ? await finishImRunProgress(user, "wechat", runId) : undefined;
           const finalDelivery = runId
             ? await imFinalDeliveryText(user, "wechat", runId, delivery.text ?? "", progress?.sentActivity ?? 0)
             : { text: delivery.text, activityIncluded: false };
-          const sent = await weixinJson<{ ret?: number; errmsg?: string }>(
-            secret.baseUrl,
-            "ilink/bot/sendmessage",
-            "POST",
-            {
-              msg: {
-                from_user_id: "",
-                to_user_id: secret.userId,
-                client_id: `qm-${randomUUID()}`,
-                message_type: 2,
-                message_state: 2,
-                ...(finalDelivery.text
-                  ? { item_list: [{ type: 1, text_item: { text: finalDelivery.text.slice(0, 40_000) } }] }
-                  : {}),
-                ...(secret.contextToken ? { context_token: secret.contextToken } : {}),
-                ...(runId ? { run_id: runId } : {}),
+          try {
+            const sent = await weixinJson<{ ret?: number; errmsg?: string }>(
+              secret.baseUrl,
+              "ilink/bot/sendmessage",
+              "POST",
+              {
+                msg: {
+                  from_user_id: "",
+                  to_user_id: secret.userId,
+                  client_id: `qm-${randomUUID()}`,
+                  message_type: 2,
+                  message_state: 2,
+                  ...(finalDelivery.text
+                    ? { item_list: [{ type: 1, text_item: { text: finalDelivery.text.slice(0, 40_000) } }] }
+                    : {}),
+                  ...(secret.contextToken ? { context_token: secret.contextToken } : {}),
+                  ...(runId ? { run_id: runId } : {}),
+                },
+                base_info: { channel_version: "0.1.0", bot_agent: "QM/0.1.0" },
               },
-              base_info: { channel_version: "0.1.0", bot_agent: "QM/0.1.0" },
-            },
-            secret.token,
-            15_000,
-          );
-          if ((sent.ret ?? 0) !== 0)
-            throw new Error(`Weixin sendmessage failed: ${sent.ret} ${sent.errmsg ?? ""}`);
-          const acked = await coreFetch("POST", `/v1/deliveries/${encodeURIComponent(delivery.id)}/ack`);
-          if (acked.status !== 200) throw new Error(`core delivery ack failed (${acked.status})`);
+              secret.token,
+              15_000,
+            );
+            if ((sent.ret ?? 0) !== 0) throw new Error(`Weixin sendmessage failed: ${sent.ret} ${sent.errmsg ?? ""}`);
+          } catch (error) {
+            if (await ackFailedImLocatorDelivery("wechat", delivery, error)) continue;
+            throw error;
+          }
+          await ackImDelivery(delivery);
           if (runId) await removeStoredImRunProgress(user, "wechat", runId);
         }
       });
@@ -3587,15 +3837,20 @@ export async function drainImSdkDeliveries(
           const finalDelivery = runId
             ? await imFinalDeliveryText(user, provider, runId, delivery.text ?? "", progress?.sentActivity ?? 0)
             : { text: delivery.text, activityIncluded: false };
-          await runtime.send(
-            target,
-            (finalDelivery.text ?? "").slice(0, 40_000),
-            delivery.idempotencyKey,
-            delivery.destination?.editRef,
-            finalDelivery.activityIncluded,
-          );
-          const acked = await coreFetch("POST", `/v1/deliveries/${encodeURIComponent(delivery.id)}/ack`);
-          if (acked.status !== 200) throw new Error(`core delivery ack failed (${acked.status})`);
+          const text = (finalDelivery.text ?? "").slice(0, 40_000);
+          try {
+            await runtime.send(
+              target,
+              text,
+              delivery.idempotencyKey,
+              delivery.destination?.editRef,
+              finalDelivery.activityIncluded,
+            );
+          } catch (error) {
+            if (await ackFailedImLocatorDelivery(provider, delivery, error)) continue;
+            throw error;
+          }
+          await ackImDelivery(delivery);
           if (runId) await removeStoredImRunProgress(user, provider, runId);
         }
       });
@@ -4219,9 +4474,12 @@ const apiRoutes: readonly WebRoute[] = [
       const provider = url.searchParams.get("provider") ?? "";
       if (!isImProviderId(provider)) return json(res, 400, { error: "bad_request", message: "provider required" });
       try {
-        const binding =
-          provider === "wechat" ? await refreshWeixinBinding(user) : (await readImBindings(user)).bindings[provider];
-        return json(res, 200, { binding: binding ? publicImBinding(binding) : null });
+        if (provider === "wechat") await refreshWeixinBinding(user);
+        const state = await readImBindings(user);
+        const binding = state.bindings[provider];
+        return json(res, 200, {
+          binding: binding ? publicImBinding(binding, state.resources[provider]) : null,
+        });
       } catch (error) {
         if (error instanceof ImResourceConflictError)
           return json(res, 409, { error: "resource_conflict", message: error.message });
@@ -4239,7 +4497,9 @@ const apiRoutes: readonly WebRoute[] = [
       const provider = typeof body.provider === "string" ? body.provider : "";
       if (!isImProviderId(provider)) return json(res, 400, { error: "bad_request", message: "unknown provider" });
       try {
-        return json(res, 200, { binding: publicImBinding(await startImBinding(user, provider)) });
+        const binding = await startImBinding(user, provider);
+        const state = await readImBindings(user);
+        return json(res, 200, { binding: publicImBinding(binding, state.resources[provider]) });
       } catch (error) {
         if (error instanceof ImResourceConflictError)
           return json(res, 409, { error: "resource_conflict", message: error.message });
@@ -4257,7 +4517,8 @@ const apiRoutes: readonly WebRoute[] = [
       const code = typeof body.code === "string" ? body.code.trim() : "";
       const binding = await verifyWeixinBinding(user, code);
       if (!binding) return json(res, 400, { error: "bad_request", message: "valid verification code required" });
-      return json(res, 200, { binding: publicImBinding(binding) });
+      const state = await readImBindings(user);
+      return json(res, 200, { binding: publicImBinding(binding, state.resources.wechat) });
     },
   },
   {
@@ -4275,13 +4536,38 @@ const apiRoutes: readonly WebRoute[] = [
       if (!parsed) return json(res, 400, { error: "bad_request", message: "请完整填写平台凭据" });
       try {
         const binding = await saveImSdkResource(user, provider, parsed.credentials, parsed.resourceId);
-        return json(res, 200, { binding: publicImBinding(binding) });
+        const state = await readImBindings(user);
+        return json(res, 200, { binding: publicImBinding(binding, state.resources[provider]) });
       } catch (error) {
         if (error instanceof ImResourceConflictError)
           return json(res, 409, { error: "resource_conflict", message: error.message });
         return json(res, 400, {
           error: "invalid_credentials",
           message: error instanceof Error ? error.message : "平台凭据验证失败",
+        });
+      }
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/im-bindings/:provider/locate",
+    handle: async (c) => {
+      const { res, user } = c;
+      const provider = c.params.provider ?? "";
+      if (!isImProviderId(provider)) return json(res, 400, { error: "bad_request", message: "unknown provider" });
+      try {
+        const result = await locateImBot(user, provider);
+        return json(res, 200, {
+          queued: result.queued,
+          sent: !result.queued,
+          message: result.queued ? `定位消息已提交，请打开${result.label}查看` : `定位消息已发送，请打开${result.label}查看`,
+        });
+      } catch (error) {
+        if (error instanceof ImBotTargetUnavailableError)
+          return json(res, 409, { error: "target_unavailable", message: error.message });
+        return json(res, 502, {
+          error: "send_failed",
+          message: error instanceof Error ? error.message : "定位消息发送失败",
         });
       }
     },
