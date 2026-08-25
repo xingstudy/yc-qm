@@ -197,7 +197,7 @@ const IM_PROVIDER_META: Record<
     label: "企业微信",
     botName: "QM 企业微信智能机器人",
     kind: "wecom-aibot",
-    docsUrl: "https://developer.work.weixin.qq.com/document/path/98960",
+    docsUrl: "https://work.weixin.qq.com/nl/index/aicli?from=catDetail",
     hint: "已有机器人请填写 Bot ID 和 Secret 直接绑定；仅在需要新机器人时打开企业微信扫码创建窗口。",
     setupMode: "provision-qr",
     setupTitle: "扫码创建企业微信智能机器人",
