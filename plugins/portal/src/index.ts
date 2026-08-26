@@ -154,6 +154,8 @@ const BROKER_PUBLIC_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
   { method: "POST", path: "/authorize" },
   { method: "GET", path: "/verify" },
   { method: "POST", path: "/verify" },
+  { method: "GET", path: "/wecom/login" },
+  { method: "GET", path: "/wecom/callback" },
 ];
 
 export function brokerRouteFor(method: string, pathname: string): string | null {
@@ -186,6 +188,7 @@ const PRINCIPAL_RULE: PrincipalRule = {
   allowedEmails: process.env.OIDC_ALLOWED_EMAILS?.split(",")
     .map((email) => email.trim())
     .filter(Boolean),
+  allowBrokerPrincipal: Boolean(AUTH_BROKER_UPSTREAM),
 };
 
 const DEV_SECRET = "dev-only-insecure-portal-session-secret";

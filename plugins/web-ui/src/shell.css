@@ -1062,11 +1062,21 @@ a.chat-row-open {
 .im-channel-row:focus-visible {
   background: color-mix(in srgb, var(--secondary) 82%, var(--background));
 }
-.im-channel-row > span:nth-child(2) {
+.im-channel-main {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+.im-channel-main > span,
+.im-channel-main > small {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.im-channel-main > small {
+  color: var(--muted-foreground);
+  font-size: 11px;
 }
 .im-logo {
   display: inline-flex;

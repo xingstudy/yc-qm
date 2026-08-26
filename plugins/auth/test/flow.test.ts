@@ -44,6 +44,13 @@ async function requestLink(
   return { verifier, state: query.get("state")! };
 }
 
+async function submitEmail(h: Harness, email: string): Promise<Response> {
+  const page = await fetch(`${h.base}/authorize?${authorizeQuery()}`);
+  assert.equal(page.status, 200);
+  const request = hiddenRequestToken(await page.text());
+  return fetch(`${h.base}/authorize`, form({ request, email }));
+}
+
 function localLink(h: Harness, link: string): string {
   const url = new URL(link);
   return `${h.base}/verify${url.search}`;
@@ -131,6 +138,141 @@ test("the whole authorization-code flow the portal drives succeeds", async (t) =
   assert.equal(userinfo.sub, claims.sub, "userinfo sub must equal the id_token sub — the portal rejects a mismatch");
   assert.equal(userinfo.email, "admin@example.com");
   assert.equal(userinfo.email_verified, true);
+});
+
+test("WeCom QR sign-in issues the same OIDC code using the member email", async (t) => {
+  const wecomCalls: URL[] = [];
+  const h = await startHarness({
+    env: {
+      AUTH_WECOM_CORP_ID: "wwcorp",
+      AUTH_WECOM_AGENT_ID: "1000002",
+      AUTH_WECOM_SECRET: "wecom-secret",
+    },
+    fetchImpl: async (input) => {
+      const url = new URL(input.toString());
+      wecomCalls.push(url);
+      if (url.pathname === "/cgi-bin/gettoken") {
+        assert.equal(url.searchParams.get("corpid"), "wwcorp");
+        assert.equal(url.searchParams.get("corpsecret"), "wecom-secret");
+        return new Response(JSON.stringify({ errcode: 0, access_token: "wecom-access" }));
+      }
+      if (url.pathname === "/cgi-bin/auth/getuserinfo") {
+        assert.equal(url.searchParams.get("access_token"), "wecom-access");
+        assert.equal(url.searchParams.get("code"), "wecom-code");
+        return new Response(JSON.stringify({ errcode: 0, UserId: "wecom-user" }));
+      }
+      if (url.pathname === "/cgi-bin/user/get") {
+        assert.equal(url.searchParams.get("access_token"), "wecom-access");
+        assert.equal(url.searchParams.get("userid"), "wecom-user");
+        return new Response(JSON.stringify({ errcode: 0, email: "Admin@Example.com", name: "企业管理员" }));
+      }
+      return new Response(JSON.stringify({ errcode: 404, errmsg: "unexpected" }), { status: 404 });
+    },
+  });
+  t.after(() => h.close());
+
+  const { verifier, challenge } = pkcePair();
+  const query = authorizeQuery({ code_challenge: challenge });
+  const page = await fetch(`${h.base}/authorize?${query}`);
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  assert.match(html, /Sign in with WeCom/);
+  const request = hiddenRequestToken(html);
+
+  const login = await fetch(`${h.base}/wecom/login?request=${encodeURIComponent(request)}`, { redirect: "manual" });
+  assert.equal(login.status, 302);
+  const qr = new URL(login.headers.get("location")!);
+  assert.equal(`${qr.origin}${qr.pathname}`, "https://open.work.weixin.qq.com/wwopen/sso/qrConnect");
+  assert.equal(qr.searchParams.get("appid"), "wwcorp");
+  assert.equal(qr.searchParams.get("agentid"), "1000002");
+  assert.equal(qr.searchParams.get("redirect_uri"), `${ISSUER}/wecom/callback`);
+  assert.equal(qr.searchParams.get("state"), request);
+
+  const callback = await fetch(
+    `${h.base}/wecom/callback?code=wecom-code&state=${encodeURIComponent(request)}`,
+    { redirect: "manual" },
+  );
+  assert.equal(callback.status, 302, await callback.text());
+  const location = new URL(callback.headers.get("location")!);
+  assert.equal(`${location.origin}${location.pathname}`, REDIRECT_URI);
+  assert.equal(location.searchParams.get("state"), query.get("state"));
+
+  const tokens = await exchange(h, location.searchParams.get("code")!, verifier);
+  assert.equal(tokens.status, 200);
+  const body = (await tokens.json()) as { id_token: string; access_token: string };
+  const claims = await verifyIdTokenLikePortal(h, body.id_token, "nonce-value");
+  assert.equal(claims.email, "admin@example.com");
+  assert.equal(claims.qm_principal, "admin@example.com");
+  assert.equal(claims.qm_principal_verified, true);
+  assert.equal(claims.name, "企业管理员");
+  const info = await fetch(`${h.base}/userinfo`, { headers: { authorization: `Bearer ${body.access_token}` } });
+  assert.equal(info.status, 200);
+  const userinfo = (await info.json()) as { email: string; qm_principal: string; name: string };
+  assert.equal(userinfo.email, "admin@example.com");
+  assert.equal(userinfo.qm_principal, "admin@example.com");
+  assert.equal(userinfo.name, "企业管理员");
+  assert.deepEqual(
+    wecomCalls.map((url) => url.pathname),
+    ["/cgi-bin/gettoken", "/cgi-bin/auth/getuserinfo", "/cgi-bin/user/get"],
+  );
+});
+
+test("WeCom QR sign-in works when the member has no email", async (t) => {
+  const h = await startHarness({
+    env: {
+      AUTH_WECOM_CORP_ID: "wwcorp",
+      AUTH_WECOM_AGENT_ID: "1000002",
+      AUTH_WECOM_SECRET: "wecom-secret",
+    },
+    fetchImpl: async (input) => {
+      const url = new URL(input.toString());
+      if (url.pathname === "/cgi-bin/gettoken") {
+        return new Response(JSON.stringify({ errcode: 0, access_token: "wecom-access" }));
+      }
+      if (url.pathname === "/cgi-bin/auth/getuserinfo") {
+        return new Response(JSON.stringify({ errcode: 0, UserId: "wecom-user" }));
+      }
+      if (url.pathname === "/cgi-bin/user/get") {
+        return new Response(JSON.stringify({ errcode: 0, name: "无邮箱成员" }));
+      }
+      return new Response(JSON.stringify({ errcode: 404, errmsg: "unexpected" }), { status: 404 });
+    },
+  });
+  t.after(() => h.close());
+
+  const { verifier, challenge } = pkcePair();
+  const query = authorizeQuery({ code_challenge: challenge });
+  const page = await fetch(`${h.base}/authorize?${query}`);
+  assert.equal(page.status, 200);
+  const request = hiddenRequestToken(await page.text());
+  const callback = await fetch(
+    `${h.base}/wecom/callback?code=wecom-code&state=${encodeURIComponent(request)}`,
+    { redirect: "manual" },
+  );
+  assert.equal(callback.status, 302, await callback.text());
+  const location = new URL(callback.headers.get("location")!);
+  assert.equal(`${location.origin}${location.pathname}`, REDIRECT_URI);
+
+  const tokens = await exchange(h, location.searchParams.get("code")!, verifier);
+  assert.equal(tokens.status, 200);
+  const body = (await tokens.json()) as { id_token: string; access_token: string };
+  const claims = await verifyIdTokenLikePortal(h, body.id_token, "nonce-value");
+  assert.equal(claims.qm_principal, "wecom:wwcorp:wecom-user");
+  assert.equal(claims.qm_principal_verified, true);
+  assert.equal(claims.name, "无邮箱成员");
+  assert.equal(claims.email, undefined);
+  const info = await fetch(`${h.base}/userinfo`, { headers: { authorization: `Bearer ${body.access_token}` } });
+  assert.equal(info.status, 200);
+  const userinfo = (await info.json()) as {
+    email?: string;
+    qm_principal: string;
+    qm_principal_verified: boolean;
+    name: string;
+  };
+  assert.equal(userinfo.email, undefined);
+  assert.equal(userinfo.qm_principal, "wecom:wwcorp:wecom-user");
+  assert.equal(userinfo.qm_principal_verified, true);
+  assert.equal(userinfo.name, "无邮箱成员");
 });
 
 test("a replayed magic link is refused", async (t) => {
@@ -292,8 +434,12 @@ test("a tampered authorization code does not open", async (t) => {
 test("an address outside the allowlist is never emailed and never redeemed", async (t) => {
   const h = await startHarness();
   t.after(() => h.close());
-  await requestLink(h, { email: "stranger@example.org" });
+  const submitted = await submitEmail(h, "stranger@example.org");
+  assert.equal(submitted.status, 403);
+  assert.match(await submitted.text(), /This address can&#39;t sign in/);
+  await h.settle();
   assert.equal(h.mailer.sent.length, 0, "a disallowed address must not receive a link");
+  assert.equal(h.claims.calls.length, 0, "a disallowed address must not consume rate-limit slots");
 
   const permitted = await startHarness({ env: { AUTH_ALLOWED_EMAILS: "stranger@example.org" } });
   t.after(() => permitted.close());
@@ -306,17 +452,14 @@ test("an address outside the allowlist is never emailed and never redeemed", asy
   assert.notEqual(refused.status, 302, "a link minted for an address that is no longer allowed must not redeem");
 });
 
-test("the confirmation page is identical for permitted and unknown addresses", async (t) => {
+test("a permitted address still receives the confirmation page", async (t) => {
   const h = await startHarness();
   t.after(() => h.close());
-  const bodyFor = async (email: string): Promise<string> => {
-    const page = await fetch(`${h.base}/authorize?${authorizeQuery()}`);
-    const request = hiddenRequestToken(await page.text());
-    const submitted = await fetch(`${h.base}/authorize`, form({ request, email }));
-    await h.settle();
-    return (await submitted.text()).replace(email, "<address>");
-  };
-  assert.equal(await bodyFor("admin@example.com"), await bodyFor("nobody@elsewhere.test"));
+  const submitted = await submitEmail(h, "admin@example.com");
+  assert.equal(submitted.status, 200);
+  assert.match(await submitted.text(), /Check your email/);
+  await h.settle();
+  assert.equal(h.mailer.sent.length, 1);
 });
 
 test("an email domain allowlist admits the domain and nothing else", async (t) => {
@@ -324,7 +467,8 @@ test("an email domain allowlist admits the domain and nothing else", async (t) =
   t.after(() => h.close());
   await requestLink(h, { email: "anyone@example.com" });
   assert.equal(h.mailer.sent.length, 1);
-  await requestLink(h, { email: "anyone@notexample.com" });
+  const rejected = await submitEmail(h, "anyone@notexample.com");
+  assert.equal(rejected.status, 403);
   assert.equal(h.mailer.sent.length, 1, "a lookalike domain must not be admitted");
 });
 

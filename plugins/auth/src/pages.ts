@@ -96,6 +96,9 @@ const STYLE = `<style>
     text-decoration:none; font:inherit; font-weight:600; border-radius:var(--radius-md); cursor:pointer;
     background:var(--text); color:var(--bg); border:1px solid var(--text); }
   .btn:hover{ opacity:.9; }
+  .btn.secondary{ background:var(--secondary); color:var(--text); border-color:var(--border); }
+  .divider{ display:flex; align-items:center; gap:10px; margin:16px 0; color:var(--muted); font-size:12px; }
+  .divider:before,.divider:after{ content:""; flex:1; height:1px; background:var(--border); }
   .help{ color:var(--muted); font-size:12.5px; margin:20px 0 0; }
   .who{ display:block; margin:0 auto 22px; font-size:13px; color:var(--text); background:var(--secondary);
     border:1px solid var(--border); border-radius:var(--radius-md); padding:11px 14px; word-break:break-word; }
@@ -143,9 +146,13 @@ export function emailFormPage(o: {
   brandName: string;
   action: string;
   requestToken: string;
+  wecomLoginUrl?: string;
   email?: string;
   problem?: string;
 }): string {
+  const wecomLogin = o.wecomLoginUrl
+    ? `<div class="divider"><span>or</span></div><a class="btn secondary" href="${escapeHtml(o.wecomLoginUrl)}">Sign in with WeCom</a>`
+    : "";
   return page({
     title: "Sign in",
     brandName: o.brandName,
@@ -158,7 +165,7 @@ export function emailFormPage(o: {
         <input id="email" name="email" type="email" autocomplete="email" inputmode="email" required autofocus
           spellcheck="false" maxlength="254" placeholder="you@example.com" value="${escapeHtml(o.email ?? "")}">
         <button class="btn" type="submit">Email me a sign-in link</button>
-      </form>`,
+      </form>${wecomLogin}`,
     help: "Only addresses your administrator has allowed can sign in.",
   });
 }

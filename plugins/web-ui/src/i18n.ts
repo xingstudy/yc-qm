@@ -126,6 +126,7 @@ const ZH: Record<string, string> = {
   "Waiting for platform authorization": "等待平台授权",
   "Bot name": "机器人名称",
   Bound: "已绑定",
+  Enterprise: "企业",
   Browse: "浏览",
   "Can manage": "可管理",
   "Can view": "可查看",

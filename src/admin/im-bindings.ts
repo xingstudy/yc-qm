@@ -7,6 +7,8 @@ export interface AdminImBinding {
   status: "pending" | "connected";
   botName: string | null;
   externalDisplayName: string | null;
+  externalTenantId: string | null;
+  externalTenantName: string | null;
   connectedAt: number | null;
 }
 
@@ -37,6 +39,10 @@ export function parseAdminImBindings(value: unknown): AdminImBinding[] {
     if (binding.status !== "pending" && binding.status !== "connected") continue;
     const providerId = provider as AdminImProviderId;
     if (binding.status === "connected" && !hasResource(rawResources, providerId)) continue;
+    const resource =
+      typeof rawResources[providerId] === "object" && rawResources[providerId] !== null
+        ? (rawResources[providerId] as Record<string, unknown>)
+        : {};
     if (
       binding.status === "pending" &&
       providerId === "wechat" &&
@@ -50,6 +56,18 @@ export function parseAdminImBindings(value: unknown): AdminImBinding[] {
       status: binding.status,
       botName: typeof binding.botName === "string" ? binding.botName : null,
       externalDisplayName: typeof binding.externalDisplayName === "string" ? binding.externalDisplayName : null,
+      externalTenantId:
+        typeof binding.externalTenantId === "string"
+          ? binding.externalTenantId
+          : typeof resource.externalTenantId === "string"
+            ? resource.externalTenantId
+            : null,
+      externalTenantName:
+        typeof binding.externalTenantName === "string"
+          ? binding.externalTenantName
+          : typeof resource.externalTenantName === "string"
+            ? resource.externalTenantName
+            : null,
       connectedAt: typeof binding.connectedAt === "number" ? binding.connectedAt : null,
     });
   }

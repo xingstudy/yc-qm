@@ -70,12 +70,18 @@ test("the footer user pill opens the IM channel popover", () => {
   assert.match(shell, /t\("Available chat platforms"\)/);
   assert.match(shell, /VISIBLE_IM_PROVIDER_OPTIONS\.map\(\(option\) => \{/);
   assert.match(shell, /delete imBindings\[provider\]/);
-  assert.match(shell, /const authWindow = window\.open\(/);
+  assert.match(shell, /function openWeComAuthWindow\(\): Window \| null/);
+  assert.match(shell, /return window\.open\(/);
   assert.match(shell, /const startRequest = api<\{ binding: ImBindingRecord \}>\("\/api\/im-bindings\/start"/);
   assert.match(shell, /const started = await startRequest/);
   assert.match(shell, /else \{\s+const authorization = WecomAIBotSDK\.openBotInfoAuthWindow/);
-  assert.ok(shell.indexOf("const authWindow = window.open") < shell.indexOf("const started = await startRequest"));
+  assert.match(shell, /const authorization = WecomAIBotSDK\.openBotInfoAuthWindow/);
+  assert.ok(shell.indexOf("const authWindow = openWeComAuthWindow()") < shell.indexOf("const started = await startRequest"));
   assert.ok(shell.indexOf("const started = await startRequest") < shell.indexOf("WecomAIBotSDK.openBotInfoAuthWindow"));
+  assert.doesNotMatch(shell, /\/api\/im-bindings\/work-wechat\/preflight/);
+  assert.doesNotMatch(shell, /preflightState/);
+  assert.match(shell, /function imTenantLabel\(binding: ImBindingRecord \| undefined\): string/);
+  assert.match(shell, /class="im-resource-id"><span>\$\{t\("Enterprise"\)\}<\/span><code>\$\{tenantLabel\}<\/code>/);
   assert.match(shell, /class="im-resource-id"><span>Bot ID<\/span><code>\$\{binding\.resourceId\}<\/code>/);
   assert.match(shell, /class="user-pill"[\s\S]*aria-haspopup="dialog"[\s\S]*@click=\$\{toggleImPanel\}/);
   assert.match(shell, /<div id="im-panel-host"><\/div>/);
@@ -103,6 +109,10 @@ test("each IM platform uses its official authorization and message client", () =
   assert.match(server, /"\/app\/registration\/poll"/);
   assert.match(server, /new QQBot\(/);
   assert.match(server, /new WeComWSClient\(/);
+  assert.doesNotMatch(server, /\/api\/im-bindings\/work-wechat\/preflight/);
+  assert.doesNotMatch(server, /handleWeComBindingPreflightCallback/);
+  assert.doesNotMatch(server, /consumeWeComBindingPreflight/);
+  assert.doesNotMatch(server, /WECOM_BINDING_ALLOWED_CORP_IDS/);
   assert.match(server, /new DingTalkStreamClient\(/);
   assert.match(server, /path: "\/api\/im-bindings\/:provider\/credentials"/);
   assert.match(server, /path: "\/api\/im-bindings\/:provider\/locate"/);
@@ -121,6 +131,7 @@ test("each IM platform uses its official authorization and message client", () =
   );
   assert.match(server, /encryptedSecret: encryptImSecret/);
   assert.match(server, /process\.env\.CONNECTOR_SECRET_KEY/);
+  assert.doesNotMatch(server, /IM_WECOM_/);
   assert.doesNotMatch(server, /WEB_UI_IM_|\/im\/gateway|\/im\/pair|pairCode/);
   assert.match(server, /const IM_DELIVERY_POLL_MS = WEIXIN_BRIDGE_SYNC_MS/);
   assert.match(server, /setInterval\(\(\) => \{\s+void drainImDeliveries\(\)/);
@@ -160,6 +171,7 @@ test("the IM channel picker has its own panel, provider menu, provider setup flo
   assert.match(css, /\.im-locate/);
   assert.match(css, /\.im-doc-link \{[\s\S]*?background: #fff;[\s\S]*?color: #202124;/);
   assert.match(css, /\.im-resource-id \{/);
+  assert.match(css, /\.im-channel-main \{/);
   assert.match(css, /place-items: center/);
   assert.match(css, /\.im-channel-state \{/);
   assert.match(i18n, /"Chat channels": "聊天频道"/);
@@ -168,6 +180,7 @@ test("the IM channel picker has its own panel, provider menu, provider setup flo
   assert.match(i18n, /"Setup in progress": "接入中"/);
   assert.match(i18n, /"Available chat platforms": "可接入"/);
   assert.match(i18n, /"Continue setup": "继续接入"/);
+  assert.match(i18n, /Enterprise: "企业"/);
   assert.match(i18n, /WeCom: "企业微信"/);
   assert.match(i18n, /"Binding complete": "绑定完成"/);
   assert.match(i18n, /"Find Bot in IM": "在 IM 中找到 Bot"/);

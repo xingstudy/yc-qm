@@ -142,6 +142,26 @@ test("oversized token lifetimes are refused", () => {
   assert.match(problemsFor({ AUTH_REQUEST_TTL_S: "7200" }), /AUTH_REQUEST_TTL_S must be at most 3600/);
 });
 
+test("WeCom sign-in is optional but partial configuration is refused", () => {
+  assert.equal(problemsFor({ CORE_SIGNING_SECRET: "a".repeat(48) }), "");
+  assert.match(
+    problemsFor({
+      AUTH_WECOM_CORP_ID: "wwcorp",
+      CORE_SIGNING_SECRET: "a".repeat(48),
+    }),
+    /AUTH_WECOM_AGENT_ID is required/,
+  );
+  assert.equal(
+    problemsFor({
+      AUTH_WECOM_CORP_ID: "wwcorp",
+      AUTH_WECOM_AGENT_ID: "1000002",
+      AUTH_WECOM_SECRET: "wecom-secret",
+      CORE_SIGNING_SECRET: "a".repeat(48),
+    }),
+    "",
+  );
+});
+
 test("a rate limit that core could not honour is refused at boot rather than silently suppressing every sign-in", () => {
   assert.match(
     problemsFor({ AUTH_SEND_LIMIT_PER_EMAIL: "500" }),

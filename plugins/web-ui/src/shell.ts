@@ -268,6 +268,8 @@ interface ImBindingRecord {
   externalUserId?: string;
   externalChatId?: string;
   externalDisplayName?: string;
+  externalTenantId?: string;
+  externalTenantName?: string;
   resourceId?: string;
   locatorAvailable?: boolean;
   locatorUnavailableReason?: string;
@@ -306,6 +308,42 @@ function isImProviderId(value: string): value is ImProviderId {
 
 function imProvider(id: ImProviderId): (typeof IM_PROVIDER_OPTIONS)[number] {
   return IM_PROVIDER_OPTIONS.find((option) => option.id === id)!;
+}
+
+function imTenantLabel(binding: ImBindingRecord | undefined): string {
+  return binding?.externalTenantName || binding?.externalTenantId || "";
+}
+
+function imOptionalText(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim().slice(0, 256);
+  }
+  return undefined;
+}
+
+function weComTenantFromBot(bot: { botid: string; secret: string }): {
+  externalTenantId?: string;
+  externalTenantName?: string;
+} {
+  const raw = bot as unknown as Record<string, unknown>;
+  const corp = typeof raw.corp === "object" && raw.corp !== null ? (raw.corp as Record<string, unknown>) : {};
+  const externalTenantId = imOptionalText(raw.corpid, raw.corp_id, raw.corpId, corp.corpid, corp.corp_id, corp.corpId);
+  const externalTenantName = imOptionalText(
+    raw.corpname,
+    raw.corp_name,
+    raw.corpName,
+    raw.company_name,
+    raw.companyName,
+    corp.corpname,
+    corp.corp_name,
+    corp.corpName,
+    corp.company_name,
+    corp.companyName,
+  );
+  return {
+    ...(externalTenantId ? { externalTenantId } : {}),
+    ...(externalTenantName ? { externalTenantName } : {}),
+  };
 }
 
 function isImSetupMode(value: string): value is ImSetupMode {
@@ -350,6 +388,8 @@ function normalizeImBindings(raw: unknown): Partial<Record<ImProviderId, ImBindi
       ...(typeof record.externalUserId === "string" ? { externalUserId: record.externalUserId } : {}),
       ...(typeof record.externalChatId === "string" ? { externalChatId: record.externalChatId } : {}),
       ...(typeof record.externalDisplayName === "string" ? { externalDisplayName: record.externalDisplayName } : {}),
+      ...(typeof record.externalTenantId === "string" ? { externalTenantId: record.externalTenantId } : {}),
+      ...(typeof record.externalTenantName === "string" ? { externalTenantName: record.externalTenantName } : {}),
       ...(typeof record.resourceId === "string" ? { resourceId: record.resourceId } : {}),
       ...(typeof record.locatorAvailable === "boolean" ? { locatorAvailable: record.locatorAvailable } : {}),
       ...(typeof record.locatorUnavailableReason === "string"
@@ -457,6 +497,14 @@ async function startImBinding(provider: ImProviderId): Promise<void> {
   renderImPanel();
 }
 
+function openWeComAuthWindow(): Window | null {
+  return window.open(
+    "about:blank",
+    "WecomAIBotAuthWindow",
+    "width=950,height=640,resizable=false,scrollbars=false,status=no,toolbar=no,menubar=no,location=no",
+  );
+}
+
 async function startWeComBinding(): Promise<void> {
   const provider = "work-wechat";
   if (reusableImProviders.has(provider) || imBindings[provider]?.resourceId) {
@@ -468,11 +516,7 @@ async function startWeComBinding(): Promise<void> {
   imBindingsLoading = true;
   imBindingsError = "";
   renderImPanel();
-  const authWindow = window.open(
-    "about:blank",
-    "WecomAIBotAuthWindow",
-    "width=950,height=640,resizable=false,scrollbars=false,status=no,toolbar=no,menubar=no,location=no",
-  );
+  const authWindow = openWeComAuthWindow();
   if (!authWindow) {
     imBindingsLoading = false;
     imBindingsError = t("WeCom authorization window was blocked.");
@@ -503,7 +547,10 @@ async function startWeComBinding(): Promise<void> {
         `/api/im-bindings/${encodeURIComponent(provider)}/credentials`,
         {
           method: "POST",
-          body: JSON.stringify({ credentials: { botId: outcome.bot.botid, secret: outcome.bot.secret } }),
+          body: JSON.stringify({
+            credentials: { botId: outcome.bot.botid, secret: outcome.bot.secret },
+            ...weComTenantFromBot(outcome.bot),
+          }),
         },
       );
       imBindings[provider] = result.binding;
@@ -926,8 +973,14 @@ function imSetupPanel(): TemplateResult | typeof nothing {
     const displayName = binding.externalDisplayName
       ? html`<div class="im-qr-note">${binding.externalDisplayName}</div>`
       : nothing;
+    const tenantLabel = imTenantLabel(binding);
     setupContent = html`<div class="im-qr-state connected">${t("Binding complete")}</div>
       ${displayName}
+      ${
+        tenantLabel
+          ? html`<div class="im-resource-id"><span>${t("Enterprise")}</span><code>${tenantLabel}</code></div>`
+          : nothing
+      }
       ${
         binding.resourceId
           ? html`<div class="im-resource-id"><span>Bot ID</span><code>${binding.resourceId}</code></div>`
@@ -1003,9 +1056,15 @@ function imSetupPanel(): TemplateResult | typeof nothing {
 
 function imBindingRow(id: ImProviderId): TemplateResult {
   const option = imProvider(id);
-  const pending = imBindings[id]?.status === "pending";
+  const binding = imBindings[id];
+  const pending = binding?.status === "pending";
+  const tenantLabel = imTenantLabel(binding);
   return html`<button class="im-channel-row" type="button" @click=${() => showImBinding(id)}>
-    ${imLogo(option)}<span>${t(option.label)}</span>
+    ${imLogo(option)}
+    <span class="im-channel-main">
+      <span>${t(option.label)}</span>
+      ${tenantLabel ? html`<small>${tenantLabel}</small>` : nothing}
+    </span>
     <span class=${pending ? "im-channel-state pending" : "im-channel-state"}>
       ${pending ? t("Continue setup") : t("Bound")}
     </span>
