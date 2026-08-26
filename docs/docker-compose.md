@@ -146,7 +146,10 @@ the configured model and each required connector as part of the same acceptance 
 
 Back up and restore-test Postgres, `core-data`, and each `qm-home-*` volume before any
 upgrade. Keep the corresponding configuration and generated signing/encryption values in
-the protected backup. For a release whose notes do not change the Compose or configuration
+the protected backup. Before the first release that requires `WEB_UI_IM_CREDENTIALS_KEY`,
+the verified deployer derives a compatible value for existing deployments with saved IM Bot
+credentials; source-build deployments use the root README procedure. A random value makes
+those credentials unreadable. For a release whose notes do not change the Compose or configuration
 contract, update only `QM_RELEASE_TAG` in the existing `.env.production`, rerun the
 versioned deployer, and repeat the acceptance checks. Do not regenerate the file or
 replace durable secrets, project identity, or volume names. The deployer obtains the
@@ -174,7 +177,7 @@ name as `QM_CORE_VOLUME`. These explicit names are not redirected by
 environment file at mode `0600`.
 
 Preserve the old `POSTGRES_USER`, `POSTGRES_DB`, database role password, `ORG_ID`,
-`CONNECTOR_SECRET_KEY`, `CORE_SIGNING_SECRET`, `CAPABILITY_SECRET`,
+`CONNECTOR_SECRET_KEY`, `WEB_UI_IM_CREDENTIALS_KEY`, `CORE_SIGNING_SECRET`, `CAPABILITY_SECRET`,
 `PORTAL_IDENTITY_SECRET`, `PORTAL_SESSION_SECRET`, `SKILL_SIGNING_SECRET`, and active auth
 token, client, and JWK values. PostgreSQL initialization variables do not rotate the role
 password in an existing volume, and new encryption keys cannot read existing connector
@@ -271,6 +274,7 @@ sed -i "s/^DOCKER_GID=.*/DOCKER_GID=${qm_socket_gid}/" .env
 for qm_secret_name in \
   POSTGRES_PASSWORD \
   CONNECTOR_SECRET_KEY \
+  WEB_UI_IM_CREDENTIALS_KEY \
   CORE_SIGNING_SECRET \
   CAPABILITY_SECRET \
   PORTAL_IDENTITY_SECRET \
@@ -282,7 +286,7 @@ do
 done
 ```
 
-Set `POSTGRES_PASSWORD`, `CONNECTOR_SECRET_KEY`, `CORE_SIGNING_SECRET`,
+Set `POSTGRES_PASSWORD`, `CONNECTOR_SECRET_KEY`, `WEB_UI_IM_CREDENTIALS_KEY`, `CORE_SIGNING_SECRET`,
 `CAPABILITY_SECRET`, `PORTAL_IDENTITY_SECRET`, `PORTAL_SESSION_SECRET`, and
 `SKILL_SIGNING_SECRET` in `.env`. The generated signing and encryption secrets must be
 distinct. Compose requires `DOCKER_GID` while resolving its configuration, so set it

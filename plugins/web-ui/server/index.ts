@@ -122,7 +122,10 @@ const IM_BINDINGS_KEY = "im-bindings";
 const IM_PROGRESS_LEGACY_KEY = "im-progress";
 const IM_PROGRESS_KEY_PREFIX = `${IM_PROGRESS_LEGACY_KEY}-`;
 const IM_TOKENS_PRINCIPAL = "web-ui-im";
-const IM_CREDENTIALS_SECRET = process.env.CONNECTOR_SECRET_KEY?.trim();
+const IM_CREDENTIALS_KEY = parseImCredentialsKey(process.env.WEB_UI_IM_CREDENTIALS_KEY);
+if (process.env.NODE_ENV === "production" && !IM_CREDENTIALS_KEY) {
+  throw new Error("WEB_UI_IM_CREDENTIALS_KEY must be exactly 32 bytes encoded as hexadecimal");
+}
 const WEIXIN_ILINK_BASE_URL = "https://ilinkai.weixin.qq.com";
 const WEIXIN_ILINK_BOT_TYPE = "3";
 const WEIXIN_QR_TTL_MS = 5 * 60_000;
@@ -431,14 +434,17 @@ function truncateUtf8(value: string, maxBytes: number, suffix: string): string {
   return `${bytes.toString("utf8").replace(/\uFFFD$/, "")}${suffix}`;
 }
 
-function imCredentialKey(secret: string): Buffer {
-  return createHash("sha256").update(`web-ui-im-resource-v2\0${secret}`).digest();
+function parseImCredentialsKey(value: string | undefined): Buffer | undefined {
+  const key = value?.trim();
+  if (!key || !/^[0-9a-f]{64}$/i.test(key)) return undefined;
+  const decoded = Buffer.from(key, "hex");
+  return decoded.length === 32 ? decoded : undefined;
 }
 
 function encryptImSecret(value: unknown): string {
-  if (!IM_CREDENTIALS_SECRET) throw new Error("CONNECTOR_SECRET_KEY 未配置，无法保存 Bot 凭据");
+  if (!IM_CREDENTIALS_KEY) throw new Error("WEB_UI_IM_CREDENTIALS_KEY 未配置或格式无效，无法保存 Bot 凭据");
   const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", imCredentialKey(IM_CREDENTIALS_SECRET), iv);
+  const cipher = createCipheriv("aes-256-gcm", IM_CREDENTIALS_KEY, iv);
   const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
   return [
     "v2",
@@ -450,13 +456,9 @@ function encryptImSecret(value: unknown): string {
 
 function decryptImSecret<T>(sealed: string): T | null {
   const [version, ivRaw, tagRaw, encryptedRaw] = sealed.split(".");
-  if (version !== "v2" || !ivRaw || !tagRaw || !encryptedRaw || !IM_CREDENTIALS_SECRET) return null;
+  if (version !== "v2" || !ivRaw || !tagRaw || !encryptedRaw || !IM_CREDENTIALS_KEY) return null;
   try {
-    const decipher = createDecipheriv(
-      "aes-256-gcm",
-      imCredentialKey(IM_CREDENTIALS_SECRET),
-      Buffer.from(ivRaw, "base64url"),
-    );
+    const decipher = createDecipheriv("aes-256-gcm", IM_CREDENTIALS_KEY, Buffer.from(ivRaw, "base64url"));
     decipher.setAuthTag(Buffer.from(tagRaw, "base64url"));
     return JSON.parse(
       Buffer.concat([decipher.update(Buffer.from(encryptedRaw, "base64url")), decipher.final()]).toString("utf8"),

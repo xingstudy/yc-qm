@@ -5,11 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_FILENAME, loadConfigAt } from "../src/config.ts";
 import { dockerUp } from "../src/backends/docker.ts";
+import { deriveWebUiImCredentialsKey } from "../src/secrets.ts";
 
+const CONNECTOR_SECRET_KEY = "connector-supersecret".repeat(2);
 const SECRETS = {
   ANTHROPIC_API_KEY: "anthropic-supersecret",
   CAPABILITY_SECRET: "capability-supersecret",
-  CONNECTOR_SECRET_KEY: "connector-supersecret".repeat(2),
+  CONNECTOR_SECRET_KEY,
+  WEB_UI_IM_CREDENTIALS_KEY: deriveWebUiImCredentialsKey(CONNECTOR_SECRET_KEY),
   CORE_SIGNING_SECRET: "core-signing-supersecret".repeat(2),
   PORTAL_IDENTITY_SECRET: "portal-identity-supersecret",
   SKILL_SIGNING_SECRET: "skill-signing-supersecret".repeat(2),
@@ -46,7 +49,10 @@ if (args[0] === "run") {
   console.log("cid");
   process.exit(0);
 }
-if (args[0] === "logs") { console.log("listening on :8080"); process.exit(0); }
+if (args[0] === "logs") {
+  console.log(String(args.at(-1)).endsWith("-web-ui") ? "surface on http://0.0.0.0:8080" : "listening on :8080");
+  process.exit(0);
+}
 if (args[0] === "volume") { console.error("No such volume"); process.exit(1); }
 if (args[0] === "inspect") {
   if (String(args[args.length - 1]).endsWith("-pg")) { console.error("No such object"); process.exit(1); }
@@ -77,7 +83,7 @@ test("docker up delivers secrets via a 0600 env-file, never on the docker argv",
         orgId: "sekrit",
         publicUrl: "http://localhost:8080",
         target: "docker",
-        services: ["core", "slack"],
+        services: ["core", "slack", "web-ui"],
         plugins: [
           {
             name: "linear",
@@ -122,7 +128,7 @@ test("docker up delivers secrets via a 0600 env-file, never on the docker argv",
       join(dir, ".env"),
       [
         ...Object.entries(SECRETS)
-          .filter(([name]) => name !== "ANTHROPIC_API_KEY")
+          .filter(([name]) => name !== "ANTHROPIC_API_KEY" && name !== "WEB_UI_IM_CREDENTIALS_KEY")
           .map(([k, v]) => `${k}=${v}`),
         "ANTHROPIC_API_KEY=",
         "EMPTY_TOKEN=",
@@ -171,6 +177,11 @@ test("docker up delivers secrets via a 0600 env-file, never on the docker argv",
     );
 
     const envFiles = readFileSync(fake.envCopy, "utf8");
+    const webUiSecretFile = envFiles
+      .split("---\n")
+      .find((block) => block.includes(`WEB_UI_IM_CREDENTIALS_KEY=${SECRETS.WEB_UI_IM_CREDENTIALS_KEY}`));
+    assert.ok(webUiSecretFile, "web-ui receives its dedicated IM credential key");
+    assert.ok(!webUiSecretFile.includes("CONNECTOR_SECRET_KEY="), "web-ui never receives the connector root key");
     assert.ok(envFiles.includes(`CORE_SIGNING_SECRET=${SECRETS.CORE_SIGNING_SECRET}`));
     assert.ok(
       !envFiles.includes("config-placeholder"),
@@ -348,6 +359,91 @@ test(
     }
   },
 );
+
+test("docker up rejects a web UI key that reuses the connector root before any container starts", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-docker-reused-web-ui-key-"));
+  const priorPath = process.env.PATH;
+  const priorDb = process.env.DATABASE_URL;
+  try {
+    writeFileSync(
+      join(dir, CONFIG_FILENAME),
+      JSON.stringify({
+        contract: 1,
+        orgId: "sekritscope",
+        publicUrl: "http://localhost:8080",
+        target: "docker",
+        services: ["core", "web-ui"],
+        env: { core: { HARNESS: "mock" } },
+      }),
+    );
+    const reused = "0a".repeat(32);
+    writeFileSync(
+      join(dir, ".env"),
+      [
+        "CAPABILITY_SECRET=capability-secret-that-is-long-enough",
+        `CONNECTOR_SECRET_KEY=${reused}`,
+        `CORE_SIGNING_SECRET=${"core-signing".repeat(3)}`,
+        "PORTAL_IDENTITY_SECRET=portal-identity-secret-that-is-long-enough",
+        `SKILL_SIGNING_SECRET=${"skill-signing".repeat(3)}`,
+        `WEB_UI_IM_CREDENTIALS_KEY=${reused}`,
+      ].join("\n"),
+    );
+    const fake = fakeDocker(dir);
+    process.env.PATH = `${dir}:${priorPath}`;
+    process.env.DATABASE_URL = "postgres://external/db";
+    const { config } = loadConfigAt(join(dir, CONFIG_FILENAME));
+    await assert.rejects(dockerUp(config, dir, {}), /WEB_UI_IM_CREDENTIALS_KEY must differ from CONNECTOR_SECRET_KEY/);
+    for (const line of readFileSync(fake.argvLog, "utf8").split("\n").filter(Boolean)) {
+      const args = JSON.parse(line) as string[];
+      assert.notEqual(args[0], "run");
+    }
+  } finally {
+    process.env.PATH = priorPath;
+    if (priorDb === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = priorDb;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a core-only docker plan ignores a stale web UI key", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-docker-stale-web-ui-key-"));
+  const priorDb = process.env.DATABASE_URL;
+  const log = console.log;
+  try {
+    writeFileSync(
+      join(dir, CONFIG_FILENAME),
+      JSON.stringify({
+        contract: 1,
+        orgId: "sekritcore",
+        publicUrl: "http://localhost:8080",
+        target: "docker",
+        services: ["core"],
+        env: { core: { HARNESS: "mock" } },
+      }),
+    );
+    const reused = "0a".repeat(32);
+    writeFileSync(
+      join(dir, ".env"),
+      [
+        "CAPABILITY_SECRET=capability-secret-that-is-long-enough",
+        `CONNECTOR_SECRET_KEY=${reused}`,
+        `CORE_SIGNING_SECRET=${"core-signing".repeat(3)}`,
+        "PORTAL_IDENTITY_SECRET=portal-identity-secret-that-is-long-enough",
+        `SKILL_SIGNING_SECRET=${"skill-signing".repeat(3)}`,
+        `WEB_UI_IM_CREDENTIALS_KEY=${reused}`,
+      ].join("\n"),
+    );
+    process.env.DATABASE_URL = "postgres://external/db";
+    console.log = (): void => {};
+    const { config } = loadConfigAt(join(dir, CONFIG_FILENAME));
+    await assert.doesNotReject(dockerUp(config, dir, { dryRun: true }));
+  } finally {
+    console.log = log;
+    if (priorDb === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = priorDb;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test(
   "a multi-line secret value fails loudly, naming the key (docker --env-file cannot carry newlines)",

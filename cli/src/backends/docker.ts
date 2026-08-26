@@ -33,7 +33,13 @@ import {
 } from "../services.ts";
 import { dockerBasePort, sandboxCoreEnv, securityScreenEnv, type QmConfig } from "../config.ts";
 import { discoverPlugins, type ResolvedPlugin } from "../plugins.ts";
-import { computedSecrets, runtimeSecretNames, secretsForService } from "../secrets.ts";
+import {
+  assertWebUiImCredentialsKeyIsScoped,
+  computedSecrets,
+  resolveWebUiImCredentialsKey,
+  runtimeSecretNames,
+  secretsForService,
+} from "../secrets.ts";
 import { readDeploymentState, withDeploymentLock, writeDeploymentState, type DeploymentState } from "../state.ts";
 
 export const dockerDeploymentLayerTransport: DeploymentLayerTransport = httpDeploymentLayerTransport({
@@ -268,12 +274,17 @@ function readEnvValue(envFile: string | undefined, key: string): string | undefi
   return readEnvFile(envFile).get(key);
 }
 
+function dockerSecretValue(ctx: DockerCtx, name: string): string | undefined {
+  const valueOf = (candidate: string): string | undefined =>
+    deploymentSecretValue(candidate, readEnvValue(ctx.envFile, candidate));
+  return name === "WEB_UI_IM_CREDENTIALS_KEY" ? resolveWebUiImCredentialsKey(valueOf) : valueOf(name);
+}
+
 function secretValues(ctx: DockerCtx, service: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const secret of secretsForService(ctx.config, service)) {
     if (secret.managedBy === "terraform" && service === "core") continue;
-    const fileValue = readEnvValue(ctx.envFile, secret.name);
-    const value = deploymentSecretValue(secret.name, fileValue);
+    const value = dockerSecretValue(ctx, secret.name);
     if (value === undefined) continue;
     for (const name of runtimeSecretNames(service, secret)) {
       if (name !== `FLY_RESIDENT_ENV_${secret.name}`) out[name] = value;
@@ -512,11 +523,12 @@ function warnUnforwardedEnvKeys(ctx: DockerCtx): void {
 }
 
 function missingRequiredOperatorSecrets(ctx: DockerCtx): string[] {
-  const lookup = (name: string): string | undefined => deploymentSecretValue(name, readEnvValue(ctx.envFile, name));
   return computedSecrets(ctx.config)
     .filter(
       (secret) =>
-        secret.required && secret.managedBy === "operator" && isInvalidSecret(secret.name, lookup(secret.name)),
+        secret.required &&
+        secret.managedBy === "operator" &&
+        isInvalidSecret(secret.name, dockerSecretValue(ctx, secret.name)),
     )
     .map((secret) => secret.name);
 }
@@ -542,6 +554,9 @@ export async function dockerUp(
     warn(`sandbox.secretEnv "${name}" has no value in .env or the environment — it won't be set in the sandbox.`);
   }
   const missingRequired = missingRequiredOperatorSecrets(ctx);
+  if (config.services.includes("web-ui")) {
+    assertWebUiImCredentialsKeyIsScoped((name) => dockerSecretValue(ctx, name));
+  }
   if (opts.dryRun && missingRequired.length) {
     warn(`MISSING required secrets — add them to .env before up: ${missingRequired.join(", ")}`);
   }

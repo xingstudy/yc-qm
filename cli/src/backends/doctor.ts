@@ -9,7 +9,7 @@ import {
 } from "../config.ts";
 import { CliError, errMessage, step, warn } from "../log.ts";
 import { capture, deploymentSecretValue, flyBin, isInvalidSecret, readEnvFile, which } from "../util.ts";
-import { computedSecrets } from "../secrets.ts";
+import { assertWebUiImCredentialsKeyIsScoped, computedSecrets, resolveWebUiImCredentialsKey } from "../secrets.ts";
 
 export function slackManifestBotScopes(manifest: string): string[] {
   try {
@@ -130,13 +130,17 @@ export async function doctorCommon(
   secrets: Map<string, string>,
   opts: { requiredSecretValues?: boolean; configDir?: string } = {},
 ): Promise<void> {
+  const secretValue = (name: string): string | undefined => {
+    const valueOf = (candidate: string): string | undefined => deploymentSecretValue(candidate, secrets.get(candidate));
+    return name === "WEB_UI_IM_CREDENTIALS_KEY" ? resolveWebUiImCredentialsKey(valueOf) : valueOf(name);
+  };
+  if (config.services.includes("web-ui")) {
+    assertWebUiImCredentialsKeyIsScoped(secretValue);
+  }
   if (opts.requiredSecretValues) {
     const missing = computedSecrets(config)
       .filter((secret) => secret.required)
-      .filter((secret) => {
-        const value = deploymentSecretValue(secret.name, secrets.get(secret.name));
-        return isInvalidSecret(secret.name, value);
-      });
+      .filter((secret) => isInvalidSecret(secret.name, secretValue(secret.name)));
     if (missing.length)
       throw new CliError(
         `required secrets are missing or placeholders: ${missing.map((secret) => secret.name).join(", ")}`,

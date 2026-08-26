@@ -207,6 +207,7 @@ export function isInvalidSecret(name: string, value: string | undefined): boolea
       })
     );
   }
+  if (name === "WEB_UI_IM_CREDENTIALS_KEY") return !/^[0-9a-f]{64}$/i.test(candidate);
   return (
     (name === "CONNECTOR_SECRET_KEY" || name === "CORE_SIGNING_SECRET" || name === "SKILL_SIGNING_SECRET") &&
     candidate.length < 32

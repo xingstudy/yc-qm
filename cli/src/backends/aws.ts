@@ -21,7 +21,14 @@ import {
   type QmConfig,
 } from "../config.ts";
 import { manifestRef } from "../manifest.ts";
-import { computedSecrets, runtimeSecretNames, secretsForService, type ComputedSecret } from "../secrets.ts";
+import {
+  assertWebUiImCredentialsKeyIsScoped,
+  computedSecrets,
+  resolveWebUiImCredentialsKey,
+  runtimeSecretNames,
+  secretsForService,
+  type ComputedSecret,
+} from "../secrets.ts";
 import {
   brokerWiring,
   brandEnvOf,
@@ -578,7 +585,7 @@ function publishWorkloadImage(
 
 function secretArns(config: QmConfig): Record<string, string> {
   const aws = requireAws(config);
-  const pairs = computedSecrets(config).flatMap((secret) => {
+  const entries = computedSecrets(config).flatMap((secret) => {
     const id = `${aws.secretsPrefix}${secret.name}`;
     try {
       const value = awsJson<{ ARN?: string; SecretString?: string }>(aws, [
@@ -589,15 +596,27 @@ function secretArns(config: QmConfig): Record<string, string> {
       ]);
       if (!value.ARN || isInvalidSecret(secret.name, value.SecretString)) {
         if (!secret.required) return [];
+        if (secret.name === "WEB_UI_IM_CREDENTIALS_KEY") {
+          throw new CliError(
+            "required AWS secret WEB_UI_IM_CREDENTIALS_KEY is missing; run `qm secrets push` so a compatible scoped key can be derived from the existing connector key",
+          );
+        }
         throw new CliError(`required AWS secret ${secret.name} has no usable, non-placeholder AWSCURRENT value`);
       }
-      return [[secret.name, value.ARN] as const];
+      return [{ name: secret.name, arn: value.ARN, value: value.SecretString! }];
     } catch (error) {
       if (!secret.required && /ResourceNotFoundException/.test(errMessage(error))) return [];
+      if (secret.name === "WEB_UI_IM_CREDENTIALS_KEY" && /ResourceNotFoundException/.test(errMessage(error))) {
+        throw new CliError(
+          "AWS secret container for WEB_UI_IM_CREDENTIALS_KEY is missing; run `qm infra render`, then `terraform -chdir=infra apply`, then `qm secrets push` before retrying",
+        );
+      }
       throw error;
     }
   });
-  return Object.fromEntries(pairs);
+  const values = new Map(entries.map((entry) => [entry.name, entry.value]));
+  assertWebUiImCredentialsKeyIsScoped((name) => values.get(name));
+  return Object.fromEntries(entries.map((entry) => [entry.name, entry.arn]));
 }
 
 function assertAwsPublicApiUrl(config: QmConfig): void {
@@ -2165,7 +2184,7 @@ export async function awsSecretsPush(config: QmConfig, configDir: string, envFil
   const { aws, workloads } = awsTopology(config, configDir);
   assertAwsCallerAccount(aws);
   const values = envValues(configDir, envFile);
-  const staged: Array<{ name: string; id: string; dir: string; file: string }> = [];
+  const staged: Array<{ name: string; id: string; dir: string; file: string; value: string }> = [];
   try {
     for (const secret of computedSecrets(config).filter((item) => item.managedBy === "operator")) {
       const supplied = deploymentSecretValue(secret.name, values.get(secret.name));
@@ -2173,7 +2192,15 @@ export async function awsSecretsPush(config: QmConfig, configDir: string, envFil
         step(`${secret.name}: optional, not supplied`);
         continue;
       }
-      const value = supplied ?? (await promptHidden(secret.name));
+      const compatible =
+        secret.name === "WEB_UI_IM_CREDENTIALS_KEY"
+          ? resolveWebUiImCredentialsKey((name) =>
+              name === secret.name
+                ? supplied
+                : (staged.find((entry) => entry.name === name)?.value ?? deploymentSecretValue(name, values.get(name))),
+            )
+          : supplied;
+      const value = compatible ?? (await promptHidden(secret.name));
       if (isInvalidSecret(secret.name, value)) {
         throw new CliError(
           `${secret.name} must have a non-empty, non-placeholder value; signing keys must be at least 32 characters`,
@@ -2182,8 +2209,10 @@ export async function awsSecretsPush(config: QmConfig, configDir: string, envFil
       const dir = mkdtempSync(join(tmpdir(), "qm-secret-"));
       const file = join(dir, "value");
       writeFileSync(file, value, { mode: 0o600 });
-      staged.push({ name: secret.name, id: `${aws.secretsPrefix}${secret.name}`, dir, file });
+      staged.push({ name: secret.name, id: `${aws.secretsPrefix}${secret.name}`, dir, file, value });
     }
+    const resolvedValues = new Map(staged.map((secret) => [secret.name, secret.value]));
+    assertWebUiImCredentialsKeyIsScoped((name) => resolvedValues.get(name));
     await withAwsLease(aws, async () => {
       const baseline = currentDeploymentManifest(aws);
       const states = describedServices(config, workloads);
@@ -2209,10 +2238,10 @@ export async function awsSecretsPush(config: QmConfig, configDir: string, envFil
         }
       }
       const uploaded = Object.fromEntries(staged.map((secret) => [secret.name, secret.id]));
-      const affected = workloads.filter((workload) =>
+      const candidates = workloads.filter((workload) =>
         workloadSecrets(config, workload, uploaded).some((secret) => uploaded[secret.name]),
       );
-      if (usesFlySandboxes(config) && baseline && affected.includes("core")) {
+      if (usesFlySandboxes(config) && baseline && candidates.includes("core")) {
         config = withSandboxPin(config, resolveAwsSandboxPin(config, () => baseline).image);
       }
       for (const secret of staged) {
@@ -2236,13 +2265,14 @@ export async function awsSecretsPush(config: QmConfig, configDir: string, envFil
         step(`${secret.name}: uploaded`);
       }
       if (!baseline || !before) {
-        if (affected.length) step("secret activation deferred to the first complete AWS deployment");
+        if (candidates.length) step("secret activation deferred to the first complete AWS deployment");
         return;
       }
       const arns = secretArns(config);
       const targets = { ...before.tasks };
       const changed: Record<string, string> = {};
-      for (const workload of affected) {
+      const affected: string[] = [];
+      for (const workload of candidates) {
         const live =
           awsJson<{ taskDefinition?: Record<string, unknown> }>(aws, [
             "ecs",
@@ -2259,6 +2289,22 @@ export async function awsSecretsPush(config: QmConfig, configDir: string, envFil
           !isPinnedWorkloadImage(config, workload, container.image)
         ) {
           throw new CliError(`cannot rotate secrets while ${workload} lacks a trusted digest-pinned image`);
+        }
+        const liveSecretNames = new Set(
+          (Array.isArray(container.secrets) ? container.secrets : []).flatMap((secret) =>
+            secret && typeof secret === "object" && typeof (secret as { name?: unknown }).name === "string"
+              ? [(secret as { name: string }).name]
+              : [],
+          ),
+        );
+        affected.push(workload);
+        if (
+          workload === "web-ui" &&
+          uploaded.WEB_UI_IM_CREDENTIALS_KEY &&
+          (!liveSecretNames.has("WEB_UI_IM_CREDENTIALS_KEY") || liveSecretNames.has("CONNECTOR_SECRET_KEY"))
+        ) {
+          step("WEB_UI_IM_CREDENTIALS_KEY: uploaded; task activation deferred to the next complete AWS deployment");
+          continue;
         }
         const desired = renderTaskDefinition(config, workload, container.image, arns);
         if (!taskDefinitionChanges(desired, live).length) continue;

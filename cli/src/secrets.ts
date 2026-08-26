@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { isVirtualService, type DeclaredServiceName } from "./services.ts";
 import type { ModelProvider, QmConfig } from "./config.ts";
+import { CliError } from "./log.ts";
 import { TARGET_ENV_DEFAULTS } from "./target-env-defaults.ts";
 
 type SecretCondition =
@@ -38,6 +40,27 @@ export interface ComputedSecret {
 export const MINT_LOCALLY = "openssl rand -hex 32";
 export const MINT_JWK =
   "node -e \"const {generateKeyPairSync}=require('node:crypto');process.stdout.write(JSON.stringify(generateKeyPairSync('ec',{namedCurve:'P-256'}).privateKey.export({format:'jwk'})))\"";
+
+export function assertWebUiImCredentialsKeyIsScoped(valueOf: (name: string) => string | undefined): void {
+  const webUiKey = valueOf("WEB_UI_IM_CREDENTIALS_KEY")?.trim();
+  const connectorKey = valueOf("CONNECTOR_SECRET_KEY")?.trim();
+  const canonical = (value: string): string => (/^[0-9a-f]{64}$/i.test(value) ? value.toLowerCase() : value);
+  if (webUiKey && connectorKey && canonical(webUiKey) === canonical(connectorKey)) {
+    throw new CliError("WEB_UI_IM_CREDENTIALS_KEY must differ from CONNECTOR_SECRET_KEY");
+  }
+}
+
+export function deriveWebUiImCredentialsKey(connectorSecretKey: string): string {
+  return createHash("sha256").update(`web-ui-im-resource-v2\0${connectorSecretKey.trim()}`).digest("hex");
+}
+
+export function resolveWebUiImCredentialsKey(valueOf: (name: string) => string | undefined): string | undefined {
+  const current = valueOf("WEB_UI_IM_CREDENTIALS_KEY");
+  if (current?.trim()) return current;
+  const material = valueOf("CONNECTOR_SECRET_KEY")?.trim();
+  if (!material || material.length < 32 || /^(replace-me|placeholder|changeme|todo)$/i.test(material)) return current;
+  return deriveWebUiImCredentialsKey(material);
+}
 
 export const FIRST_PARTY_SECRET_SPECS: readonly SecretSpec[] = [
   {
@@ -208,6 +231,13 @@ export const FIRST_PARTY_SECRET_SPECS: readonly SecretSpec[] = [
     service: "web-ui",
     required: true,
     description: "HMAC key shared by core and surface plugins.",
+    generate: MINT_LOCALLY,
+  },
+  {
+    name: "WEB_UI_IM_CREDENTIALS_KEY",
+    service: "web-ui",
+    required: true,
+    description: "Dedicated 32-byte hex key for durable IM Bot credentials.",
     generate: MINT_LOCALLY,
   },
   {

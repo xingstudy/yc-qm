@@ -151,7 +151,40 @@ curl -fsS http://127.0.0.1:8088/healthz
 
 `--wait` 和 `/healthz` 只能证明服务存活。验收安装前，请使用已配置的初始管理员授权完成浏览器登录、运行一次非 mock 的真实 Agent 对话、确认创建了 `qm-sandbox-local` 容器，并验证模型供应商和所需连接器。
 
-升级前必须备份并演练恢复 Postgres、`core-data` 和所有 `qm-home-*` 卷。将生成的签名和加密配置与备份一起保存；丢失 `CONNECTOR_SECRET_KEY` 可能导致已保存的连接器凭据无法读取。日常停止或升级时绝不可使用 `docker compose down -v`。
+升级前必须备份并演练恢复 Postgres、`core-data` 和所有 `qm-home-*` 卷。将生成的签名和加密配置与备份一起保存；丢失 `CONNECTOR_SECRET_KEY` 或 `WEB_UI_IM_CREDENTIALS_KEY` 可能导致已保存的连接器或 IM Bot 凭据无法读取。日常停止或升级时绝不可使用 `docker compose down -v`。
+
+如果现有部署已经使用 `CONNECTOR_SECRET_KEY` 保存了 IM Bot 凭据，必须在选择引入
+`WEB_UI_IM_CREDENTIALS_KEY` 的 release 前派生新的作用域密钥。签名验证后的 release deployer 会自动完成
+该迁移。源码构建栈可对未加引号的旧 connector 密钥执行以下操作；它既能保持已有密文可读，又不再把
+connector 根密钥交给 web-ui：
+
+```bash
+(
+  set -euo pipefail
+  if grep -q '^WEB_UI_IM_CREDENTIALS_KEY=' .env.production; then
+    echo 'WEB_UI_IM_CREDENTIALS_KEY is already configured' >&2
+    exit 1
+  fi
+  if [[ "$(awk -F= '$1 == "CONNECTOR_SECRET_KEY" { count++ } END { print count + 0 }' .env.production)" != 1 ]]; then
+    echo 'CONNECTOR_SECRET_KEY must occur exactly once' >&2
+    exit 1
+  fi
+  connector_secret="$(sed -n 's/^CONNECTOR_SECRET_KEY=//p' .env.production)"
+  connector_secret="${connector_secret#"${connector_secret%%[![:space:]]*}"}"
+  connector_secret="${connector_secret%"${connector_secret##*[![:space:]]}"}"
+  if (( ${#connector_secret} < 32 )); then
+    echo 'CONNECTOR_SECRET_KEY must be an unquoted value of at least 32 characters' >&2
+    exit 1
+  fi
+  web_ui_im_key="$(printf '%s\0%s' 'web-ui-im-resource-v2' "$connector_secret" | sha256sum | awk '{print $1}')"
+  printf 'WEB_UI_IM_CREDENTIALS_KEY=%s\n' "$web_ui_im_key" >> .env.production
+  chmod 600 .env.production
+)
+```
+
+升级时不能随机生成该值，否则已有 IM Bot 凭据将无法读取。全新安装会由初始化脚本生成彼此独立的随机密钥。
+如果旧 connector 值带引号或使用 dotenv 转义，不能直接运行这段源码构建命令，必须先还原其实际生效值。
+签名验证后的 deployer 遇到带引号、插值或行内注释的旧值时也会安全失败，不会对错误的字节派生密钥。
 
 日常升级保留现有 `.env.production`，只修改 `QM_RELEASE_TAG`，然后重新运行
 `./scripts/deploy-production-release.sh`。不能重新运行初始化脚本，也不能替换数据库、加密、签名、
@@ -206,6 +239,7 @@ sed -i "s/^DOCKER_GID=.*/DOCKER_GID=${qm_socket_gid}/" .env
 for qm_secret_name in \
   POSTGRES_PASSWORD \
   CONNECTOR_SECRET_KEY \
+  WEB_UI_IM_CREDENTIALS_KEY \
   CORE_SIGNING_SECRET \
   CAPABILITY_SECRET \
   PORTAL_IDENTITY_SECRET \
@@ -216,6 +250,10 @@ do
   sed -i "s/^${qm_secret_name}=.*/${qm_secret_name}=${qm_secret_value}/" .env
 done
 ```
+
+升级已经保存 IM Bot 凭据的源码构建栈时，请按上面的生产升级步骤派生
+`WEB_UI_IM_CREDENTIALS_KEY`，并将命令中的 `.env.production` 替换为 `.env`；不能对现有文件执行这段
+仅供全新安装使用的随机密钥循环。
 
 首次启动全新的本地数据库时，为默认开发用户授予 Admin 权限：
 
@@ -234,6 +272,7 @@ sed -i 's/^ADMIN_GRANTS=.*/ADMIN_GRANTS=dev-admin:org_admin/' .env
 | `POSTGRES_PASSWORD`                                                           | 必填                                        | Compose 初始化和连接 Postgres 使用的密码。数据卷创建后再修改该值，不会自动轮换数据库角色密码。            |
 | `DOCKER_GID`                                                                  | 必填                                        | `/var/run/docker.sock` 的数字组 ID，使非 root 的 core 进程能够创建沙箱容器。                              |
 | `CONNECTOR_SECRET_KEY`                                                        | 必填                                        | 加密连接器凭据和其他持久密钥材料。丢失后，已存储的凭据可能无法读取。                                      |
+| `WEB_UI_IM_CREDENTIALS_KEY`                                                   | 必填                                        | 加密持久化 IM Bot 凭据的专用 32 字节十六进制密钥。                                                        |
 | `CORE_SIGNING_SECRET`                                                         | 必填                                        | 认证 core 与可信服务之间的请求。                                                                          |
 | `CAPABILITY_SECRET`                                                           | 必填                                        | 为沙箱、blob 和出口流量路径使用的作用域能力令牌签名。                                                     |
 | `PORTAL_IDENTITY_SECRET`                                                      | 必填                                        | 为 Portal 转发给私有服务和 core 的浏览器身份签名。                                                        |

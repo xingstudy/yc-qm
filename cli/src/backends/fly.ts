@@ -37,7 +37,14 @@ import {
   type QmConfig,
 } from "../config.ts";
 import { discoverPlugins, type ResolvedPlugin } from "../plugins.ts";
-import { computedSecrets, runtimeSecretNames, secretDestinations, secretsForService } from "../secrets.ts";
+import {
+  assertWebUiImCredentialsKeyIsScoped,
+  computedSecrets,
+  resolveWebUiImCredentialsKey,
+  runtimeSecretNames,
+  secretDestinations,
+  secretsForService,
+} from "../secrets.ts";
 import { flySandboxRepository, imageRepository, pinnedByDigest, recordSandboxPin } from "../commands/sandbox.ts";
 import { manifestRef } from "../manifest.ts";
 import { CONNECTIVITY_CODES, CoreUnreachableError, type DeploymentLayerTransport } from "../deployment-layer.ts";
@@ -1014,6 +1021,13 @@ function unsetDisabledFlyPublisherToken(config: QmConfig, appPrefix: string): vo
   note(`removed the disabled Fly app publisher token from ${app}`);
 }
 
+function unsetLegacyWebUiConnectorSecret(appPrefix: string): void {
+  const app = `${appPrefix}-web-ui`;
+  if (!secretNames(app)?.has("CONNECTOR_SECRET_KEY")) return;
+  fly(["secrets", "unset", "--stage", "-a", app, "CONNECTOR_SECRET_KEY"]);
+  note(`removed the legacy connector root secret from ${app}`);
+}
+
 export async function flyUp(config: QmConfig, configDir: string, opts: FlyUpOpts = {}): Promise<void> {
   if (opts.imageLabel && opts.imageFrom) {
     throw new CliError("--image-label and --image-from select different image sources and cannot be combined");
@@ -1113,9 +1127,17 @@ export async function flyUp(config: QmConfig, configDir: string, opts: FlyUpOpts
       note(`\n=== ${header} ===`);
       note(`config: ${path}`);
       if (missing.length) {
-        note(
-          `MISSING secrets — set them with:\n  fly secrets set -a ${app} --stage ${missing.map((sec) => `${sec}=…`).join(" ")}`,
-        );
+        const direct = missing.filter((name) => name !== "WEB_UI_IM_CREDENTIALS_KEY");
+        if (missing.includes("WEB_UI_IM_CREDENTIALS_KEY")) {
+          note(
+            "MISSING WEB_UI_IM_CREDENTIALS_KEY — run `qm secrets push`; it derives a compatible scoped key from the existing connector key when needed.",
+          );
+        }
+        if (direct.length) {
+          note(
+            `MISSING secrets — set them with:\n  fly secrets set -a ${app} --stage ${direct.map((sec) => `${sec}=…`).join(" ")}`,
+          );
+        }
       } else {
         note("secrets: ok");
       }
@@ -1154,6 +1176,7 @@ export async function flyUp(config: QmConfig, configDir: string, opts: FlyUpOpts
       unsetDisabledSecurityScreenToken(config, ctx.appPrefix);
       unsetDisabledFlyPublisherToken(config, ctx.appPrefix);
     }
+    if (services.includes("web-ui")) unsetLegacyWebUiConnectorSecret(ctx.appPrefix);
 
     for (const phase of flyDeployPhases(services)) await deployPhase(ctx, phase, imageSource, timing);
     await deployPlugins(ctx, plugins, imageSource, timing);
@@ -1701,6 +1724,9 @@ export async function flySecretsPush(config: QmConfig, configDir: string, envFil
       throw new CliError(`required secret ${secret.name} is missing, a placeholder, or too short`);
     }
   }
+  if (config.services.includes("web-ui")) {
+    assertWebUiImCredentialsKeyIsScoped((name) => deploymentSecretValue(name, values.get(name)));
+  }
   const ctx = buildCtx(config, configDir, {});
   requireFlyAuth();
   for (const workload of runnableServices(config.services))
@@ -1708,17 +1734,34 @@ export async function flySecretsPush(config: QmConfig, configDir: string, envFil
   for (const plugin of pluginNames) ensureApp(`${prefix}-${plugin}`, ctx.flyOrg, ctx.orgId, ctx.appPrefix);
   unsetDisabledSecurityScreenToken(config, prefix);
   unsetDisabledFlyPublisherToken(config, prefix);
-  const stagedApps = new Set<string>();
+  const resolvedValues = new Map<string, string>();
   for (const secret of operatorSecrets) {
     const supplied = deploymentSecretValue(secret.name, values.get(secret.name));
     if (!secret.required && !supplied) {
       step(`${secret.name}: optional, not supplied`);
       continue;
     }
-    const value = supplied ?? (await promptHidden(secret.name));
+    const compatible =
+      secret.name === "WEB_UI_IM_CREDENTIALS_KEY"
+        ? resolveWebUiImCredentialsKey((name) =>
+            name === secret.name
+              ? supplied
+              : (resolvedValues.get(name) ?? deploymentSecretValue(name, values.get(name))),
+          )
+        : supplied;
+    const value = compatible ?? (await promptHidden(secret.name));
     if (secret.required && isInvalidSecret(secret.name, value)) {
       throw new CliError(`required secret ${secret.name} is missing, a placeholder, or too short`);
     }
+    resolvedValues.set(secret.name, value);
+  }
+  if (config.services.includes("web-ui")) {
+    assertWebUiImCredentialsKeyIsScoped((name) => resolvedValues.get(name));
+  }
+  const stagedApps = new Set<string>();
+  for (const secret of operatorSecrets) {
+    const value = resolvedValues.get(secret.name);
+    if (value === undefined) continue;
     const destinations = new Map<string, Set<string>>();
     for (const [workload, names] of secretDestinations(secret, pluginNames)) {
       destinations.set(`${prefix}-${workload}`, names);
@@ -1731,6 +1774,7 @@ export async function flySecretsPush(config: QmConfig, configDir: string, envFil
     }
     step(`${secret.name}: staged on ${[...destinations].map(([app]) => app).join(", ")}`);
   }
+  if (config.services.includes("web-ui")) unsetLegacyWebUiConnectorSecret(prefix);
   ok("operator secrets staged on Fly");
   const running = [...stagedApps].filter(appHasMachines);
   if (running.length) {

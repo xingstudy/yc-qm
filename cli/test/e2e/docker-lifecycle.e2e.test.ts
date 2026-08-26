@@ -45,6 +45,7 @@ test(
         `CORE_SIGNING_SECRET=${sentinel}`,
         `CAPABILITY_SECRET=${sentinel}-capability`,
         `CONNECTOR_SECRET_KEY=${sentinel}-connector`,
+        `WEB_UI_IM_CREDENTIALS_KEY=${"0a".repeat(32)}`,
         `PORTAL_IDENTITY_SECRET=${sentinel}-identity`,
         `SKILL_SIGNING_SECRET=${sentinel}-skill`,
         "OIDC_CLIENT_ID=fixture-client",
