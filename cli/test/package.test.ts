@@ -252,6 +252,7 @@ else if (command === "secretsmanager get-secret-value") {
   const name = option("--secret-id").split("/").at(-1);
   const value = name === "ADMIN_GRANTS" ? "admin@example.com:org_admin"
     : name === "PUBLIC_API_URL" ? "https://acme-aws.example.com"
+    : name === "WEB_UI_IM_CREDENTIALS_KEY" ? "b".repeat(64)
     : name.endsWith("SIGNING_SECRET") || name === "CONNECTOR_SECRET_KEY" ? "a".repeat(64)
     : "fixture-" + name.toLowerCase();
   if (args.includes("--query")) process.stdout.write(value + "\\n");

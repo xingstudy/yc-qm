@@ -22,7 +22,11 @@ trap cleanup EXIT
 cd "$root"
 docker build -f "deploy/$service/Dockerfile" -t "$image" .
 
-if [[ "$service" == "portal" ]]; then
+if [[ "$service" == "web-ui" ]]; then
+  docker run -d --name "$container" -p 127.0.0.1::"$container_port" \
+    -e WEB_UI_IM_CREDENTIALS_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+    "$image" >/dev/null
+elif [[ "$service" == "portal" ]]; then
   docker run -d --name "$container" -p 127.0.0.1::"$container_port" \
     -e PORTAL_SESSION_SECRET=runtime-smoke-portal-session-secret \
     -e CORE_SIGNING_SECRET=runtime-smoke-core-signing-secret \

@@ -39,6 +39,7 @@ const requiredProductionValues = [
   "PORTAL_IDENTITY_SECRET",
   "PORTAL_SESSION_SECRET",
   "CONNECTOR_SECRET_KEY",
+  "WEB_UI_IM_CREDENTIALS_KEY",
   "SKILL_SIGNING_SECRET",
   "OIDC_CLIENT_ID",
   "OIDC_CLIENT_SECRET",
@@ -54,6 +55,7 @@ const generatedValues = [
   "PORTAL_IDENTITY_SECRET",
   "PORTAL_SESSION_SECRET",
   "CONNECTOR_SECRET_KEY",
+  "WEB_UI_IM_CREDENTIALS_KEY",
   "SKILL_SIGNING_SECRET",
   "OIDC_CLIENT_SECRET",
   "AUTH_CLIENT_SECRET",
@@ -107,6 +109,8 @@ test("the production example is a complete fail-closed template without organiza
   for (const name of generatedValues) {
     if (name === "AUTH_SIGNING_JWK") {
       assert.match(values.get(name) ?? "", /"kid":"qm-example-do-not-use"/);
+    } else if (name === "WEB_UI_IM_CREDENTIALS_KEY") {
+      assert.match(values.get(name) ?? "", /^0{64}$/);
     } else {
       assert.match(values.get(name) ?? "", /^qm-example-/);
     }
@@ -146,6 +150,12 @@ test("the production Compose stack is image-only and exposes only the edge", () 
   assert.match(serviceBlock(compose, "core"), /sandbox-image:[\s\S]*?service_completed_successfully/);
   assert.match(serviceBlock(compose, "postgres"), /profiles:[\s\S]*?bundled-postgres/);
   assert.match(serviceBlock(compose, "core"), /postgres:[\s\S]*?required: false/);
+  assert.match(
+    serviceBlock(compose, "web-ui"),
+    /WEB_UI_IM_CREDENTIALS_KEY: \$\{WEB_UI_IM_CREDENTIALS_KEY:\?Set WEB_UI_IM_CREDENTIALS_KEY in \.env\.production\}/,
+  );
+  assert.doesNotMatch(serviceBlock(compose, "web-ui"), /CONNECTOR_SECRET_KEY/);
+  assert.doesNotMatch(serviceBlock(compose, "core"), /WEB_UI_IM_CREDENTIALS_KEY/);
   for (const service of ["preflight", "core"]) {
     const block = serviceBlock(compose, service);
     assert.match(block, /DATABASE_URL: \$\{DATABASE_URL:-\}/);

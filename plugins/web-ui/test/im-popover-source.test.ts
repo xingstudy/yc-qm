@@ -120,8 +120,9 @@ test("each IM platform uses its official authorization and message client", () =
     /const resource = state\.resources\[provider\][\s\S]*if \(reusable\)[\s\S]*provider !== "wechat"[\s\S]*return connectImSdkResource\(user, provider\)/,
   );
   assert.match(server, /encryptedSecret: encryptImSecret/);
-  assert.match(server, /process\.env\.CONNECTOR_SECRET_KEY/);
-  assert.doesNotMatch(server, /WEB_UI_IM_|\/im\/gateway|\/im\/pair|pairCode/);
+  assert.match(server, /process\.env\.WEB_UI_IM_CREDENTIALS_KEY/);
+  assert.match(server, /process\.env\.NODE_ENV === "production" && !IM_CREDENTIALS_KEY/);
+  assert.doesNotMatch(server, /process\.env\.CONNECTOR_SECRET_KEY|\/im\/gateway|\/im\/pair|pairCode/);
   assert.match(server, /const IM_DELIVERY_POLL_MS = WEIXIN_BRIDGE_SYNC_MS/);
   assert.match(server, /setInterval\(\(\) => \{\s+void drainImDeliveries\(\)/);
   assert.doesNotMatch(server, /for \(const delay of \[0, 100, 400, 1_000\]\)/);

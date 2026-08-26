@@ -53,6 +53,38 @@ env_value_or_default() {
   fi
 }
 
+ensure_web_ui_im_credentials_key() {
+  local count
+  local connector_secret
+  local web_ui_im_key
+  count="$(awk -F= '$1 == "WEB_UI_IM_CREDENTIALS_KEY" { count++ } END { print count + 0 }' "$env_file")"
+  if (( count > 1 )); then
+    echo "$env_file must contain at most one WEB_UI_IM_CREDENTIALS_KEY value" >&2
+    exit 1
+  fi
+  if (( count == 1 )); then
+    return
+  fi
+  connector_secret="$(env_value CONNECTOR_SECRET_KEY)"
+  if [[ "$connector_secret" == \"* || "$connector_secret" == *\" || "$connector_secret" == \'* || "$connector_secret" == *\' || "$connector_secret" == *'$'* || "$connector_secret" == *[[:space:]]#* ]]; then
+    echo "automatic migration requires an unquoted, non-interpolated CONNECTOR_SECRET_KEY without an inline comment" >&2
+    exit 1
+  fi
+  connector_secret="${connector_secret#"${connector_secret%%[![:space:]]*}"}"
+  connector_secret="${connector_secret%"${connector_secret##*[![:space:]]}"}"
+  if (( ${#connector_secret} < 32 )); then
+    echo "CONNECTOR_SECRET_KEY must be an unquoted value of at least 32 characters for automatic WEB_UI_IM_CREDENTIALS_KEY migration" >&2
+    exit 1
+  fi
+  web_ui_im_key="$(printf '%s\0%s' 'web-ui-im-resource-v2' "$connector_secret" | sha256sum | awk '{print $1}')"
+  if [[ -s "$env_file" && -n "$(tail -c 1 "$env_file")" ]]; then
+    printf '\n' >> "$env_file"
+  fi
+  printf 'WEB_UI_IM_CREDENTIALS_KEY=%s\n' "$web_ui_im_key" >> "$env_file"
+  chmod 600 "$env_file"
+  echo "derived WEB_UI_IM_CREDENTIALS_KEY from the existing connector key"
+}
+
 release_tag="$(env_value QM_RELEASE_TAG)"
 compose_project="$(env_value QM_COMPOSE_PROJECT)"
 database_mode="$(env_value_or_default QM_DATABASE_MODE bundled)"
@@ -244,6 +276,10 @@ fi
 chmod 700 "$release_dir/deploy-production-release.sh"
 if ! cmp -s "$script_path" "$release_dir/deploy-production-release.sh"; then
   exec "$release_dir/deploy-production-release.sh" "$env_file" "$action" "$root"
+fi
+
+if grep -q '\${WEB_UI_IM_CREDENTIALS_KEY' "$release_dir/compose.production.yaml"; then
+  ensure_web_ui_im_credentials_key
 fi
 
 compose=(
