@@ -1518,7 +1518,16 @@ test("AWS deploy explains how to create a missing web UI secret container before
   const fake = fakeAws(
     dir,
     `
-if (a.includes("ecs describe-services")) console.log(JSON.stringify({ services: ${JSON.stringify(Object.entries(config.aws!.services).map(([name, spec]) => ({ serviceName: spec.ecsService, loadBalancers: name === "portal" ? [{ targetGroupArn: targetArn }] : [], tags: [{ key: "Deployment", value: "acme" }, { key: "ManagedBy", value: "terraform" }] })))} }));
+if (a.includes("ecs describe-services")) console.log(JSON.stringify({ services: ${JSON.stringify(
+      Object.entries(config.aws!.services).map(([name, spec]) => ({
+        serviceName: spec.ecsService,
+        loadBalancers: name === "portal" ? [{ targetGroupArn: targetArn }] : [],
+        tags: [
+          { key: "Deployment", value: "acme" },
+          { key: "ManagedBy", value: "terraform" },
+        ],
+      })),
+    )} }));
 else if (a.includes("secretsmanager get-secret-value")) {
   if (a.includes("PUBLIC_API_URL") && a.includes("--query SecretString")) {
     console.log(${JSON.stringify(config.apiUrl ?? config.publicUrl)});
@@ -2359,7 +2368,8 @@ test("AWS optional-secret activation restores prior tasks when a later service r
     join(dir, ".env"),
     [
       ...required.map(
-        (secret) => `${secret.name}=${secret.name === "WEB_UI_IM_CREDENTIALS_KEY" ? "ab".repeat(32) : TEST_SECRET_VALUE}`,
+        (secret) =>
+          `${secret.name}=${secret.name === "WEB_UI_IM_CREDENTIALS_KEY" ? "ab".repeat(32) : TEST_SECRET_VALUE}`,
       ),
       "ACME_API_KEY=optional-value",
     ].join("\n"),
