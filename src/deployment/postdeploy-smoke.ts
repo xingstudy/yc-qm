@@ -1,9 +1,11 @@
+import { pgConnectionOptions, resolvePgCaTrust } from "../persistence/pg-pool.ts";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { PORTAL_IDENTITY_HEADER } from "../auth/portal-identity.ts";
 import { mintSignedPayload } from "../auth/signed-token.ts";
 import { signedRequestHeaders } from "../auth/source-auth-sign.ts";
 import { loadConfig, type Config } from "../config.ts";
+import { errMessage } from "../util/errors.ts";
 
 export const PARALLEL_EXCEPTION_QUERY = `
   SELECT n.nspname AS schema_name, p.proname AS function_name
@@ -87,25 +89,140 @@ export async function checkSlackCredentials(
 }
 
 export async function stagingApiHeaders(
-  orgId: string,
   principalId: string,
   sourceSecret: string,
   portalIdentitySecret: string,
+  method: string,
   path: string,
+  body = "",
+  base: Record<string, string> = {},
   nowMs = Date.now(),
 ): Promise<Record<string, string>> {
   const portalIdentity = await mintSignedPayload({ p: principalId, exp: nowMs + 60_000 }, portalIdentitySecret);
   return signedRequestHeaders(
     sourceSecret,
-    "GET",
+    method,
     path,
-    "",
+    body,
     {
-      "x-admin-actor": `${principalId}@${orgId}`,
+      ...base,
       [PORTAL_IDENTITY_HEADER]: portalIdentity,
     },
     Math.floor(nowMs / 1000),
   );
+}
+
+type LiveSessionConfig = Pick<Config, "adminGrants" | "orgId" | "portalIdentitySecret" | "signingSecret">;
+
+export async function checkLiveSession(
+  config: LiveSessionConfig,
+  baseUrl: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<void> {
+  const { orgId, portalIdentitySecret, signingSecret: sourceSecret } = config;
+  if (!orgId) throw new Error("live session smoke requires ORG_ID");
+  if (!sourceSecret) throw new Error("live session smoke requires CORE_SIGNING_SECRET");
+  if (!portalIdentitySecret) throw new Error("live session smoke requires PORTAL_IDENTITY_SECRET");
+  const principalId = firstAdminPrincipal(config.adminGrants);
+  const root = baseUrl.replace(/\/+$/, "");
+  const request = async (method: "GET" | "POST", path: string, body?: unknown, admin = false): Promise<unknown> => {
+    const raw = body === undefined ? "" : JSON.stringify(body);
+    const headers = await stagingApiHeaders(
+      principalId,
+      sourceSecret,
+      portalIdentitySecret,
+      method,
+      path,
+      raw,
+      admin ? { "x-admin-actor": `${principalId}@${orgId}` } : {},
+    );
+    const response = await fetchImpl(`${root}${path}`, {
+      method,
+      headers: { ...headers, ...(raw ? { "content-type": "application/json" } : {}) },
+      ...(raw ? { body: raw } : {}),
+    });
+    const text = await response.text();
+    if (!response.ok)
+      throw new Error(`live session ${method} ${path} returned ${response.status}: ${text.slice(0, 500)}`);
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      throw new Error(`live session ${method} ${path} returned unparseable JSON`);
+    }
+  };
+
+  const nonce = randomUUID();
+  const expectedReply = "QM deployment canary passed.";
+  const threadRef = `web:${principalId}:deployment-canary-${nonce}`;
+  let turn: { status?: string; sessionId?: string; reply?: string } | undefined;
+  let failure: unknown;
+  try {
+    turn = (await request("POST", "/v1/turns", {
+      surface: "web",
+      actor: { externalId: principalId },
+      conversation: { kind: "dm", threadRef },
+      text: `Reply with exactly: ${expectedReply}`,
+      origin: { kind: "human" },
+      addressed: true,
+      readOnly: true,
+      skipMemory: true,
+      idempotencyKey: nonce,
+    })) as { status?: string; sessionId?: string; reply?: string };
+    if (!turn.sessionId) throw new Error(`live session model turn failed with status ${turn.status ?? "missing"}`);
+    if (turn.status !== "ok") throw new Error(`live session model turn failed with status ${turn.status ?? "missing"}`);
+    if (turn.reply?.trim() !== expectedReply) throw new Error("live session received an unexpected model reply");
+
+    const sessionPath = `/v1/sessions/${encodeURIComponent(turn.sessionId)}?viewer=${encodeURIComponent(principalId)}&tailTurns=1`;
+    const persisted = (await request("GET", sessionPath)) as {
+      session?: { title?: string | null };
+      entries?: Array<{ type?: string }>;
+    };
+    if (!persisted.session?.title?.trim()) throw new Error("live session has no generated title");
+    if (!persisted.entries?.some((entry) => entry.type === "user"))
+      throw new Error("live session has no persisted user turn");
+    if (!persisted.entries.some((entry) => entry.type === "assistant")) {
+      throw new Error("live session has no persisted assistant turn");
+    }
+
+    const errorsPath = `/v1/admin/errors?scope=${encodeURIComponent(`personal:${principalId}`)}&sessionId=${encodeURIComponent(turn.sessionId)}`;
+    const logged = (await request("GET", errorsPath, undefined, true)) as { errors?: unknown[] };
+    if (!Array.isArray(logged.errors)) throw new Error("live session error log response has no errors array");
+    if (logged.errors.length) throw new Error(`live session recorded ${logged.errors.length} error event(s)`);
+  } catch (error) {
+    failure = error;
+  }
+  let sessionId = turn?.sessionId;
+  if (!sessionId) {
+    try {
+      const sessionsPath = `/v1/admin/sessions?scope=${encodeURIComponent(`personal:${principalId}`)}&category=all&limit=200`;
+      const listed = (await request("GET", sessionsPath, undefined, true)) as {
+        sessions?: Array<{ id?: string; threadRef?: string }>;
+      };
+      sessionId = listed.sessions?.find((session) => session.threadRef === threadRef)?.id;
+    } catch (error) {
+      if (failure)
+        throw new AggregateError(
+          [failure, error],
+          `${errMessage(failure)}; session recovery failed: ${errMessage(error)}`,
+          { cause: error },
+        );
+      throw error;
+    }
+  }
+  if (sessionId) {
+    try {
+      await request("POST", `/v1/sessions/${encodeURIComponent(sessionId)}`, { principalId, archived: true });
+    } catch (error) {
+      if (failure)
+        throw new AggregateError(
+          [failure, error],
+          `${errMessage(failure)}; session archive failed: ${errMessage(error)}`,
+          { cause: error },
+        );
+      throw error;
+    }
+  }
+  if (failure) throw failure;
 }
 
 async function checkApi(
@@ -117,7 +234,9 @@ async function checkApi(
 ): Promise<void> {
   const path = `/v1/admin/sessions?scope=${encodeURIComponent(`org:${orgId}`)}&limit=5&_smoke=${randomUUID()}`;
   const response = await fetch(`http://127.0.0.1:${port}${path}`, {
-    headers: await stagingApiHeaders(orgId, principalId, sourceSecret, portalIdentitySecret, path),
+    headers: await stagingApiHeaders(principalId, sourceSecret, portalIdentitySecret, "GET", path, "", {
+      "x-admin-actor": `${principalId}@${orgId}`,
+    }),
   });
   const body = await response.text();
   if (!response.ok) throw new Error(`staging session API returned ${response.status}: ${body.slice(0, 500)}`);
@@ -129,6 +248,8 @@ type PostdeployConfig = Pick<
   Config,
   | "adminGrants"
   | "databaseUrl"
+  | "databaseCaCert"
+  | "databaseCaCertFile"
   | "flyAppName"
   | "orgId"
   | "port"
@@ -138,15 +259,21 @@ type PostdeployConfig = Pick<
   | "slack"
 >;
 
-async function runPostdeploySmoke(config: PostdeployConfig): Promise<void> {
-  const { databaseUrl, orgId, portalIdentitySecret, signingSecret: sourceSecret } = config;
+export async function checkPostdeployDatabase(
+  config: Pick<PostdeployConfig, "databaseUrl" | "databaseCaCert" | "databaseCaCertFile">,
+): Promise<void> {
+  const { databaseUrl } = config;
   if (!databaseUrl) throw new Error("postdeploy smoke requires DATABASE_URL");
-  if (!orgId) throw new Error("postdeploy smoke requires ORG_ID");
-  if (!sourceSecret) throw new Error("postdeploy smoke requires CORE_SIGNING_SECRET");
-  if (!portalIdentitySecret) throw new Error("postdeploy smoke requires PORTAL_IDENTITY_SECRET");
-
   const pg = (await import("pg")).default;
-  const client = new pg.Client({ connectionString: databaseUrl });
+  const client = new pg.Client(
+    pgConnectionOptions(
+      databaseUrl,
+      resolvePgCaTrust({
+        ...(config.databaseCaCert ? { cert: config.databaseCaCert } : {}),
+        ...(config.databaseCaCertFile ? { certFile: config.databaseCaCertFile } : {}),
+      }),
+    ),
+  );
   await client.connect();
   try {
     const unsafe = await client.query(PARALLEL_EXCEPTION_QUERY);
@@ -158,6 +285,15 @@ async function runPostdeploySmoke(config: PostdeployConfig): Promise<void> {
   } finally {
     await client.end();
   }
+}
+
+async function runPostdeploySmoke(config: PostdeployConfig): Promise<void> {
+  const { orgId, portalIdentitySecret, signingSecret: sourceSecret } = config;
+  if (!orgId) throw new Error("postdeploy smoke requires ORG_ID");
+  if (!sourceSecret) throw new Error("postdeploy smoke requires CORE_SIGNING_SECRET");
+  if (!portalIdentitySecret) throw new Error("postdeploy smoke requires PORTAL_IDENTITY_SECRET");
+
+  await checkPostdeployDatabase(config);
 
   await checkApi(
     orgId,
@@ -172,5 +308,12 @@ async function runPostdeploySmoke(config: PostdeployConfig): Promise<void> {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await runPostdeploySmoke(loadConfig());
+  const config = loadConfig();
+  if (process.argv[2] === "session") {
+    await checkLiveSession(config, process.argv[3] ?? `http://127.0.0.1:${config.port}`);
+    if (config.databaseUrl) await checkPostdeployDatabase(config);
+    console.log("database and live session smoke passed");
+  } else {
+    await runPostdeploySmoke(config);
+  }
 }

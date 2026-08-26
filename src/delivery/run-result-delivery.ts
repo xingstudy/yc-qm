@@ -4,6 +4,7 @@ import type { DeliveryStore } from "./delivery-store.ts";
 import type { Task, TaskStore } from "../tasks/task-store.ts";
 import { SECURITY_QUARANTINE_REFUSAL_TEXT } from "../../plugins/chassis/src/security-quarantine.ts";
 import { resolveTurnOrigin } from "../core/turn-origin.ts";
+import { errMessage } from "../util/errors.ts";
 
 export interface RunResultDelivery {
   destination: Destination;
@@ -16,7 +17,7 @@ export function runResultDelivery(run: Run, taskList: Task[] = []): RunResultDel
   const target = run.request.deliveryTarget;
   const surface = run.request.surface;
   if (!target || !surface) return null;
-  const editRef = run.deliveryState?.editRef;
+  const editRef = run.deliveryState?.editRef ?? run.request.deliveryEditRef;
   const destination: Destination = {
     type: surface,
     target,
@@ -46,6 +47,19 @@ export function runResultDelivery(run: Run, taskList: Task[] = []): RunResultDel
       idempotencyKey,
     };
   }
+  if (
+    surface === "im:work-wechat" &&
+    (run.result?.status === "ok" ||
+      run.result?.status === "refused" ||
+      run.result?.status === "silent" ||
+      run.result?.status === "react")
+  ) {
+    return {
+      destination,
+      text: run.result.status === "refused" ? "消息无法处理。" : "消息已处理。",
+      idempotencyKey,
+    };
+  }
   return null;
 }
 
@@ -56,6 +70,8 @@ export function wireRunResultDeliveries(runs: RunStore, deliveries: DeliveryStor
       const delivery = runResultDelivery(run, taskList);
       if (!delivery) return;
       await deliveries.enqueue(delivery);
-    })().catch((err) => console.error(`[delivery] failed to enqueue recovery delivery for run ${run.id}:`, err));
+    })().catch((err) =>
+      console.error(`[delivery] failed to enqueue recovery delivery for run ${run.id}:`, errMessage(err)),
+    );
   });
 }

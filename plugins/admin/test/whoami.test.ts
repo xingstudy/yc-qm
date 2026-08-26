@@ -8,8 +8,16 @@ import { mintPortalIdentity } from "../../chassis/src/portal-identity.ts";
 let lastActor: string | null = null;
 let lastSigned = false;
 let lastPortalIdentity: string | null = null;
+let transientWhoamiFailures = 0;
+let whoamiRequests = 0;
 const core = createServer((req: IncomingMessage, res) => {
   if (req.method === "GET" && (req.url ?? "").startsWith("/v1/admin/whoami")) {
+    whoamiRequests++;
+    if (transientWhoamiFailures > 0) {
+      transientWhoamiFailures--;
+      res.writeHead(502, { "content-type": "application/json" });
+      return void res.end(JSON.stringify({ error: "temporarily_unavailable" }));
+    }
     lastActor = (req.headers["x-admin-actor"] as string) ?? null;
     lastSigned = Boolean(req.headers["x-timestamp"] && req.headers["x-signature"]);
     lastPortalIdentity = (req.headers["x-portal-identity"] as string) ?? null;
@@ -27,6 +35,8 @@ const corePort = (core.address() as AddressInfo).port;
 
 process.env.CORE_API_URL = `http://localhost:${corePort}`;
 process.env.CORE_SIGNING_SECRET = "admin-whoami-test-secret";
+process.env.NODE_ENV = "test";
+process.env.ALLOW_UNSIGNED_TEST_IDENTITY = "1";
 
 const { server } = await import("../src/index.ts");
 await new Promise<void>((r) => server.listen(0, r));
@@ -137,6 +147,15 @@ test("an unsigned or wrongly-signed portal identity is not accepted as an admin 
     const r = await fetch(`${base}/api/whoami`, { headers: { "x-portal-identity": token } });
     assert.equal(r.status, 401, `forged identity ${token.slice(0, 24)}… must not authenticate`);
   }
+});
+
+test("a transient core failure is retried before admin bootstrap fails", async () => {
+  transientWhoamiFailures = 1;
+  whoamiRequests = 0;
+  const r = await api("/api/me", "admin=U-admin");
+  assert.equal(r.status, 200);
+  assert.equal(whoamiRequests, 2);
+  assert.equal(((await r.json()) as { isAdmin?: boolean }).isAdmin, true);
 });
 
 test("core unreachable → /api/whoami returns 502 core_unreachable (outage, not a not-admin verdict)", async () => {

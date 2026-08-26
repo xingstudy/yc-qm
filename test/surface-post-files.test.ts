@@ -7,6 +7,7 @@ import { createMemoryFileArtifactStore } from "../src/files/file-artifact-store.
 import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
 import { scopeId } from "../src/types.ts";
 import type { Sandbox, SandboxHandle } from "../src/sandbox/sandbox.ts";
+import { createMemoryChannelPolicyStore } from "../src/surface-cache/channel-policy-store.ts";
 
 function fakeSandbox(files: Record<string, Uint8Array>, outboxListing: string[]): Sandbox {
   return {
@@ -102,6 +103,38 @@ test("surface post rejects traversal before provisioning or staging any attachme
   assert.deepEqual(calls, { provision: 0, read: 0, put: 0, grant: 0 });
 });
 
+test("surface standing orders preserve and reset the stored ambient reply policy", async () => {
+  const channelPolicy = createMemoryChannelPolicyStore();
+  const tools = createSurfaceToolDeps({
+    deps: { deliveries: {}, channelPolicy, auditLog: { record() {} } },
+    input: { surfaceTools: true },
+    actor: { id: "U1" },
+    conversation: { kind: "channel", channelRef: "C1" },
+    session: { id: "S1" },
+    scopeId: "channel:C1",
+    defaultDestination: {},
+    strictReadOnly: false,
+    blobTransfer: {},
+    fileRegistration: {},
+    provision: async () => handle,
+    postProvenance() {
+      return {};
+    },
+    spine: { surfaceOutboundCount: 0, crossConversationPosts: 0 },
+  } as unknown as SurfaceToolsContext)!;
+
+  await tools.setStandingOrder("watch", undefined, true);
+  assert.equal((await channelPolicy.get("C1"))?.ambientEnabled, true);
+  const enabledOrder = await tools.getStandingOrder();
+  assert.equal(enabledOrder.ok && enabledOrder.ambientEnabled, true);
+  await tools.setStandingOrder("keep watching");
+  assert.equal((await channelPolicy.get("C1"))?.ambientEnabled, true);
+  await tools.setStandingOrder("keep watching", undefined, null);
+  assert.equal((await channelPolicy.get("C1"))?.ambientEnabled, undefined);
+  const defaultOrder = await tools.getStandingOrder();
+  assert.equal(defaultOrder.ok && defaultOrder.ambientEnabled, undefined);
+});
+
 test("collectNamedOutbound: a missing/empty path is reported (so post can fail the WHOLE call)", async () => {
   const transfer = createMemoryBlobTransferStore();
   const sandbox = fakeSandbox({ "outbox/there.png": bytes("X"), "outbox/blank.txt": bytes("") }, []);
@@ -145,4 +178,48 @@ test("collectOutbound: harvests every outbox file (the turn-result rail for a no
   ]);
   const r = await collectOutbound(sandbox, handle, transfer);
   assert.deepEqual(r.attachments.map((a) => a.name).sort(), ["cover.png", "leftover.txt"]);
+});
+
+test("surface post returns the sent attachments' metadata (so surfaces can render them)", async () => {
+  const enqueued: unknown[] = [];
+  const tools = createSurfaceToolDeps({
+    deps: {
+      deliveries: {
+        async enqueue(input: unknown) {
+          enqueued.push(input);
+          return { id: "d1" };
+        },
+      },
+      sandbox: fakeSandbox({ "qm-brand/cover.png": bytes("PNGDATA") }, []),
+    },
+    input: { surfaceTools: true },
+    actor: { id: "U1" },
+    conversation: { kind: "group" },
+    session: { id: "S1" },
+    scopeId: scopeId("personal", "U1"),
+    defaultDestination: { type: "web", target: "web:thread" },
+    strictReadOnly: false,
+    provision: async () => handle,
+    blobTransfer: createMemoryBlobTransferStore(),
+    fileRegistration: {
+      store: createMemoryFileArtifactStore(createMemoryDurableByteStore()),
+      ownerScopeId: scopeId("personal", "U1"),
+      createdBy: "U1",
+      seed: "run-post",
+    },
+    postProvenance() {
+      return {};
+    },
+    spine: { surfaceOutboundCount: 0, crossConversationPosts: 0 },
+  } as unknown as SurfaceToolsContext)!;
+  const r = await tools.post("Here they are", undefined, ["qm-brand/cover.png"]);
+  assert.equal(r.ok, true);
+  assert.equal(enqueued.length, 1, "the delivery was enqueued");
+  assert.equal(r.attachments?.length, 1, "the post result names what it sent");
+  const a = r.attachments![0]!;
+  assert.equal(a.name, "cover.png");
+  assert.equal(a.mimetype, "image/png");
+  assert.ok(a.sizeBytes > 0);
+  assert.ok(a.artifactId, "artifact id present so the web surface can serve the bytes");
+  assert.ok(!("blobId" in a), "internal blob handle is not leaked to surfaces");
 });

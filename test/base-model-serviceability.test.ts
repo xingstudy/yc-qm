@@ -7,9 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { createInsecureTestServer } from "../src/api/server.ts";
-import { buildApp } from "../src/wiring.ts";
-import { baseModelProviders, configuredModelForHarness, providerKeysPresent } from "../src/config.ts";
-import { defaultModelForHarness } from "../src/model/pi-models.ts";
+import { buildApp, serverDeps } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";
 
 const ADMIN = { "content-type": "application/json", "x-admin-actor": "admin-alice@default-org" };
@@ -17,16 +15,7 @@ const ADMIN = { "content-type": "application/json", "x-admin-actor": "admin-alic
 function start(overrides: Parameters<typeof testConfig>[0] = { anthropicApiKey: "deployment-anthropic-key" }) {
   const config = testConfig({ dataDir: mkdtempSync(join(tmpdir(), "base-model-svc-")), harness: "pi", ...overrides });
   const built = buildApp(config);
-  const server = createInsecureTestServer(built.app, {
-    config: built.config,
-    admin: built.admin,
-    auditLog: built.auditLog,
-    acl: built.acl,
-    modelCredentials: built.modelCredentials,
-    harnessId: "pi",
-    baseModelDefault: defaultModelForHarness("pi", configuredModelForHarness(config, "pi"), baseModelProviders(config)),
-    providerKeys: providerKeysPresent(config),
-  });
+  const server = createInsecureTestServer(built.app, serverDeps(config, built));
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
   return { base, close: () => new Promise<void>((r) => server.close(() => r())) };

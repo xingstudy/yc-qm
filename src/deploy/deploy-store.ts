@@ -290,11 +290,7 @@ export function createDeployStore(backing?: DurableMap<Deployment> | DeployStore
       await updateAppliedRef(id, v);
     },
     async touch(id, at) {
-      const d = await backingMap.get(id);
-      if (d) {
-        d.lastAccessAt = at;
-        await backingMap.put(id, d);
-      }
+      await backingMap.merge(id, { lastAccessAt: at });
     },
     async versionOf(id, version) {
       return (await backingMap.get(id))?.versions.find((v) => v.version === version) ?? null;

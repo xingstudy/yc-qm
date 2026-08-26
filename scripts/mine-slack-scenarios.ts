@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import { writeFileSync } from "node:fs";
+import { pgConnectionOptionsFromEnv } from "../src/persistence/pg-pool.ts";
 
 const require = createRequire(import.meta.url);
 const { Client } = require("pg") as typeof import("pg");
@@ -39,7 +40,7 @@ function readUser(payload: string | null): { author: string; text: string } | nu
 async function main(): Promise<void> {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is required (run inside the core box)");
-  const client = new Client({ connectionString: url });
+  const client = new Client(pgConnectionOptionsFromEnv(url, process.env));
   await client.connect();
   try {
     const since = Date.now() - DAYS * 86_400_000;

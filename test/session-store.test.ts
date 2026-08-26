@@ -426,7 +426,7 @@ for (const [name, make] of backends) {
       step: 0,
       model: "claude-x",
       scopeLabel: s.scopeId,
-      request: { system: "you are helpful", messages: [{ role: "user", content: "hi" }] },
+      promptEnvelope: { system: "you are helpful", tools: [{ name: "execute" }] },
     });
     assert.ok(rec.id, "stamps an id");
     assert.equal(rec.truncated, false, "defaults truncated to false");
@@ -438,7 +438,6 @@ for (const [name, make] of backends) {
       step: 1,
       model: "claude-x",
       scopeLabel: s.scopeId,
-      request: { messages: [] },
       truncated: true,
       ttftMs: 1200,
       durationMs: 8400,
@@ -455,10 +454,27 @@ for (const [name, make] of backends) {
     );
     assert.equal(list[0]!.turnSeq, 0, "correlated to the turn's user entry seq");
     assert.equal(list[1]!.truncated, true, "truncated flag round-trips");
+    assert.equal(list[0]!.request, null, "message-array bodies are never stored");
     assert.deepEqual(
-      (list[0]!.request as { messages: unknown[] }).messages,
-      [{ role: "user", content: "hi" }],
-      "request body round-trips",
+      list[0]!.promptEnvelope,
+      { system: "you are helpful", tools: [{ name: "execute" }] },
+      "prompt envelope round-trips via its hash",
+    );
+    assert.ok(list[0]!.promptHash, "envelope rows carry the dedup hash");
+    assert.equal(list[1]!.promptHash, null, "rows recorded without an envelope stay bare");
+    const repeat = await store.recordLlmRequest(s.id, {
+      turnSeq: 1,
+      step: 0,
+      model: "claude-x",
+      scopeLabel: s.scopeId,
+      promptEnvelope: { system: "you are helpful", tools: [{ name: "execute" }] },
+    });
+    assert.equal(repeat.promptHash, list[0]!.promptHash, "identical envelopes dedupe to one stored body");
+    const rehydrated = await store.listLlmRequests(s.id, { turnSeqs: [1] });
+    assert.deepEqual(
+      rehydrated[0]!.promptEnvelope,
+      { system: "you are helpful", tools: [{ name: "execute" }] },
+      "the deduped row still hydrates its envelope",
     );
     assert.equal(list[1]!.ttftMs, 1200, "per-call TTFT round-trips");
     assert.equal(list[1]!.durationMs, 8400, "per-call duration round-trips");
@@ -480,7 +496,7 @@ for (const [name, make] of backends) {
   test(`${name}: listLlmRequests filters by turnSeq in the store (no load-all-then-filter)`, async () => {
     const store = make();
     const s = await store.getOrCreateByThread("t1", "dm", scopeId("personal", "U1"));
-    const base = { model: "claude-x", scopeLabel: s.scopeId, request: { messages: [] } };
+    const base = { model: "claude-x", scopeLabel: s.scopeId, promptEnvelope: { system: "sys" } };
     await store.recordLlmRequest(s.id, { ...base, turnSeq: 0, step: 0 });
     await store.recordLlmRequest(s.id, { ...base, turnSeq: 5, step: 0 });
     await store.recordLlmRequest(s.id, { ...base, turnSeq: 5, step: 1 });
@@ -513,7 +529,7 @@ for (const [name, make] of backends) {
     const meta = await store.listLlmRequests(s.id, { omitRequest: true });
     assert.equal(meta.length, 4, "every row still listed");
     assert.ok(
-      meta.every((r) => r.request === null),
+      meta.every((r) => r.request === null && r.promptEnvelope === undefined),
       "bodies omitted",
     );
     assert.ok(
@@ -587,7 +603,10 @@ for (const [name, make] of backends) {
       true,
       "other sessions untouched",
     );
-    assert.notEqual((await store.acquireLease(s.id)).lease, null, "lease row cleared (re-acquirable)");
+    assert.equal((await store.acquireLease(s.id)).lease, null, "no lease is granted on a deleted session");
+    const reborn = await store.getOrCreateByThread("t1", "dm", scope);
+    assert.notEqual(reborn.id, s.id, "the thread gets a fresh session");
+    assert.notEqual((await store.acquireLease(reborn.id)).lease, null, "the fresh session is leasable");
   });
 
   test(`${name}: listByParticipant sets lastActivityAt to the most recent user message`, async () => {
@@ -833,4 +852,35 @@ test("cronIdOf and sessionOrigin agree on which threadRefs are crons", () => {
   assert.equal(cronIdOf("agent:main:cron:abc"), "abc");
   assert.equal(cronIdOf("cron:abc:slot"), "abc");
   assert.equal(cronIdOf("dm:D1"), null);
+});
+
+test("deleteSessionIfEmpty refuses while a lease is held and after entries land", async () => {
+  const nowRef = { v: 10_000_000_000 };
+  const store = createMemorySessionStore({ now: () => nowRef.v, leaseTtlMs: 50 });
+  const scope = scopeId("personal", "U1");
+  const s = await store.getOrCreateByThread("web:U1:seed", "dm", scope);
+  const { lease } = await store.acquireLease(s.id);
+  assert.ok(lease);
+  assert.equal(await store.deleteSessionIfEmpty(s.id), false, "a held lease blocks the discard");
+  await store.append(lease, { type: "user", payload: { text: "seed" }, scopeLabel: scope });
+  await store.releaseLease(lease);
+  assert.equal(await store.deleteSessionIfEmpty(s.id), false, "entries block the discard");
+  const empty = await store.getOrCreateByThread("web:U1:seed2", "dm", scope);
+  const second = await store.acquireLease(empty.id);
+  assert.ok(second.lease);
+  await store.releaseLease(second.lease);
+  assert.equal(await store.deleteSessionIfEmpty(empty.id), true, "a released empty session is discarded");
+  assert.equal(await store.get(empty.id), null);
+  assert.equal((await store.acquireLease(empty.id)).lease, null, "no lease is granted on a discarded session");
+
+  const abandoned = await store.getOrCreateByThread("web:U1:seed3", "dm", scope);
+  const stale = await store.acquireLease(abandoned.id);
+  assert.ok(stale.lease);
+  nowRef.v += 60;
+  assert.equal(await store.deleteSessionIfEmpty(abandoned.id), true, "an expired lease does not block the discard");
+  await assert.rejects(
+    store.append(stale.lease, { type: "user", payload: {}, scopeLabel: scope }),
+    /valid session lease/,
+    "the stale holder cannot append after the discard",
+  );
 });

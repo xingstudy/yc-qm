@@ -170,6 +170,7 @@ test("boot refuses playground configurations that leak or brick", () => {
   const boot = (env: NodeJS.ProcessEnv) =>
     spawnSync(process.execPath, ["--input-type=module", "-e", command], { cwd: process.cwd(), env, encoding: "utf8" });
   assert.equal(boot(baseEnv).status, 0);
+  assert.equal(boot({ ...baseEnv, PORTAL_DEPLOYMENTS_ENABLED: "0" }).status, 0);
   const bad: Array<[NodeJS.ProcessEnv, RegExp]> = [
     [{ PORTAL_PLAYGROUND_MINTS_PER_IP: "0" }, /between 1 and 64/],
     [{ PORTAL_PLAYGROUND_MINTS_PER_IP: "65" }, /between 1 and 64/],
@@ -177,7 +178,7 @@ test("boot refuses playground configurations that leak or brick", () => {
     [{ PORTAL_PLAYGROUND_MINT_WINDOW_S: "30" }, /between 60 and 86400/],
     [{ PORTAL_PLAYGROUND_MINT_WINDOW_S: "172800" }, /between 60 and 86400/],
     [{ PORTAL_COOKIE_DOMAIN: "qm.example.com" }, /PORTAL_COOKIE_DOMAIN and PORTAL_APPS_DOMAIN unset/],
-    [{ PORTAL_DEPLOYMENTS_ENABLED: "1" }, /PORTAL_DEPLOYMENTS_ENABLED unset/],
+    [{ PORTAL_DEPLOYMENTS_ENABLED: "1" }, /PORTAL_DEPLOYMENTS_ENABLED=0/],
   ];
   for (const [extra, pattern] of bad) {
     const r = boot({ ...baseEnv, ...extra });

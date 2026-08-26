@@ -54,14 +54,14 @@ test("attaching files is allowed while a turn is streaming", () => {
   assert.ok(guards.length > 0, "streaming still gates steer/send routing");
 });
 
-test("steering with pending attachments explains they ride the next message", () => {
-  assert.match(composer, /attachments stay for your next message/);
+test("a mid-turn submit queues — attachments cannot ride a queued message and stay for the next", () => {
+  assert.match(composer, /title=\$\{t\("Queue for after this turn"\)\}/);
+  assert.doesNotMatch(composer, /attachments stay for your next message/);
 });
 
 test("a steer whose run already ended is recovered, never silently dropped", () => {
-  // sendSteer must inspect the signal outcome and route a failed steer through recovery.
-  assert.match(composer, /const outcome = await ctx\.chat\.signalLiveRun\("steer", text\);/);
-  assert.match(composer, /if \(!outcome\.ok\) recoverEndedRunSteer\(agent, text, outcome\);/);
+  assert.match(composer, /const outcome = await ctx\.chat\.signalLiveRun\("steer", queued\.text\);/);
+  assert.match(composer, /if \(!outcome\.ok\) recoverEndedRunSteer\(agent, queued\.text, outcome\);/);
   // Replayed by core → detach from the stale stream and attach to the fresh run.
   assert.match(composer, /function recoverEndedRunSteer\(/);
   assert.match(composer, /attachWhenIdle\(agent, 0\);/);

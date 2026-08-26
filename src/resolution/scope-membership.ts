@@ -8,6 +8,7 @@ export interface ManagedGroupDirectory {
   members(groupId: string): Promise<string[] | undefined>;
   version(groupId: string): Promise<string | undefined>;
   withVersion<T>(groupId: string, version: string | undefined, fn: () => Promise<T>): Promise<T | undefined>;
+  slackChannel?(groupId: string): Promise<{ channelId: string; channelName: string } | undefined>;
 }
 
 export interface ScopeMembershipDeps {
@@ -126,7 +127,9 @@ export function createCurrentScopeMembers(deps: ScopeMembershipDeps): CurrentSco
           : null,
       ),
     );
-    return included.filter((member): member is Principal => member !== null);
+    const present = included.filter((member): member is Principal => member !== null);
+    if (kind === "group" && present.length === 0) return undefined;
+    return present;
   };
 }
 

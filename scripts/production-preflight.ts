@@ -9,6 +9,7 @@ import {
   isProductionPlaceholder,
 } from "../plugins/chassis/src/production-placeholders.ts";
 import { sleep } from "../src/util/async.ts";
+import { pgConnectionOptions, resolvePgCaTrust } from "../src/persistence/pg-pool.ts";
 import { databaseUrlFromEnv } from "../src/util/postgres-url.ts";
 
 const imageNames = [
@@ -123,13 +124,24 @@ export function productionPreflightProblems(
     "PORTAL_IDENTITY_SECRET",
     "PORTAL_SESSION_SECRET",
     "CONNECTOR_SECRET_KEY",
+    "WEB_UI_IM_CREDENTIALS_KEY",
     "SKILL_SIGNING_SECRET",
     "AUTH_TOKEN_SECRET",
   ] as const;
   const secretValues = independentSecrets.map((name) => [name, strong(name)] as const);
+  const webUiImCredentialsKey = secretValues.find(([name]) => name === "WEB_UI_IM_CREDENTIALS_KEY")?.[1];
+  if (webUiImCredentialsKey && /^0{64}$/.test(webUiImCredentialsKey)) {
+    problems.push("WEB_UI_IM_CREDENTIALS_KEY must be replaced with a deployment value");
+  } else if (webUiImCredentialsKey && !/^[0-9a-f]{64}$/i.test(webUiImCredentialsKey)) {
+    problems.push("WEB_UI_IM_CREDENTIALS_KEY must be exactly 32 bytes encoded as hexadecimal");
+  }
+  const canonicalSecretValue = (value: string): string => (/^[0-9a-f]{64}$/i.test(value) ? value.toLowerCase() : value);
   for (let i = 0; i < secretValues.length; i++) {
     for (let j = i + 1; j < secretValues.length; j++) {
-      if (secretValues[i]![1] && secretValues[i]![1] === secretValues[j]![1]) {
+      if (
+        secretValues[i]![1] &&
+        canonicalSecretValue(secretValues[i]![1]) === canonicalSecretValue(secretValues[j]![1])
+      ) {
         problems.push(`${secretValues[i]![0]} must differ from ${secretValues[j]![0]}`);
       }
     }
@@ -305,10 +317,13 @@ export async function productionDatabaseProblem(env: NodeJS.ProcessEnv): Promise
     if (delay) await sleep(delay);
     const client = new pg.Client({
       application_name: "qm-production-preflight",
-      connectionString: databaseUrl,
       connectionTimeoutMillis: 5000,
       query_timeout: 5000,
       statement_timeout: 5000,
+      ...pgConnectionOptions(
+        databaseUrl,
+        resolvePgCaTrust({ cert: env.DATABASE_CA_CERT, certFile: env.DATABASE_CA_CERT_FILE }),
+      ),
     });
     let lockKey = "";
     let lockAcquired = false;

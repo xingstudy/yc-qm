@@ -9,6 +9,7 @@ function pat(method: string, template: string, field?: Field): Rule {
 }
 
 const USER_SCOPED: Rule[] = [
+  pat("GET", "/v1/sessions/search", { in: "query", name: "principalId" }),
   pat("GET", "/v1/sessions/:id", { in: "query", name: "viewer" }),
   pat("GET", "/v1/sessions/:id/entries/:seq", { in: "query", name: "viewer" }),
   pat("GET", "/v1/sessions/:id/approvals", { in: "query", name: "viewer" }),
@@ -109,6 +110,8 @@ const SYSTEM: Rule[] = [
   pat("POST", "/v1/surface-context"),
   pat("POST", "/v1/surface-file"),
   pat("POST", "/v1/triggers/:id/consent"),
+  pat("PUT", "/v1/ui-state"),
+  pat("DELETE", "/v1/ui-state"),
 ];
 
 const WRITE = new Set(["POST", "PUT", "DELETE", "PATCH"]);

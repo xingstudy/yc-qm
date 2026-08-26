@@ -108,13 +108,10 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
     resolveCache.delete(id);
     inflightResolves.delete(id);
   };
-  const detached = async (d: Deployment, fn: () => Promise<void>): Promise<void> => {
-    const run = (): Promise<void> => launchQueue(d.id, fn);
-    if (advisoryLock.tryWithLock) {
-      await advisoryLock.tryWithLock(`deploy:${d.id}`, run);
-      return;
-    }
-    await advisoryLock.withLock(`deploy:${d.id}`, run);
+  const afterResolve = (d: Deployment, label: string, fn: () => Promise<void>): void => {
+    setImmediate(() => {
+      void advisoryLock.withLock(`deploy:${d.id}`, () => launchQueue(d.id, fn)).catch((e) => swallow(label, e));
+    });
   };
 
   const ingress = opts.ingressConnectorArns?.length ? opts.ingressConnectorArns : [DEFAULT_INGRESS(region)];
@@ -564,27 +561,16 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
       if (!(e instanceof AwsApiError && (e.status >= 500 || e.status === 429))) throw e;
     }
     if (s3 && Date.now() - (stored.lastSnapshotMs ?? 0) > snapshotIntervalMs) {
-      void (async () => {
-        const claim = (): Promise<StoredDeployBody | null> =>
-          launchQueue(d.id, async () => {
-            const cur = await store.get(d.id);
-            if (
-              !cur ||
-              cur.microvmId !== stored.microvmId ||
-              Date.now() - (cur.lastSnapshotMs ?? 0) <= snapshotIntervalMs
-            )
-              return null;
-            await store.put(d.id, { ...cur, lastSnapshotMs: Date.now() });
-            return cur;
-          });
-        const cur = advisoryLock.tryWithLock
-          ? await advisoryLock.tryWithLock(`deploy:${d.id}`, claim)
-          : await advisoryLock.withLock(`deploy:${d.id}`, claim);
-        if (cur) await snapshotData(d.id, cur.microvmId, cur.endpoint);
-      })().catch((e) => swallow("aws-deploy: periodic data snapshot", e));
+      afterResolve(d, "aws-deploy: periodic data snapshot", async () => {
+        const cur = await store.get(d.id);
+        if (!cur || cur.microvmId !== stored.microvmId || Date.now() - (cur.lastSnapshotMs ?? 0) <= snapshotIntervalMs)
+          return;
+        await store.put(d.id, { ...cur, lastSnapshotMs: Date.now() });
+        await snapshotData(d.id, cur.microvmId, cur.endpoint);
+      });
     }
     if (litestream && Date.now() - (stored.dataCredsAtMs ?? 0) > DATA_CREDS_REFRESH_MS) {
-      void detached(d, async () => {
+      afterResolve(d, "aws-deploy: litestream creds refresh", async () => {
         const cur = await store.get(d.id);
         if (
           !cur ||
@@ -599,7 +585,7 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
           await store.put(d.id, { ...cur, dataCredsAtMs: failureBackoffStamp() }).catch(() => {});
           throw e;
         }
-      }).catch((e) => swallow("aws-deploy: litestream creds refresh", e));
+      });
     }
     return endpointFor(d, stored.microvmId, stored.endpoint);
   };
@@ -649,6 +635,21 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
         });
       inflightResolves.set(d.id, resolve);
       return resolve;
+    },
+
+    async logs(d, opts): Promise<string | null> {
+      ensureConfigured();
+      const stored = await store.get(d.id);
+      if (!stored) return null;
+      await ensureRunning(stored.microvmId, stored.endpoint);
+      const lines = Math.max(1, Math.min(2000, Math.floor(opts.tailLines)));
+      const r = await execRaw(
+        stored.microvmId,
+        stored.endpoint,
+        `tail -n ${lines} ${shq(LOG_PATH)} 2>/dev/null || true`,
+        30,
+      );
+      return r.stdout;
     },
 
     async destroy(d): Promise<void> {

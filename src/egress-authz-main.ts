@@ -9,6 +9,7 @@ import { signedRequestHeaders } from "./auth/source-auth-sign.ts";
 import { createSweeper } from "./util/sweeper.ts";
 import { errMessage } from "./util/errors.ts";
 import { numEnv } from "./config.ts";
+import { configurePgCaTrustFromEnv } from "./persistence/pg-pool.ts";
 import type { EgressPolicy, ScopeId } from "./types.ts";
 import { isPrivateNetworkIp } from "./util/network.ts";
 
@@ -18,12 +19,16 @@ const DENY_ALL: EgressPolicy = { allowedHosts: ["deny.invalid"], deniedHosts: []
 
 const METADATA_HOSTS = ["metadata.google.internal", "metadata.goog"];
 
-const LINK_LOCAL = new BlockList();
-LINK_LOCAL.addSubnet("169.254.0.0", 16, "ipv4");
-LINK_LOCAL.addSubnet("fe80::", 10, "ipv6");
-LINK_LOCAL.addAddress("fd00:ec2::254", "ipv6");
+const BLOCKED = new BlockList();
+BLOCKED.addSubnet("169.254.0.0", 16, "ipv4");
+BLOCKED.addSubnet("fe80::", 10, "ipv6");
+BLOCKED.addAddress("fd00:ec2::254", "ipv6");
+BLOCKED.addSubnet("127.0.0.0", 8, "ipv4");
+BLOCKED.addSubnet("0.0.0.0", 8, "ipv4");
+BLOCKED.addAddress("::1", "ipv6");
+BLOCKED.addAddress("::", "ipv6");
 
-export function isLinkLocalOrMetadataIp(ip: string): boolean {
+export function isBlockedDestinationIp(ip: string): boolean {
   const s = ip
     .trim()
     .toLowerCase()
@@ -31,7 +36,7 @@ export function isLinkLocalOrMetadataIp(ip: string): boolean {
     .replace(/%.*$/, "");
   const fam = isIP(s);
   if (!fam) return false;
-  return LINK_LOCAL.check(s, fam === 4 ? "ipv4" : "ipv6");
+  return BLOCKED.check(s, fam === 4 ? "ipv4" : "ipv6");
 }
 
 function isAlwaysBlockedHost(host: string): boolean {
@@ -40,7 +45,7 @@ function isAlwaysBlockedHost(host: string): boolean {
     .toLowerCase()
     .replace(/^\[(.*)\]$/, "$1")
     .replace(/\.$/, "");
-  if (isIP(h)) return isLinkLocalOrMetadataIp(h);
+  if (isIP(h)) return isBlockedDestinationIp(h);
   return METADATA_HOSTS.some((m) => h === m || h.endsWith(`.${m}`));
 }
 
@@ -108,7 +113,7 @@ async function decide(
   if (
     ips.some(
       (ip) =>
-        isLinkLocalOrMetadataIp(ip) ||
+        isBlockedDestinationIp(ip) ||
         isHostDenied(ip, policy?.deniedHosts) ||
         (policy?.denyPrivateNetworks === true && !privateAllowed && isPrivateNetworkIp(ip)),
     )
@@ -224,10 +229,20 @@ export function createRelayAuditSink(
   };
 }
 
+export function createEgressAuditFromEnv(
+  env: NodeJS.ProcessEnv,
+  relay: EgressAuditRecorder | null = null,
+): EgressAuditRecorder {
+  if (relay) return relay;
+  const databaseUrl = env.DATABASE_URL;
+  if (!databaseUrl) return createEgressAuditSink();
+  configurePgCaTrustFromEnv(env);
+  return createPostgresEgressAuditSink(databaseUrl);
+}
+
 function main(): void {
   const port = numEnv(process.env.AUTHZ_PORT) ?? 48081;
   const capabilitySecret = process.env.CAPABILITY_SECRET;
-  const databaseUrl = process.env.DATABASE_URL;
   const coreApiUrl = process.env.CORE_API_URL;
   const relaySecret = process.env.CORE_SIGNING_SECRET;
   if (!capabilitySecret) console.warn("[egress-authz] CAPABILITY_SECRET unset — signed traffic will be denied");
@@ -235,8 +250,7 @@ function main(): void {
     console.warn("[egress-authz] CORE_API_URL set without CORE_SIGNING_SECRET — audit relay disabled");
   const relay = coreApiUrl && relaySecret ? createRelayAuditSink(coreApiUrl, relaySecret) : null;
   relay?.start();
-  const audit: EgressAuditRecorder =
-    relay ?? (databaseUrl ? createPostgresEgressAuditSink(databaseUrl) : createEgressAuditSink());
+  const audit = createEgressAuditFromEnv(process.env, relay);
 
   const tokenless = process.env.EGRESS_TOKENLESS === "open" ? ("open" as const) : ("deny" as const);
   const server = buildEgressAuthzServer({ ...(capabilitySecret ? { capabilitySecret } : {}), audit, tokenless });

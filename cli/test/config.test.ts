@@ -62,6 +62,15 @@ test("required fields: orgId, target, services (must include core), valid servic
     const { config } = loadConfigAt(path);
     assert.deepEqual(config.services, ["core", "web-ui", "admin", "portal"]);
   });
+  withConfig({ unknownField: "bad" }, ({ path }) =>
+    assert.throws(() => loadConfigAt(path), /unknown top-level field "unknownField"/),
+  );
+  withConfig({ org_id: "acme" }, ({ path }) =>
+    assert.throws(() => loadConfigAt(path), /unknown top-level field "org_id"/),
+  );
+  withConfig({ "//": "comment-key convention for plain-JSON configs" }, ({ path }) => {
+    assert.ok(loadConfigAt(path).config);
+  });
 });
 
 test("apiUrl must be an http(s) origin URL; the trailing slash is stripped", () => {
@@ -81,6 +90,45 @@ test("apiUrl must be an http(s) origin URL; the trailing slash is stripped", () 
     withConfig({ apiUrl }, ({ path }) =>
       assert.throws(() => loadConfigAt(path), /"apiUrl" must be a non-empty http\(s\) origin URL/),
     );
+  }
+});
+
+test("publicUrl must be an http(s) origin URL on every target", () => {
+  withConfig({ publicUrl: "https://acme.example/" }, ({ path }) =>
+    assert.equal(loadConfigAt(path).config.publicUrl, "https://acme.example"),
+  );
+  for (const publicUrl of [
+    "",
+    "not a url",
+    "ftp://acme.example",
+    "https://acme.example/subpath",
+    "https://acme.example?x=1",
+    "https://user:pw@acme.example",
+    "https://acme.example.",
+  ]) {
+    withConfig({ publicUrl }, ({ path }) =>
+      assert.throws(() => loadConfigAt(path), /"publicUrl" must be a non-empty http\(s\) origin URL/),
+    );
+  }
+});
+
+test("botName and orgName are optional trimmed strings with length caps", () => {
+  withConfig({}, ({ path }) => {
+    const { config } = loadConfigAt(path);
+    assert.equal(config.botName, undefined);
+    assert.equal(config.orgName, undefined);
+  });
+  withConfig({ botName: " straylight ", orgName: " Acme Corp " }, ({ path }) => {
+    const { config } = loadConfigAt(path);
+    assert.equal(config.botName, "straylight");
+    assert.equal(config.orgName, "Acme Corp");
+  });
+  withConfig({ botName: "x".repeat(31) }, ({ path }) => assert.equal(loadConfigAt(path).config.botName?.length, 31));
+  for (const botName of ["", "   ", 7, "x".repeat(32), "{{bot}}", "a<b>c", "bot\nX", 'a"b', "a\\b"]) {
+    withConfig({ botName }, ({ path }) => assert.throws(() => loadConfigAt(path), /"botName" must be/));
+  }
+  for (const orgName of ["", 7, "x".repeat(41), "Acme {{Corp}}"]) {
+    withConfig({ orgName }, ({ path }) => assert.throws(() => loadConfigAt(path), /"orgName" must be/));
   }
 });
 

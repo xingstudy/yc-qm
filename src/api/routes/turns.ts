@@ -34,7 +34,12 @@ async function postTurn(ctx: ApiCtx): Promise<void> {
     return sendJson(res, 400, { error: "bad_request", message: "expected a TurnRequest" });
   }
   const wantAsync = url.searchParams.get("async") === "1" || body.async === true;
-  const { ownerKeychainUnion: _ownerKeychainUnion, spawned: _spawned, ...safeBody } = body;
+  const {
+    ownerKeychainUnion: _ownerKeychainUnion,
+    spawned: _spawned,
+    unattendedGrants: _unattendedGrants,
+    ...safeBody
+  } = body;
   const resolvedOrigin = publicTurnOrigin(safeBody);
   if (resolvedOrigin.error) return sendJson(res, 400, { error: "bad_request", message: resolvedOrigin.error });
   const origin = resolvedOrigin.origin;
@@ -98,15 +103,51 @@ async function getActiveRunForThread(ctx: ApiCtx): Promise<void> {
   const threadRef = url.searchParams.get("threadRef") ?? "";
   if (!threadRef) return sendJson(res, 400, { error: "bad_request", message: "threadRef required" });
   const active = await app.activeRunForThread(threadRef, actor?.p);
-  return sendJson(res, 200, { runId: active?.runId ?? null });
+  return sendJson(res, 200, { runId: active?.runId ?? null, ...(active?.queued ? { queued: active.queued } : {}) });
+}
+
+async function postRunWithdraw(ctx: ApiCtx): Promise<void> {
+  const { res, app, actor } = ctx;
+  const outcome = await app.withdrawRun(ctx.params.id!, actor?.p);
+  if (outcome.withdrawn) return sendJson(res, 200, outcome);
+  if (outcome.reason === "not_found") return sendJson(res, 404, { error: "not_found" });
+  return sendJson(res, 409, outcome);
 }
 
 async function listDeliveries(ctx: ApiCtx): Promise<void> {
   const { res, app, url } = ctx;
   const type = url.searchParams.get("type") ?? "";
+  const targetPrefix = url.searchParams.get("targetPrefix") ?? undefined;
   const claimMsRaw = Number(url.searchParams.get("claimMs") ?? 0);
   const claimMs = Number.isFinite(claimMsRaw) && claimMsRaw > 0 ? claimMsRaw : 0;
-  return sendJson(res, 200, { deliveries: await app.pendingDeliveries(type, claimMs) });
+  return sendJson(res, 200, { deliveries: await app.pendingDeliveries(type, claimMs, targetPrefix) });
+}
+
+async function postDelivery(ctx: ApiCtx): Promise<void> {
+  const { res, app, body } = ctx;
+  const destination = isObj(body) && isObj(body.destination) ? body.destination : undefined;
+  const type = destination && typeof destination.type === "string" ? destination.type.trim() : "";
+  const target = destination && typeof destination.target === "string" ? destination.target.trim() : "";
+  const editRef = destination && typeof destination.editRef === "string" ? destination.editRef : undefined;
+  const text = isObj(body) && typeof body.text === "string" ? body.text : undefined;
+  const idempotencyKey = isObj(body) && typeof body.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";
+  if (
+    !type ||
+    type.length > 100 ||
+    !target ||
+    target.length > 2_000 ||
+    text === undefined ||
+    text.length > 40_000 ||
+    !idempotencyKey
+  ) {
+    return sendJson(res, 400, { error: "bad_request", message: "valid destination and idempotencyKey required" });
+  }
+  await app.enqueueDelivery({
+    destination: { type, target, ...(editRef ? { editRef: editRef.slice(0, 2_000) } : {}) },
+    text,
+    idempotencyKey: idempotencyKey.slice(0, 1_000),
+  });
+  return sendJson(res, 202, { queued: true });
 }
 
 async function ackDelivery(ctx: ApiCtx): Promise<void> {
@@ -157,9 +198,11 @@ export const turnRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/approvals/:id", auth: "source", handle: getApproval },
   { method: "POST", path: "/v1/runs/:id/delivery-state", auth: "source", handle: postRunDeliveryState },
   { method: "POST", path: "/v1/runs/:id/signal", auth: "source", handle: postRunSignal },
+  { method: "POST", path: "/v1/runs/:id/withdraw", auth: "source", handle: postRunWithdraw },
   { method: "GET", path: "/v1/runs/:id", auth: "source", handle: getRun },
   { method: "GET", path: "/v1/runs", auth: "source", handle: getActiveRunForThread },
   { method: "GET", path: "/v1/deliveries", auth: "source", handle: listDeliveries },
+  { method: "POST", path: "/v1/deliveries", auth: "source", handle: postDelivery },
   { method: "POST", path: "/v1/deliveries/:id/ack", auth: "source", handle: ackDelivery },
   { method: "POST", path: "/v1/deliveries/ack-by-key", auth: "source", handle: ackDeliveryByKey },
 ];

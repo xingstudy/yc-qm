@@ -21,9 +21,17 @@ import {
   type QmConfig,
 } from "../config.ts";
 import { manifestRef } from "../manifest.ts";
-import { computedSecrets, runtimeSecretNames, secretsForService, type ComputedSecret } from "../secrets.ts";
+import {
+  assertWebUiImCredentialsKeyIsScoped,
+  computedSecrets,
+  resolveWebUiImCredentialsKey,
+  runtimeSecretNames,
+  secretsForService,
+  type ComputedSecret,
+} from "../secrets.ts";
 import {
   brokerWiring,
+  brandEnvOf,
   orgEnv,
   runnableServices,
   serviceDef,
@@ -55,8 +63,28 @@ import {
   deploymentLayerBody,
   syncDeploymentLayerBody,
   type DeploymentLayerSyncResult,
+  httpDeploymentLayerTransport,
+  type DeploymentLayerTransport,
 } from "../deployment-layer.ts";
 
+export const awsDeploymentLayerTransport: DeploymentLayerTransport = httpDeploymentLayerTransport({
+  secretFallback: (config) =>
+    config.aws
+      ? capture(process.env.AWS_BIN ?? "aws", [
+          "secretsmanager",
+          "get-secret-value",
+          "--secret-id",
+          `${config.aws.secretsPrefix}CORE_SIGNING_SECRET`,
+          "--query",
+          "SecretString",
+          "--output",
+          "text",
+          "--region",
+          config.aws.region,
+        ]).trim()
+      : undefined,
+  timeoutMs: 60_000,
+});
 export interface AwsUpOpts {
   dryRun?: boolean;
   yes?: boolean;
@@ -220,7 +248,7 @@ export function serviceEnvironment(config: QmConfig, service: ServiceName): Reco
         }
       : {};
   const env: Record<string, string> = {
-    ...orgEnv(service, config.orgId, config.publicUrl, config.services.includes("portal")),
+    ...orgEnv(service, config.orgId, config.publicUrl, config.services.includes("portal"), brandEnvOf(config)),
     ...(service === "core" ? {} : { CORE_API_URL: coreUrl }),
     ...coreEnv,
     ...config.env[service],
@@ -287,7 +315,7 @@ function workloadEnvironment(config: QmConfig, workload: string): Record<string,
   return Object.fromEntries(
     Object.entries({
       CORE_API_URL: `http://core.${requireAws(config).networking.cloudMapNamespace}:8080`,
-      ...orgEnv(workload, config.orgId, config.publicUrl, config.services.includes("portal")),
+      ...orgEnv(workload, config.orgId, config.publicUrl, config.services.includes("portal"), brandEnvOf(config)),
       ...plugin?.env,
       PORT: "8080",
     }).sort(([a], [b]) => a.localeCompare(b)),
@@ -557,7 +585,7 @@ function publishWorkloadImage(
 
 function secretArns(config: QmConfig): Record<string, string> {
   const aws = requireAws(config);
-  const pairs = computedSecrets(config).flatMap((secret) => {
+  const entries = computedSecrets(config).flatMap((secret) => {
     const id = `${aws.secretsPrefix}${secret.name}`;
     try {
       const value = awsJson<{ ARN?: string; SecretString?: string }>(aws, [
@@ -568,15 +596,27 @@ function secretArns(config: QmConfig): Record<string, string> {
       ]);
       if (!value.ARN || isInvalidSecret(secret.name, value.SecretString)) {
         if (!secret.required) return [];
+        if (secret.name === "WEB_UI_IM_CREDENTIALS_KEY") {
+          throw new CliError(
+            "required AWS secret WEB_UI_IM_CREDENTIALS_KEY is missing; run `qm secrets push` so a compatible scoped key can be derived from the existing connector key",
+          );
+        }
         throw new CliError(`required AWS secret ${secret.name} has no usable, non-placeholder AWSCURRENT value`);
       }
-      return [[secret.name, value.ARN] as const];
+      return [{ name: secret.name, arn: value.ARN, value: value.SecretString! }];
     } catch (error) {
       if (!secret.required && /ResourceNotFoundException/.test(errMessage(error))) return [];
+      if (secret.name === "WEB_UI_IM_CREDENTIALS_KEY" && /ResourceNotFoundException/.test(errMessage(error))) {
+        throw new CliError(
+          "AWS secret container for WEB_UI_IM_CREDENTIALS_KEY is missing; run `qm infra render`, then `terraform -chdir=infra apply`, then `qm secrets push` before retrying",
+        );
+      }
       throw error;
     }
   });
-  return Object.fromEntries(pairs);
+  const values = new Map(entries.map((entry) => [entry.name, entry.value]));
+  assertWebUiImCredentialsKeyIsScoped((name) => values.get(name));
+  return Object.fromEntries(entries.map((entry) => [entry.name, entry.arn]));
 }
 
 function assertAwsPublicApiUrl(config: QmConfig): void {
@@ -748,8 +788,73 @@ interface EcsServiceState {
   desiredCount?: number;
   runningCount?: number;
   taskDefinition?: string;
+  networkConfiguration?: {
+    awsvpcConfiguration?: {
+      subnets?: string[];
+      securityGroups?: string[];
+      assignPublicIp?: "ENABLED" | "DISABLED";
+    };
+  };
   deployments?: EcsDeploymentState[];
   tags?: Array<{ key?: string; value?: string }>;
+}
+
+function awsLiveSession(config: QmConfig, core: EcsServiceState): void {
+  const aws = requireAws(config);
+  if (!core.taskDefinition) throw new Error("core service has no live task definition");
+  if (!core.networkConfiguration?.awsvpcConfiguration) throw new Error("core service has no VPC network configuration");
+  const started = awsJson<{
+    tasks?: Array<{ taskArn?: string }>;
+    failures?: Array<{ arn?: string; reason?: string; detail?: string }>;
+  }>(aws, [
+    "ecs",
+    "run-task",
+    "--cluster",
+    aws.cluster,
+    "--task-definition",
+    core.taskDefinition,
+    "--launch-type",
+    "FARGATE",
+    "--network-configuration",
+    JSON.stringify(core.networkConfiguration),
+    "--overrides",
+    JSON.stringify({
+      containerOverrides: [
+        {
+          name: "core",
+          command: [
+            "node",
+            "src/deployment/postdeploy-smoke.ts",
+            "session",
+            `http://core.${aws.networking.cloudMapNamespace}:8080`,
+          ],
+        },
+      ],
+    }),
+    "--count",
+    "1",
+  ]);
+  const taskArn = started.tasks?.[0]?.taskArn;
+  if (!taskArn) {
+    const failure = started.failures?.[0];
+    throw new Error(
+      `could not start canary task: ${failure?.reason ?? failure?.detail ?? failure?.arn ?? "no task returned"}`,
+    );
+  }
+  awsText(aws, ["ecs", "wait", "tasks-stopped", "--cluster", aws.cluster, "--tasks", taskArn]);
+  const stopped = awsJson<{
+    tasks?: Array<{
+      stoppedReason?: string;
+      containers?: Array<{ name?: string; exitCode?: number; reason?: string }>;
+    }>;
+  }>(aws, ["ecs", "describe-tasks", "--cluster", aws.cluster, "--tasks", taskArn]);
+  const task = stopped.tasks?.[0];
+  const coreContainer = task?.containers?.find((container) => container.name === "core");
+  if (coreContainer?.exitCode !== 0) {
+    throw new Error(
+      `canary task exited ${coreContainer?.exitCode ?? "without a code"}: ${coreContainer?.reason ?? task?.stoppedReason ?? "unknown reason"}`,
+    );
+  }
 }
 
 type DeploymentImageProvenance =
@@ -1662,7 +1767,7 @@ export async function awsUp(config: QmConfig, _configDir: string, opts: AwsUpOpt
       if (current || before.counts.core !== 0) {
         const previousState = await currentDeploymentLayerState({
           config,
-          target: "aws",
+          transport: awsDeploymentLayerTransport,
           configDir: _configDir,
           ...(opts.envFile ? { envFile: opts.envFile } : {}),
         });
@@ -1688,7 +1793,7 @@ export async function awsUp(config: QmConfig, _configDir: string, opts: AwsUpOpt
       if (!layerChanged) {
         const state = await currentDeploymentLayerState({
           config,
-          target: "aws",
+          transport: awsDeploymentLayerTransport,
           configDir: _configDir,
           ...(opts.envFile ? { envFile: opts.envFile } : {}),
         });
@@ -1760,7 +1865,12 @@ export async function awsUp(config: QmConfig, _configDir: string, opts: AwsUpOpt
     if (desiredLayerBody) {
       layerAttempted = true;
       await syncAwsLayerAfterRoll(
-        { config, target: "aws", configDir: _configDir, ...(opts.envFile ? { envFile: opts.envFile } : {}) },
+        {
+          config,
+          transport: awsDeploymentLayerTransport,
+          configDir: _configDir,
+          ...(opts.envFile ? { envFile: opts.envFile } : {}),
+        },
         desiredLayerBody,
         desiredLayer!,
       );
@@ -1811,7 +1921,12 @@ export async function awsUp(config: QmConfig, _configDir: string, opts: AwsUpOpt
     if (layerAttempted && previousLayerBody && !previousLayerBootstrapped) {
       try {
         await syncAwsLayerAfterRoll(
-          { config, target: "aws", configDir: _configDir, ...(opts.envFile ? { envFile: opts.envFile } : {}) },
+          {
+            config,
+            transport: awsDeploymentLayerTransport,
+            configDir: _configDir,
+            ...(opts.envFile ? { envFile: opts.envFile } : {}),
+          },
           previousLayerBody,
           createHash("sha256").update(previousLayerBody).digest("hex"),
         );
@@ -2004,7 +2119,7 @@ export async function awsRollback(
         await syncAwsLayerAfterRoll(
           {
             config,
-            target: "aws",
+            transport: awsDeploymentLayerTransport,
             configDir: layerOpts.configDir,
             ...(layerOpts.envFile ? { envFile: layerOpts.envFile } : {}),
           },
@@ -2031,7 +2146,7 @@ export async function awsRollback(
         await syncAwsLayerAfterRoll(
           {
             config,
-            target: "aws",
+            transport: awsDeploymentLayerTransport,
             configDir: layerOpts.configDir,
             ...(layerOpts.envFile ? { envFile: layerOpts.envFile } : {}),
           },
@@ -2069,7 +2184,7 @@ export async function awsSecretsPush(config: QmConfig, configDir: string, envFil
   const { aws, workloads } = awsTopology(config, configDir);
   assertAwsCallerAccount(aws);
   const values = envValues(configDir, envFile);
-  const staged: Array<{ name: string; id: string; dir: string; file: string }> = [];
+  const staged: Array<{ name: string; id: string; dir: string; file: string; value: string }> = [];
   try {
     for (const secret of computedSecrets(config).filter((item) => item.managedBy === "operator")) {
       const supplied = deploymentSecretValue(secret.name, values.get(secret.name));
@@ -2077,7 +2192,15 @@ export async function awsSecretsPush(config: QmConfig, configDir: string, envFil
         step(`${secret.name}: optional, not supplied`);
         continue;
       }
-      const value = supplied ?? (await promptHidden(secret.name));
+      const compatible =
+        secret.name === "WEB_UI_IM_CREDENTIALS_KEY"
+          ? resolveWebUiImCredentialsKey((name) =>
+              name === secret.name
+                ? supplied
+                : (staged.find((entry) => entry.name === name)?.value ?? deploymentSecretValue(name, values.get(name))),
+            )
+          : supplied;
+      const value = compatible ?? (await promptHidden(secret.name));
       if (isInvalidSecret(secret.name, value)) {
         throw new CliError(
           `${secret.name} must have a non-empty, non-placeholder value; signing keys must be at least 32 characters`,
@@ -2086,8 +2209,10 @@ export async function awsSecretsPush(config: QmConfig, configDir: string, envFil
       const dir = mkdtempSync(join(tmpdir(), "qm-secret-"));
       const file = join(dir, "value");
       writeFileSync(file, value, { mode: 0o600 });
-      staged.push({ name: secret.name, id: `${aws.secretsPrefix}${secret.name}`, dir, file });
+      staged.push({ name: secret.name, id: `${aws.secretsPrefix}${secret.name}`, dir, file, value });
     }
+    const resolvedValues = new Map(staged.map((secret) => [secret.name, secret.value]));
+    assertWebUiImCredentialsKeyIsScoped((name) => resolvedValues.get(name));
     await withAwsLease(aws, async () => {
       const baseline = currentDeploymentManifest(aws);
       const states = describedServices(config, workloads);
@@ -2113,10 +2238,10 @@ export async function awsSecretsPush(config: QmConfig, configDir: string, envFil
         }
       }
       const uploaded = Object.fromEntries(staged.map((secret) => [secret.name, secret.id]));
-      const affected = workloads.filter((workload) =>
+      const candidates = workloads.filter((workload) =>
         workloadSecrets(config, workload, uploaded).some((secret) => uploaded[secret.name]),
       );
-      if (usesFlySandboxes(config) && baseline && affected.includes("core")) {
+      if (usesFlySandboxes(config) && baseline && candidates.includes("core")) {
         config = withSandboxPin(config, resolveAwsSandboxPin(config, () => baseline).image);
       }
       for (const secret of staged) {
@@ -2140,13 +2265,14 @@ export async function awsSecretsPush(config: QmConfig, configDir: string, envFil
         step(`${secret.name}: uploaded`);
       }
       if (!baseline || !before) {
-        if (affected.length) step("secret activation deferred to the first complete AWS deployment");
+        if (candidates.length) step("secret activation deferred to the first complete AWS deployment");
         return;
       }
       const arns = secretArns(config);
       const targets = { ...before.tasks };
       const changed: Record<string, string> = {};
-      for (const workload of affected) {
+      const affected: string[] = [];
+      for (const workload of candidates) {
         const live =
           awsJson<{ taskDefinition?: Record<string, unknown> }>(aws, [
             "ecs",
@@ -2163,6 +2289,22 @@ export async function awsSecretsPush(config: QmConfig, configDir: string, envFil
           !isPinnedWorkloadImage(config, workload, container.image)
         ) {
           throw new CliError(`cannot rotate secrets while ${workload} lacks a trusted digest-pinned image`);
+        }
+        const liveSecretNames = new Set(
+          (Array.isArray(container.secrets) ? container.secrets : []).flatMap((secret) =>
+            secret && typeof secret === "object" && typeof (secret as { name?: unknown }).name === "string"
+              ? [(secret as { name: string }).name]
+              : [],
+          ),
+        );
+        affected.push(workload);
+        if (
+          workload === "web-ui" &&
+          uploaded.WEB_UI_IM_CREDENTIALS_KEY &&
+          (!liveSecretNames.has("WEB_UI_IM_CREDENTIALS_KEY") || liveSecretNames.has("CONNECTOR_SECRET_KEY"))
+        ) {
+          step("WEB_UI_IM_CREDENTIALS_KEY: uploaded; task activation deferred to the next complete AWS deployment");
+          continue;
         }
         const desired = renderTaskDefinition(config, workload, container.image, arns);
         if (!taskDefinitionChanges(desired, live).length) continue;
@@ -3141,7 +3283,7 @@ async function checkLive(
       await retryLiveProbe(async () => {
         const state = await currentDeploymentLayerState({
           config,
-          target: "aws",
+          transport: awsDeploymentLayerTransport,
           configDir,
           ...(opts.envFile ? { envFile: opts.envFile } : {}),
         });
@@ -3152,6 +3294,14 @@ async function checkLive(
       });
     } catch (error) {
       failures.push(`deployment layer drift: ${errMessage(error)}`);
+    }
+  }
+  if (!failures.length) {
+    try {
+      awsLiveSession(config, states.get("core")!);
+      if (opts.report ?? true) step("core: private live session smoke passed");
+    } catch (error) {
+      failures.push(`core: private live session smoke failed: ${errMessage(error)}`);
     }
   }
   if (failures.length)
@@ -3240,7 +3390,7 @@ export async function awsPinSandbox(
       await assertAwsPublicNetwork(config);
       const liveLayer = await currentDeploymentLayerState({
         config,
-        target: "aws",
+        transport: awsDeploymentLayerTransport,
         configDir: layerOpts.configDir,
         ...(layerOpts.envFile ? { envFile: layerOpts.envFile } : {}),
       });
@@ -3300,7 +3450,7 @@ export async function awsPinSandbox(
       await syncAwsLayerAfterRoll(
         {
           config,
-          target: "aws",
+          transport: awsDeploymentLayerTransport,
           configDir: layerOpts.configDir,
           ...(layerOpts.envFile ? { envFile: layerOpts.envFile } : {}),
         },
@@ -3335,7 +3485,7 @@ export async function awsPinSandbox(
         await syncAwsLayerAfterRoll(
           {
             config,
-            target: "aws",
+            transport: awsDeploymentLayerTransport,
             configDir: layerOpts.configDir,
             ...(layerOpts.envFile ? { envFile: layerOpts.envFile } : {}),
           },

@@ -13,7 +13,13 @@ import {
   type DeclaredServiceName,
   type ServiceName,
 } from "./services.ts";
-import { hostingProviderChoices, isTarget, type Target } from "./providers.ts";
+import {
+  hostingProviderChoices,
+  isTarget,
+  type Target,
+  SANDBOX_BACKEND_POLICY,
+  targetsAllowingSandboxBackend,
+} from "./providers.ts";
 import { envNum, isEnvVarName, isMissingOrPlaceholder } from "./util.ts";
 
 export const CONFIG_FILENAME = "qm.config.jsonc";
@@ -146,6 +152,8 @@ export interface QmConfig {
   vms?: Partial<Record<ServiceName, { size?: string; memory?: string }>>;
   imageOverrides: Partial<Record<ServiceName, string>>;
   sandbox?: SandboxConfig;
+  botName?: string;
+  orgName?: string;
   appPrefix?: string;
   region?: string;
   flyOrg?: string;
@@ -478,9 +486,43 @@ export function readConfigOrgId(path: string): string | undefined {
   }
 }
 
+const VALID_TOP_LEVEL_KEYS: ReadonlySet<string> = new Set([
+  "contract",
+  "orgId",
+  "publicUrl",
+  "apiUrl",
+  "target",
+  "model",
+  "modelProvider",
+  "basePort",
+  "services",
+  "plugins",
+  "skills",
+  "env",
+  "secretEnv",
+  "securityScreen",
+  "vms",
+  "imageOverrides",
+  "sandbox",
+  "botName",
+  "orgName",
+  "appPrefix",
+  "region",
+  "flyOrg",
+  "imageFrom",
+  "deployAppPrefix",
+  "aws",
+]);
+
 function validate(raw: unknown, path: string): QmConfig {
   if (!isPlainObject(raw)) throw new CliError(`${path}: expected a JSON object`);
   const o = raw;
+
+  for (const key of Object.keys(o)) {
+    if (key !== "//" && !VALID_TOP_LEVEL_KEYS.has(key)) {
+      throw new CliError(`${path}: unknown top-level field ${JSON.stringify(key)}`);
+    }
+  }
 
   const contract = o["contract"];
   if (contract !== CONTRACT_VERSION) {
@@ -499,13 +541,18 @@ function validate(raw: unknown, path: string): QmConfig {
 
   const publicUrl = o["publicUrl"];
   if (typeof publicUrl !== "string" || !publicUrl.trim()) {
-    throw new CliError(`${path}: "publicUrl" must be a non-empty http(s) URL`);
+    throw new CliError(`${path}: "publicUrl" must be a non-empty http(s) origin URL`);
   }
   try {
     const parsed = new URL(publicUrl);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("protocol");
+    if (parsed.pathname !== "/" || parsed.search || parsed.hash || parsed.username || parsed.password)
+      throw new Error("origin");
+    if (parsed.hostname.endsWith(".")) throw new Error("trailing dot");
   } catch {
-    throw new CliError(`${path}: "publicUrl" must be a non-empty http(s) URL`);
+    throw new CliError(
+      `${path}: "publicUrl" must be a non-empty http(s) origin URL without credentials, a path, query, fragment, or trailing hostname dot`,
+    );
   }
 
   const apiUrl = o["apiUrl"];
@@ -665,6 +712,24 @@ function validate(raw: unknown, path: string): QmConfig {
     }
     out.basePort = bp;
   }
+  const identityName = (key: "botName" | "orgName", cap: number, what: string): string | undefined => {
+    if (o[key] === undefined) return undefined;
+    const name = typeof o[key] === "string" ? o[key].trim() : "";
+    if (!name || name.length > cap || /[<>{}\u0000-\u001F\u007F-\u009F\u2028\u2029"\\]/.test(name)) {
+      throw new CliError(
+        `${path}: "${key}" must be a nonempty string of at most ${cap} characters without <>{}, quotes, backslashes, or control characters — ${what}`,
+      );
+    }
+    return name;
+  };
+  const botName = identityName(
+    "botName",
+    31,
+    'it names the bot everywhere users see it: the Slack apps (including the "<botName> SSO" sign-in app, which Slack caps at 35 characters), the prompt identity, and sign-in pages',
+  );
+  if (botName) out.botName = botName;
+  const orgName = identityName("orgName", 40, "it is how the bot refers to your organization");
+  if (orgName) out.orgName = orgName;
   if (typeof o["appPrefix"] === "string") out.appPrefix = o["appPrefix"];
   if (typeof o["region"] === "string") out.region = o["region"];
   if (typeof o["flyOrg"] === "string") out.flyOrg = o["flyOrg"];
@@ -796,13 +861,22 @@ function validateBrokerTrust(config: QmConfig, path: string, secrets?: ReadonlyM
   }
 }
 
+function isSlackIssuer(issuer: string): boolean {
+  try {
+    const host = new URL(issuer).hostname;
+    return host === "slack.com" || host.endsWith(".slack.com");
+  } catch {
+    return false;
+  }
+}
+
 export function validatePortalTrust(config: QmConfig, path = "config", secrets?: ReadonlyMap<string, string>): void {
   if (!config.services.includes("portal")) return;
   if (config.services.includes("auth")) return validateBrokerTrust(config, path, secrets);
   const env = config.env.portal ?? {};
   const issuer = env.OIDC_ISSUER?.trim() || "https://slack.com";
   const jwksUri = env.OIDC_JWKS_URI?.trim();
-  if (issuer !== "https://slack.com" && isMissingOrPlaceholder(jwksUri)) {
+  if (!isSlackIssuer(issuer) && isMissingOrPlaceholder(jwksUri)) {
     throw new CliError(`${path}: portal requires env.portal.OIDC_JWKS_URI when using a non-Slack OIDC issuer`);
   }
   if (jwksUri !== undefined) {
@@ -1289,10 +1363,14 @@ function validateSandbox(raw: unknown, path: string, target: Target): SandboxCon
     for (const name of se) assertEnvName(name, `"sandbox.secretEnv" entry`);
     out.secretEnv = se;
   }
+  if (out.backend !== undefined && !SANDBOX_BACKEND_POLICY[target].allowed.includes(out.backend)) {
+    const targets = targetsAllowingSandboxBackend(out.backend)
+      .map((allowed) => JSON.stringify(allowed))
+      .join(" or ");
+    const label = out.backend === "aws" ? " (Lambda MicroVM sandboxes)" : "";
+    throw new CliError(`${path}: "sandbox.backend": ${JSON.stringify(out.backend)}${label} requires target ${targets}`);
+  }
   if (out.backend === "aws") {
-    if (target !== "aws") {
-      throw new CliError(`${path}: "sandbox.backend": "aws" (Lambda MicroVM sandboxes) requires target "aws"`);
-    }
     const stray = (["app", "image", "baseImage", "env", "secretEnv"] as const).filter((key) => out[key] !== undefined);
     if (stray.length) {
       throw new CliError(
@@ -1308,9 +1386,9 @@ function validateSandbox(raw: unknown, path: string, target: Target): SandboxCon
       `${path}: "sandbox.backend": ${JSON.stringify(out.backend)} requires "sandbox.app" (the Fly app agents execute in)`,
     );
   }
-  if (target === "aws" && out.backend === undefined) {
+  if (SANDBOX_BACKEND_POLICY[target].requireExplicit && out.backend === undefined) {
     throw new CliError(
-      `${path}: target "aws" requires an explicit "sandbox.backend" — "sprites" boots the operator-published layer image in "sandbox.app"; "aws" runs Lambda MicroVM sandboxes (or omit the whole "sandbox" block for the MicroVM default)`,
+      `${path}: target ${JSON.stringify(target)} requires an explicit "sandbox.backend" — "sprites" boots the operator-published layer image in "sandbox.app"; "aws" runs Lambda MicroVM sandboxes (or omit the whole "sandbox" block for the MicroVM default)`,
     );
   }
   return out;

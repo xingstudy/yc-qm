@@ -1,4 +1,5 @@
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
+import { configurePgCaTrustFromEnv } from "../src/persistence/pg-pool.ts";
 import { coverageImportEvent } from "../src/harness/replay.ts";
 import { lastImportLacksScopes } from "../src/harness/tape-fold.ts";
 import type { SessionEntry } from "../src/types.ts";
@@ -18,6 +19,7 @@ if (!url) {
   process.exit(1);
 }
 
+configurePgCaTrustFromEnv(process.env);
 const store = createPostgresSessionStore(url);
 
 const needsScopesReimport = async (sessionId: string): Promise<boolean> =>

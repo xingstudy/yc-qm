@@ -9,7 +9,9 @@ import type { AddressInfo } from "node:net";
 import { createInsecureTestServer } from "../src/api/server.ts";
 import { buildApp } from "../src/wiring.ts";
 import { computeUsers } from "../src/admin/users.ts";
+import { adminImBindingsByPrincipal, parseAdminImBindings } from "../src/admin/im-bindings.ts";
 import type { TurnRequest } from "../src/types.ts";
+import { uiStateId } from "../src/surfaces/ui-state.ts";
 import { testConfig } from "./support/test-config.ts";
 
 test("computeUsers dedupes participants, credits in-window turns, and joins admin status", () => {
@@ -59,6 +61,105 @@ test("computeUsers includes a grant-holder who has never participated", () => {
   assert.equal(rows[0]!.admin.isAdmin, true);
 });
 
+test("computeUsers includes a principal that only has an IM binding", () => {
+  const rows = computeUsers({ participants: [], turns: [], grants: [], principalIds: ["im-only"] });
+  assert.deepEqual(rows, [
+    {
+      principalId: "im-only",
+      sessionCount: 0,
+      turnCount: 0,
+      lastSeenAt: null,
+      admin: { isAdmin: false },
+    },
+  ]);
+});
+
+test("admin IM summaries expose binding metadata without resource credentials", () => {
+  const value = {
+    bindings: {
+      wechat: {
+        provider: "wechat",
+        status: "connected",
+        botName: "微信 Bot",
+        externalDisplayName: "微信用户",
+        connectedAt: 123,
+      },
+    },
+    resources: {
+      wechat: { resourceId: "wx-bot-1", externalUserId: "wx-user-1", encryptedSecret: "v2.secret" },
+    },
+  };
+  assert.deepEqual(parseAdminImBindings(value), [
+    {
+      provider: "wechat",
+      status: "connected",
+      botName: "微信 Bot",
+      externalDisplayName: "微信用户",
+      connectedAt: 123,
+    },
+  ]);
+  assert.deepEqual(
+    adminImBindingsByPrincipal([["U1#im-bindings", { value, updatedAt: 1 }]]).get("U1"),
+    parseAdminImBindings(value),
+  );
+  assert.deepEqual(
+    parseAdminImBindings({
+      bindings: { feishu: { provider: "feishu", status: "connected", botName: "飞书 Bot", connectedAt: 456 } },
+      resources: { feishu: { resourceId: "cli_1", encryptedSecret: "v2.secret" } },
+    }),
+    [
+      {
+        provider: "feishu",
+        status: "connected",
+        botName: "飞书 Bot",
+        externalDisplayName: null,
+        connectedAt: 456,
+      },
+    ],
+  );
+  assert.deepEqual(
+    parseAdminImBindings({
+      bindings: {
+        wechat: {
+          provider: "wechat",
+          status: "pending",
+          botName: "旧微信 Bot",
+          qrPayload: "https://invalid.example/qr",
+        },
+      },
+    }),
+    [],
+  );
+});
+
+test("admin IM summaries include official authorization states", () => {
+  const now = Date.now();
+  const parsed = parseAdminImBindings({
+    bindings: {
+      feishu: {
+        provider: "feishu",
+        status: "pending",
+        qrPayload: "https://open.feishu.cn/device/qr",
+        authorizationState: "waiting",
+        updatedAt: now,
+      },
+      "work-wechat": {
+        provider: "work-wechat",
+        status: "pending",
+        authorizationState: "waiting",
+        updatedAt: now,
+      },
+    },
+  });
+  assert.deepEqual(
+    parsed.map((binding) => [binding.provider, binding.status]),
+    [
+      ["feishu", "pending"],
+      ["work-wechat", "pending"],
+    ],
+  );
+});
+
 function start() {
   const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "admin-users-")) }));
   const server = createInsecureTestServer(built.app, {
@@ -66,6 +167,7 @@ function start() {
     sessions: built.sessions,
     memory: built.memory,
     auditLog: built.auditLog,
+    uiState: built.uiState,
   });
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
@@ -99,6 +201,53 @@ test("/v1/admin/users: org_admin sees the roster + grants; a non-admin is denied
     assert.equal(denied.status, 403);
 
     assert.ok((await s.built.auditLog.events()).some((e) => e.action === "users.read"));
+  } finally {
+    await s.close();
+  }
+});
+
+test("/v1/admin/users includes IM-only users and exposes their active platforms in list and detail", async () => {
+  const s = start();
+  try {
+    await s.built.uiState.put(uiStateId("im-only", "im-bindings"), {
+      value: {
+        bindings: {
+          wechat: {
+            provider: "wechat",
+            status: "connected",
+            botName: "微信 Bot",
+            externalDisplayName: "微信用户",
+            connectedAt: 123,
+          },
+          feishu: {
+            provider: "feishu",
+            status: "pending",
+            botName: "飞书 Bot",
+            token: `f.${Math.floor(Date.now() / 1000).toString(36)}.nonce.signature`,
+          },
+        },
+        resources: {
+          wechat: { resourceId: "wx-bot-1", externalUserId: "wx-user-1", encryptedSecret: "v2.secret" },
+        },
+      },
+      updatedAt: 123,
+    });
+    const adminHeaders = { "x-admin-actor": "admin-alice@default-org" };
+    const list = (await (await fetch(`${s.base}/v1/admin/users`, { headers: adminHeaders })).json()) as any;
+    const user = list.users.find((candidate: { principalId: string }) => candidate.principalId === "im-only");
+    assert.ok(user);
+    assert.deepEqual(
+      user.imBindings.map((binding: { provider: string; status: string }) => [binding.provider, binding.status]),
+      [
+        ["wechat", "connected"],
+        ["feishu", "pending"],
+      ],
+    );
+    assert.equal(JSON.stringify(user).includes("encryptedSecret"), false);
+
+    const detail = (await (await fetch(`${s.base}/v1/admin/users/im-only`, { headers: adminHeaders })).json()) as any;
+    assert.deepEqual(detail.imBindings, user.imBindings);
+    assert.equal(JSON.stringify(detail).includes("v2.secret"), false);
   } finally {
     await s.close();
   }

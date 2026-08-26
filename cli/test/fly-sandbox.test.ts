@@ -7,10 +7,21 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfigAt, type QmConfig } from "../src/config.ts";
-import { derivedTomlFor, derivedPluginTomlFor, flyCheckLive, flyS3ProbeCommand, flyUp } from "../src/backends/fly.ts";
+import {
+  derivedTomlFor,
+  derivedPluginTomlFor,
+  flyCheckLive,
+  flyLiveSessionCommand,
+  flyS3ProbeCommand,
+  flyUp,
+} from "../src/backends/fly.ts";
 import type { ResolvedPlugin } from "../src/plugins.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+test("Fly runs the live session smoke inside the private core machine", () => {
+  assert.equal(flyLiveSessionCommand(), "node src/deployment/postdeploy-smoke.ts session http://127.0.0.1:8080");
+});
 
 test("a fly config's sandbox block rewrites the core fly.toml [env] (app, image, env literals)", () => {
   const { config } = loadConfigAt(join(repoRoot, "deploy", "stacks", "acme", "qm.config.jsonc"));
@@ -455,6 +466,97 @@ else if (a.startsWith("secrets set ")) fs.readFileSync(0, "utf8");
     assert.match(readFileSync(fake.log, "utf8"), /secrets unset --stage -a acme-core FLY_DEPLOY_API_TOKEN/);
   } finally {
     console.log = log;
+    fake.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("fly secrets push derives the scoped key before removing the connector root", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-fly-push-web-ui-key-"));
+  const config: QmConfig = {
+    contract: 1,
+    orgId: "acme",
+    publicUrl: "https://acme.example.com",
+    target: "fly",
+    region: "sjc",
+    flyOrg: "personal",
+    services: ["core", "web-ui"],
+    plugins: [],
+    skills: [],
+    env: { core: { HARNESS: "mock" } },
+    imageOverrides: {},
+  };
+  writeFileSync(
+    join(dir, ".env"),
+    [
+      "CAPABILITY_SECRET=capability-secret-that-is-long-enough",
+      `CONNECTOR_SECRET_KEY=${"connector".repeat(4)}`,
+      `CORE_SIGNING_SECRET=${"core-signing".repeat(3)}`,
+      "PORTAL_IDENTITY_SECRET=portal-identity-secret-that-is-long-enough",
+      `SKILL_SIGNING_SECRET=${"skill-signing".repeat(3)}`,
+      "FLY_SANDBOX_API_TOKEN=fly",
+    ].join("\n"),
+  );
+  const fake = fakeFly(
+    dir,
+    `if (a === "secrets list -a acme-web-ui") console.log("CONNECTOR_SECRET_KEY digest");
+else if (a.startsWith("secrets set ")) fs.readFileSync(0, "utf8");`,
+  );
+  const log = console.log;
+  console.log = (): void => {};
+  try {
+    await flySecretsPush(config, dir);
+    const calls = readFileSync(fake.log, "utf8");
+    assert.match(calls, /secrets unset --stage -a acme-web-ui CONNECTOR_SECRET_KEY/);
+    assert.match(calls, /secrets set --stage -a acme-web-ui WEB_UI_IM_CREDENTIALS_KEY=-/);
+    assert.ok(
+      calls.indexOf("secrets set --stage -a acme-web-ui WEB_UI_IM_CREDENTIALS_KEY=-") <
+        calls.indexOf("secrets unset --stage -a acme-web-ui CONNECTOR_SECRET_KEY"),
+    );
+    assert.doesNotMatch(calls, /secrets set --stage -a acme-web-ui CONNECTOR_SECRET_KEY=-/);
+  } finally {
+    console.log = log;
+    fake.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("fly secrets push rejects a web UI key that reuses the connector root before staging", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-fly-push-reused-web-ui-key-"));
+  const config: QmConfig = {
+    contract: 1,
+    orgId: "acme",
+    publicUrl: "https://acme.example.com",
+    target: "fly",
+    region: "sjc",
+    flyOrg: "personal",
+    services: ["core", "web-ui"],
+    plugins: [],
+    skills: [],
+    env: { core: { HARNESS: "mock" } },
+    imageOverrides: {},
+  };
+  const reused = "0a".repeat(32);
+  writeFileSync(
+    join(dir, ".env"),
+    [
+      "CAPABILITY_SECRET=capability-secret-that-is-long-enough",
+      `CONNECTOR_SECRET_KEY=${reused}`,
+      `CORE_SIGNING_SECRET=${"core-signing".repeat(3)}`,
+      "PORTAL_IDENTITY_SECRET=portal-identity-secret-that-is-long-enough",
+      `SKILL_SIGNING_SECRET=${"skill-signing".repeat(3)}`,
+      `WEB_UI_IM_CREDENTIALS_KEY=${reused}`,
+      "FLY_SANDBOX_API_TOKEN=fly",
+    ].join("\n"),
+  );
+  const fake = fakeFly(dir, "");
+  try {
+    await assert.rejects(
+      () => flySecretsPush(config, dir),
+      /WEB_UI_IM_CREDENTIALS_KEY must differ from CONNECTOR_SECRET_KEY/,
+    );
+    assert.doesNotMatch(readFileSync(fake.log, "utf8"), /secrets (?:set|unset)/);
+  } finally {
     fake.restore();
     rmSync(dir, { recursive: true, force: true });
   }

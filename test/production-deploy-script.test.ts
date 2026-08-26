@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
@@ -44,14 +45,15 @@ test("the production deployer verifies a versioned digest lock before running Co
       `${readFileSync(join(scripts, "deploy-production-release.sh"), "utf8")}\n`,
     );
     const envFile = join(deployment, ".env.production");
+    const connectorSecret = "legacy-connector-secret-key-with-base64+/=";
     writeFileSync(
       envFile,
-      "QM_RELEASE_TAG=prod-v1.2.3\nQM_COMPOSE_PROJECT=qm\nQM_POSTGRES_VOLUME=qm_postgres-data\nPOSTGRES_PASSWORD=production-password\n",
+      `QM_RELEASE_TAG=prod-v1.2.3\nQM_COMPOSE_PROJECT=qm\nQM_POSTGRES_VOLUME=qm_postgres-data\nPOSTGRES_PASSWORD=production-password\nCONNECTOR_SECRET_KEY=${connectorSecret}\n`,
     );
     chmodSync(envFile, 0o600);
     writeFileSync(
       join(release, "compose.production.yaml"),
-      "name: ${QM_COMPOSE_PROJECT}\nservices:\n  core:\n    image: ${QM_CORE_IMAGE}\nvolumes:\n  postgres-data:\n    name: ${QM_POSTGRES_VOLUME}\n",
+      "name: ${QM_COMPOSE_PROJECT}\nservices:\n  core:\n    image: ${QM_CORE_IMAGE}\n  web-ui:\n    image: ${QM_WEB_UI_IMAGE}\n    environment:\n      WEB_UI_IM_CREDENTIALS_KEY: ${WEB_UI_IM_CREDENTIALS_KEY}\nvolumes:\n  postgres-data:\n    name: ${QM_POSTGRES_VOLUME}\n",
     );
     copyFileSync("scripts/deploy-production-release.sh", join(release, "deploy-production-release.sh"));
     writeFileSync(join(release, "release.production.tag"), "prod-v1.2.3\n");
@@ -154,6 +156,9 @@ fi
     assert.match(dockerCalls, / pull$/m);
     assert.match(dockerCalls, / up -d --wait --pull never --remove-orphans$/m);
     assert.match(dockerCalls, / ps$/m);
+    const migratedKey = createHash("sha256").update(`web-ui-im-resource-v2\0${connectorSecret}`).digest("hex");
+    assert.match(readFileSync(envFile, "utf8"), new RegExp(`^WEB_UI_IM_CREDENTIALS_KEY=${migratedKey}$`, "m"));
+    assert.equal(statSync(envFile).mode & 0o777, 0o600);
 
     const beforePrepare = readFileSync(dockerLog, "utf8").length;
     execFileSync("bash", [join(scripts, "deploy-production-release.sh"), envFile, "prepare"], {
@@ -189,7 +194,7 @@ fi
     const externalEnv = join(deployment, ".env.external.production");
     writeFileSync(
       externalEnv,
-      "QM_RELEASE_TAG=prod-v1.2.3\nQM_COMPOSE_PROJECT=qm-external\nQM_DATABASE_MODE=external\n",
+      `QM_RELEASE_TAG=prod-v1.2.3\nQM_COMPOSE_PROJECT=qm-external\nQM_DATABASE_MODE=external\nWEB_UI_IM_CREDENTIALS_KEY=${"0b".repeat(32)}\n`,
     );
     chmodSync(externalEnv, 0o600);
     const beforeExternalApply = readFileSync(dockerLog, "utf8").length;
@@ -223,6 +228,26 @@ fi
     const failedExternalApplyCalls = readFileSync(dockerLog, "utf8").slice(beforeFailedExternalApply);
     assert.match(failedExternalApplyCalls, / up -d --wait --pull never --remove-orphans$/m);
     assert.doesNotMatch(failedExternalApplyCalls, / stop postgres| rm -f postgres/);
+
+    const quotedConnectorEnv = join(deployment, ".env.quoted-connector.production");
+    writeFileSync(
+      quotedConnectorEnv,
+      `QM_RELEASE_TAG=prod-v1.2.3\nQM_COMPOSE_PROJECT=qm-quoted\nQM_POSTGRES_VOLUME=qm-quoted-postgres\nPOSTGRES_PASSWORD=production-password\nCONNECTOR_SECRET_KEY="${connectorSecret}"\n`,
+    );
+    chmodSync(quotedConnectorEnv, 0o600);
+    assert.throws(
+      () =>
+        execFileSync("bash", [join(scripts, "deploy-production-release.sh"), quotedConnectorEnv, "apply"], {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            QM_TEST_DOCKER_LOG: dockerLog,
+          },
+          stdio: "pipe",
+        }),
+      /automatic migration requires an unquoted, non-interpolated CONNECTOR_SECRET_KEY/,
+    );
+    assert.doesNotMatch(readFileSync(quotedConnectorEnv, "utf8"), /WEB_UI_IM_CREDENTIALS_KEY/);
 
     for (const [name, content, expected] of [
       ["missing", "", /exactly one QM_POSTGRES_VOLUME/],

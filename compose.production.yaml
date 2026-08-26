@@ -30,6 +30,8 @@ services:
       QM_DATABASE_MODE: ${QM_DATABASE_MODE:-bundled}
       QM_DATABASE_TRANSPORT: ${QM_DATABASE_TRANSPORT:-}
       DATABASE_URL: ${DATABASE_URL:-}
+      DATABASE_CA_CERT: ${DATABASE_CA_CERT:-}
+      DATABASE_CA_CERT_FILE: ${DATABASE_CA_CERT_FILE:+/run/qm/database-ca.crt}
       POSTGRES_USER: ${POSTGRES_USER:-qm}
       POSTGRES_DB: ${POSTGRES_DB:-qm}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
@@ -40,6 +42,7 @@ services:
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET:?Set PORTAL_IDENTITY_SECRET in .env.production}
       PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET:?Set PORTAL_SESSION_SECRET in .env.production}
       CONNECTOR_SECRET_KEY: ${CONNECTOR_SECRET_KEY:?Set CONNECTOR_SECRET_KEY in .env.production}
+      WEB_UI_IM_CREDENTIALS_KEY: ${WEB_UI_IM_CREDENTIALS_KEY:?Set WEB_UI_IM_CREDENTIALS_KEY in .env.production}
       SKILL_SIGNING_SECRET: ${SKILL_SIGNING_SECRET:?Set SKILL_SIGNING_SECRET in .env.production}
       AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:?Set AUTH_TOKEN_SECRET in .env.production}
       AUTH_CLIENT_SECRET: ${AUTH_CLIENT_SECRET:?Set AUTH_CLIENT_SECRET in .env.production}
@@ -88,6 +91,12 @@ services:
       - scripts/production-preflight.ts
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - type: bind
+        source: ${DATABASE_CA_CERT_FILE:-/dev/null}
+        target: /run/qm/database-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
     network_mode: host
     depends_on:
       postgres:
@@ -162,6 +171,8 @@ services:
       RUN_STORE: postgres
       QM_DATABASE_MODE: ${QM_DATABASE_MODE:-bundled}
       DATABASE_URL: ${DATABASE_URL:-}
+      DATABASE_CA_CERT: ${DATABASE_CA_CERT:-}
+      DATABASE_CA_CERT_FILE: ${DATABASE_CA_CERT_FILE:+/run/qm/database-ca.crt}
       POSTGRES_USER: ${POSTGRES_USER:-qm}
       POSTGRES_DB: ${POSTGRES_DB:-qm}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
@@ -197,6 +208,12 @@ services:
     volumes:
       - core-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
+      - type: bind
+        source: ${DATABASE_CA_CERT_FILE:-/dev/null}
+        target: /run/qm/database-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
     stop_grace_period: 300s
     healthcheck:
       test:
@@ -219,6 +236,7 @@ services:
       CORE_ORG_ID: ${ORG_ID:?Set ORG_ID in .env.production}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET in .env.production}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET:?Set PORTAL_IDENTITY_SECRET in .env.production}
+      WEB_UI_IM_CREDENTIALS_KEY: ${WEB_UI_IM_CREDENTIALS_KEY:?Set WEB_UI_IM_CREDENTIALS_KEY in .env.production}
       WEB_UI_PUBLIC_URL: ${PORTAL_PUBLIC_URL:?Set PORTAL_PUBLIC_URL in .env.production}
       WEB_UI_PRINCIPALS: ${WEB_UI_PRINCIPALS:-}
     extra_hosts:
@@ -335,6 +353,7 @@ services:
       PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET:?Set PORTAL_SESSION_SECRET in .env.production}
       PORTAL_PUBLIC_URL: ${PORTAL_PUBLIC_URL:?Set PORTAL_PUBLIC_URL in .env.production}
       PORTAL_LOCAL_AUTH_BYPASS: "0"
+      PORTAL_DEPLOYMENTS_ENABLED: ${PORTAL_DEPLOYMENTS_ENABLED:-1}
       PORTAL_XFF_TRUSTED_HOPS: ${PORTAL_XFF_TRUSTED_HOPS:-2}
       WEB_UI_UPSTREAM: http://web-ui:8080
       ADMIN_UPSTREAM: http://admin:8080

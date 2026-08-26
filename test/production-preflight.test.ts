@@ -26,6 +26,7 @@ function validEnv(): NodeJS.ProcessEnv {
     PORTAL_IDENTITY_SECRET: "04".repeat(32),
     PORTAL_SESSION_SECRET: "05".repeat(32),
     CONNECTOR_SECRET_KEY: "06".repeat(32),
+    WEB_UI_IM_CREDENTIALS_KEY: "0a".repeat(32),
     SKILL_SIGNING_SECRET: "07".repeat(32),
     AUTH_TOKEN_SECRET: "08".repeat(32),
     AUTH_CLIENT_SECRET: "09".repeat(32),
@@ -74,11 +75,13 @@ test("the checked-in production example fails closed without echoing secret valu
   env.CORE_SIGNING_SECRET = secret;
   env.PORTAL_PUBLIC_URL = "https://qm.example.com";
   env.QM_RELEASE_TAG = "prod-v0.0.0";
+  env.WEB_UI_IM_CREDENTIALS_KEY = "0".repeat(64);
   const text = productionPreflightProblems(env, 989).join(" | ");
 
   assert.match(text, /CORE_SIGNING_SECRET must be replaced/);
   assert.match(text, /PORTAL_PUBLIC_URL must not use example\.com/);
   assert.match(text, /QM_RELEASE_TAG must not use the example release/);
+  assert.match(text, /WEB_UI_IM_CREDENTIALS_KEY must be replaced/);
   assert.doesNotMatch(text, new RegExp(secret));
 });
 
@@ -105,9 +108,11 @@ test("the central preflight validates literal volume names and the verified imag
 test("the central preflight rejects reused secrets and a mismatched Docker socket group", () => {
   const env = validEnv();
   env.PORTAL_SESSION_SECRET = env.CORE_SIGNING_SECRET;
+  env.WEB_UI_IM_CREDENTIALS_KEY = env.CONNECTOR_SECRET_KEY!.toUpperCase();
   const text = productionPreflightProblems(env, 1000).join(" | ");
 
   assert.match(text, /CORE_SIGNING_SECRET must differ from PORTAL_SESSION_SECRET/);
+  assert.match(text, /CONNECTOR_SECRET_KEY must differ from WEB_UI_IM_CREDENTIALS_KEY/);
   assert.match(text, /DOCKER_GID must match/);
 });
 

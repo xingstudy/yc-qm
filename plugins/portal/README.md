@@ -11,7 +11,7 @@ surfaces, which all stay **private** (no public `[http_service]` of their own):
 | `/*` (root) | `<prefix>-web-ui` | Pi web UI SPA, root-mounted (`/web-ui/*` 308-redirects to root for old links) |
 | `/admin/*`  | `<prefix>-admin`  | governance — admin access derived from the core (`canAdminister`)             |
 
-User deployments are never served on this authenticated origin; they use the dedicated apps domain.
+User deployments are served on this authenticated origin when deployment routes are enabled; Compose enables them by default. Use a dedicated apps domain when deployments need their own origin.
 
 It is a thin `node:http` server (native TS type-stripping), like the other
 surfaces, and it does **not** import the core.
@@ -83,8 +83,8 @@ surfaces, and it does **not** import the core.
   the portal before the core. A new portal paired with an old core fails closed with `503` before
   redirecting to the broker.
 - **Surface isolation.** The private surface hop carries a signed portal identity; core verifies
-  it independently, so a synthesized cookie alone confers no user authority. User deployments
-  stay on a dedicated apps hostname and are never proxied through the portal or admin origin.
+  it independently, so a synthesized cookie alone confers no user authority. Deployment routes can
+  proxy through the portal when enabled; use a dedicated apps hostname when deployments need their own origin.
 - **Stateless logout.** `POST /auth/logout` clears the cookie but can't revoke an already-issued
   session before `exp`; the core's `canAdminister` (re-read per request) remains the live admin
   revocation path. Slack has no RP-initiated end-session, so SSO re-login is silent.
@@ -121,7 +121,7 @@ address's one bucket.
 
 Because playground authority must never leave this origin, the portal refuses
 to boot with `PORTAL_PLAYGROUND` alongside `PORTAL_COOKIE_DOMAIN`,
-`PORTAL_APPS_DOMAIN`, or `PORTAL_DEPLOYMENTS_ENABLED` — a domain-wide cookie or
+`PORTAL_APPS_DOMAIN`, or `PORTAL_DEPLOYMENTS_ENABLED=1` — a domain-wide cookie or
 the deployment proxy would hand anonymous sessions to surfaces that never see
 the `anon` flag. Anonymous sessions are also refused the `/connect/*` and
 `/drop/*` flows, so a visitor can't attach real OAuth tokens or dropped secrets
@@ -142,7 +142,7 @@ garbage-collects an abandoned visitor's scope yet.
 
 ## Env
 
-Non-secret (`[env]`): `PORT` (8097 local / 8080 image), `PORTAL_PUBLIC_URL`, `CORE_API_URL`,
+Non-secret (`[env]`): `PORT` (8097 local / 8080 image), `PORTAL_PUBLIC_URL`, `PORTAL_DEPLOYMENTS_ENABLED`, `CORE_API_URL`,
 `CORE_ORG_ID`, `WEB_UI_UPSTREAM`, `ADMIN_UPSTREAM`,
 `OIDC_AUTH_ENDPOINT` / `OIDC_TOKEN_ENDPOINT` / `OIDC_USERINFO_ENDPOINT` / `OIDC_ISSUER` /
 `OIDC_JWKS_URI` / `OIDC_SCOPES` / `OIDC_CLIENT_ID`, `PORTAL_EXPECTED_TEAM_ID`,
@@ -152,6 +152,7 @@ access is derived from the core (see the security model above).
 For local development only, `PORTAL_LOCAL_AUTH_BYPASS=1` mints a local session as
 `PORTAL_DEV_PRINCIPAL` without contacting OIDC. The portal refuses this in production
 and only accepts it when `PORTAL_PUBLIC_URL` is loopback.
+Compose defaults `PORTAL_DEPLOYMENTS_ENABLED=1`; set it to `0` for Playground mode.
 
 Identity: `OIDC_PRINCIPAL_CLAIM` — `email` (default; the org-canonical id: the
 verified work email, lowercased; sign-in fails unless the IdP marks the email verified) or `sub`

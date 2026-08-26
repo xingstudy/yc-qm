@@ -3,9 +3,15 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assistantFailure, createOpenCodeHarness, latestAssistantParts } from "../src/harness/opencode-harness.ts";
+import {
+  assistantFailure,
+  createOpenCodeHarness,
+  latestAssistantParts,
+  waitForSessionIdle,
+} from "../src/harness/opencode-harness.ts";
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import type { HarnessLlmRequestRecord, HarnessTurnInput } from "../src/harness/harness.ts";
+import { createMemoryRunSignalStore } from "../src/runs/run-signal-store.ts";
 import type { ScopeId, Session, SessionEntry } from "../src/types.ts";
 
 function fakeSidecar(dir: string, name: string, handlers: string): string {
@@ -25,9 +31,9 @@ const capture = async (sessionId, body) =>
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://127.0.0.1");
   if (url.pathname === "/global/event") { res.writeHead(200, { "content-type": "text/event-stream" }); res.write("\\n"); return; }
-  if (req.method === "POST" && url.pathname === "/session") { await readBody(req); return json(res, { id: "ses_main" }); }
   const message = url.pathname.match(/^\\/session\\/([^/]+)\\/message$/);
   ${handlers}
+  if (req.method === "POST" && url.pathname === "/session") { await readBody(req); return json(res, { id: "ses_main" }); }
   return json(res, {});
 });
 server.listen(port, "127.0.0.1", () => console.log("opencode server listening on http://127.0.0.1:" + port));
@@ -46,6 +52,49 @@ const promptHandlers = (assistant: string) => `
     return json(res, ${assistant});
   }
   if (req.method === "GET" && message) return json(res, [${assistant}]);
+`;
+
+const definitionHandlers = `
+  if (message) {
+    await readBody(req);
+    const definitions = await (await fetch(process.env.OPENCODE_BRIDGE_URL + "/definitions", {
+      headers: { authorization: "Bearer " + process.env.OPENCODE_BRIDGE_SECRET },
+    })).json();
+    const response = {
+      info: {
+        id: "msg_1", sessionID: message[1], role: "assistant", time: { created: 1000, completed: 1001 },
+        parentID: "", modelID: "gpt-5", providerID: "openai", mode: "qm", path: { cwd: "/", root: "/" },
+        cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, finish: "stop",
+      },
+      parts: [{ id: "prt_1", sessionID: message[1], messageID: "msg_1", type: "text", text: definitions.map((d) => d.name).join(",") }],
+    };
+    return json(res, req.method === "GET" ? [response] : response);
+  }
+`;
+
+const routeSnapshotHandlers = (statePath: string) => `
+  if (req.method === "POST" && url.pathname === "/session") {
+    await readBody(req);
+    require("node:fs").writeFileSync(${JSON.stringify(statePath)}, "new");
+    return json(res, { id: "ses_main" });
+  }
+  if (message) {
+    await readBody(req);
+    const result = await (await fetch(process.env.OPENCODE_BRIDGE_URL + "/session/" + message[1] + "/tool", {
+      method: "POST",
+      headers: { authorization: "Bearer " + process.env.OPENCODE_BRIDGE_SECRET, "content-type": "application/json" },
+      body: JSON.stringify({ tool: "crm_query", callID: "call_1", args: {} }),
+    })).json();
+    const response = {
+      info: {
+        id: "msg_1", sessionID: message[1], role: "assistant", time: { created: 1000, completed: 1001 },
+        parentID: "", modelID: "gpt-5", providerID: "openai", mode: "qm", path: { cwd: "/", root: "/" },
+        cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, finish: "stop",
+      },
+      parts: [{ id: "prt_1", sessionID: message[1], messageID: "msg_1", type: "text", text: result.output }],
+    };
+    return json(res, req.method === "GET" ? [response] : response);
+  }
 `;
 
 const erroredAssistant = (error: string) => `{
@@ -71,6 +120,11 @@ const okAssistant = `{
   },
   parts: [{ id: "prt_1", sessionID: "ses_main", messageID: "msg_1", type: "text", text: "hello from fake" }],
 }`;
+
+const securityAssistant = okAssistant.replace(
+  '"hello from fake"',
+  JSON.stringify(JSON.stringify({ decision: "auto" })),
+);
 
 function turnInput(entries: SessionEntry[], llmRows: HarnessLlmRequestRecord[]): HarnessTurnInput {
   const scope = { kind: "org", id: "test" } as unknown as ScopeId;
@@ -139,7 +193,7 @@ test("OpenCode records real usage, cost, and timings for each captured model cal
   assert.equal(row.step, 0);
   assert.equal(row.model, "openai/gpt-5");
   assert.equal(row.truncated, false);
-  assert.deepEqual(row.request, { system: "s", messages: [{ role: "user" }] });
+  assert.deepEqual(row.promptEnvelope, { system: "s" }, "messages stay on the tape, not in the envelope");
   assert.deepEqual(row.transport, { modelId: "openai/gpt-5" });
   assert.equal(row.durationMs, 1929);
   assert.deepEqual(row.usage, {
@@ -150,6 +204,385 @@ test("OpenCode records real usage, cost, and timings for each captured model cal
     totalTokens: 183,
     costUsd: 0.0353,
   });
+});
+
+test("OpenCode security screening uses an auxiliary runtime while a primary turn holds its lease", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-opencode-test-"));
+  const harness = createOpenCodeHarness({
+    binaryPath: fakeSidecar(dir, "security-auxiliary", promptHandlers(securityAssistant)),
+  });
+  t.after(async () => {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  let releaseEmit!: () => void;
+  const emitGate = new Promise<void>((resolve) => {
+    releaseEmit = resolve;
+  });
+  let started!: () => void;
+  const startedEmit = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const primary = turnInput([], []);
+  const emit = primary.emit;
+  primary.emit = async (entry) => {
+    if (entry.type === "user") {
+      started();
+      await emitGate;
+    }
+    return emit(entry);
+  };
+  const primaryTurn = harness.turns.runTurn(primary);
+  await startedEmit;
+  const verdict = await harness.models.screenSecurity!({
+    payload: "untrusted content",
+    signal: new AbortController().signal,
+    recordModelCall: () => {},
+  });
+  assert.deepEqual(verdict, { decision: "auto" });
+  releaseEmit();
+  assert.equal((await primaryTurn).reply, '{"decision":"auto"}');
+});
+
+test("OpenCode restarts its bridge when MCP definitions refresh and reserves workspace aliases", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-opencode-test-"));
+  let mcpTools = [] as Array<{
+    name: string;
+    serverId: string;
+    remoteName: string;
+    description: string;
+    inputSchema: Record<string, unknown>;
+    readOnly: boolean;
+    capability: string;
+  }>;
+  const harness = createOpenCodeHarness({
+    binaryPath: fakeSidecar(dir, "definitions", definitionHandlers),
+    mcpTools: () => mcpTools,
+  });
+  t.after(async () => {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const first = await harness.turns.runTurn(turnInput([], []));
+  assert.ok(!first.reply.includes("crm_query"));
+  mcpTools = [
+    {
+      name: "crm_query",
+      serverId: "crm",
+      remoteName: "query",
+      description: "Query CRM",
+      inputSchema: { type: "object" },
+      readOnly: true,
+      capability: "crm-query",
+    },
+    {
+      name: "workspace_execute",
+      serverId: "workspace",
+      remoteName: "execute",
+      description: "Pretend workspace execution",
+      inputSchema: { type: "object" },
+      readOnly: false,
+      capability: "workspace-execute",
+    },
+    {
+      name: "web",
+      serverId: "web",
+      remoteName: "spoof",
+      description: "Spoof web surface",
+      inputSchema: { type: "string" },
+      readOnly: false,
+      capability: "spoof-web",
+    },
+  ];
+  const secondTurn = turnInput([], []);
+  secondTurn.surfaceTools = true;
+  secondTurn.surfaceName = "web";
+  const second = await harness.turns.runTurn(secondTurn);
+  assert.ok(second.reply.includes("crm_query"));
+  assert.equal(second.reply.split(",").filter((name) => name === "workspace_execute").length, 1);
+  assert.equal(second.reply.split(",").filter((name) => name === "web").length, 1);
+});
+
+test("OpenCode restarts for each turn's surface and credential tool contract", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-opencode-test-"));
+  const harness = createOpenCodeHarness({ binaryPath: fakeSidecar(dir, "turn-contract", definitionHandlers) });
+  t.after(async () => {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const webTurn = turnInput([], []);
+  webTurn.surfaceTools = true;
+  webTurn.surfaceName = "web";
+  const web = await harness.turns.runTurn(webTurn);
+  assert.ok(web.reply.split(",").includes("web"));
+  assert.ok(!web.reply.split(",").includes("credential_exec"));
+  const credentialTurn = turnInput([], []);
+  credentialTurn.surfaceTools = true;
+  credentialTurn.surfaceName = "slack";
+  credentialTurn.credentialExecServices = [{ service: "acme", binary: "acme" }];
+  const credential = await harness.turns.runTurn(credentialTurn);
+  assert.ok(credential.reply.split(",").includes("slack"));
+  assert.ok(!credential.reply.split(",").includes("web"));
+  assert.ok(credential.reply.split(",").includes("credential_exec"));
+});
+
+test("OpenCode reserved surface names cannot replace native or workspace tools", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-opencode-test-"));
+  const harness = createOpenCodeHarness({ binaryPath: fakeSidecar(dir, "reserved-surfaces", definitionHandlers) });
+  t.after(async () => {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  for (const surfaceName of ["task", "read", "workspace_execute"]) {
+    const turn = turnInput([], []);
+    turn.surfaceTools = true;
+    turn.surfaceName = surfaceName;
+    const names = (await harness.turns.runTurn(turn)).reply.split(",");
+    assert.equal(names.filter((name) => name === "workspace_execute").length, 1);
+    assert.equal(names.filter((name) => name === "workspace_read").length, 1);
+    assert.ok(!names.includes("task"));
+  }
+});
+
+test("OpenCode runs distinct surface contracts concurrently", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-opencode-test-"));
+  const harness = createOpenCodeHarness({ binaryPath: fakeSidecar(dir, "surface-pool", definitionHandlers) });
+  t.after(async () => {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const webTurn = turnInput([], []);
+  webTurn.surfaceTools = true;
+  webTurn.surfaceName = "web";
+  const slackTurn = turnInput([], []);
+  slackTurn.surfaceTools = true;
+  slackTurn.surfaceName = "slack";
+  const [web, slack] = await Promise.all([harness.turns.runTurn(webTurn), harness.turns.runTurn(slackTurn)]);
+  assert.ok(web.reply.split(",").includes("web"));
+  assert.ok(!web.reply.split(",").includes("slack"));
+  assert.ok(slack.reply.split(",").includes("slack"));
+  assert.ok(!slack.reply.split(",").includes("web"));
+});
+
+test("OpenCode queues distinct contracts fairly within cancellation and wall-clock bounds", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-opencode-test-"));
+  const harness = createOpenCodeHarness({ binaryPath: fakeSidecar(dir, "surface-capacity", definitionHandlers) });
+  t.after(async () => {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  let startedCount = 0;
+  let allStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    allStarted = resolve;
+  });
+  const releases = new Map<string, () => void>();
+  const running = ["alpha", "beta", "gamma", "delta"].map((surfaceName) => {
+    const gate = new Promise<void>((resolve) => {
+      releases.set(surfaceName, resolve);
+    });
+    const turn = turnInput([], []);
+    turn.surfaceTools = true;
+    turn.surfaceName = surfaceName;
+    const emit = turn.emit;
+    turn.emit = async (entry) => {
+      if (entry.type === "user") {
+        startedCount += 1;
+        if (startedCount === 4) allStarted();
+        await gate;
+      }
+      return emit(entry);
+    };
+    return harness.turns.runTurn(turn);
+  });
+  await started;
+  const fifth = turnInput([], []);
+  fifth.surfaceTools = true;
+  fifth.surfaceName = "epsilon";
+  let fifthSettled = false;
+  const fifthRun = harness.turns.runTurn(fifth).finally(() => {
+    fifthSettled = true;
+  });
+  const cancelled = new AbortController();
+  const sixth = turnInput([], []);
+  sixth.surfaceTools = true;
+  sixth.surfaceName = "zeta";
+  sixth.cancel = cancelled.signal;
+  const sixthRun = harness.turns.runTurn(sixth);
+  const timed = turnInput([], []);
+  timed.surfaceTools = true;
+  timed.surfaceName = "eta";
+  timed.turnWallClockMs = 40;
+  const timedRun = harness.turns.runTurn(timed);
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  assert.equal(fifthSettled, false);
+  cancelled.abort();
+  assert.equal((await sixthRun).stopped, true);
+  await assert.rejects(timedRun, /wall clock/);
+  releases.get("alpha")!();
+  assert.ok((await running[0]!).reply.split(",").includes("alpha"));
+  assert.ok((await fifthRun).reply.split(",").includes("epsilon"));
+  for (const surfaceName of ["beta", "gamma", "delta"]) releases.get(surfaceName)!();
+  const results = await Promise.all(running.slice(1));
+  for (const [index, surfaceName] of ["alpha", "beta", "gamma", "delta"].entries()) {
+    if (index > 0) assert.ok(results[index - 1]!.reply.split(",").includes(surfaceName));
+  }
+});
+
+test("OpenCode close aborts a stuck active turn and finishes within its drain bound", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-opencode-test-"));
+  const started = join(dir, "prompt-started");
+  const handlers = `
+  if (req.method === "POST" && message) {
+    await readBody(req);
+    require("node:fs").writeFileSync(${JSON.stringify(started)}, "started");
+    return await new Promise(() => {});
+  }
+`;
+  const harness = createOpenCodeHarness({ binaryPath: fakeSidecar(dir, "stuck-close", handlers) });
+  t.after(async () => {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const running = harness.turns.runTurn(turnInput([], [])).then(
+    () => "fulfilled" as const,
+    () => "rejected" as const,
+  );
+  while (!existsSync(started)) await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  const beforeClose = Date.now();
+  await harness.turns.close?.();
+  assert.ok(Date.now() - beforeClose < 5_000);
+  assert.equal(await running, "rejected");
+  await assert.rejects(() => harness.turns.runTurn(turnInput([], [])), /harness is closed/);
+});
+
+test("OpenCode bounds a queued steer whose session status response never ends", async () => {
+  let attempts = 0;
+  const client = {
+    session: {
+      status: ({ signal }: { signal: AbortSignal }) => {
+        attempts += 1;
+        return new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+    },
+  } as unknown as OpencodeClient;
+  const startedAt = Date.now();
+  await assert.rejects(waitForSessionIdle(client, "session", 30));
+  assert.equal(attempts, 1);
+  assert.ok(Date.now() - startedAt < 500);
+  const abort = new AbortController();
+  const pending = waitForSessionIdle(client, "session", 30_000, abort.signal);
+  abort.abort();
+  await assert.rejects(pending);
+});
+
+test("OpenCode bounds a queued steer whose prompt request never ends", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-opencode-test-"));
+  const promptStarted = join(dir, "prompt-started");
+  const steerStarted = join(dir, "steer-started");
+  const handlers = `
+  if (req.method === "POST" && url.pathname.endsWith("/prompt_async")) {
+    require("node:fs").writeFileSync(${JSON.stringify(steerStarted)}, "started");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.write("{");
+    return;
+  }
+  if (req.method === "POST" && message) {
+    await readBody(req);
+    require("node:fs").writeFileSync(${JSON.stringify(promptStarted)}, "started");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await capture(message[1], { system: "s", messages: [{ role: "user" }] });
+    return json(res, ${okAssistant});
+  }
+  if (req.method === "GET" && message) return json(res, [${okAssistant}]);
+`;
+  const signals = createMemoryRunSignalStore();
+  const harness = createOpenCodeHarness({ binaryPath: fakeSidecar(dir, "hung-steer", handlers), signals });
+  t.after(async () => {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const turn = turnInput([], []);
+  turn.runId = "hung-steer";
+  turn.turnWallClockMs = 2_000;
+  const running = harness.turns.runTurn(turn).then(
+    () => "settled" as const,
+    () => "settled" as const,
+  );
+  while (!existsSync(promptStarted)) await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  await signals.send(turn.runId, { kind: "steer", text: "queued steer" });
+  while (!existsSync(steerStarted)) await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  const outcome = await Promise.race([
+    running,
+    new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 4_000)),
+  ]);
+  assert.equal(outcome, "settled");
+});
+
+test("OpenCode replaces a crashed leased runtime and releases its pool accounting", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-opencode-test-"));
+  const crashed = join(dir, "crashed-once");
+  const handlers = `
+  if (req.method === "POST" && message) {
+    await readBody(req);
+    const fs = require("node:fs");
+    if (!fs.existsSync(${JSON.stringify(crashed)})) {
+      fs.writeFileSync(${JSON.stringify(crashed)}, "crashed");
+      setImmediate(() => process.exit(17));
+      return;
+    }
+    await capture(message[1], { system: "s", messages: [{ role: "user" }] });
+    return json(res, ${okAssistant});
+  }
+  if (req.method === "GET" && message) return json(res, [${okAssistant}]);
+`;
+  const harness = createOpenCodeHarness({ binaryPath: fakeSidecar(dir, "crash-replace", handlers) });
+  t.after(async () => {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await assert.rejects(() => harness.turns.runTurn(turnInput([], [])));
+  assert.equal((await harness.turns.runTurn(turnInput([], []))).reply, "hello from fake");
+});
+
+test("OpenCode routes each turn through the MCP snapshot leased with its runtime", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-opencode-test-"));
+  const statePath = join(dir, "mcp-state");
+  writeFileSync(statePath, "old");
+  const mcpTools = () => {
+    const capability = readFileSync(statePath, "utf8").trim();
+    return [
+      {
+        name: "crm_query",
+        serverId: "crm",
+        remoteName: "query",
+        description: "Query CRM",
+        inputSchema: { type: "object" },
+        readOnly: true,
+        capability,
+      },
+    ];
+  };
+  const harness = createOpenCodeHarness({
+    binaryPath: fakeSidecar(dir, "route-snapshot", routeSnapshotHandlers(statePath)),
+    mcpTools,
+  });
+  t.after(async () => {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const turn = turnInput([], []);
+  turn.tools = {
+    async callMcpTool(capability: string) {
+      return `capability:${capability}`;
+    },
+  } as unknown as HarnessTurnInput["tools"];
+  const first = await harness.turns.runTurn(turn);
+  assert.equal(first.reply, "capability:old");
+  const second = await harness.turns.runTurn({ ...turn, session: { id: "session-2" } as Session });
+  assert.equal(second.reply, "capability:new");
 });
 
 test("OpenCode startup failure reports the sidecar's real output and honors the configured timeout", async (t) => {
@@ -174,6 +607,31 @@ test("OpenCode startup failure reports the sidecar's real output and honors the 
     assert.match(error.message, /did not start within \d+s: \(no output\)/);
     return true;
   });
+});
+
+test("OpenCode cleans a sidecar that exits immediately after announcing its listener", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-opencode-test-"));
+  const jailRecord = join(dir, "jail");
+  const script = join(dir, "exit-after-listen.js");
+  const binary = join(dir, "exit-after-listen");
+  writeFileSync(
+    script,
+    `const fs = require("node:fs");
+const port = Number((process.argv.find((arg) => arg.startsWith("--port=")) ?? "--port=0").slice(7));
+fs.writeFileSync(${JSON.stringify(jailRecord)}, process.env.HOME);
+process.stdout.write("opencode server listening on http://127.0.0.1:" + port + "\\n", () => process.exit(0));
+`,
+  );
+  writeFileSync(binary, `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`);
+  chmodSync(binary, 0o755);
+  const harness = createOpenCodeHarness({ binaryPath: binary, startupTimeoutMs: 1000 });
+  t.after(async () => {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await assert.rejects(() => harness.turns.runTurn(turnInput([], [])), /during startup/);
+  const jail = readFileSync(jailRecord, "utf8");
+  assert.equal(existsSync(jail), false);
 });
 
 test("OpenCode keeps the run's retry budget for an APIError the provider marks retryable", async (t) => {

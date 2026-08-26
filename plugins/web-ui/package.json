@@ -12,7 +12,7 @@
     "build": "vite build",
     "serve": "node --env-file-if-exists=.env server/index.ts",
     "start": "npm run build && npm run serve",
-    "test": "NODE_ENV=test ALLOW_UNSIGNED_TEST_IDENTITY=1 node --test \"test/**/*.test.ts\"",
+    "test": "NODE_ENV=test ALLOW_UNSIGNED_TEST_IDENTITY=1 node --experimental-test-module-mocks --test \"test/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.test.json --noEmit"
   },
   "dependencies": {
@@ -20,15 +20,22 @@
     "@earendil-works/pi-agent-core": "0.77.0",
     "@earendil-works/pi-ai": "0.77.0",
     "@earendil-works/pi-web-ui": "0.75.3",
+    "@larksuiteoapi/node-sdk": "^1.73.0",
     "@mariozechner/mini-lit": "^0.2.0",
+    "@tencent-connect/qqbot-connector": "^1.2.0",
+    "@tencent-connect/qqbot-nodejs": "^1.0.4",
+    "@wecom/aibot-node-sdk": "^1.0.7",
+    "@wecom/wecom-aibot-sdk": "^0.1.0",
     "date-fns": "^4.4.0",
+    "dingtalk-stream": "^2.1.6-beta.1",
     "dockview-core": "^7.0.4",
     "dompurify": "^3.4.12",
     "jszip": "^3.10.1",
     "lit": "^3.3.1",
     "lru-cache": "^11.5.2",
     "lucide": "^0.544.0",
-    "marked": "^18.0.5"
+    "marked": "^18.0.5",
+    "qrcode-generator": "^2.0.4"
   },
   "devDependencies": {
     "@types/jsdom": "^28.0.3",

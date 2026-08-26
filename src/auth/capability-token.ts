@@ -36,8 +36,10 @@ export interface CapabilityClaims {
   drop?: string;
   memory?: { write?: ScopeId; orgWrite?: ScopeId; read: ScopeId[] };
   liveActor?: boolean;
+  botActor?: boolean;
   liveAuthor?: boolean;
   triggered?: boolean;
+  grants?: string[];
   threadRef?: string;
   exp: number;
 }
@@ -75,9 +77,15 @@ export async function verifyCapabilityToken(
   if (claims.scopeVersion !== undefined && typeof claims.scopeVersion !== "string") return null;
   if (claims.destinations !== undefined && !Array.isArray(claims.destinations)) return null;
   if (claims.credentials !== undefined && !Array.isArray(claims.credentials)) return null;
+  if (
+    claims.grants !== undefined &&
+    (!Array.isArray(claims.grants) || !claims.grants.every((g) => typeof g === "string"))
+  )
+    return null;
   if (claims.keychainMembers !== undefined && !Array.isArray(claims.keychainMembers)) return null;
   if (claims.memory !== undefined && !Array.isArray(claims.memory?.read)) return null;
   if (claims.liveActor !== undefined && typeof claims.liveActor !== "boolean") return null;
+  if (claims.botActor !== undefined && typeof claims.botActor !== "boolean") return null;
   if (claims.liveAuthor !== undefined && typeof claims.liveAuthor !== "boolean") return null;
   if (claims.blob !== undefined && claims.blob?.dir !== "read" && claims.blob?.dir !== "write") return null;
   if (claims.drop !== undefined && typeof claims.drop !== "string") return null;

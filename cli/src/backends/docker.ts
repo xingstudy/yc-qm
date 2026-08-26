@@ -1,3 +1,5 @@
+import { httpDeploymentLayerTransport, type DeploymentLayerTransport } from "../deployment-layer.ts";
+
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,6 +22,7 @@ import { manifestRef } from "../manifest.ts";
 import {
   brokerWiring,
   ordered,
+  brandEnvOf,
   orgEnv,
   runnableServices,
   serviceDef,
@@ -30,8 +33,18 @@ import {
 } from "../services.ts";
 import { dockerBasePort, sandboxCoreEnv, securityScreenEnv, type QmConfig } from "../config.ts";
 import { discoverPlugins, type ResolvedPlugin } from "../plugins.ts";
-import { computedSecrets, runtimeSecretNames, secretsForService } from "../secrets.ts";
+import {
+  assertWebUiImCredentialsKeyIsScoped,
+  computedSecrets,
+  resolveWebUiImCredentialsKey,
+  runtimeSecretNames,
+  secretsForService,
+} from "../secrets.ts";
 import { readDeploymentState, withDeploymentLock, writeDeploymentState, type DeploymentState } from "../state.ts";
+
+export const dockerDeploymentLayerTransport: DeploymentLayerTransport = httpDeploymentLayerTransport({
+  urlOf: (config) => new URL(`http://127.0.0.1:${dockerBasePort(config)}/v1/deployment-layer`),
+});
 
 const safe = (s: string): string => s.replace(/[^A-Za-z0-9_.-]/g, "-");
 const ORG_LABEL_KEY = "qm.org";
@@ -93,7 +106,7 @@ function dockerError(args: string[], message: string): CliError {
 
 function containerRunning(name: string): boolean {
   try {
-    return docker(["inspect", "-f", "{{.State.Running}}", name], /No such object/).trim() === "true";
+    return docker(["inspect", "-f", "{{.State.Running}}", name], /No such object/i).trim() === "true";
   } catch {
     return false;
   }
@@ -212,7 +225,7 @@ function ensurePostgres(ctx: DockerCtx, dryRun: boolean): string {
 
     if (!containerRunning(pgName)) {
       step(`Postgres: starting ${pgName}`);
-      docker(["rm", "-f", pgName], /No such container|is not running/);
+      docker(["rm", "-f", pgName], /No such container|is not running/i);
       const secretFile = writeSecretEnvFile({ POSTGRES_PASSWORD: password });
       try {
         docker([
@@ -261,12 +274,17 @@ function readEnvValue(envFile: string | undefined, key: string): string | undefi
   return readEnvFile(envFile).get(key);
 }
 
+function dockerSecretValue(ctx: DockerCtx, name: string): string | undefined {
+  const valueOf = (candidate: string): string | undefined =>
+    deploymentSecretValue(candidate, readEnvValue(ctx.envFile, candidate));
+  return name === "WEB_UI_IM_CREDENTIALS_KEY" ? resolveWebUiImCredentialsKey(valueOf) : valueOf(name);
+}
+
 function secretValues(ctx: DockerCtx, service: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const secret of secretsForService(ctx.config, service)) {
     if (secret.managedBy === "terraform" && service === "core") continue;
-    const fileValue = readEnvValue(ctx.envFile, secret.name);
-    const value = deploymentSecretValue(secret.name, fileValue);
+    const value = dockerSecretValue(ctx, secret.name);
     if (value === undefined) continue;
     for (const name of runtimeSecretNames(service, secret)) {
       if (name !== `FLY_RESIDENT_ENV_${secret.name}`) out[name] = value;
@@ -280,7 +298,7 @@ export function dockerServiceEnv(config: QmConfig, service: ServiceName): Record
   const out: Record<string, string> = {
     [def.docker.portEnv]: String(def.docker.internalPort),
     CORE_API_URL: "http://core:8080",
-    ...orgEnv(service, config.orgId, config.publicUrl, config.services.includes("portal")),
+    ...orgEnv(service, config.orgId, config.publicUrl, config.services.includes("portal"), brandEnvOf(config)),
   };
   if (service === "portal") {
     if (config.services.includes("web-ui")) out.WEB_UI_UPSTREAM = "http://web-ui:8080";
@@ -306,7 +324,10 @@ function serviceEnv(ctx: DockerCtx, service: ServiceName): Record<string, string
   const out: Record<string, string> = {};
   if (ctx.signingSecret) out.CORE_SIGNING_SECRET = ctx.signingSecret;
   if (service === "core") {
-    Object.assign(out, orgEnv("core", config.orgId, config.publicUrl, config.services.includes("portal")));
+    Object.assign(
+      out,
+      orgEnv("core", config.orgId, config.publicUrl, config.services.includes("portal"), brandEnvOf(config)),
+    );
     out.PORT = "8080";
     out.DATA_DIR = "/data";
     out.SESSION_STORE = "postgres";
@@ -502,11 +523,12 @@ function warnUnforwardedEnvKeys(ctx: DockerCtx): void {
 }
 
 function missingRequiredOperatorSecrets(ctx: DockerCtx): string[] {
-  const lookup = (name: string): string | undefined => deploymentSecretValue(name, readEnvValue(ctx.envFile, name));
   return computedSecrets(ctx.config)
     .filter(
       (secret) =>
-        secret.required && secret.managedBy === "operator" && isInvalidSecret(secret.name, lookup(secret.name)),
+        secret.required &&
+        secret.managedBy === "operator" &&
+        isInvalidSecret(secret.name, dockerSecretValue(ctx, secret.name)),
     )
     .map((secret) => secret.name);
 }
@@ -532,6 +554,9 @@ export async function dockerUp(
     warn(`sandbox.secretEnv "${name}" has no value in .env or the environment — it won't be set in the sandbox.`);
   }
   const missingRequired = missingRequiredOperatorSecrets(ctx);
+  if (config.services.includes("web-ui")) {
+    assertWebUiImCredentialsKeyIsScoped((name) => dockerSecretValue(ctx, name));
+  }
   if (opts.dryRun && missingRequired.length) {
     warn(`MISSING required secrets — add them to .env before up: ${missingRequired.join(", ")}`);
   }
@@ -577,7 +602,7 @@ export async function dockerUp(
 
   for (const def of ordered(runnableServices(config.services))) {
     const image = resolveImage(ctx, def.name);
-    docker(["rm", "-f", cname(ctx, def.name)], /No such container|is not running/);
+    docker(["rm", "-f", cname(ctx, def.name)], /No such container|is not running/i);
     step(`starting ${def.name}`);
     const run = runArgs(ctx, def.name, image);
     try {
@@ -591,7 +616,7 @@ export async function dockerUp(
 
   for (const p of plugins) {
     const image = resolvePluginImage(ctx, p);
-    docker(["rm", "-f", cname(ctx, p.name)], /No such container|is not running/);
+    docker(["rm", "-f", cname(ctx, p.name)], /No such container|is not running/i);
     step(`starting plugin ${p.name} (${image})`);
     const args = [
       "run",
@@ -608,7 +633,7 @@ export async function dockerUp(
     ];
     const wiring = {
       CORE_API_URL: "http://core:8080",
-      ...orgEnv(p.name, config.orgId, config.publicUrl, config.services.includes("portal")),
+      ...orgEnv(p.name, config.orgId, config.publicUrl, config.services.includes("portal"), brandEnvOf(config)),
       PORT: "8080",
     };
     const env = {
@@ -722,12 +747,14 @@ export async function dockerDown(config: QmConfig, opts: { purge?: boolean } = {
   for (const name of candidates) {
     if (!present.has(name)) continue;
     step(`removing ${name}`);
-    docker(["rm", "-f", name], /No such container/);
+    docker(["rm", "-f", name], /No such container/i);
   }
   if (opts.purge) {
     warn("purging the network and Postgres volume (durable data will be lost)");
-    docker(["network", "rm", prefix], /not found|No such/);
-    docker(["volume", "rm", `${prefix}-pgdata`, `${prefix}-coredata`], /No such volume|not found|in use/);
+    docker(["network", "rm", prefix], /network .* not found/i);
+    for (const volume of [`${prefix}-pgdata`, `${prefix}-coredata`]) {
+      docker(["volume", "rm", volume], /no such volume/i);
+    }
   }
   ok("down.");
 }

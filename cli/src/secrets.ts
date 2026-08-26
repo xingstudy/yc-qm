@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
 import { isVirtualService, type DeclaredServiceName } from "./services.ts";
 import type { ModelProvider, QmConfig } from "./config.ts";
+import { CliError } from "./log.ts";
+import { TARGET_ENV_DEFAULTS } from "./target-env-defaults.ts";
 
 type SecretCondition =
   | { kind: "env-equals"; service: DeclaredServiceName; name: string; value: string }
@@ -37,6 +40,27 @@ export interface ComputedSecret {
 export const MINT_LOCALLY = "openssl rand -hex 32";
 export const MINT_JWK =
   "node -e \"const {generateKeyPairSync}=require('node:crypto');process.stdout.write(JSON.stringify(generateKeyPairSync('ec',{namedCurve:'P-256'}).privateKey.export({format:'jwk'})))\"";
+
+export function assertWebUiImCredentialsKeyIsScoped(valueOf: (name: string) => string | undefined): void {
+  const webUiKey = valueOf("WEB_UI_IM_CREDENTIALS_KEY")?.trim();
+  const connectorKey = valueOf("CONNECTOR_SECRET_KEY")?.trim();
+  const canonical = (value: string): string => (/^[0-9a-f]{64}$/i.test(value) ? value.toLowerCase() : value);
+  if (webUiKey && connectorKey && canonical(webUiKey) === canonical(connectorKey)) {
+    throw new CliError("WEB_UI_IM_CREDENTIALS_KEY must differ from CONNECTOR_SECRET_KEY");
+  }
+}
+
+export function deriveWebUiImCredentialsKey(connectorSecretKey: string): string {
+  return createHash("sha256").update(`web-ui-im-resource-v2\0${connectorSecretKey.trim()}`).digest("hex");
+}
+
+export function resolveWebUiImCredentialsKey(valueOf: (name: string) => string | undefined): string | undefined {
+  const current = valueOf("WEB_UI_IM_CREDENTIALS_KEY");
+  if (current?.trim()) return current;
+  const material = valueOf("CONNECTOR_SECRET_KEY")?.trim();
+  if (!material || material.length < 32 || /^(replace-me|placeholder|changeme|todo)$/i.test(material)) return current;
+  return deriveWebUiImCredentialsKey(material);
+}
 
 export const FIRST_PARTY_SECRET_SPECS: readonly SecretSpec[] = [
   {
@@ -132,11 +156,25 @@ export const FIRST_PARTY_SECRET_SPECS: readonly SecretSpec[] = [
     generate: "sprite login   # then copy the token from ~/.sprite/credentials",
   },
   {
+    name: "SMOLMACHINES_TOKEN",
+    service: "core",
+    required: { when: { kind: "env-equals", service: "core", name: "SANDBOX_BACKEND", value: "smolmachines" } },
+    description: "smolmachines API key for the agent-computer substrate.",
+    generate: "create an API key in the smolmachines console (https://smolmachines.com/console)",
+  },
+  {
     name: "DATABASE_URL",
     service: "core",
     required: { when: { kind: "target", target: "aws" } },
     description: "Postgres connection string for durable state.",
     managedBy: "terraform",
+  },
+  {
+    name: "DATABASE_CA_CERT",
+    service: "core",
+    required: false,
+    description:
+      "Extra root CA (PEM content) trusted for the Postgres connection, for providers that pin a private root (e.g. Supabase's pooler). Verification stays on.",
   },
   {
     name: "AWS_DEPLOY_GATE_SECRET",
@@ -193,6 +231,13 @@ export const FIRST_PARTY_SECRET_SPECS: readonly SecretSpec[] = [
     service: "web-ui",
     required: true,
     description: "HMAC key shared by core and surface plugins.",
+    generate: MINT_LOCALLY,
+  },
+  {
+    name: "WEB_UI_IM_CREDENTIALS_KEY",
+    service: "web-ui",
+    required: true,
+    description: "Dedicated 32-byte hex key for durable IM Bot credentials.",
     generate: MINT_LOCALLY,
   },
   {
@@ -385,21 +430,8 @@ function conditionMatches(config: QmConfig, condition: SecretCondition): boolean
   return value === condition.value;
 }
 
-export const FLY_TEMPLATE_ENV_DEFAULTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  core: { HARNESS: "pi" },
-};
-
-const AWS_RENDER_ENV_DEFAULTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  core: { SANDBOX_BACKEND: "aws" },
-};
-
 function targetEnvDefault(config: QmConfig, service: string, name: string): string | undefined {
-  if (config.target === "fly") return FLY_TEMPLATE_ENV_DEFAULTS[service]?.[name];
-  if (config.target !== "aws") return undefined;
-  const rendered = AWS_RENDER_ENV_DEFAULTS[service]?.[name];
-  if (rendered === undefined) return undefined;
-  if (name === "SANDBOX_BACKEND") return config.sandbox?.backend ?? rendered;
-  return rendered;
+  return TARGET_ENV_DEFAULTS[config.target](config, service, name);
 }
 
 function requirementFor(config: QmConfig, spec: SecretSpec): boolean | null {

@@ -1,10 +1,15 @@
 FROM golang:1.26.6-alpine@sha256:af8d6740070b8906d12eae1c3e3ea0957fb63f492051ea05e354c38ef9fe88df AS gh-builder
 
-ARG GH_VERSION=2.97.0
+ARG GH_VERSION=2.98.0
+ARG X_MOD_VERSION=0.40.0
 RUN go mod download "github.com/cli/cli/v2@v${GH_VERSION}" \
-  && cd "/go/pkg/mod/github.com/cli/cli/v2@v${GH_VERSION}" \
+  && mkdir /tmp/gh \
+  && cp -a "/go/pkg/mod/github.com/cli/cli/v2@v${GH_VERSION}/." /tmp/gh \
+  && cd /tmp/gh \
+  && go get "golang.org/x/mod@v${X_MOD_VERSION}" \
   && GH_VERSION="$GH_VERSION" SOURCE_DATE_EPOCH=1785456000 go run script/build.go bin/gh \
-  && install bin/gh /usr/local/bin/gh
+  && install bin/gh /usr/local/bin/gh \
+  && go version -m /usr/local/bin/gh | grep -Eq "golang.org/x/mod[[:space:]]+v${X_MOD_VERSION}([[:space:]]|$)"
 
 FROM node:24-trixie-slim@sha256:0711b541c1c33a8a530ac4f0d391baa9a15b3d804695b1b24a47daa5fb60e74d AS node-runtime
 
@@ -15,12 +20,15 @@ RUN npm install -g --allow-scripts=@anthropic-ai/claude-code \
   && npm install --prefix /tmp/npm-fixes --ignore-scripts --omit=dev \
       brace-expansion@5.0.9 \
       ip-address@10.3.1 \
+      tar@7.5.22 \
   && rm -rf \
       /usr/local/lib/node_modules/npm/node_modules/brace-expansion \
       /usr/local/lib/node_modules/npm/node_modules/ip-address \
+      /usr/local/lib/node_modules/npm/node_modules/tar \
   && cp -a \
       /tmp/npm-fixes/node_modules/brace-expansion \
       /tmp/npm-fixes/node_modules/ip-address \
+      /tmp/npm-fixes/node_modules/tar \
       /usr/local/lib/node_modules/npm/node_modules/ \
   && rm -rf /root/.npm /tmp/npm-fixes /tmp/node-compile-cache
 
@@ -79,6 +87,7 @@ RUN claude --version \
   && codex --version \
   && node --version \
   && npm --version \
+  && node -e 'const tar = require("/usr/local/lib/node_modules/npm/node_modules/tar"); const { version } = require("/usr/local/lib/node_modules/npm/node_modules/tar/package.json"); if (!tar || version !== "7.5.22") throw new Error(`unexpected tar version ${version}`)' \
   && aws --version \
   && gh --version
 

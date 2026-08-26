@@ -46,6 +46,8 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
   assert.equal(pi?.resolved, piCodingAgentTarball);
   assert.equal(pi?.hasShrinkwrap, true);
   assert.equal(pi?.license, "MIT");
+  assert.deepEqual(lockedVersions(packages, "hono"), ["4.13.1"]);
+  assert.deepEqual(lockedVersions(packages, "undici"), ["8.9.0"]);
   assert.match(
     readFileSync(new URL(`../${piLicensePath}`, import.meta.url), "utf8"),
     /Copyright \(c\) 2025 Mario Zechner/,

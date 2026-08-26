@@ -19,11 +19,16 @@ interface HarnessImage {
   artifactId?: string;
 }
 
+export function envelopeWithoutMessages(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  return Object.fromEntries(Object.entries(payload as Record<string, unknown>).filter(([k]) => k !== "messages"));
+}
+
 export interface HarnessLlmRequestRecord {
   turnSeq: number | null;
   step: number;
   model: string;
-  request: unknown;
+  promptEnvelope?: unknown;
   truncated: boolean;
   transport?: LlmTransportMeta | null;
   ttftMs?: number | null;
@@ -66,6 +71,7 @@ export interface HarnessTurnInput {
   systemCacheBoundary?: number;
   history: SessionEntry[];
   tools: ToolContext;
+  credentialExecServices?: readonly { service: string; binary: string }[];
   screenExternalContent?(input: {
     content: string;
     tool: string;

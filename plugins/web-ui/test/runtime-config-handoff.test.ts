@@ -45,7 +45,7 @@ test("a still-loading composer is not painted as a failure", () => {
   );
   assert.ok(branch, "the runtime-pending branch not found");
   assert.match(branch, /composerState\.error\s*\?/, "the branch must split on a real error");
-  assert.match(branch, /class="composer-note">Loading runtime settings…/, "loading is a note");
+  assert.match(branch, /class="composer-note">\$\{t\("Loading runtime settings…"\)\}/, "loading is a note");
   const loadingAt = branch.indexOf("Loading runtime settings…");
   const errorClassAt = branch.indexOf('class="composer-error"');
   assert.ok(errorClassAt >= 0 && errorClassAt < loadingAt, "only the real error keeps the error class");

@@ -2,6 +2,7 @@ import { createPgPool } from "../persistence/pg-pool.ts";
 import type { Pool, PoolClient } from "../persistence/pg-pool.ts";
 import type { ScopeId } from "../types.ts";
 import type { AuditEvent, AuditLog } from "../audit/audit-log.ts";
+import { errMessage } from "../util/errors.ts";
 
 export interface PostgresAuditLog extends AuditLog {
   pool(): Promise<Pool>;
@@ -96,7 +97,7 @@ export function createPostgresAuditLog(connectionString: string): PostgresAuditL
     record(e) {
       const write = q(`INSERT INTO audit_log(${COLS}) VALUES (${VALUES})`, eventParams(e))
         .then(() => undefined)
-        .catch((err) => console.error("[audit] failed to persist event to durable store:", err));
+        .catch((err) => console.error("[audit] failed to persist event to durable store:", errMessage(err)));
       pendingWrites.add(write);
       void write.finally(() => pendingWrites.delete(write));
     },

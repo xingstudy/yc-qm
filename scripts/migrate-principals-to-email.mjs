@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { readdirSync, renameSync, existsSync, lstatSync, rmdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { pgConnectionOptionsFromEnv } from "../src/persistence/pg-pool.ts";
 
 const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");
@@ -321,7 +322,7 @@ async function main() {
       const { createRequire } = await import("node:module");
       return createRequire(join(process.cwd(), "package.json"))("pg");
     });
-  const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  const pool = new pg.Pool(pgConnectionOptionsFromEnv(process.env.DATABASE_URL, process.env));
   let problems;
   try {
     ({ problems } = await runMigration({

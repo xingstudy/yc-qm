@@ -39,6 +39,7 @@ const requiredProductionValues = [
   "PORTAL_IDENTITY_SECRET",
   "PORTAL_SESSION_SECRET",
   "CONNECTOR_SECRET_KEY",
+  "WEB_UI_IM_CREDENTIALS_KEY",
   "SKILL_SIGNING_SECRET",
   "OIDC_CLIENT_ID",
   "OIDC_CLIENT_SECRET",
@@ -54,6 +55,7 @@ const generatedValues = [
   "PORTAL_IDENTITY_SECRET",
   "PORTAL_SESSION_SECRET",
   "CONNECTOR_SECRET_KEY",
+  "WEB_UI_IM_CREDENTIALS_KEY",
   "SKILL_SIGNING_SECRET",
   "OIDC_CLIENT_SECRET",
   "AUTH_CLIENT_SECRET",
@@ -89,6 +91,7 @@ test("the production example is a complete fail-closed template without organiza
   }
   assert.equal(values.get("NODE_ENV"), "production");
   assert.equal(values.get("PORTAL_LOCAL_AUTH_BYPASS"), "0");
+  assert.equal(values.get("PORTAL_DEPLOYMENTS_ENABLED"), "1");
   assert.equal(values.get("AUTH_EMAIL_TRANSPORT"), "smtp");
   assert.equal(values.get("QM_COMPOSE_PROJECT"), "qm");
   assert.equal(values.get("QM_RELEASE_TAG"), "prod-v0.0.0");
@@ -96,6 +99,8 @@ test("the production example is a complete fail-closed template without organiza
   assert.equal(values.get("QM_CORE_VOLUME"), "qm_core-data");
   assert.equal(values.get("QM_DATABASE_MODE"), "bundled");
   assert.equal(values.get("QM_DATABASE_TRANSPORT"), "private-network");
+  assert.equal(values.get("DATABASE_CA_CERT"), "");
+  assert.equal(values.get("DATABASE_CA_CERT_FILE"), "");
   assert.equal(values.get("QM_EDGE_PROXY_MODE"), "same-host");
   assert.equal(values.get("QM_BIND_ADDRESS"), "127.0.0.1");
   assert.equal(values.get("PORTAL_PUBLIC_URL"), "https://qm.example.com");
@@ -104,6 +109,8 @@ test("the production example is a complete fail-closed template without organiza
   for (const name of generatedValues) {
     if (name === "AUTH_SIGNING_JWK") {
       assert.match(values.get(name) ?? "", /"kid":"qm-example-do-not-use"/);
+    } else if (name === "WEB_UI_IM_CREDENTIALS_KEY") {
+      assert.match(values.get(name) ?? "", /^0{64}$/);
     } else {
       assert.match(values.get(name) ?? "", /^qm-example-/);
     }
@@ -128,6 +135,7 @@ test("the image manifest pins every pull-only first-party image to Docker Hub", 
 
 test("the production Compose stack is image-only and exposes only the edge", () => {
   const compose = readFileSync("compose.production.yaml", "utf8");
+  const developmentCompose = readFileSync("docker-compose.yaml", "utf8");
 
   assert.doesNotMatch(compose, /^\s*build:/m);
   assert.doesNotMatch(compose, /^\s*context:/m);
@@ -142,11 +150,30 @@ test("the production Compose stack is image-only and exposes only the edge", () 
   assert.match(serviceBlock(compose, "core"), /sandbox-image:[\s\S]*?service_completed_successfully/);
   assert.match(serviceBlock(compose, "postgres"), /profiles:[\s\S]*?bundled-postgres/);
   assert.match(serviceBlock(compose, "core"), /postgres:[\s\S]*?required: false/);
-  assert.match(serviceBlock(compose, "core"), /DATABASE_URL: \$\{DATABASE_URL:-\}/);
+  assert.match(
+    serviceBlock(compose, "web-ui"),
+    /WEB_UI_IM_CREDENTIALS_KEY: \$\{WEB_UI_IM_CREDENTIALS_KEY:\?Set WEB_UI_IM_CREDENTIALS_KEY in \.env\.production\}/,
+  );
+  assert.doesNotMatch(serviceBlock(compose, "web-ui"), /CONNECTOR_SECRET_KEY/);
+  assert.doesNotMatch(serviceBlock(compose, "core"), /WEB_UI_IM_CREDENTIALS_KEY/);
+  for (const service of ["preflight", "core"]) {
+    const block = serviceBlock(compose, service);
+    assert.match(block, /DATABASE_URL: \$\{DATABASE_URL:-\}/);
+    assert.match(block, /DATABASE_CA_CERT: \$\{DATABASE_CA_CERT:-\}/);
+    assert.match(block, /DATABASE_CA_CERT_FILE: \$\{DATABASE_CA_CERT_FILE:\+\/run\/qm\/database-ca\.crt\}/);
+    assert.match(block, /source: \$\{DATABASE_CA_CERT_FILE:-\/dev\/null\}/);
+    assert.match(block, /target: \/run\/qm\/database-ca\.crt/);
+    assert.match(block, /create_host_path: false/);
+  }
   assert.match(compose, /^\s*edge:\s*$/m);
   assert.match(compose, /edge:[\s\S]*?ports:/);
   assert.match(serviceBlock(compose, "edge"), /QM_BIND_ADDRESS:-127\.0\.0\.1[^\n]*QM_HTTP_PORT:-8088/);
   assert.doesNotMatch(serviceBlock(compose, "auth"), /^\s*profiles:/m);
+  assert.match(serviceBlock(compose, "portal"), /PORTAL_DEPLOYMENTS_ENABLED: \$\{PORTAL_DEPLOYMENTS_ENABLED:-1\}/);
+  assert.match(
+    serviceBlock(developmentCompose, "portal"),
+    /PORTAL_DEPLOYMENTS_ENABLED: \$\{PORTAL_DEPLOYMENTS_ENABLED:-1\}/,
+  );
   for (const service of ["web-ui", "admin", "portal", "auth"]) {
     const block = serviceBlock(compose, service);
     assert.doesNotMatch(block, /^\s*ports:/m, `${service} must stay behind the edge`);
@@ -182,10 +209,15 @@ test("literal production volume names survive Compose project overrides", () => 
         ],
         { env: { ...process.env, COMPOSE_PROJECT_NAME: "shell-project" } },
       ).toString(),
-    ) as { name: string; volumes: Record<string, { name: string }> };
+    ) as {
+      name: string;
+      services: Record<string, { environment?: Record<string, string> }>;
+      volumes: Record<string, { name: string }>;
+    };
     assert.equal(rendered.name, "cli-project");
     assert.equal(rendered.volumes["postgres-data"]?.name, "qm_postgres-data");
     assert.equal(rendered.volumes["core-data"]?.name, "qm_core-data");
+    assert.equal(rendered.services.portal?.environment?.PORTAL_DEPLOYMENTS_ENABLED, "1");
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
@@ -220,6 +252,65 @@ test("external production database mode excludes bundled PostgreSQL and preserve
     ) as { services: Record<string, { environment?: Record<string, string> }> };
     assert.equal(rendered.services.postgres, undefined);
     assert.equal(rendered.services.core?.environment?.DATABASE_URL, databaseUrl);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("external database CA configuration reaches production preflight and core", () => {
+  const directory = mkdtempSync("/tmp/qm-production-external-db-ca-");
+  try {
+    const envFile = join(directory, ".env.production");
+    const certFile = join(directory, "database-ca.crt");
+    const databaseUrl = "postgresql://vendor:password@db.provider.test:5432/qm?sslmode=verify-full";
+    const inlineCert = "inline-root-ca";
+    writeFileSync(certFile, "file-root-ca");
+    writeFileSync(
+      envFile,
+      readFileSync(".env.production.example", "utf8")
+        .replace("QM_DATABASE_MODE=bundled", "QM_DATABASE_MODE=external")
+        .replace("DATABASE_URL=", `DATABASE_URL=${databaseUrl}`)
+        .replace("DATABASE_CA_CERT=", `DATABASE_CA_CERT=${inlineCert}`)
+        .replace("DATABASE_CA_CERT_FILE=", `DATABASE_CA_CERT_FILE=${certFile}`),
+    );
+    const rendered = JSON.parse(
+      execFileSync("docker", [
+        "compose",
+        "--project-name",
+        "external-db-ca",
+        "--env-file",
+        envFile,
+        "--env-file",
+        "images.production.env",
+        "-f",
+        "compose.production.yaml",
+        "config",
+        "--format",
+        "json",
+      ]).toString(),
+    ) as {
+      services: Record<
+        string,
+        {
+          environment?: Record<string, string>;
+          volumes?: Array<{
+            source?: string;
+            target?: string;
+            read_only?: boolean;
+            bind?: { create_host_path?: boolean };
+          }>;
+        }
+      >;
+    };
+    for (const service of ["preflight", "core"]) {
+      assert.equal(rendered.services[service]?.environment?.DATABASE_URL, databaseUrl);
+      assert.equal(rendered.services[service]?.environment?.DATABASE_CA_CERT, inlineCert);
+      assert.equal(rendered.services[service]?.environment?.DATABASE_CA_CERT_FILE, "/run/qm/database-ca.crt");
+      const mount = rendered.services[service]?.volumes?.find((entry) => entry.target === "/run/qm/database-ca.crt");
+      assert.equal(mount?.source, certFile);
+      assert.equal(mount?.read_only, true);
+      assert.notEqual(mount?.bind?.create_host_path, true);
+    }
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }

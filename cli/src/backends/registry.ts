@@ -1,7 +1,10 @@
 import { awsWorkloadArchitecture, loadConfigAt, sandboxImagePinErrors, type QmConfig } from "../config.ts";
 import { CliError, errMessage, note } from "../log.ts";
 import type { Target } from "../providers.ts";
-import { syncDeploymentLayer } from "../deployment-layer.ts";
+import { syncDeploymentLayer, type DeploymentLayerTransport } from "../deployment-layer.ts";
+import { TARGET_ENV_DEFAULTS, type TargetEnvDefaults } from "../target-env-defaults.ts";
+import { renderTerraformVars } from "../terraform.ts";
+import { buildAwsMicrovmImage, deleteAwsMicrovmImage, deleteAwsTaskDefinitions } from "../commands/infra.ts";
 import { runSandboxPublish, type SandboxPublishOpts } from "../commands/sandbox.ts";
 import { awsScaffold, dockerScaffold, flyScaffold, type ProviderScaffold } from "../provider-scaffold.ts";
 import type { ResolvedPlugin } from "../plugins.ts";
@@ -17,8 +20,9 @@ import {
   awsSecretsPush,
   awsStatus,
   awsUp,
+  awsDeploymentLayerTransport,
 } from "./aws.ts";
-import { dockerDown, dockerLogs, dockerStatus, dockerUp } from "./docker.ts";
+import { dockerDeploymentLayerTransport, dockerDown, dockerLogs, dockerStatus, dockerUp } from "./docker.ts";
 import { doctorCommon, localDoctorSecrets } from "./doctor.ts";
 import {
   flyCheckLive,
@@ -30,6 +34,7 @@ import {
   flySecretsPush,
   flyStatus,
   flyUp,
+  flyDeploymentLayerTransport,
 } from "./fly.ts";
 import type { Backend, BackendUpOptions } from "./types.ts";
 
@@ -42,8 +47,13 @@ export interface DeployContext {
   target: Target;
 }
 
+type InfraOperation = "render" | "build-image" | "delete-image" | "delete-task-definitions";
+
 export interface HostingProvider {
   id: Target;
+  deploymentLayerTransport: DeploymentLayerTransport;
+  envDefaults: TargetEnvDefaults;
+  infra?: Partial<Record<InfraOperation, (ctx: DeployContext) => void | Promise<void>>>;
   upFlags: readonly string[];
   upOptions(ctx: DeployContext, flags: Readonly<Record<string, string | boolean>>, dryRun: boolean): BackendUpOptions;
   createBackend(ctx: DeployContext): Backend;
@@ -90,7 +100,7 @@ async function publishFlySandbox(ctx: DeployContext, opts: SandboxPublishOpts, p
   const config = loadConfigAt(ctx.configPath, { target: ctx.target }).config;
   await syncDeploymentLayer({
     config,
-    target: ctx.target,
+    transport: hostingProvider(ctx.target).deploymentLayerTransport,
     configDir: ctx.configDir,
     sandboxDir: ctx.sandboxDir,
     ...(ctx.envFile ? { envFile: ctx.envFile } : {}),
@@ -104,6 +114,8 @@ async function publishFlySandbox(ctx: DeployContext, opts: SandboxPublishOpts, p
 
 const docker: HostingProvider = {
   id: "docker",
+  deploymentLayerTransport: dockerDeploymentLayerTransport,
+  envDefaults: TARGET_ENV_DEFAULTS.docker,
   scaffold: dockerScaffold,
   upFlags: ["build-from", "only"],
   upOptions: (_ctx, flags, dryRun) => {
@@ -127,7 +139,7 @@ const docker: HostingProvider = {
       if (!opts.dryRun) {
         await syncDeploymentLayer({
           config: ctx.config,
-          target: ctx.target,
+          transport: hostingProvider(ctx.target).deploymentLayerTransport,
           configDir: ctx.configDir,
           sandboxDir: ctx.sandboxDir,
           ...(ctx.envFile ? { envFile: ctx.envFile } : {}),
@@ -160,6 +172,8 @@ const docker: HostingProvider = {
 
 const fly: HostingProvider = {
   id: "fly",
+  deploymentLayerTransport: flyDeploymentLayerTransport,
+  envDefaults: TARGET_ENV_DEFAULTS.fly,
   scaffold: flyScaffold,
   upFlags: ["build-from", "only", "image-label", "image-from", "image-repo-prefix", "build-only"],
   upOptions: (_ctx, flags, dryRun) => {
@@ -193,7 +207,7 @@ const fly: HostingProvider = {
       if (!opts.dryRun && !opts.buildOnly && (!opts.only || opts.only.includes("core"))) {
         await syncDeploymentLayer({
           config: ctx.config,
-          target: ctx.target,
+          transport: hostingProvider(ctx.target).deploymentLayerTransport,
           configDir: ctx.configDir,
           sandboxDir: ctx.sandboxDir,
           ...(ctx.envFile ? { envFile: ctx.envFile } : {}),
@@ -242,6 +256,16 @@ const fly: HostingProvider = {
 
 const aws: HostingProvider = {
   id: "aws",
+  deploymentLayerTransport: awsDeploymentLayerTransport,
+  envDefaults: TARGET_ENV_DEFAULTS.aws,
+  infra: {
+    render: (ctx) => renderTerraformVars(ctx.config, ctx.configDir),
+    "build-image": async (ctx) => {
+      await buildAwsMicrovmImage(ctx.config, ctx.configPath);
+    },
+    "delete-image": (ctx) => deleteAwsMicrovmImage(ctx.config),
+    "delete-task-definitions": (ctx) => deleteAwsTaskDefinitions(ctx.config),
+  },
   scaffold: awsScaffold,
   upFlags: ["build-from", "only", "yes", "image-label"],
   upOptions: (ctx, flags, dryRun) => {

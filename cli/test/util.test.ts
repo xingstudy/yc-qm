@@ -8,6 +8,8 @@ import { canonicalJson, flyBin, isInvalidSecret, readEnvFile, writeEnvValue } fr
 test("managed credential encryption keys require strong material", () => {
   assert.equal(isInvalidSecret("CONNECTOR_SECRET_KEY", "short"), true);
   assert.equal(isInvalidSecret("CONNECTOR_SECRET_KEY", "x".repeat(32)), false);
+  assert.equal(isInvalidSecret("WEB_UI_IM_CREDENTIALS_KEY", "x".repeat(64)), true);
+  assert.equal(isInvalidSecret("WEB_UI_IM_CREDENTIALS_KEY", "0a".repeat(32)), false);
 });
 
 test("flyBin honors $FLY_BIN verbatim", () => {
@@ -102,6 +104,39 @@ test("writeEnvValue rejects invalid keys and multi-line values", (t) => {
   const file = join(dir, ".env");
   assert.throws(() => writeEnvValue(file, "BAD KEY", "x"));
   assert.throws(() => writeEnvValue(file, "GOOD_KEY", "a\nb"));
+});
+
+test("readEnvFile matches Node --env-file for export prefixes and quoted values", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-env-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, ".env");
+  writeFileSync(
+    file,
+    [
+      'DQ="wrapped#value"',
+      "SQ='single'",
+      "BT=`tick`",
+      "export EXPORTED=yes",
+      'ESCAPED="line1\\nline2"',
+      'TRAILING="abc" rest is ignored',
+      'UNCLOSED="keeps raw',
+      "SPACED=  padded  ",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(
+    [...readEnvFile(file)],
+    [
+      ["DQ", "wrapped#value"],
+      ["SQ", "single"],
+      ["BT", "tick"],
+      ["EXPORTED", "yes"],
+      ["ESCAPED", "line1\nline2"],
+      ["TRAILING", "abc"],
+      ["UNCLOSED", '"keeps raw'],
+      ["SPACED", "padded"],
+    ],
+  );
 });
 
 async function withFakeStdin<T>(fn: (emit: (bytes: Buffer) => void) => Promise<T>): Promise<T> {

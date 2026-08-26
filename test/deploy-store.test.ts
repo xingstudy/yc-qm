@@ -9,7 +9,7 @@ import { createDeployService } from "../src/deploy/deploy-service.ts";
 import { createAclStore } from "../src/acl/acl-store.ts";
 import type { DeployGitArchive } from "../src/deploy/deploy-git-store.ts";
 import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
-import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { createMemoryMap, type DurableMap } from "../src/persistence/durable-map.ts";
 import { scopeId } from "../src/types.ts";
 
 test("deploy versions are immutable and rollback flips the pointer", async () => {
@@ -142,6 +142,33 @@ test("touch records last-access for scale-to-zero (C3)", async () => {
   assert.equal((await s.get(d.id))!.lastAccessAt, undefined);
   await s.touch(d.id, 12345);
   assert.equal((await s.get(d.id))!.lastAccessAt, 12345);
+});
+
+test("touch merges last access without overwriting a concurrent deployment update", async () => {
+  const raw = createMemoryMap<Deployment>();
+  let denyGet = false;
+  const deployments: DurableMap<Deployment> = {
+    ...raw,
+    async get(id) {
+      if (denyGet) throw new Error("touch must not read before merging");
+      const value = await raw.get(id);
+      return value && structuredClone(value);
+    },
+  };
+  const s = createDeployStore({ deployments });
+  const d = await s.create({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    entrypoint: "node s.js",
+    snapshotDir: "/snap",
+  });
+  await raw.merge(d.id, { status: "archived", endpoint: null });
+  denyGet = true;
+  await s.touch(d.id, 12345);
+  const stored = (await raw.get(d.id))!;
+  assert.equal(stored.status, "archived");
+  assert.equal(stored.endpoint, null);
+  assert.equal(stored.lastAccessAt, 12345);
 });
 
 test("deploy versions carry git commits for app files and rollback moves the current ref", async () => {

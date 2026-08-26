@@ -4,10 +4,13 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxCoreEnv, type QmConfig } from "../src/config.ts";
+import { FLY_TEMPLATE_ENV_DEFAULTS } from "../src/target-env-defaults.ts";
 import {
-  FLY_TEMPLATE_ENV_DEFAULTS,
+  assertWebUiImCredentialsKeyIsScoped,
   computedSecrets,
+  deriveWebUiImCredentialsKey,
   renderEnvExample,
+  resolveWebUiImCredentialsKey,
   runtimeSecretNames,
   secretDestinations,
   secretsForService,
@@ -35,6 +38,50 @@ function secretByName(config: QmConfig, name: string): ComputedSecret {
   assert.ok(secret, `computed secret ${name} exists`);
   return secret;
 }
+
+test("the web UI IM credentials key cannot reuse the connector root", () => {
+  assert.throws(
+    () =>
+      assertWebUiImCredentialsKeyIsScoped((name) =>
+        new Map([
+          ["CONNECTOR_SECRET_KEY", "a".repeat(64)],
+          ["WEB_UI_IM_CREDENTIALS_KEY", "a".repeat(64)],
+        ]).get(name),
+      ),
+    /WEB_UI_IM_CREDENTIALS_KEY must differ from CONNECTOR_SECRET_KEY/,
+  );
+  assert.throws(
+    () =>
+      assertWebUiImCredentialsKeyIsScoped((name) =>
+        new Map([
+          ["CONNECTOR_SECRET_KEY", "a".repeat(64)],
+          ["WEB_UI_IM_CREDENTIALS_KEY", "A".repeat(64)],
+        ]).get(name),
+      ),
+    /WEB_UI_IM_CREDENTIALS_KEY must differ from CONNECTOR_SECRET_KEY/,
+  );
+  assert.doesNotThrow(() =>
+    assertWebUiImCredentialsKeyIsScoped((name) =>
+      new Map([
+        ["CONNECTOR_SECRET_KEY", "a".repeat(64)],
+        ["WEB_UI_IM_CREDENTIALS_KEY", "b".repeat(64)],
+      ]).get(name),
+    ),
+  );
+});
+
+test("the web UI IM credentials key derivation preserves legacy ciphertext material", () => {
+  assert.equal(
+    deriveWebUiImCredentialsKey(" connector-secret-0123456789abcdef "),
+    "87b2e134ea577a2ca59da02ee1ce7979169d0dab489b6867d028cad7878b4560",
+  );
+  assert.equal(
+    resolveWebUiImCredentialsKey((name) =>
+      new Map([["CONNECTOR_SECRET_KEY", " connector-secret-0123456789abcdef "]]).get(name),
+    ),
+    "87b2e134ea577a2ca59da02ee1ce7979169d0dab489b6867d028cad7878b4560",
+  );
+});
 
 test("a dual-role secret (sandbox.secretEnv + virtual service) needs BOTH names on core", () => {
   const config = makeConfig({
@@ -69,15 +116,19 @@ test("a virtual-only secret keeps its plain name on core (the virtual service ru
 });
 
 test("split security keys are required and routed only to their trust boundary", () => {
-  const config = makeConfig({ services: ["core", "portal"] });
-  for (const name of ["CAPABILITY_SECRET", "CONNECTOR_SECRET_KEY"] as const) {
-    const secret = secretByName(config, name);
-    assert.equal(secret.required, true);
-    assert.deepEqual([...secretDestinations(secret).keys()], ["core"]);
-  }
+  const config = makeConfig({ services: ["core", "portal", "web-ui"] });
+  const capability = secretByName(config, "CAPABILITY_SECRET");
+  assert.equal(capability.required, true);
+  assert.deepEqual([...secretDestinations(capability).keys()], ["core"]);
+  const connector = secretByName(config, "CONNECTOR_SECRET_KEY");
+  assert.equal(connector.required, true);
+  assert.deepEqual([...secretDestinations(connector).keys()], ["core"]);
+  const imCredentials = secretByName(config, "WEB_UI_IM_CREDENTIALS_KEY");
+  assert.equal(imCredentials.required, true);
+  assert.deepEqual([...secretDestinations(imCredentials).keys()], ["web-ui"]);
   const identity = secretByName(config, "PORTAL_IDENTITY_SECRET");
   assert.equal(identity.required, true);
-  assert.deepEqual([...secretDestinations(identity).keys()].sort(), ["core", "portal"]);
+  assert.deepEqual([...secretDestinations(identity).keys()].sort(), ["core", "portal", "web-ui"]);
   const example = renderEnvExample(config);
   for (const name of ["CORE_SIGNING_SECRET", "CAPABILITY_SECRET", "PORTAL_IDENTITY_SECRET", "CONNECTOR_SECRET_KEY"]) {
     assert.match(example, new RegExp(`^${name}=$`, "m"));

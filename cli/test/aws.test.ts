@@ -216,8 +216,8 @@ const statePath = ${JSON.stringify(state)};
 const s = JSON.parse(fs.readFileSync(statePath, "utf8"));
 const save = () => fs.writeFileSync(statePath, JSON.stringify(s));
 const after = (flag) => args[args.indexOf(flag) + 1];
-if (a.includes("secretsmanager get-secret-value") && !a.includes("--query")) console.log(JSON.stringify({ ARN: "arn:aws:secretsmanager:us-west-2:123456789012:secret:test-AbCdEf", SecretString: a.includes("PUBLIC_API_URL") ? (process.env.AWS_FAKE_PUBLIC_API_URL || ${JSON.stringify(configured.apiUrl ?? configured.publicUrl)}) : (a.includes("CORE_SIGNING_SECRET") && process.env.AWS_FAKE_SECRET_VALUE || ${JSON.stringify(TEST_SECRET_VALUE)}) }));
-else if (a.includes("secretsmanager get-secret-value") && a.includes("--query SecretString")) console.log(a.includes("PUBLIC_API_URL") ? (process.env.AWS_FAKE_PUBLIC_API_URL || ${JSON.stringify(configured.apiUrl ?? configured.publicUrl)}) : (a.includes("CORE_SIGNING_SECRET") && process.env.AWS_FAKE_SECRET_VALUE || ${JSON.stringify(TEST_SECRET_VALUE)}));
+if (a.includes("secretsmanager get-secret-value") && !a.includes("--query")) console.log(JSON.stringify({ ARN: "arn:aws:secretsmanager:us-west-2:123456789012:secret:test-AbCdEf", SecretString: a.includes("PUBLIC_API_URL") ? (process.env.AWS_FAKE_PUBLIC_API_URL || ${JSON.stringify(configured.apiUrl ?? configured.publicUrl)}) : a.includes("WEB_UI_IM_CREDENTIALS_KEY") ? "${"ab".repeat(32)}" : (a.includes("CORE_SIGNING_SECRET") && process.env.AWS_FAKE_SECRET_VALUE || ${JSON.stringify(TEST_SECRET_VALUE)}) }));
+else if (a.includes("secretsmanager get-secret-value") && a.includes("--query SecretString")) console.log(a.includes("PUBLIC_API_URL") ? (process.env.AWS_FAKE_PUBLIC_API_URL || ${JSON.stringify(configured.apiUrl ?? configured.publicUrl)}) : a.includes("WEB_UI_IM_CREDENTIALS_KEY") ? "${"ab".repeat(32)}" : (a.includes("CORE_SIGNING_SECRET") && process.env.AWS_FAKE_SECRET_VALUE || ${JSON.stringify(TEST_SECRET_VALUE)}));
 else if (a.includes("secretsmanager get-secret-value") && a.includes("--query ARN")) console.log("arn:aws:secretsmanager:us-west-2:123456789012:secret:test-AbCdEf");
 else if (a.includes("ecr get-login-password")) console.log("pw");
 else if (a.includes("ecr batch-get-image")) console.log(JSON.stringify({ images: [{ imageManifest: "{}", imageManifestMediaType: "application/vnd.oci.image.index.v1+json" }] }));
@@ -266,9 +266,12 @@ else if (a.includes("ecs describe-services")) {
       : ${JSON.stringify(opts.primaryFailedTasks ?? false)} || transientlyFailing
         ? [{ id: service.deploymentId, status: "PRIMARY", taskDefinition: service.taskDefinition, rolloutState: "IN_PROGRESS", runningCount: 0, failedTasks: 1 }]
         : [{ id: service.deploymentId, status: "PRIMARY", taskDefinition: service.taskDefinition, rolloutState: "COMPLETED", runningCount: service.desiredCount, failedTasks: transientFailedTaskPolls && s.updated ? 1 : 0 }];
-    return [{ serviceName: name, status: "ACTIVE", desiredCount: service.desiredCount, runningCount: ${JSON.stringify(opts.drainRollout ?? false)} ? service.desiredCount + 1 : service.desiredCount, taskDefinition: service.taskDefinition, deployments, loadBalancers: service.workload === ${JSON.stringify(frontService)} ? [{ targetGroupArn: ${JSON.stringify(frontTargetArn)} }] : (service.workload === "core" && ${JSON.stringify(coreHosts.length > 0)} ? [{ targetGroupArn: ${JSON.stringify(coreTargetArn)} }] : []), tags: [{ key: "Deployment", value: ${JSON.stringify(opts.foreignServiceTags ? "other" : configured.orgId)} }, { key: "ManagedBy", value: "terraform" }] }];
+    return [{ serviceName: name, status: "ACTIVE", desiredCount: service.desiredCount, runningCount: ${JSON.stringify(opts.drainRollout ?? false)} ? service.desiredCount + 1 : service.desiredCount, taskDefinition: service.taskDefinition, networkConfiguration: { awsvpcConfiguration: { subnets: ["subnet-test"], securityGroups: ["sg-test"], assignPublicIp: "DISABLED" } }, deployments, loadBalancers: service.workload === ${JSON.stringify(frontService)} ? [{ targetGroupArn: ${JSON.stringify(frontTargetArn)} }] : (service.workload === "core" && ${JSON.stringify(coreHosts.length > 0)} ? [{ targetGroupArn: ${JSON.stringify(coreTargetArn)} }] : []), tags: [{ key: "Deployment", value: ${JSON.stringify(opts.foreignServiceTags ? "other" : configured.orgId)} }, { key: "ManagedBy", value: "terraform" }] }];
   }), failures: names.filter((name) => !s.services[name]).map((name) => ({ arn: name, reason: "MISSING" })) }));
 }
+else if (a.includes("ecs run-task")) console.log(JSON.stringify({ tasks: [{ taskArn: "arn:aws:ecs:us-west-2:123456789012:task/canary" }] }));
+else if (a.includes("ecs wait tasks-stopped")) console.log("");
+else if (a.includes("ecs describe-tasks")) console.log(JSON.stringify({ tasks: [{ stoppedReason: "Essential container exited", containers: [{ name: "core", exitCode: Number(process.env.AWS_FAKE_CANARY_EXIT || "0"), reason: process.env.AWS_FAKE_CANARY_REASON }] }] }));
 else if (a.includes("ecs describe-task-definition")) {
   const id = after("--task-definition");
   console.log(JSON.stringify({ taskDefinition: s.definitions[id] }));
@@ -465,6 +468,15 @@ test("AWS environment derives identity, public URLs, private wiring, and MicroVM
   assert.equal(core.DEPLOY_PROVIDER, "aws");
   assert.equal(core.AWS_DEPLOY_REGION, "us-west-2");
   assert.equal(core.PORT, "8080");
+});
+
+test("a configured bot identity lands in the AWS core task env and only there", () => {
+  const branded = { ...config, botName: "straylight", orgName: "Straylight Industries" };
+  const core = serviceEnvironment(branded, "core");
+  assert.equal(core.ORG_BRAND_SELF_LABEL, "straylight");
+  assert.equal(core.ORG_BRAND_ORG_NAME, "Straylight Industries");
+  assert.equal(serviceEnvironment(branded, "web-ui").ORG_BRAND_SELF_LABEL, undefined);
+  assert.equal(serviceEnvironment(config, "core").ORG_BRAND_SELF_LABEL, undefined);
 });
 
 test("AWS routes security screen proxy configuration and its token only to core", () => {
@@ -1010,6 +1022,7 @@ test("AWS up scales services to the configured desired count and live check flag
   };
   const fake = statefulAws(dir, scaled());
   const priorPath = process.env.PATH;
+  const priorCanaryExit = process.env.AWS_FAKE_CANARY_EXIT;
   process.env.PATH = `${dir}:${priorPath}`;
   try {
     await awsUp(scaled(), dir, { yes: true });
@@ -1017,6 +1030,17 @@ test("AWS up scales services to the configured desired count and live check flag
     assert.equal(state.services["acme-core"].desiredCount, 2);
     assert.match(readFileSync(fake.log, "utf8"), /ecs update-service .*--desired-count 2/);
     await assert.doesNotReject(() => awsCheckLive(scaled(), { report: false }));
+    assert.match(
+      readFileSync(fake.log, "utf8"),
+      /ecs run-task .*postdeploy-smoke\.ts.*session.*http:\/\/core\.acme\.internal:8080/,
+    );
+    process.env.AWS_FAKE_CANARY_EXIT = "1";
+    await assert.rejects(
+      () => awsCheckLive(scaled(), { report: false }),
+      /core: private live session smoke failed: canary task exited 1/,
+    );
+    if (priorCanaryExit === undefined) delete process.env.AWS_FAKE_CANARY_EXIT;
+    else process.env.AWS_FAKE_CANARY_EXIT = priorCanaryExit;
     state.services["acme-core"].desiredCount = 1;
     writeFileSync(fake.state, JSON.stringify(state));
     await assert.rejects(
@@ -1024,6 +1048,8 @@ test("AWS up scales services to the configured desired count and live check flag
       /core: runtime is ACTIVE with 1\/1 running, expected 2/,
     );
   } finally {
+    if (priorCanaryExit === undefined) delete process.env.AWS_FAKE_CANARY_EXIT;
+    else process.env.AWS_FAKE_CANARY_EXIT = priorCanaryExit;
     process.env.PATH = priorPath;
     fake.restore();
     rmSync(dir, { recursive: true, force: true });
@@ -1485,22 +1511,40 @@ test("every AWS mutation rejects the wrong caller account before side effects", 
   }
 });
 
-test("AWS deploy rejects required secret containers without an AWSCURRENT value before mutation", async () => {
+test("AWS deploy explains how to create a missing web UI secret container before mutation", async () => {
   const dir = mkdtempSync(join(tmpdir(), "qm-aws-empty-secret-"));
   const targetName = `acme-qm-port-${createHash("sha1").update("acme-qm:portal").digest("hex").slice(0, 6)}`;
   const targetArn = `arn:aws:elasticloadbalancing:us-west-2:123456789012:targetgroup/${targetName}/1`;
   const fake = fakeAws(
     dir,
     `
-if (a.includes("ecs describe-services")) console.log(JSON.stringify({ services: ${JSON.stringify(Object.entries(config.aws!.services).map(([name, spec]) => ({ serviceName: spec.ecsService, loadBalancers: name === "portal" ? [{ targetGroupArn: targetArn }] : [] })))} }));
+if (a.includes("ecs describe-services")) console.log(JSON.stringify({ services: ${JSON.stringify(
+      Object.entries(config.aws!.services).map(([name, spec]) => ({
+        serviceName: spec.ecsService,
+        loadBalancers: name === "portal" ? [{ targetGroupArn: targetArn }] : [],
+        tags: [
+          { key: "Deployment", value: "acme" },
+          { key: "ManagedBy", value: "terraform" },
+        ],
+      })),
+    )} }));
 else if (a.includes("secretsmanager get-secret-value")) {
-  console.error("ResourceNotFoundException: Secrets Manager can't find the specified secret value");
-  process.exit(1);
+  if (a.includes("PUBLIC_API_URL") && a.includes("--query SecretString")) {
+    console.log(${JSON.stringify(config.apiUrl ?? config.publicUrl)});
+  }
+  else if (a.includes("WEB_UI_IM_CREDENTIALS_KEY")) {
+    console.error("ResourceNotFoundException: Secrets Manager can't find the specified secret value");
+    process.exit(1);
+  }
+  else console.log(JSON.stringify({ ARN: "arn:aws:secretsmanager:us-west-2:123456789012:secret:test-AbCdEf", SecretString: a.includes("PUBLIC_API_URL") ? ${JSON.stringify(config.apiUrl ?? config.publicUrl)} : ${JSON.stringify(TEST_SECRET_VALUE)} }));
 }
 console.log("");`,
   );
   try {
-    await assert.rejects(() => awsUp(config, process.cwd(), { yes: true }), /ResourceNotFoundException/);
+    await assert.rejects(
+      () => awsUp(config, process.cwd(), { yes: true }),
+      /qm infra render.*terraform -chdir=infra apply.*qm secrets push/,
+    );
     const calls = readFileSync(fake.log, "utf8");
     assert.match(calls, /secretsmanager get-secret-value/);
     assert.doesNotMatch(calls, /dynamodb put-item|ecr get-login-password|ecr describe-images|ecs update-service/);
@@ -1596,6 +1640,12 @@ test("AWS task definitions are digest-pinned and route only computed secrets", (
     "SKILL_SIGNING_SECRET",
     "SPRITES_TOKEN",
   ]);
+  const webUiImage = `123456789012.dkr.ecr.us-west-2.amazonaws.com/qm-web-ui@sha256:${"b".repeat(64)}`;
+  const webUiSecrets = (
+    renderTaskDefinition(config, "web-ui", webUiImage).containerDefinitions[0]!.secrets as Array<{ name: string }>
+  ).map((secret) => secret.name);
+  assert.deepEqual(webUiSecrets, ["CORE_SIGNING_SECRET", "PORTAL_IDENTITY_SECRET", "WEB_UI_IM_CREDENTIALS_KEY"]);
+  assert.ok(!webUiSecrets.includes("CONNECTOR_SECRET_KEY"));
   assert.throws(() => renderTaskDefinition(config, "core", "repo:latest"), /must be pinned by digest/);
 });
 
@@ -2067,7 +2117,13 @@ test("AWS secret upload reads the deployment .env and removes every plaintext st
   const bin = join(dir, "aws-fake");
   const log = join(dir, "paths.log");
   const operatorSecrets = computedSecrets(config).filter((secret) => secret.managedBy === "operator");
-  writeFileSync(join(dir, ".env"), operatorSecrets.map((secret) => `${secret.name}=${TEST_SECRET_VALUE}`).join("\n"));
+  writeFileSync(
+    join(dir, ".env"),
+    operatorSecrets
+      .filter((secret) => secret.name !== "WEB_UI_IM_CREDENTIALS_KEY")
+      .map((secret) => `${secret.name}=${TEST_SECRET_VALUE}`)
+      .join("\n"),
+  );
   writeFileSync(
     bin,
     `#!/bin/sh
@@ -2173,6 +2229,65 @@ test("AWS secret rotation holds the deploy lease across the complete write set",
   }
 });
 
+test("AWS first scoped web UI key migration preserves the running task contract and rollback chain", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-aws-web-ui-secret-migration-"));
+  const secretsConfig: QmConfig = { ...twoServiceConfig(), env: {} };
+  const operator = computedSecrets(secretsConfig).filter(
+    (secret) => secret.managedBy === "operator" && secret.required,
+  );
+  writeFileSync(
+    join(dir, ".env"),
+    operator
+      .filter((secret) => secret.name !== "WEB_UI_IM_CREDENTIALS_KEY")
+      .map((secret) => `${secret.name}=${TEST_SECRET_VALUE}`)
+      .join("\n"),
+  );
+  const fake = statefulAws(dir, secretsConfig);
+  const state = JSON.parse(readFileSync(fake.state, "utf8"));
+  const tasks = {
+    core: state.services["acme-core"].taskDefinition,
+    "web-ui": state.services["acme-web-ui"].taskDefinition,
+  };
+  const arns = Object.fromEntries(
+    computedSecrets(secretsConfig).map((secret) => [
+      secret.name,
+      "arn:aws:secretsmanager:us-west-2:123456789012:secret:test-AbCdEf",
+    ]),
+  );
+  const coreImage = `123456789012.dkr.ecr.us-west-2.amazonaws.com/qm-core@sha256:${"a".repeat(64)}`;
+  state.definitions[tasks.core] = renderTaskDefinition(secretsConfig, "core", coreImage, arns);
+  const webImage = `123456789012.dkr.ecr.us-west-2.amazonaws.com/qm-web-ui@sha256:${"a".repeat(64)}`;
+  const oldWebTask = renderTaskDefinition(secretsConfig, "web-ui", webImage, arns);
+  const oldWebContainer = oldWebTask.containerDefinitions[0]!;
+  oldWebContainer.secrets = [
+    ...(oldWebContainer.secrets as Array<{ name: string; valueFrom: string }>).filter(
+      (secret) => secret.name !== "WEB_UI_IM_CREDENTIALS_KEY",
+    ),
+    { name: "CONNECTOR_SECRET_KEY", valueFrom: arns.CONNECTOR_SECRET_KEY },
+  ].sort((a, b) => a.name.localeCompare(b.name));
+  state.definitions[tasks["web-ui"]] = oldWebTask;
+  state.dynamo = manifestItems([{ id: "current", imageLabel: "release", tasks }], "current");
+  writeFileSync(fake.state, JSON.stringify(state));
+  try {
+    await awsSecretsPush(secretsConfig, dir);
+    const calls = readFileSync(fake.log, "utf8");
+    const after = JSON.parse(readFileSync(fake.state, "utf8"));
+    assert.match(calls, /put-secret-value .*WEB_UI_IM_CREDENTIALS_KEY/);
+    assert.match(calls, /update-service .*acme-web-ui .*--force-new-deployment/);
+    assert.doesNotMatch(calls, /register-task-definition|dynamodb transact-write-items/);
+    assert.equal(after.services["acme-web-ui"].taskDefinition, tasks["web-ui"]);
+    assert.equal(after.dynamo["deployment/current"].manifestId.S, "current");
+    const names = after.definitions[tasks["web-ui"]].containerDefinitions[0].secrets.map(
+      (secret: { name: string }) => secret.name,
+    );
+    assert.ok(names.includes("CONNECTOR_SECRET_KEY"));
+    assert.ok(!names.includes("WEB_UI_IM_CREDENTIALS_KEY"));
+  } finally {
+    fake.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("AWS secret rotation refuses foreign exact-name services before uploading or restarting", async () => {
   const dir = mkdtempSync(join(tmpdir(), "qm-aws-foreign-secret-rotation-"));
   const secretsConfig: QmConfig = { ...oneServiceConfig(), env: {} };
@@ -2251,7 +2366,13 @@ test("AWS optional-secret activation restores prior tasks when a later service r
   );
   writeFileSync(
     join(dir, ".env"),
-    [...required.map((secret) => `${secret.name}=${TEST_SECRET_VALUE}`), "ACME_API_KEY=optional-value"].join("\n"),
+    [
+      ...required.map(
+        (secret) =>
+          `${secret.name}=${secret.name === "WEB_UI_IM_CREDENTIALS_KEY" ? "ab".repeat(32) : TEST_SECRET_VALUE}`,
+      ),
+      "ACME_API_KEY=optional-value",
+    ].join("\n"),
   );
   const fake = statefulAws(dir, secretsConfig, {}, { failForcedDeploymentResponse: true });
   const state = JSON.parse(readFileSync(fake.state, "utf8"));
@@ -2322,6 +2443,39 @@ const twoServiceConfig = (): QmConfig => ({
   ...config,
   services: ["core", "web-ui"],
   aws: { ...config.aws!, services: { core: config.aws!.services.core!, "web-ui": config.aws!.services["web-ui"]! } },
+});
+
+test("AWS secrets push rejects a web UI key that reuses the connector root before upload", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-aws-reused-web-ui-key-"));
+  const secretsConfig: QmConfig = { ...twoServiceConfig(), env: {} };
+  const reused = "0a".repeat(32);
+  const operator = computedSecrets(secretsConfig).filter(
+    (secret) => secret.managedBy === "operator" && secret.required,
+  );
+  writeFileSync(
+    join(dir, ".env"),
+    operator
+      .map(
+        (secret) =>
+          `${secret.name}=${
+            secret.name === "CONNECTOR_SECRET_KEY" || secret.name === "WEB_UI_IM_CREDENTIALS_KEY"
+              ? reused
+              : TEST_SECRET_VALUE
+          }`,
+      )
+      .join("\n"),
+  );
+  const fake = fakeAws(dir, 'console.log("");');
+  try {
+    await assert.rejects(
+      () => awsSecretsPush(secretsConfig, dir),
+      /WEB_UI_IM_CREDENTIALS_KEY must differ from CONNECTOR_SECRET_KEY/,
+    );
+    assert.doesNotMatch(readFileSync(fake.log, "utf8"), /put-secret-value/);
+  } finally {
+    fake.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 function manifestItems(

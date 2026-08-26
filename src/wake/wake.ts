@@ -12,6 +12,7 @@ export interface Wake {
   text?: string;
   isSelf?: boolean;
   halt?: boolean;
+  fileNames?: string[];
 }
 
 export type WakeRoute =
@@ -26,6 +27,7 @@ export function routeWake(wake: Wake, runIsLive: boolean, liveRunGated = false):
   if (wake.halt) return { kind: "steer", signal: "abort" };
   if (liveRunGated && wake.situation === "addressed") return { kind: "engage" };
   const text = wake.text?.trim();
-  if (!text) return { kind: "drop", reason: "empty-mid-turn" };
-  return { kind: "steer", signal: "steer", text };
+  const files = wake.fileNames?.length ? `[files attached mid-run: ${wake.fileNames.join(", ")}]` : "";
+  if (!text && !files) return { kind: "drop", reason: "empty-mid-turn" };
+  return { kind: "steer", signal: "steer", text: [text, files].filter(Boolean).join("\n") };
 }

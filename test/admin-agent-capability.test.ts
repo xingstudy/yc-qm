@@ -30,6 +30,10 @@ function start() {
       signingSecret: SECRET,
     }),
   );
+  void built.directory.replaceChannels(
+    [{ channelId: "C1", name: "agent-admin", isPrivate: false }],
+    [{ channelId: "C1", principalId: "admin-alice" }],
+  );
   const keychain = createKeychain({
     creds: createMemoryMap(),
     grants: createMemoryMap(),
@@ -41,6 +45,9 @@ function start() {
     memory: built.memory,
     config: built.config,
     auditLog: built.auditLog,
+    sessions: built.sessions,
+    runs: built.runs,
+    errors: built.errors,
     keychain,
     signingSecret: SECRET,
   });
@@ -49,7 +56,10 @@ function start() {
   return { base, built, keychain, close: () => new Promise<void>((r) => server.close(() => r())) };
 }
 
-const capFor = async (actorId: string, opts: { aud?: string | null; live?: boolean; scope?: string } = {}) => {
+const capFor = async (
+  actorId: string,
+  opts: { aud?: string | null; live?: boolean; scope?: string; grants?: string[] } = {},
+) => {
   const aud = opts.aud === undefined ? CONTROL_PLANE_AUD : opts.aud;
   return await mintCapabilityToken(
     {
@@ -57,6 +67,7 @@ const capFor = async (actorId: string, opts: { aud?: string | null; live?: boole
       scopeId: opts.scope ?? scopeId("personal", actorId),
       ...(aud === null ? {} : { aud }),
       ...(opts.live === false ? {} : { liveActor: true }),
+      ...(opts.grants ? { grants: opts.grants } : {}),
       exp: Date.now() + CAPABILITY_TTL_MS,
     },
     SECRET,
@@ -178,6 +189,60 @@ test("an autonomous turn's token cannot act as an admin, even when its actor hol
   }
 });
 
+test("an unattended admin-read grant opens only the five read-only routes and keeps the DM gate", async () => {
+  const s = start();
+  try {
+    const granted = await capFor("admin-alice", { live: false, grants: ["admin.sessions.read"] });
+    const scopeQ = `scope=${encodeURIComponent(ORG)}`;
+    const allowed: Array<[string, number]> = [
+      [`/v1/admin/sessions?${scopeQ}`, 200],
+      [`/v1/admin/sessions/missing-session?${scopeQ}`, 404],
+      ["/v1/admin/scopes", 200],
+      [`/v1/admin/errors?${scopeQ}`, 200],
+      [`/v1/admin/runs?${scopeQ}`, 200],
+    ];
+    for (const [path, expected] of allowed) {
+      const response = await fetch(`${s.base}${path}`, { headers: { "x-agent-capability": granted } });
+      assert.equal(response.status, expected, `${path} is usable under the grant (got ${response.status})`);
+    }
+
+    const denied = [
+      ["GET", "/v1/admin/sessions/missing-session/llm"],
+      ["GET", "/v1/admin/memory"],
+      ["GET", `/v1/admin/scopes/${encodeURIComponent(ORG)}`],
+      ["POST", "/v1/admin/sessions"],
+      ["PUT", "/v1/admin/scopes"],
+      ["DELETE", "/v1/admin/errors"],
+    ] as const;
+    for (const [method, path] of denied) {
+      const response = await fetch(`${s.base}${path}`, {
+        method,
+        headers: { "x-agent-capability": granted, "content-type": "application/json" },
+        body: method === "GET" ? undefined : "{}",
+      });
+      assert.equal(response.status, 403, `${method} ${path} stays attended-only`);
+    }
+
+    const ungranted = await capFor("admin-alice", { live: false });
+    assert.equal(
+      (await fetch(`${s.base}/v1/admin/sessions`, { headers: { "x-agent-capability": ungranted } })).status,
+      403,
+    );
+    const channelGrant = await capFor("admin-alice", {
+      live: false,
+      grants: ["admin.sessions.read"],
+      scope: scopeId("channel", "C1"),
+    });
+    const channelRead = await fetch(`${s.base}/v1/admin/sessions`, {
+      headers: { "x-agent-capability": channelGrant },
+    });
+    assert.equal(channelRead.status, 403);
+    assert.match(((await channelRead.json()) as { message: string }).message, /ask the agent in a DM/);
+  } finally {
+    await s.close();
+  }
+});
+
 test("an aud-less token never opens the admin door", async () => {
   const s = start();
   try {
@@ -277,7 +342,7 @@ test("content reads need a DM-scoped token", async () => {
       headers: { "x-agent-capability": fromChannel },
     });
     assert.equal(keychainFromChannel.status, 403);
-    assert.match(((await keychainFromChannel.json()) as any).message, /ask the agent in a DM/);
+    assert.match(((await keychainFromChannel.json()) as any).message, /portal-only/);
     const mirrorFromChannel = await fetch(`${s.base}/v1/admin/slack-mirror`, {
       headers: { "x-agent-capability": fromChannel },
     });
@@ -315,7 +380,8 @@ test("content reads need a DM-scoped token", async () => {
     });
     assert.equal(dmUser.status, 200);
     const dmKeychain = await fetch(`${s.base}/v1/admin/keychain`, { headers: { "x-agent-capability": fromDm } });
-    assert.equal(dmKeychain.status, 200);
+    assert.equal(dmKeychain.status, 403);
+    assert.match(((await dmKeychain.json()) as any).message, /portal-only/);
   } finally {
     await s.close();
   }

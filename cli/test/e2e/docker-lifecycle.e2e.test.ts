@@ -45,6 +45,7 @@ test(
         `CORE_SIGNING_SECRET=${sentinel}`,
         `CAPABILITY_SECRET=${sentinel}-capability`,
         `CONNECTOR_SECRET_KEY=${sentinel}-connector`,
+        `WEB_UI_IM_CREDENTIALS_KEY=${"0a".repeat(32)}`,
         `PORTAL_IDENTITY_SECRET=${sentinel}-identity`,
         `SKILL_SIGNING_SECRET=${sentinel}-skill`,
         "OIDC_CLIENT_ID=fixture-client",
@@ -59,12 +60,17 @@ test(
       target: "docker",
       basePort,
       services: [...SERVICES],
+      botName: "straylight",
+      orgName: "Straylight Industries",
       env: { core: { HARNESS: "mock" } },
     });
     standInPlugin(dep, "widget");
 
     const up = (): ReturnType<typeof runCli> =>
-      runCli(["up", "--build-from", checkout], { cwd: dep, env: { CORE_SIGNING_SECRET: undefined } });
+      runCli(["up", "--build-from", checkout], {
+        cwd: dep,
+        env: { CORE_SIGNING_SECRET: undefined, DATABASE_URL: undefined },
+      });
 
     try {
       await t.test("up builds + starts every service, the source plugin, and Postgres", () => {
@@ -86,6 +92,16 @@ test(
           encoding: "utf8",
         }).trim();
         assert.equal(got, sentinel);
+      });
+
+      await t.test("the configured bot identity reaches the core container and only the core container", () => {
+        const names = deploymentContainers(org);
+        const printenv = (container: string, name: string): string =>
+          execFileSync("docker", ["exec", container, "printenv", name], { encoding: "utf8" }).trim();
+        const core = suffix(names, "core")!;
+        assert.equal(printenv(core, "ORG_BRAND_SELF_LABEL"), "straylight");
+        assert.equal(printenv(core, "ORG_BRAND_ORG_NAME"), "Straylight Industries");
+        assert.throws(() => printenv(suffix(names, "web-ui")!, "ORG_BRAND_SELF_LABEL"));
       });
 
       await t.test("status enumerates exactly this deployment's containers with ports", () => {
@@ -185,6 +201,24 @@ test(
     try {
       writeConfig(dep, { orgId: org, target: "docker", services: ["core"] });
       const r = runCli(["down"], { cwd: dep });
+      assert.equal(r.code, 0, r.out);
+      assert.match(r.out, /down\./);
+    } finally {
+      dockerCleanup(org);
+      rmDir(dep);
+    }
+  },
+);
+
+test(
+  "down --purge tolerates absent managed volumes",
+  { skip: dockerAvailable() ? false : "no Docker daemon reachable" },
+  () => {
+    const org = `qm-e2e-dl-purge-${process.pid}`;
+    const dep = tmp("dl-purge");
+    try {
+      writeConfig(dep, { orgId: org, target: "docker", services: ["core"] });
+      const r = runCli(["down", "--purge"], { cwd: dep });
       assert.equal(r.code, 0, r.out);
       assert.match(r.out, /down\./);
     } finally {

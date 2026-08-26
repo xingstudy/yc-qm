@@ -18,11 +18,13 @@ import {
 import {
   isVirtualService,
   ordered,
+  type BrandEnv,
+  brandEnvOf,
   orgEnv,
   runnableServices,
   serviceDef,
   virtualServiceEnv,
-  type FlyServiceCtx,
+  type ServiceCtx,
   type LogOpts,
   type ServiceName,
 } from "../services.ts";
@@ -35,9 +37,76 @@ import {
   type QmConfig,
 } from "../config.ts";
 import { discoverPlugins, type ResolvedPlugin } from "../plugins.ts";
-import { computedSecrets, runtimeSecretNames, secretDestinations, secretsForService } from "../secrets.ts";
+import {
+  assertWebUiImCredentialsKeyIsScoped,
+  computedSecrets,
+  resolveWebUiImCredentialsKey,
+  runtimeSecretNames,
+  secretDestinations,
+  secretsForService,
+} from "../secrets.ts";
 import { flySandboxRepository, imageRepository, pinnedByDigest, recordSandboxPin } from "../commands/sandbox.ts";
 import { manifestRef } from "../manifest.ts";
+import { CONNECTIVITY_CODES, CoreUnreachableError, type DeploymentLayerTransport } from "../deployment-layer.ts";
+
+const flyServiceCtx = (config: QmConfig, appPrefix: string, deployAppPrefix: string): ServiceCtx => {
+  const brand = brandEnvOf(config);
+  return {
+    appPrefix,
+    orgId: config.orgId,
+    deployAppPrefix,
+    publicUrl: config.publicUrl,
+    hasPortal: config.services.includes("portal"),
+    hasAuth: config.services.includes("auth"),
+    ...(config.env.auth?.AUTH_ALLOWED_EMAIL_DOMAIN
+      ? { authAllowedEmailDomain: config.env.auth.AUTH_ALLOWED_EMAIL_DOMAIN }
+      : {}),
+    ...(brand ? { brand } : {}),
+    coreUrl: `http://${appPrefix}-core.internal:8080`,
+    authUrl: `http://${appPrefix}-auth.flycast`,
+  };
+};
+
+const FLY_RESPONSE = "QM_LAYER_RESPONSE=";
+const FLY_REMOTE_ERROR = "QM_LAYER_ERROR=";
+const FLY_REQUEST_TIMEOUT_MS = 120_000;
+
+function flyRequest(config: QmConfig, method: "GET" | "PUT", body: string): { status: number; body: string } {
+  const app = `${appPrefixOf(config)}-core`;
+  const script = `const fs=require("node:fs"),{createHmac}=require("node:crypto");const fail=error=>{const code=error&&(error.cause&&error.cause.code||error.code);console.log(${JSON.stringify(FLY_REMOTE_ERROR)}+JSON.stringify({message:error&&error.message?error.message:String(error),...(typeof code==="string"?{code}:{})}))};try{const method=${JSON.stringify(method)},path="/v1/deployment-layer",body=fs.readFileSync(0,"utf8"),timestamp=Math.floor(Date.now()/1000),canonical=method+"\\n"+path+"\\n"+body,secret=process.env.CORE_SIGNING_SECRET;if(!secret)throw new Error("CORE_SIGNING_SECRET is not set on core");const signature=createHmac("sha256",secret).update("v0:"+timestamp+":"+canonical).digest("hex");fetch("http://127.0.0.1:"+(process.env.PORT||8080)+path,{method,headers:{"content-type":"application/json","x-timestamp":String(timestamp),"x-signature":"v0="+signature},...(method==="PUT"?{body}: {})}).then(async response=>console.log(${JSON.stringify(FLY_RESPONSE)}+JSON.stringify({status:response.status,body:await response.text()}))).catch(fail)}catch(error){fail(error)}`;
+  const encoded = Buffer.from(script).toString("base64");
+  const command = `node -e "eval(Buffer.from('${encoded}','base64').toString())"`;
+  let output: string;
+  try {
+    output = execFileSync(flyBin(), ["ssh", "console", "-a", app, "-C", command], {
+      encoding: "utf8",
+      input: body,
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: FLY_REQUEST_TIMEOUT_MS,
+    });
+  } catch (error) {
+    const detail = error as { stdout?: string; stderr?: string; message?: string };
+    const text = `${detail.stderr ?? ""}${detail.stdout ?? ""}`.trim() || detail.message || "fly ssh failed";
+    if (/could not find app|app not found/i.test(text)) throw new CliError(`Fly app ${app} not found: ${text}`);
+    throw new CoreUnreachableError(`could not reach the Fly core: ${text}`);
+  }
+  const remoteError = output.split("\n").find((value) => value.startsWith(FLY_REMOTE_ERROR));
+  if (remoteError) {
+    const detail = JSON.parse(remoteError.slice(FLY_REMOTE_ERROR.length)) as { message?: string; code?: string };
+    const message = detail.message ?? "deployment-layer request failed on the core";
+    if (detail.code && CONNECTIVITY_CODES.has(detail.code)) {
+      throw new CoreUnreachableError(`the core process on ${app} is not accepting connections: ${message}`);
+    }
+    throw new CliError(`deployment-layer request failed on ${app}: ${message}`);
+  }
+  const line = output.split("\n").find((value) => value.startsWith(FLY_RESPONSE));
+  if (!line) throw new CliError(`Fly core returned no deployment-layer response`);
+  return JSON.parse(line.slice(FLY_RESPONSE.length)) as { status: number; body: string };
+}
+
+export const flyDeploymentLayerTransport: DeploymentLayerTransport = (opts) =>
+  Promise.resolve(flyRequest(opts.config, opts.method, opts.body));
+
 import { doctorCommon, localDoctorSecrets, requireFlyAuth } from "./doctor.ts";
 
 export interface FlyUpOpts {
@@ -62,7 +131,7 @@ interface FlyCtx {
   orgId: string;
   region: string;
   flyOrg: string;
-  serviceCtx: FlyServiceCtx;
+  serviceCtx: ServiceCtx;
 }
 
 interface DeployTiming {
@@ -287,17 +356,7 @@ export function derivedTomlFor(config: QmConfig, service: ServiceName, repoRoot:
     orgId: config.orgId,
     region: config.region ?? "",
     flyOrg: config.flyOrg ?? "",
-    serviceCtx: {
-      appPrefix,
-      orgId: config.orgId,
-      deployAppPrefix,
-      publicUrl: config.publicUrl,
-      hasPortal: config.services.includes("portal"),
-      hasAuth: config.services.includes("auth"),
-      ...(config.env.auth?.AUTH_ALLOWED_EMAIL_DOMAIN
-        ? { authAllowedEmailDomain: config.env.auth.AUTH_ALLOWED_EMAIL_DOMAIN }
-        : {}),
-    },
+    serviceCtx: flyServiceCtx(config, appPrefix, deployAppPrefix),
   };
   return deriveToml(ctx, service);
 }
@@ -395,6 +454,14 @@ export function flyS3ProbeCommand(): string {
 
 function flyS3RoundTrip(app: string, machineId: string): void {
   fly(["ssh", "console", "-a", app, "--machine", machineId, "--command", flyS3ProbeCommand(), "--quiet"]);
+}
+
+export function flyLiveSessionCommand(): string {
+  return "node src/deployment/postdeploy-smoke.ts session http://127.0.0.1:8080";
+}
+
+function flyLiveSession(app: string, machineId: string): void {
+  fly(["ssh", "console", "-a", app, "--machine", machineId, "--command", flyLiveSessionCommand(), "--quiet"]);
 }
 
 function flyOrgApps(flyOrg: string): Set<string> {
@@ -703,17 +770,7 @@ function buildCtx(config: QmConfig, configDir: string, opts: Pick<FlyUpOpts, "bu
     orgId: config.orgId,
     region: config.region,
     flyOrg: config.flyOrg,
-    serviceCtx: {
-      appPrefix,
-      orgId: config.orgId,
-      deployAppPrefix,
-      publicUrl: config.publicUrl,
-      hasPortal: config.services.includes("portal"),
-      hasAuth: config.services.includes("auth"),
-      ...(config.env.auth?.AUTH_ALLOWED_EMAIL_DOMAIN
-        ? { authAllowedEmailDomain: config.env.auth.AUTH_ALLOWED_EMAIL_DOMAIN }
-        : {}),
-    },
+    serviceCtx: flyServiceCtx(config, appPrefix, deployAppPrefix),
   };
 }
 
@@ -812,10 +869,11 @@ function pluginTomlContent(
   hasPortal: boolean,
   region: string,
   plugin: ResolvedPlugin,
+  brand?: BrandEnv,
 ): string {
   const env: Record<string, string> = {
     CORE_API_URL: `http://${appPrefix}-core.internal:8080`,
-    ...orgEnv(plugin.name, orgId, publicUrl, hasPortal),
+    ...orgEnv(plugin.name, orgId, publicUrl, hasPortal, brand),
     PORT: "8080",
     ...plugin.env,
     [FLY_DEPLOYMENT_ID_ENV]: flyDeploymentId(flyOrg, orgId, appPrefix),
@@ -844,6 +902,7 @@ export function derivedPluginTomlFor(config: QmConfig, plugin: ResolvedPlugin): 
     config.services.includes("portal"),
     config.region ?? "",
     plugin,
+    brandEnvOf(config),
   );
 }
 
@@ -860,6 +919,7 @@ function writePluginDerived(ctx: FlyCtx, plugin: ResolvedPlugin): string {
       ctx.config.services.includes("portal"),
       ctx.region,
       plugin,
+      brandEnvOf(ctx.config),
     ),
   );
   return path;
@@ -961,6 +1021,13 @@ function unsetDisabledFlyPublisherToken(config: QmConfig, appPrefix: string): vo
   note(`removed the disabled Fly app publisher token from ${app}`);
 }
 
+function unsetLegacyWebUiConnectorSecret(appPrefix: string): void {
+  const app = `${appPrefix}-web-ui`;
+  if (!secretNames(app)?.has("CONNECTOR_SECRET_KEY")) return;
+  fly(["secrets", "unset", "--stage", "-a", app, "CONNECTOR_SECRET_KEY"]);
+  note(`removed the legacy connector root secret from ${app}`);
+}
+
 export async function flyUp(config: QmConfig, configDir: string, opts: FlyUpOpts = {}): Promise<void> {
   if (opts.imageLabel && opts.imageFrom) {
     throw new CliError("--image-label and --image-from select different image sources and cannot be combined");
@@ -1060,9 +1127,17 @@ export async function flyUp(config: QmConfig, configDir: string, opts: FlyUpOpts
       note(`\n=== ${header} ===`);
       note(`config: ${path}`);
       if (missing.length) {
-        note(
-          `MISSING secrets — set them with:\n  fly secrets set -a ${app} --stage ${missing.map((sec) => `${sec}=…`).join(" ")}`,
-        );
+        const direct = missing.filter((name) => name !== "WEB_UI_IM_CREDENTIALS_KEY");
+        if (missing.includes("WEB_UI_IM_CREDENTIALS_KEY")) {
+          note(
+            "MISSING WEB_UI_IM_CREDENTIALS_KEY — run `qm secrets push`; it derives a compatible scoped key from the existing connector key when needed.",
+          );
+        }
+        if (direct.length) {
+          note(
+            `MISSING secrets — set them with:\n  fly secrets set -a ${app} --stage ${direct.map((sec) => `${sec}=…`).join(" ")}`,
+          );
+        }
       } else {
         note("secrets: ok");
       }
@@ -1101,6 +1176,7 @@ export async function flyUp(config: QmConfig, configDir: string, opts: FlyUpOpts
       unsetDisabledSecurityScreenToken(config, ctx.appPrefix);
       unsetDisabledFlyPublisherToken(config, ctx.appPrefix);
     }
+    if (services.includes("web-ui")) unsetLegacyWebUiConnectorSecret(ctx.appPrefix);
 
     for (const phase of flyDeployPhases(services)) await deployPhase(ctx, phase, imageSource, timing);
     await deployPlugins(ctx, plugins, imageSource, timing);
@@ -1551,6 +1627,7 @@ export async function flyCheckLive(
             config.services.includes("portal"),
             ctx.region,
             plugin!,
+            brandEnvOf(config),
           ),
     );
     const envDrift = machines.flatMap((machine, index) =>
@@ -1615,6 +1692,18 @@ export async function flyCheckLive(
   } catch (error) {
     failures.push(`${healthUrl}: ${errMessage(error)}`);
   }
+  if (!failures.length) {
+    if (!coreMachineId) {
+      failures.push(`${ctx.appPrefix}-core: cannot run the live session smoke without an identified machine`);
+    } else {
+      try {
+        flyLiveSession(`${ctx.appPrefix}-core`, coreMachineId);
+        if (report) step(`${ctx.appPrefix}-core: private live session smoke passed`);
+      } catch (error) {
+        failures.push(`${ctx.appPrefix}-core: private live session smoke failed: ${errMessage(error)}`);
+      }
+    }
+  }
   if (failures.length) {
     throw new CliError(`live check failed:\n${failures.map((failure) => `  - ${failure}`).join("\n")}`, {
       clause: "fly.live-readiness",
@@ -1635,6 +1724,9 @@ export async function flySecretsPush(config: QmConfig, configDir: string, envFil
       throw new CliError(`required secret ${secret.name} is missing, a placeholder, or too short`);
     }
   }
+  if (config.services.includes("web-ui")) {
+    assertWebUiImCredentialsKeyIsScoped((name) => deploymentSecretValue(name, values.get(name)));
+  }
   const ctx = buildCtx(config, configDir, {});
   requireFlyAuth();
   for (const workload of runnableServices(config.services))
@@ -1642,17 +1734,34 @@ export async function flySecretsPush(config: QmConfig, configDir: string, envFil
   for (const plugin of pluginNames) ensureApp(`${prefix}-${plugin}`, ctx.flyOrg, ctx.orgId, ctx.appPrefix);
   unsetDisabledSecurityScreenToken(config, prefix);
   unsetDisabledFlyPublisherToken(config, prefix);
-  const stagedApps = new Set<string>();
+  const resolvedValues = new Map<string, string>();
   for (const secret of operatorSecrets) {
     const supplied = deploymentSecretValue(secret.name, values.get(secret.name));
     if (!secret.required && !supplied) {
       step(`${secret.name}: optional, not supplied`);
       continue;
     }
-    const value = supplied ?? (await promptHidden(secret.name));
+    const compatible =
+      secret.name === "WEB_UI_IM_CREDENTIALS_KEY"
+        ? resolveWebUiImCredentialsKey((name) =>
+            name === secret.name
+              ? supplied
+              : (resolvedValues.get(name) ?? deploymentSecretValue(name, values.get(name))),
+          )
+        : supplied;
+    const value = compatible ?? (await promptHidden(secret.name));
     if (secret.required && isInvalidSecret(secret.name, value)) {
       throw new CliError(`required secret ${secret.name} is missing, a placeholder, or too short`);
     }
+    resolvedValues.set(secret.name, value);
+  }
+  if (config.services.includes("web-ui")) {
+    assertWebUiImCredentialsKeyIsScoped((name) => resolvedValues.get(name));
+  }
+  const stagedApps = new Set<string>();
+  for (const secret of operatorSecrets) {
+    const value = resolvedValues.get(secret.name);
+    if (value === undefined) continue;
     const destinations = new Map<string, Set<string>>();
     for (const [workload, names] of secretDestinations(secret, pluginNames)) {
       destinations.set(`${prefix}-${workload}`, names);
@@ -1665,6 +1774,7 @@ export async function flySecretsPush(config: QmConfig, configDir: string, envFil
     }
     step(`${secret.name}: staged on ${[...destinations].map(([app]) => app).join(", ")}`);
   }
+  if (config.services.includes("web-ui")) unsetLegacyWebUiConnectorSecret(prefix);
   ok("operator secrets staged on Fly");
   const running = [...stagedApps].filter(appHasMachines);
   if (running.length) {

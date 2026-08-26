@@ -346,6 +346,21 @@ resource "aws_iam_role_policy" "github_deploy" {
         Resource = ["arn:aws:ecs:${var.region}:${data.aws_caller_identity.current.account_id}:service/${var.cluster_name}/*"]
       },
       {
+        Sid      = "RunDeploymentCanaries"
+        Effect   = "Allow"
+        Action   = ["ecs:RunTask"]
+        Resource = ["arn:aws:ecs:${var.region}:${data.aws_caller_identity.current.account_id}:task-definition/${var.services["core"].ecs_service}:*"]
+        Condition = {
+          ArnEquals = { "ecs:cluster" = aws_ecs_cluster.this.arn }
+        }
+      },
+      {
+        Sid      = "InspectDeploymentCanaries"
+        Effect   = "Allow"
+        Action   = ["ecs:DescribeTasks"]
+        Resource = ["arn:aws:ecs:${var.region}:${data.aws_caller_identity.current.account_id}:task/${var.cluster_name}/*"]
+      },
+      {
         Sid       = "PassTaskRolesToEcs"
         Effect    = "Allow"
         Action    = ["iam:PassRole"]
@@ -569,12 +584,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "objects" {
       expired_object_delete_marker = true
     }
 
-    # The core writes this same rule id via ensureExpiry, with the same 1 day and this same clause,
-    # so whichever applies last leaves an identical config instead of the two stripping each other.
-    # Parts from an upload that died mid-stream are invisible to ListObjects; only this reaps them.
-    abort_incomplete_multipart_upload {
-      days_after_initiation = 1
-    }
   }
 
   rule {
@@ -587,6 +596,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "objects" {
 
     expiration {
       days = 1
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
     }
   }
 }
@@ -607,7 +620,7 @@ resource "aws_iam_role_policy" "task_objects" {
         Resource = aws_s3_bucket.objects.arn
       },
       {
-        Effect   = "Allow"
+        Effect = "Allow"
         # AbortMultipartUpload is its own action — PutObject covers Create/UploadPart/Complete but
         # not the abort, and without it a failed staging upload strands parts that bill silently.
         Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"]

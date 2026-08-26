@@ -5,15 +5,37 @@ import { personKey, samePerson } from "../../../directory/person.ts";
 import type { AdminRole } from "../../../admin/admin-grant-store.ts";
 import type { DirectoryMember } from "../../../directory/directory-store.ts";
 import { computeUsers } from "../../../admin/users.ts";
+import { adminImBindingsByPrincipal, parseAdminImBindings } from "../../../admin/im-bindings.ts";
 import { forEachAttributedTurn } from "../../../admin/attribution.ts";
 import { detectOnboardingStatus, setOnboardingStatus, type OnboardingStatus } from "../../../onboarding/onboarding.ts";
+import type { KeychainCredentialMeta } from "../../../credentials/keychain.ts";
 import { sendJson } from "../../http.ts";
 import { audit, authorizeAdmin, orgScope } from "../shared.ts";
 import { type ApiCtx } from "../route.ts";
 import { FILES_PAGE_SIZE } from "./common.ts";
+import { uiStateId } from "../../../surfaces/ui-state.ts";
 
 const USER_CONVERSATIONS_MAX = 100;
 const USER_FILES_MAX = 200;
+
+type AdminCredentialMetadata = Pick<
+  KeychainCredentialMeta,
+  "id" | "ownerId" | "service" | "kind" | "envKey" | "targets" | "host" | "accountLabel" | "expiresAt"
+>;
+
+function adminCredentialMetadata(credential: KeychainCredentialMeta): AdminCredentialMetadata {
+  return {
+    id: credential.id,
+    ownerId: credential.ownerId,
+    service: credential.service,
+    kind: credential.kind,
+    ...(credential.envKey !== undefined ? { envKey: credential.envKey } : {}),
+    ...(credential.targets !== undefined ? { targets: credential.targets } : {}),
+    ...(credential.host !== undefined ? { host: credential.host } : {}),
+    ...(credential.accountLabel !== undefined ? { accountLabel: credential.accountLabel } : {}),
+    ...(credential.expiresAt !== undefined ? { expiresAt: credential.expiresAt } : {}),
+  };
+}
 
 export async function listUsers(ctx: ApiCtx): Promise<void> {
   const { res, deps } = ctx;
@@ -21,10 +43,17 @@ export async function listUsers(ctx: ApiCtx): Promise<void> {
   const actor = await authorizeAdmin(ctx, scope);
   if (!actor) return;
   audit(deps, { principalId: actor.id, action: "users.read", resource: "users", scopeLabel: scope });
-  const participants = (await deps.sessions?.listParticipants()) ?? [];
-  const turns = (await deps.sessions?.attributedTurns()) ?? [];
-  const grants = (await deps.admin?.listGrants()) ?? [];
-  const users = computeUsers({ participants, turns, grants });
+  const [participants, turns, grants, uiStateEntries] = await Promise.all([
+    deps.sessions?.listParticipants() ?? Promise.resolve([]),
+    deps.sessions?.attributedTurns() ?? Promise.resolve([]),
+    deps.admin?.listGrants() ?? Promise.resolve([]),
+    deps.uiState?.entries() ?? Promise.resolve([]),
+  ]);
+  const imBindings = adminImBindingsByPrincipal(uiStateEntries);
+  const users = computeUsers({ participants, turns, grants, principalIds: [...imBindings.keys()] }).map((user) => ({
+    ...user,
+    imBindings: imBindings.get(user.principalId) ?? [],
+  }));
   return sendJson(res, 200, { scopeId: scope, users, grants });
 }
 
@@ -53,13 +82,14 @@ export async function listKeychainStatus(ctx: ApiCtx): Promise<void> {
   if (!deps.keychain)
     return sendJson(res, 200, { scopeId: scope, people: [], credentials: [], grants: [], asks: [], enabled: false });
 
-  const [credentials, grants, asks, participants, adminGrants] = await Promise.all([
+  const [credentialRecords, grants, asks, participants, adminGrants] = await Promise.all([
     deps.keychain.listAllMetadata(),
     deps.keychain.listGrants({}),
     deps.keychain.listAsks({}),
     deps.sessions?.listParticipants() ?? Promise.resolve([]),
     deps.admin?.listGrants() ?? Promise.resolve([]),
   ]);
+  const credentials = credentialRecords.map(adminCredentialMetadata);
   const ids = new Set<string>([
     ...credentials.map((c) => c.ownerId),
     ...grants.map((g) => g.ownerId),
@@ -224,6 +254,9 @@ export async function getUserDetail(ctx: ApiCtx): Promise<void> {
       }
     : null;
   const onboarding = deps.memory ? detectOnboardingStatus(await deps.memory.read(personal)) : null;
+  const imBindings = deps.uiState
+    ? parseAdminImBindings((await deps.uiState.get(uiStateId(principalId, "im-bindings")))?.value)
+    : [];
 
   return sendJson(res, 200, {
     principalId,
@@ -237,6 +270,7 @@ export async function getUserDetail(ctx: ApiCtx): Promise<void> {
     crons,
     config,
     onboarding,
+    imBindings,
   });
 }
 

@@ -210,7 +210,7 @@ test("env-delivery credential: envKey validated, host refused, duplicates refuse
   }
 });
 
-test("env-delivery refuses person/team grantees — grants don't gate env injection, so the ACL must not pretend otherwise", async () => {
+test("env-delivery accepts person/team grantees — grants now gate env injection like broker calls", async () => {
   const srv = start();
   try {
     const narrowed = await putCred(srv.base, {
@@ -221,18 +221,17 @@ test("env-delivery refuses person/team grantees — grants don't gate env inject
       secret: "s1",
       grantees: ["personal:alice@default-org"],
     });
-    assert.equal(narrowed.status, 400);
-    assert.match(await narrowed.text(), /don't gate them/);
+    assert.equal(narrowed.status, 200, "a person grant on an env credential is allowed");
 
     const orgWide = await putCred(srv.base, {
-      slug: "browse-steel",
-      name: "Steel",
+      slug: "browse-steel-wide",
+      name: "Steel wide",
       delivery: "env",
-      envKey: "STEEL_API_KEY",
+      envKey: "STEEL_WIDE_API_KEY",
       secret: "s1",
       grantees: ["org:default-org"],
     });
-    assert.equal(orgWide.status, 200, "the org grant itself is fine");
+    assert.equal(orgWide.status, 200, "the org grant is fine too");
   } finally {
     await srv.close();
   }
@@ -1010,6 +1009,27 @@ test("orchestrator stamps AGENT_CREDENTIAL_TOKEN with an org-wide credential's s
   const claims = await verifyCapabilityToken(token!, TEST_CAPABILITY_SECRET);
   assert.equal(claims?.aud, CREDENTIAL_BROKER_AUD);
   assert.deepEqual(claims?.credentials, ["x-firehose"]);
+
+  const actor = { externalId: "B-LEGACY", isBot: true };
+  await built.app.turn({
+    surface: "slack",
+    actor,
+    botActor: true,
+    liveActor: true,
+    conversation: {
+      kind: "channel",
+      threadRef: "ch:C1:bot",
+      channelRef: "C1",
+      isPrivate: true,
+      audience: [actor],
+      publishMembers: [actor],
+    },
+    text: "!run echo bot",
+  });
+  const botClaims = await verifyCapabilityToken(env()!.AGENT_CREDENTIAL_TOKEN!, TEST_CAPABILITY_SECRET);
+  assert.equal(botClaims?.botActor, true);
+  assert.equal(botClaims?.liveActor, true);
+  assert.deepEqual(botClaims?.members, [{ id: "B-LEGACY", type: "internal" }]);
 });
 
 test("orchestrator does NOT stamp a credential granted only to someone else", async () => {

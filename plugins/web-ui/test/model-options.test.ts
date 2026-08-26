@@ -209,3 +209,15 @@ test("custom provider models from the runtime catalog stay in the picker", () =>
   assert.equal(scoped[0]!.model.provider, "qa");
   assert.equal(scoped[0]!.model.api, "openai-completions");
 });
+
+test("runtime options include custom-provider models from the catalog", () => {
+  const options = runtimeModelOptions(
+    ["pi"],
+    { pi: ["claude-opus-4-8", "acme-large"] },
+    { "acme-large": { name: "Acme Large", provider: "acme-gateway" } },
+  );
+  const acme = options.find((option) => option.value === "pi:acme-large");
+  assert.ok(acme);
+  assert.equal(acme.label, "Acme Large");
+  assert.equal(acme.model.provider, "acme-gateway");
+});

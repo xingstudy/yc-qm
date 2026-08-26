@@ -1,5 +1,8 @@
-import type { Pool, PoolClient } from "pg";
+import { readFileSync } from "node:fs";
+import type { ClientConfig, Pool, PoolClient } from "pg";
+import { parse, toClientConfig, type ConnectionOptions } from "pg-connection-string";
 import { swallowAs } from "../util/errors.ts";
+import { errMessage } from "../util/errors.ts";
 
 export type { Pool, PoolClient };
 
@@ -39,11 +42,23 @@ export function assertOneStatement(stmt: string): void {
   }
 }
 
+export function concurrentIndexName(stmt: string): string | undefined {
+  return /^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\s+IF\s+NOT\s+EXISTS\s+([a-z_][a-z0-9_$]*)\b/i.exec(stmt)?.[1];
+}
+
 async function applyDdl(pool: Pool, statements: string[]): Promise<void> {
   const ddl = await pool.connect();
   try {
     await ddl.query("SELECT pg_advisory_lock(hashtext('agent-platform:schema-init'))");
     for (const stmt of statements) {
+      const indexName = concurrentIndexName(stmt);
+      if (indexName) {
+        const existing = await ddl.query(
+          "SELECT NOT indisvalid OR NOT indisready AS invalid FROM pg_index WHERE indexrelid = to_regclass($1)",
+          [indexName],
+        );
+        if (existing.rows[0]?.invalid) await ddl.query(`DROP INDEX CONCURRENTLY ${indexName}`);
+      }
       await ddl.query(stmt);
     }
   } finally {
@@ -54,6 +69,69 @@ async function applyDdl(pool: Pool, statements: string[]): Promise<void> {
   }
 }
 
+export function resolvePgCaTrust(opts: { cert?: string; certFile?: string }): { ssl?: { ca: string } } {
+  if (opts.cert?.trim()) return { ssl: { ca: opts.cert } };
+  if (opts.certFile?.trim()) {
+    try {
+      return { ssl: { ca: readFileSync(opts.certFile, "utf8") } };
+    } catch (e) {
+      throw new Error(`DATABASE_CA_CERT_FILE is set but unreadable (${opts.certFile}): ${errMessage(e)}`, {
+        cause: e,
+      });
+    }
+  }
+  return {};
+}
+
+let installedCaTrust: { ssl?: { ca: string } } = {};
+
+export function configurePgCaTrust(opts: { cert?: string; certFile?: string }): void {
+  installedCaTrust = resolvePgCaTrust(opts);
+}
+
+export function configurePgCaTrustFromEnv(env: NodeJS.ProcessEnv): void {
+  configurePgCaTrust({ cert: env.DATABASE_CA_CERT, certFile: env.DATABASE_CA_CERT_FILE });
+}
+
+export function pgCaOptions(): { ssl?: { ca: string } } {
+  return installedCaTrust;
+}
+
+export type PgConnectionConfig = ClientConfig & { sslnegotiation?: "postgres" | "direct" };
+
+export function pgConnectionOptions(
+  connectionString: string,
+  caTrust: { ssl?: { ca: string } } = pgCaOptions(),
+): PgConnectionConfig {
+  if (!caTrust.ssl) return { connectionString };
+  const url = new URL(connectionString);
+  url.searchParams.delete("sslrootcert");
+  url.searchParams.delete("uselibpqcompat");
+  const config = parse(url.toString());
+  const ssl = (typeof config.ssl === "object" && config.ssl ? config.ssl : {}) as Record<string, unknown>;
+  const {
+    ca: _ca,
+    checkServerIdentity: _checkServerIdentity,
+    rejectUnauthorized: _rejectUnauthorized,
+    ...clientAuth
+  } = ssl;
+  return toClientConfig({
+    ...config,
+    ssl: { ...clientAuth, ca: caTrust.ssl.ca },
+  } as ConnectionOptions) as PgConnectionConfig;
+}
+
+export function pgConnectionOptionsFromEnv(
+  connectionString: string | undefined,
+  env: NodeJS.ProcessEnv,
+): PgConnectionConfig {
+  if (!connectionString) return {};
+  return pgConnectionOptions(
+    connectionString,
+    resolvePgCaTrust({ cert: env.DATABASE_CA_CERT, certFile: env.DATABASE_CA_CERT_FILE }),
+  );
+}
+
 export function createPgPool(connectionString: string, statements: string[]): PgPool {
   const schema = statements.map((s) => s.trim()).filter((s) => s.length > 0);
   for (const stmt of schema) assertOneStatement(stmt);
@@ -62,8 +140,8 @@ export function createPgPool(connectionString: string, statements: string[]): Pg
     if (!poolP) {
       poolP = (async () => {
         const pg = (await import("pg")).default;
-        const p = new pg.Pool({ connectionString });
-        p.on("error", (err) => console.error("[pg] idle client error:", err));
+        const p = new pg.Pool(pgConnectionOptions(connectionString));
+        p.on("error", (err) => console.error("[pg] idle client error:", errMessage(err)));
         try {
           await applyDdl(p, schema);
         } catch (e) {

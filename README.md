@@ -211,9 +211,46 @@ configured initial administrator grant, run a real non-mock Agent turn, confirm 
 connectors before accepting the installation.
 
 Back up and restore-test Postgres, `core-data`, and every `qm-home-*` volume before an
-upgrade. Preserve the generated encryption and signing values with that backup: loss of
-`CONNECTOR_SECRET_KEY` can make stored connector credentials unreadable. Never use
+upgrade. Preserve the generated encryption and signing values with that backup. Losing
+`CONNECTOR_SECRET_KEY` or `WEB_UI_IM_CREDENTIALS_KEY` can make stored connector or IM Bot credentials unreadable. Never use
 `docker compose down -v` as a routine stop or upgrade command.
+
+An existing deployment that already saved IM Bot credentials with `CONNECTOR_SECRET_KEY`
+must derive the new scoped key before selecting the release that introduces
+`WEB_UI_IM_CREDENTIALS_KEY`. The verified release deployer performs this migration
+automatically. For a source-build stack, the following handles an unquoted existing connector
+key while preserving the existing ciphertext without exposing the connector root to web-ui:
+
+```bash
+(
+  set -euo pipefail
+  if grep -q '^WEB_UI_IM_CREDENTIALS_KEY=' .env.production; then
+    echo 'WEB_UI_IM_CREDENTIALS_KEY is already configured' >&2
+    exit 1
+  fi
+  if [[ "$(awk -F= '$1 == "CONNECTOR_SECRET_KEY" { count++ } END { print count + 0 }' .env.production)" != 1 ]]; then
+    echo 'CONNECTOR_SECRET_KEY must occur exactly once' >&2
+    exit 1
+  fi
+  connector_secret="$(sed -n 's/^CONNECTOR_SECRET_KEY=//p' .env.production)"
+  connector_secret="${connector_secret#"${connector_secret%%[![:space:]]*}"}"
+  connector_secret="${connector_secret%"${connector_secret##*[![:space:]]}"}"
+  if (( ${#connector_secret} < 32 )); then
+    echo 'CONNECTOR_SECRET_KEY must be an unquoted value of at least 32 characters' >&2
+    exit 1
+  fi
+  web_ui_im_key="$(printf '%s\0%s' 'web-ui-im-resource-v2' "$connector_secret" | sha256sum | awk '{print $1}')"
+  printf 'WEB_UI_IM_CREDENTIALS_KEY=%s\n' "$web_ui_im_key" >> .env.production
+  chmod 600 .env.production
+)
+```
+
+Do not generate a random replacement during this upgrade: it would make existing IM Bot
+credentials unreadable. New installations receive an independent random key from the
+initializer. If the old connector value is quoted or uses dotenv escapes, normalize it to the
+effective value first instead of running the source-build snippet directly. The verified
+deployer also fails closed on quoted, interpolated, or inline-commented legacy values instead
+of deriving a key from the wrong bytes.
 
 For a routine release, keep the existing `.env.production`, change only
 `QM_RELEASE_TAG`, and rerun `./scripts/deploy-production-release.sh`. Do not rerun the
@@ -294,6 +331,7 @@ sed -i "s/^DOCKER_GID=.*/DOCKER_GID=${qm_socket_gid}/" .env
 for qm_secret_name in \
   POSTGRES_PASSWORD \
   CONNECTOR_SECRET_KEY \
+  WEB_UI_IM_CREDENTIALS_KEY \
   CORE_SIGNING_SECRET \
   CAPABILITY_SECRET \
   PORTAL_IDENTITY_SECRET \
@@ -304,6 +342,10 @@ do
   sed -i "s/^${qm_secret_name}=.*/${qm_secret_name}=${qm_secret_value}/" .env
 done
 ```
+
+When upgrading an existing source-build stack that already has saved IM Bot credentials,
+derive `WEB_UI_IM_CREDENTIALS_KEY` with the production upgrade procedure above, replacing
+`.env.production` with `.env`; do not run this new-install random-key loop over the existing file.
 
 On the first boot of a new local database, grant the default development principal
 access to Admin:
@@ -325,6 +367,7 @@ secrets must be distinct.
 | `POSTGRES_PASSWORD`                                                           | Required                                | Password used by Compose to initialize and connect to Postgres. Changing it after the volume exists does not rotate the database role password. |
 | `DOCKER_GID`                                                                  | Required                                | Numeric group ID of `/var/run/docker.sock`, allowing the unprivileged core process to create sandbox containers.                                |
 | `CONNECTOR_SECRET_KEY`                                                        | Required                                | Encrypts connector credentials and other durable secret material. Losing it can make stored credentials unreadable.                             |
+| `WEB_UI_IM_CREDENTIALS_KEY`                                                   | Required                                | Dedicated 32-byte hexadecimal key for durable IM Bot credentials.                                                                               |
 | `CORE_SIGNING_SECRET`                                                         | Required                                | Authenticates requests between core and trusted services.                                                                                       |
 | `CAPABILITY_SECRET`                                                           | Required                                | Signs scoped capability tokens used by sandbox, blob, and egress paths.                                                                         |
 | `PORTAL_IDENTITY_SECRET`                                                      | Required                                | Signs the browser identity that Portal forwards to private services and core.                                                                   |
@@ -340,6 +383,7 @@ secrets must be distinct.
 | `QM_INTERNAL_BIND_ADDRESS`                                                    | `127.0.0.1`                             | Bind address for Postgres and direct Web UI, Admin, Portal, and auth diagnostic ports. It does not restrict core's host-networked port `8080`.  |
 | `PORTAL_PUBLIC_URL`                                                           | `http://localhost:8088`                 | Browser-visible origin; use the externally reachable HTTPS URL in production.                                                                   |
 | `PORTAL_LOCAL_AUTH_BYPASS`                                                    | `1`                                     | Development-only login as `PORTAL_DEV_PRINCIPAL`. Set to `0` before any non-local exposure.                                                     |
+| `PORTAL_DEPLOYMENTS_ENABLED`                                                  | `1`                                     | Enables deployment routes. Set to `0` to disable them, including for Playground mode.                                                           |
 | `PORTAL_XFF_TRUSTED_HOPS`                                                     | `1`                                     | Number of trusted reverse proxies used to derive client addresses. Match the real proxy chain.                                                  |
 | `OIDC_ALLOWED_EMAIL_DOMAIN`, `OIDC_ALLOWED_EMAILS`, `PORTAL_EXPECTED_TEAM_ID` | At least one in production              | Limits sign-in to an email domain, explicit email list, or Slack workspace.                                                                     |
 | `RATE_LIMIT_PER_WINDOW`, `RATE_LIMIT_WINDOW_MS`                               | `60`, `60000`                           | Per-principal request limit and window in milliseconds.                                                                                         |

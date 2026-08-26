@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { envSha, formatAge, readEnvFile } from "../scripts/dev/lib/util.ts";
+import { envSha, formatAge, readEnvFile, sha256Hex } from "../scripts/dev/lib/util.ts";
 import {
   clearSlotFlag,
   ensureStore,
@@ -87,10 +87,10 @@ test("pool token parsing accepts quoted dotenv values", () => {
     handle: "bot1",
     canaryChannel: "C0TEST",
     extra: {
-      SLACK_BOT_TOKEN: '"xoxb-quoted"',
-      SLACK_APP_TOKEN: "'xapp-quoted'",
-      HANDLE: '"bot1"',
-      CANARY_CHANNEL: "'C0TEST'",
+      SLACK_BOT_TOKEN: "xoxb-quoted",
+      SLACK_APP_TOKEN: "xapp-quoted",
+      HANDLE: "bot1",
+      CANARY_CHANNEL: "C0TEST",
     },
   });
   assert.equal(slotValid("pool1", store), true);
@@ -293,7 +293,10 @@ test("dev security secrets are stable, complete, and distinct", () => {
   completeDevSecuritySecrets(first, "postgres://dev");
   completeDevSecuritySecrets(second, "postgres://dev");
   assert.deepEqual(first, second);
-  assert.equal(new Set(Object.values(first)).size, 5);
+  assert.equal(new Set(Object.values(first)).size, 6);
+  const legacy: Record<string, string> = { CONNECTOR_SECRET_KEY: " connector " };
+  completeDevSecuritySecrets(legacy, "postgres://other");
+  assert.equal(legacy.WEB_UI_IM_CREDENTIALS_KEY, sha256Hex("web-ui-im-resource-v2\0connector"));
   assert.throws(
     () => completeDevSecuritySecrets({ CORE_SIGNING_SECRET: "same", CAPABILITY_SECRET: "same" }, "postgres://dev"),
     /must be distinct/,

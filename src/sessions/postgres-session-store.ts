@@ -4,6 +4,7 @@ import { jsonbSafeStringify } from "../util/text.ts";
 import type { Session, SessionEntry, SessionType, ScopeId } from "../types.ts";
 import type {
   AttributedTurn,
+  EntrySearchHit,
   CronGroupSummary,
   DistinctScope,
   GetEntriesOptions,
@@ -26,15 +27,21 @@ import type {
   StoreOptions,
   TapeRecord,
 } from "./session-store.ts";
+import { tsPrefixQuery } from "./entry-search.ts";
 import {
   LEGACY_CRON_ID_PATTERN,
   legacyOriginPattern,
   ORIGIN_ALTERNATION,
+  promptEnvelopeBody,
   sessionOrigin,
   STABLE_CRON_ID_PATTERN,
   stableOriginPattern,
   userMessagePreview,
 } from "./session-store.ts";
+
+export const SESSION_ENTRIES_SEARCH_INDEX_SQL = `CREATE INDEX CONCURRENTLY IF NOT EXISTS session_entries_search_fts
+  ON session_entries USING GIN (to_tsvector('simple', COALESCE(entry_search_text(payload), '')))
+  WHERE type IN ('user', 'assistant', 'text')`;
 
 export function rowToSession(r: Record<string, unknown>): Session {
   return {
@@ -79,6 +86,8 @@ function rowToLlmRequest(r: Record<string, unknown>): LlmRequestRecord {
     scopeLabel: r.scope_label as ScopeId,
     createdAt: Number(r.created_at),
     request: r.request != null ? JSON.parse(r.request as string) : null,
+    promptHash: r.prompt_hash == null ? null : (r.prompt_hash as string),
+    ...(r.prompt_body != null ? { promptEnvelope: JSON.parse(r.prompt_body as string) } : {}),
     truncated: Boolean(r.truncated),
     ttftMs: r.ttft_ms == null ? null : Number(r.ttft_ms),
     durationMs: r.duration_ms == null ? null : Number(r.duration_ms),
@@ -243,12 +252,28 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
     `ALTER TABLE session_llm_requests ADD COLUMN IF NOT EXISTS usage_json TEXT`,
     `ALTER TABLE session_llm_requests ADD COLUMN IF NOT EXISTS transport_json TEXT`,
     `ALTER TABLE session_llm_requests ADD COLUMN IF NOT EXISTS gap_phases_json TEXT`,
+    `ALTER TABLE session_llm_requests ALTER COLUMN request DROP NOT NULL`,
+    `ALTER TABLE session_llm_requests ADD COLUMN IF NOT EXISTS prompt_hash TEXT`,
+    `CREATE TABLE IF NOT EXISTS llm_prompt_envelopes(
+        hash TEXT PRIMARY KEY, body TEXT NOT NULL, created_at BIGINT NOT NULL
+      )`,
     `CREATE INDEX IF NOT EXISTS sessions_by_scope ON sessions(scope_id, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS sessions_by_activity ON sessions((COALESCE(last_activity, created_at)) DESC, id DESC)`,
     `CREATE INDEX IF NOT EXISTS sessions_by_scope_activity
         ON sessions(scope_id, (COALESCE(last_activity, created_at)) DESC, id DESC)`,
     `CREATE INDEX IF NOT EXISTS session_entries_user_ts ON session_entries(created_at) WHERE type = 'user'`,
     `CREATE INDEX IF NOT EXISTS session_entries_session_created ON session_entries(session_id, created_at DESC)`,
+    `CREATE OR REPLACE FUNCTION entry_search_text(payload text) RETURNS text
+        LANGUAGE plpgsql IMMUTABLE PARALLEL UNSAFE AS $entry_search_text$
+        DECLARE j json;
+        BEGIN
+          j := replace(payload, '\\u0000', '')::json;
+          RETURN CASE WHEN json_typeof(j -> 'text') = 'string' THEN j ->> 'text'
+                      WHEN json_typeof(j) = 'string' THEN j #>> '{}'
+                      ELSE NULL END;
+        EXCEPTION WHEN others THEN RETURN NULL;
+        END $entry_search_text$`,
+    SESSION_ENTRIES_SEARCH_INDEX_SQL,
     `DELETE FROM session_entries WHERE session_id IN (SELECT id FROM sessions WHERE type IN ('channel','group') AND thread_ref ~ '^[a-z0-9_]+/[^:/]+$')`,
     `DELETE FROM participants WHERE session_id IN (SELECT id FROM sessions WHERE type IN ('channel','group') AND thread_ref ~ '^[a-z0-9_]+/[^:/]+$')`,
     `DELETE FROM session_leases WHERE session_id IN (SELECT id FROM sessions WHERE type IN ('channel','group') AND thread_ref ~ '^[a-z0-9_]+/[^:/]+$')`,
@@ -262,8 +287,12 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
          OR ${lastActivityExpr("s")} > (EXTRACT(EPOCH FROM now()) * 1000)::bigint - 172800000`,
   ]);
 
+  const lockSession = (client: PoolClient, sessionId: string) =>
+    client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [sessionId]);
+
   const withLease = async <T>(lease: Lease, invalidMsg: string, fn: (client: PoolClient) => Promise<T>): Promise<T> =>
     withPgTransaction(await pool(), async (client) => {
+      await lockSession(client, lease.sessionId);
       const held = await client.query("SELECT token FROM session_leases WHERE session_id = $1 FOR UPDATE", [
         lease.sessionId,
       ]);
@@ -371,27 +400,31 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
     async acquireLease(sessionId, holder): Promise<LeaseAttempt> {
       const token = randomUUID();
       const t = now();
-      const rows = await q(
-        `INSERT INTO session_leases(session_id, token, expires_at, holder, acquired_at)
-           VALUES ($1,$2,$3,$5,$4)
-         ON CONFLICT (session_id) DO UPDATE
-           SET token = $2, expires_at = $3, holder = $5, acquired_at = $4
-           WHERE session_leases.expires_at <= $4
-         RETURNING token`,
-        [sessionId, token, t + leaseTtlMs, t, holder ?? null],
-      );
-      if (rows[0]) return { lease: { sessionId, token } };
-      const held = await q("SELECT expires_at, holder, acquired_at FROM session_leases WHERE session_id = $1", [
-        sessionId,
-      ]);
-      const row = held[0];
-      if (!row) return { lease: null };
-      return {
-        lease: null,
-        ...(row.holder != null ? { heldBy: row.holder as LeaseHolder } : {}),
-        ...(row.acquired_at != null ? { heldSince: Number(row.acquired_at) } : {}),
-        heldUntil: Number(row.expires_at),
-      };
+      return withPgTransaction(await pool(), async (client) => {
+        await lockSession(client, sessionId);
+        const granted = await client.query(
+          `INSERT INTO session_leases(session_id, token, expires_at, holder, acquired_at)
+             SELECT $1, $2, $3, $5, $4 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1)
+           ON CONFLICT (session_id) DO UPDATE
+             SET token = $2, expires_at = $3, holder = $5, acquired_at = $4
+             WHERE session_leases.expires_at <= $4
+           RETURNING token`,
+          [sessionId, token, t + leaseTtlMs, t, holder ?? null],
+        );
+        if (granted.rows[0]) return { lease: { sessionId, token } };
+        const held = await client.query(
+          "SELECT expires_at, holder, acquired_at FROM session_leases WHERE session_id = $1",
+          [sessionId],
+        );
+        const row = held.rows[0];
+        if (!row) return { lease: null };
+        return {
+          lease: null,
+          ...(row.holder != null ? { heldBy: row.holder as LeaseHolder } : {}),
+          ...(row.acquired_at != null ? { heldSince: Number(row.acquired_at) } : {}),
+          heldUntil: Number(row.expires_at),
+        };
+      });
     },
 
     async releaseLease(lease): Promise<void> {
@@ -499,6 +532,14 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
     },
 
     async recordLlmRequest(sessionId, rec: NewLlmRequest): Promise<LlmRequestRecord> {
+      const envelope = promptEnvelopeBody(rec.promptEnvelope);
+      if (envelope) {
+        await q("INSERT INTO llm_prompt_envelopes(hash, body, created_at) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING", [
+          envelope.hash,
+          envelope.body,
+          now(),
+        ]);
+      }
       const full: LlmRequestRecord = {
         id: randomUUID(),
         sessionId,
@@ -507,7 +548,9 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
         model: rec.model,
         scopeLabel: rec.scopeLabel as ScopeId,
         createdAt: now(),
-        request: rec.request,
+        request: null,
+        promptHash: envelope?.hash ?? null,
+        ...(rec.promptEnvelope !== undefined ? { promptEnvelope: rec.promptEnvelope } : {}),
         truncated: rec.truncated ?? false,
         ttftMs: rec.ttftMs ?? null,
         durationMs: rec.durationMs ?? null,
@@ -518,7 +561,7 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
         transport: rec.transport ?? null,
       };
       await q(
-        "INSERT INTO session_llm_requests(id, session_id, turn_seq, step, model, scope_label, request, truncated, created_at, ttft_ms, duration_ms, step_gap_ms, tool_wall_json, usage_json, transport_json, gap_phases_json) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
+        "INSERT INTO session_llm_requests(id, session_id, turn_seq, step, model, scope_label, prompt_hash, truncated, created_at, ttft_ms, duration_ms, step_gap_ms, tool_wall_json, usage_json, transport_json, gap_phases_json) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
         [
           full.id,
           full.sessionId,
@@ -526,7 +569,7 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
           full.step,
           full.model,
           full.scopeLabel,
-          JSON.stringify(full.request ?? null),
+          full.promptHash,
           full.truncated,
           full.createdAt,
           full.ttftMs,
@@ -543,21 +586,26 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
 
     async listLlmRequests(sessionId, opts): Promise<LlmRequestRecord[]> {
       const cols = opts?.omitRequest
-        ? "id, session_id, turn_seq, step, model, scope_label, created_at, truncated, ttft_ms, duration_ms, step_gap_ms, tool_wall_json, usage_json, transport_json, gap_phases_json"
-        : "*";
-      const conds = ["session_id = $1"];
+        ? "r.id, r.session_id, r.turn_seq, r.step, r.model, r.scope_label, r.created_at, r.truncated, r.prompt_hash, r.ttft_ms, r.duration_ms, r.step_gap_ms, r.tool_wall_json, r.usage_json, r.transport_json, r.gap_phases_json"
+        : "r.*, e.body AS prompt_body";
+      const from = opts?.omitRequest
+        ? "session_llm_requests r"
+        : "session_llm_requests r LEFT JOIN llm_prompt_envelopes e ON e.hash = r.prompt_hash";
+      const conds = ["r.session_id = $1"];
       const args: unknown[] = [sessionId];
       const turnSeqs = opts?.turnSeqs;
       if (turnSeqs) {
         args.push(turnSeqs);
         conds.push(
-          opts?.orphans ? `(turn_seq = ANY($${args.length}) OR turn_seq IS NULL)` : `turn_seq = ANY($${args.length})`,
+          opts?.orphans
+            ? `(r.turn_seq = ANY($${args.length}) OR r.turn_seq IS NULL)`
+            : `r.turn_seq = ANY($${args.length})`,
         );
       } else if (opts?.orphans) {
-        conds.push("turn_seq IS NULL");
+        conds.push("r.turn_seq IS NULL");
       }
       const rows = await q(
-        `SELECT ${cols} FROM session_llm_requests WHERE ${conds.join(" AND ")} ORDER BY created_at ASC, step ASC`,
+        `SELECT ${cols} FROM ${from} WHERE ${conds.join(" AND ")} ORDER BY r.created_at ASC, r.step ASC`,
         args,
       );
       return rows.map(rowToLlmRequest);
@@ -600,12 +648,32 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
 
     async deleteSession(sessionId): Promise<void> {
       await withPgTransaction(await pool(), async (client) => {
+        await lockSession(client, sessionId);
         await client.query("DELETE FROM session_llm_requests WHERE session_id = $1", [sessionId]);
         await client.query("DELETE FROM session_leases WHERE session_id = $1", [sessionId]);
         await client.query("DELETE FROM participants WHERE session_id = $1", [sessionId]);
         await client.query("DELETE FROM session_entries WHERE session_id = $1", [sessionId]);
         await client.query("DELETE FROM session_tape WHERE session_id = $1", [sessionId]);
         await client.query("DELETE FROM sessions WHERE id = $1", [sessionId]);
+      });
+    },
+
+    async deleteSessionIfEmpty(sessionId): Promise<boolean> {
+      return withPgTransaction(await pool(), async (client) => {
+        await lockSession(client, sessionId);
+        const gone = await client.query(
+          `DELETE FROM sessions
+            WHERE id = $1
+              AND NOT EXISTS (SELECT 1 FROM session_entries WHERE session_id = $1)
+              AND NOT EXISTS (SELECT 1 FROM session_leases WHERE session_id = $1 AND expires_at > $2)`,
+          [sessionId, now()],
+        );
+        if (gone.rowCount === 0) return false;
+        await client.query("DELETE FROM session_llm_requests WHERE session_id = $1", [sessionId]);
+        await client.query("DELETE FROM session_leases WHERE session_id = $1", [sessionId]);
+        await client.query("DELETE FROM participants WHERE session_id = $1", [sessionId]);
+        await client.query("DELETE FROM session_tape WHERE session_id = $1", [sessionId]);
+        return true;
       });
     },
 
@@ -666,6 +734,39 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
         [sessionId, principalId],
       );
       return rows.map(rowToEntry);
+    },
+
+    async searchEntries(principalId, query, limit = 40): Promise<EntrySearchHit[]> {
+      const ts = tsPrefixQuery(query);
+      if (!ts) return [];
+      const rows = await q(
+        `SELECT e.session_id, e.seq, e.type, e.created_at,
+                entry_search_text(e.payload) AS text,
+                (SELECT CASE WHEN e.type = 'user' AND json_typeof(j -> 'name') = 'string' THEN j ->> 'name' END
+                   FROM (SELECT safe_json(replace(e.payload, '\\u0000', '')) AS j) _) AS author
+           FROM session_entries e
+           JOIN participants p ON p.session_id = e.session_id AND p.principal_id = $1
+          WHERE e.type IN ('user', 'assistant', 'text')
+            AND ${withinParticipantWindow("e", "p")}
+            AND to_tsvector('simple', COALESCE(entry_search_text(e.payload), '')) @@ to_tsquery('simple', $2)
+          ORDER BY e.created_at DESC, e.session_id, e.seq DESC
+          LIMIT $3`,
+        [principalId, ts, Math.max(1, Math.min(limit, 200))],
+      );
+      return rows.flatMap((r) => {
+        const text = (r.text as string | null) ?? "";
+        if (!text.trim()) return [];
+        return [
+          {
+            sessionId: r.session_id as string,
+            seq: Number(r.seq),
+            type: r.type as EntrySearchHit["type"],
+            ...(r.author ? { author: r.author as string } : {}),
+            text,
+            createdAt: Number(r.created_at),
+          },
+        ];
+      });
     },
 
     async listAll(): Promise<Session[]> {

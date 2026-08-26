@@ -61,6 +61,17 @@ test("Chinese translations cover exact UI copy and dynamic counters", () => {
   assert.equal(translateText("read-only", "zh-CN"), "只读");
   assert.equal(translateText("pinned", "zh-CN"), "已置顶");
   assert.equal(translateText("Open here", "zh-CN"), "在此打开");
+  assert.equal(translateText("Link a channel", "zh-CN"), "关联频道");
+  assert.equal(translateText("Slack channel", "zh-CN"), "Slack 频道");
+  assert.equal(translateText("Unlink #build from Project Alpha?", "zh-CN"), "取消关联 #build 与 Project Alpha？");
+  assert.equal(translateText("Unlink #build", "zh-CN"), "取消关联 #build");
+  assert.equal(
+    translateText(
+      "The agent posts this project's updates to #build, and everyone in the channel is in the project.",
+      "zh-CN",
+    ),
+    "智能体会将此项目的更新发布到 #build，频道中的所有人都属于该项目。",
+  );
   assert.equal(translateText("New chat", "en"), "New chat");
   assert.equal(translateText("New project", "en"), "New project");
   assert.equal(translateText("User supplied content", "zh-CN"), "User supplied content");
@@ -195,6 +206,13 @@ test("conditional interface labels pass through the translator", () => {
   assert.match(source("memory.ts"), /memoryNotice = t\("Saved ✓"\)/);
   assert.match(source("memory.ts"), /memoryNotice \|\| t\("Loading…"\)/);
   assert.match(source("contexts.ts"), /contextsNotice \|\| \(contextsLoading[^]*t\("Loading projects…"\)/);
+  assert.match(source("contexts.ts"), /\$\{t\(g\.label\)\}/);
+  assert.match(source("contexts.ts"), /errMessage\(error, t\("Couldn't link that channel/);
+  assert.match(source("contexts.ts"), /window\.confirm\(t\(`Unlink #\$\{linked\.channelName\}/);
+  assert.match(source("contexts.ts"), /aria-label=\$\{t\(`Unlink #\$\{linked\.channelName\}`\)\}/);
+  assert.match(source("contexts.ts"), /placeholder=\$\{t\("channel name"\)\}/);
+  assert.match(source("contexts.ts"), /\$\{t\("Link a channel"\)\}/);
+  assert.match(source("contexts.ts"), /\$\{t\("Slack channel"\)\}/);
   assert.match(source("skills.ts"), /skillsNotice = t\("Loading skill instructions…"\)/);
   assert.match(source("crons.ts"), /cronActionNotice = t\("Run started\./);
   assert.match(source("crons.ts"), /Describe what you want scheduled[^]*t\("Gmail unread digest"\)/);
@@ -211,7 +229,7 @@ test("conditional interface labels pass through the translator", () => {
   assert.match(source("sessions.ts"), /aria-label=\$\{t\(`Copy link to \$\{sessionTitle\(s\)\}`\)\}/);
   assert.match(source("deploys.ts"), /aria-label=\$\{t\(`More actions for \$\{deploymentTitle\(d\)\}`\)\}/);
   assert.match(source("ambient-policy.ts"), /ariaLabel: t\(`Handling for \$\{b\.name\}`\)/);
-  assert.match(source("composer.ts"), /const steerTitle = t\(/);
+  assert.match(source("composer.ts"), /t\("Queue for after this turn"\)/);
   assert.match(source("crons.ts"), /error\.textContent = t\(taskControl \? "Title and task are required\."/);
   assert.match(source("session-list.ts"), /parts\.push\(t\(`\$\{jobs\} background job/);
   assert.match(source("sessions.ts"), /working \? t\("agent is working"\) : null/);
@@ -220,5 +238,5 @@ test("conditional interface labels pass through the translator", () => {
   assert.match(source("split.ts"), /if \(panelParams\(panel\)\.sessionId\) return t\("Conversation"\)/);
   assert.match(source("split.ts"), /title=\$\{t\(b\.label\)\}/);
   assert.match(source("chat.ts"), /title = t\(liveWorkExpanded \? "Show less" : "Show more"\)/);
-  assert.match(source("chat.ts"), /<strong>\$\{label\}<\/strong> \$\{t\("context"\)\}/);
+  assert.match(source("session-scope.ts"), /\$\{t\("context — the agent works with that context's files/);
 });

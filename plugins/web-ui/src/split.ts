@@ -1,7 +1,22 @@
 import { nothing, render, type TemplateResult } from "lit";
 import { html, t } from "./i18n.ts";
 import { ref } from "lit/directives/ref.js";
-import { Binoculars, Cog, Expand, Maximize2, Plus, Shrink, X } from "lucide";
+import {
+  Binoculars,
+  Box,
+  Brain,
+  Clock3,
+  Cog,
+  Expand,
+  Files,
+  KeyRound,
+  Maximize2,
+  MoreHorizontal,
+  Plus,
+  Rocket,
+  Shrink,
+  X,
+} from "lucide";
 import {
   createDockview,
   type DockviewApi,
@@ -31,7 +46,7 @@ import {
 import { preservingFocus } from "./pane-focus";
 import { hideTooltip, showTooltip } from "./tooltip";
 import { icon } from "./ui";
-import { contextsState } from "./contexts";
+import { contextsState, scopeTitle } from "./contexts";
 import type { DensityTier } from "./density";
 import { appState } from "./shell-state";
 import { renderSidebarTop, switchView, syncUrlFromState } from "./shell";
@@ -55,7 +70,9 @@ import {
   syncWorkingPulse,
 } from "./sessions";
 import { conversationBackground, type RowIndicators } from "./session-list";
+import { setScopedSession, type SessionTool } from "./session-scope";
 import type { CoreSession } from "./core-bridge";
+import { fetchUiState, putUiState } from "./core-bridge";
 
 export const splitState = {
   active: false,
@@ -63,6 +80,7 @@ export const splitState = {
 };
 
 const STORE_KEY = "web-ui:split-canvas:v1";
+const REMOTE_STATE_KEY = "split-canvas";
 
 interface PaneParams {
   sessionId?: string;
@@ -86,6 +104,9 @@ let toastMsg = "";
 let toastTimer: number | null = null;
 let headerSignature = "";
 let persistTimer: number | null = null;
+let remoteTimer: number | null = null;
+let remotePayload: { updatedAt: number } | null = null;
+let persistedUpdatedAt = 0;
 
 function uid(): string {
   return crypto.randomUUID().slice(0, 8);
@@ -94,11 +115,41 @@ function uid(): string {
 function persist(): void {
   try {
     if (dockApi) lastLayout = dockApi.toJSON();
-    localStorage.setItem(STORE_KEY, JSON.stringify({ v: 2, active: splitState.active, layout: lastLayout }));
+    persistedUpdatedAt = Date.now();
+    const payload = { v: 2, active: splitState.active, layout: lastLayout, updatedAt: persistedUpdatedAt };
+    localStorage.setItem(STORE_KEY, JSON.stringify(payload));
+    pushRemoteSoon(payload);
   } catch {
     void 0;
   }
 }
+
+function pushRemoteSoon(payload: { updatedAt: number }): void {
+  remotePayload = payload;
+  if (remoteTimer !== null) window.clearTimeout(remoteTimer);
+  remoteTimer = window.setTimeout(() => {
+    remoteTimer = null;
+    const p = remotePayload;
+    remotePayload = null;
+    if (p) void putUiState(REMOTE_STATE_KEY, p, p.updatedAt).catch(() => void 0);
+  }, 400);
+}
+
+function flushRemoteNow(): void {
+  if (remoteTimer !== null) {
+    window.clearTimeout(remoteTimer);
+    remoteTimer = null;
+  }
+  const p = remotePayload;
+  if (!p) return;
+  remotePayload = null;
+  void putUiState(REMOTE_STATE_KEY, p, p.updatedAt, { keepalive: true }).catch(() => void 0);
+}
+
+window.addEventListener("pagehide", flushRemoteNow);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushRemoteNow();
+});
 
 function persistSoon(): void {
   if (persistTimer !== null) window.clearTimeout(persistTimer);
@@ -153,6 +204,7 @@ function buildDock(): DockviewApi {
       guarded.add(group);
       group.model.onWillDrop(holdTileCap);
     }
+    if (sessionDrag) refreshSessionDrag();
     persistSoon();
   });
   api.onDidActivePanelChange((e) => {
@@ -304,16 +356,13 @@ export function exitSplitIfActive(): void {
   renderSidebarTop();
 }
 
-export function loadPersistedSplit(): void {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(localStorage.getItem(STORE_KEY) ?? "null");
-  } catch {
-    return;
-  }
+function adoptPersisted(raw: unknown): void {
   if (!raw || typeof raw !== "object") return;
-  const o = raw as { v?: unknown; active?: unknown; layout?: unknown };
+  const o = raw as { v?: unknown; active?: unknown; layout?: unknown; updatedAt?: unknown };
   if (o.v === 2) {
+    if (typeof o.updatedAt === "number") persistedUpdatedAt = o.updatedAt;
+    pendingSeed = null;
+    splitState.active = false;
     if (o.active !== true || !o.layout || typeof o.layout !== "object") return;
     const panels = (o.layout as { panels?: object }).panels;
     const n = panels && typeof panels === "object" ? Object.keys(panels).length : 0;
@@ -326,6 +375,38 @@ export function loadPersistedSplit(): void {
   if (!seeds) return;
   pendingSeed = { kind: "v1", seeds };
   splitState.active = true;
+}
+
+export function loadPersistedSplit(): void {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(localStorage.getItem(STORE_KEY) ?? "null");
+  } catch {
+    return;
+  }
+  adoptPersisted(raw);
+}
+
+export async function adoptRemoteSplit(timeoutMs = 2000): Promise<void> {
+  let rec: Awaited<ReturnType<typeof fetchUiState>>;
+  try {
+    rec = await Promise.race([
+      fetchUiState(REMOTE_STATE_KEY),
+      new Promise<never>((_, reject) => window.setTimeout(reject, timeoutMs)),
+    ]);
+  } catch {
+    return;
+  }
+  if (!rec || typeof rec !== "object") return;
+  const at = typeof rec.updatedAt === "number" ? rec.updatedAt : 0;
+  if (!rec.value || typeof rec.value !== "object" || at <= persistedUpdatedAt) return;
+  adoptPersisted(rec.value);
+  persistedUpdatedAt = at;
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify({ ...rec.value, updatedAt: at }));
+  } catch {
+    void 0;
+  }
 }
 
 export function restoredCanvasNeedsSessionList(): boolean {
@@ -360,6 +441,22 @@ function paneShowing(sessionId: string): IDockviewPanel | null {
 
 export function sessionInCanvas(sessionId: string): boolean {
   return splitState.active && paneShowing(sessionId) !== null;
+}
+
+export function closeSessionSurfaces(sessionId: string): boolean {
+  if (!sessionId) return false;
+  if (splitState.active && dockApi) {
+    const showing = dockApi.panels.filter((p) => panelParams(p).sessionId === sessionId);
+    if (showing.length) {
+      closePanels(showing);
+      return true;
+    }
+    return false;
+  }
+  const conv = mainConversation();
+  if (conv.state.sessionId !== sessionId) return false;
+  conv.newChat();
+  return true;
 }
 
 export function splitInterceptsOpen(s: CoreSession): boolean {
@@ -514,14 +611,23 @@ function drawToast(): void {
 export function beginSessionDrag(s: CoreSession): void {
   if (!s.id) return;
   sessionDrag = { sessionId: s.id, threadRef: s.threadRef };
-  if (splitState.active) syncAllZones();
+  if (splitState.active) refreshSessionDrag();
   else showSingleDropOverlay();
+}
+
+function refreshSessionDrag(): void {
+  const drag = sessionDrag;
+  if (!drag) return;
+  const addsTab = !paneShowing(drag.sessionId) && (dockApi?.panels.length ?? 0) < MAX_PANES;
+  canvasHost?.classList.toggle("session-dragging", addsTab);
+  syncAllZones();
 }
 
 export function endSessionDrag(): void {
   if (!sessionDrag) return;
   sessionDrag = null;
   hideSingleDropOverlay();
+  canvasHost?.classList.remove("session-dragging");
   if (splitState.active) syncAllZones();
 }
 
@@ -556,12 +662,31 @@ function zoneTpl(edge: DropEdge, label: string, onDrop: () => void): TemplateRes
   </div>`;
 }
 
-function zonesTpl(act: (edge: DropEdge) => () => void): TemplateResult {
+function splitZonesTpl(act: (edge: DropEdge) => () => void): TemplateResult {
   return html`
-    ${zoneTpl("center", "Open here", act("center"))} ${zoneTpl("left", "Split left", act("left"))}
-    ${zoneTpl("right", "Split right", act("right"))} ${zoneTpl("top", "Split up", act("top"))}
-    ${zoneTpl("bottom", "Split down", act("bottom"))}
+    ${zoneTpl("left", "Split left", act("left"))} ${zoneTpl("right", "Split right", act("right"))}
+    ${zoneTpl("top", "Split up", act("top"))} ${zoneTpl("bottom", "Split down", act("bottom"))}
   `;
+}
+
+function zonesTpl(act: (edge: DropEdge) => () => void): TemplateResult {
+  return html`${zoneTpl("center", "Open here", act("center"))} ${splitZonesTpl(act)}`;
+}
+
+function paneZonesTpl(paneId: string): TemplateResult | typeof nothing {
+  const drag = sessionDrag;
+  if (!drag || !dockApi) return nothing;
+  const act = paneZoneAct(paneId);
+  const showing = paneShowing(drag.sessionId);
+  if (showing)
+    return showing.id === paneId
+      ? zoneTpl("center", "Show here", () => {
+          endSessionDrag();
+          focusPane(paneId);
+        })
+      : nothing;
+  const canSplit = dockApi.panels.length < MAX_PANES && dockApi.groups.length < MAX_TILES;
+  return html`${zoneTpl("center", "Open here", act("center"))} ${canSplit ? splitZonesTpl(act) : nothing}`;
 }
 
 function paneZoneAct(paneId: string): (edge: DropEdge) => () => void {
@@ -603,9 +728,12 @@ function showSingleDropOverlay(): void {
     }
     activateCanvas(current, { sessionId: drag.sessionId, threadRef: drag.threadRef }, edge);
   };
+  const drag = sessionDrag;
+  const splittable =
+    Boolean(drag) && mainConversation().state.sessionId !== drag?.sessionId && currentChatParams() !== null;
   singleOverlay = document.createElement("div");
   singleOverlay.className = "split-zones split-zones-single";
-  render(zonesTpl(act), singleOverlay);
+  render(splittable ? zonesTpl(act) : zoneTpl("center", "Open here", act("center")), singleOverlay);
   appState.mainEl.appendChild(singleOverlay);
 }
 
@@ -622,7 +750,10 @@ export function drawCanvas(): void {
 
 function computeHeaderSignature(): string {
   return (dockApi?.panels ?? [])
-    .map((p) => `${p.id}|${paneTitle(p)}|${paneIsWorking(p)}|${paneAwaitsInput(p)}|${paneBackground(p)?.label ?? ""}`)
+    .map(
+      (p) =>
+        `${p.id}|${paneCrumb(p) ?? ""}|${paneTitle(p)}|${paneIsWorking(p)}|${paneAwaitsInput(p)}|${paneBackground(p)?.label ?? ""}`,
+    )
     .join("~");
 }
 
@@ -648,6 +779,41 @@ function paneTitle(panel: IDockviewPanel): string {
   if (session) return sessionTitle(session);
   if (panelParams(panel).sessionId) return t("Conversation");
   return t("New session");
+}
+
+function paneScopeId(panel: IDockviewPanel): string | null {
+  return paneSession(panel)?.scopeId || panelParams(panel).scopeId || null;
+}
+
+function paneCrumb(panel: IDockviewPanel): string | null {
+  const scope = paneScopeId(panel);
+  if (!scope || scope.startsWith("personal:")) return null;
+  const context = contextsState.list.find((c) => c.scopeId === scope);
+  return scopeTitle(scope, context?.name ?? null);
+}
+
+const PANE_TOOLS: { tool: SessionTool; glyph: Parameters<typeof icon>[0]; label: string }[] = [
+  { tool: "crons", glyph: Clock3, label: "Crons" },
+  { tool: "files", glyph: Files, label: "Files" },
+  { tool: "apps", glyph: Rocket, label: "Apps" },
+  { tool: "skills", glyph: Box, label: "Skills" },
+  { tool: "memory", glyph: Brain, label: "Memory" },
+  { tool: "keychain", glyph: KeyRound, label: "Your keychain" },
+];
+
+function openPaneTool(panel: IDockviewPanel, tool: SessionTool): void {
+  const params = panelParams(panel);
+  const session = paneSession(panel);
+  const scope = paneScopeId(panel) ?? "";
+  setScopedSession({
+    scopeId: scope,
+    sessionId: params.sessionId ?? session?.id ?? null,
+    threadRef: params.threadRef ?? null,
+    title: session?.title?.trim() || "New chat",
+    crumb: paneCrumb(panel),
+  });
+  if (scope && (tool === "crons" || tool === "files" || tool === "apps")) contextsState.selected = scope;
+  switchView(tool === "apps" ? "deploys" : tool);
 }
 
 function paneIsWorking(panel: IDockviewPanel): boolean {
@@ -720,7 +886,13 @@ class PaneContent implements IContentRenderer {
     this.syncZones();
     p.api.onDidDimensionsChange(() => this.syncDensity());
     p.api.onDidVisibilityChange((e) => {
-      if (e.isVisible) void this.load();
+      if (!e.isVisible) return;
+      if (!this.loaded) {
+        void this.load();
+        return;
+      }
+      this.syncDensity();
+      this.conversation.drawActiveChat(undefined, { forceScroll: true });
     });
     if (p.api.isVisible) void this.load();
   }
@@ -776,7 +948,7 @@ class PaneContent implements IContentRenderer {
   }
 
   syncZones(): void {
-    render(sessionDrag ? zonesTpl(paneZoneAct(this.panelId)) : nothing, this.zonesEl);
+    render(sessionDrag ? paneZonesTpl(this.panelId) : nothing, this.zonesEl);
   }
 
   dispose(): void {
@@ -814,10 +986,11 @@ class PaneTab implements ITabRenderer {
     const panel = this.panel;
     if (!panel) return;
     const title = paneTitle(panel);
+    const crumb = paneCrumb(panel);
     const working = paneIsWorking(panel);
     const awaiting = paneAwaitsInput(panel);
     const background = paneBackground(panel);
-    this.element.title = title;
+    this.element.title = crumb ? `${crumb} / ${title}` : title;
     render(
       html`
         ${working ? html`<span class="working-dot" ${ref(syncWorkingPulse)} title="Agent is working"></span>` : nothing}
@@ -831,8 +1004,13 @@ class PaneTab implements ITabRenderer {
                 @mouseleave=${(e: Event) => hideTooltip(e.currentTarget as Element)}
                 >${background.jobs > 0 ? icon(Cog, 11) : nothing}${
                   background.watches > 0 ? icon(Binoculars, 11) : nothing
-                }</span
+                }${background.crons > 0 ? icon(Clock3, 11) : nothing}</span
               >`
+            : nothing
+        }
+        ${
+          crumb
+            ? html`<span class="split-pane-crumb">${crumb}</span><span class="split-pane-crumb-sep">/</span>`
             : nothing
         }
         <span class="split-pane-title-text">${title}</span>
@@ -865,6 +1043,7 @@ class PaneTab implements ITabRenderer {
 class GroupActions implements IHeaderActionsRenderer {
   readonly element: HTMLElement;
   private props: IGroupHeaderProps | null = null;
+  private menuOpen = false;
 
   constructor() {
     this.element = document.createElement("span");
@@ -874,8 +1053,26 @@ class GroupActions implements IHeaderActionsRenderer {
   init(props: IGroupHeaderProps): void {
     this.props = props;
     groupActions.add(this);
+    document.addEventListener("click", this.onDocClick);
     this.draw();
   }
+
+  private readonly onDocClick = (e: Event): void => {
+    if (!this.menuOpen) return;
+    if (this.element.querySelector(".split-tools")?.contains(e.target as Node)) return;
+    this.menuOpen = false;
+    this.draw();
+  };
+
+  private readonly placeMenu = (el?: Element): void => {
+    if (!(el instanceof HTMLElement)) return;
+    const rect = this.element.querySelector(".split-tools-btn")?.getBoundingClientRect();
+    if (!rect) return;
+    el.style.position = "fixed";
+    el.style.top = `${rect.bottom + 6}px`;
+    el.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
+    el.style.left = "auto";
+  };
 
   draw(): void {
     const props = this.props;
@@ -885,6 +1082,46 @@ class GroupActions implements IHeaderActionsRenderer {
       return g?.activePanel ?? g?.panels[0] ?? null;
     };
     const maximized = props.api.isMaximized();
+    const runTool = (tool: SessionTool): void => {
+      this.menuOpen = false;
+      const p = activePanel();
+      this.draw();
+      if (p) openPaneTool(p, tool);
+    };
+    const menu = this.menuOpen
+      ? html`
+          <div
+            class="session-menu-popover split-tools-menu"
+            role="menu"
+            ${ref(this.placeMenu)}
+            @click=${(e: Event) => e.stopPropagation()}
+          >
+            ${PANE_TOOLS.map(
+              (tool) => html`
+                <button class="session-menu-option" type="button" role="menuitem" @click=${() => runTool(tool.tool)}>
+                  ${icon(tool.glyph, 15)}<span>${t(tool.label)}</span>
+                </button>
+              `,
+            )}
+            <div class="split-tools-menu-sep" role="separator"></div>
+            <button
+              class="session-menu-option"
+              type="button"
+              role="menuitem"
+              @click=${() => {
+                this.menuOpen = false;
+                this.draw();
+                if (maximized) props.api.exitMaximized();
+                else props.api.maximize();
+              }}
+            >
+              ${icon(maximized ? Shrink : Expand, 15)}<span
+                >${t(maximized ? "Restore to grid (Esc)" : "Focus over the grid")}</span
+              >
+            </button>
+          </div>
+        `
+      : nothing;
     const buttons: { label: string; glyph: TemplateResult | SVGElement; cls?: string; run: () => void }[] = [
       {
         label: "Split this pane with a new session",
@@ -893,11 +1130,6 @@ class GroupActions implements IHeaderActionsRenderer {
           const p = activePanel();
           if (p) paneSplitWithBlank(p);
         },
-      },
-      {
-        label: maximized ? "Restore to grid (Esc)" : "Focus this pane over the grid",
-        glyph: icon(maximized ? Shrink : Expand, 14),
-        run: () => (maximized ? props.api.exitMaximized() : props.api.maximize()),
       },
       {
         label: "Open full screen",
@@ -918,23 +1150,41 @@ class GroupActions implements IHeaderActionsRenderer {
       },
     ];
     render(
-      html`${buttons.map(
-        (b) =>
-          html`<button
-            class="icon-btn subtle${b.cls ?? ""}"
+      html`<span class="split-tools">
+          <button
+            class="icon-btn subtle split-tools-btn ${this.menuOpen ? "active" : ""}"
             type="button"
-            title=${t(b.label)}
-            aria-label=${t(b.label)}
-            @click=${b.run}
+            title=${t("Tools")}
+            aria-label=${t("Tools")}
+            aria-haspopup="menu"
+            aria-expanded=${this.menuOpen ? "true" : "false"}
+            @click=${() => {
+              this.menuOpen = !this.menuOpen;
+              this.draw();
+            }}
           >
-            ${b.glyph}
-          </button>`,
-      )}`,
+            ${icon(MoreHorizontal, 15)}
+          </button>
+          ${menu}
+        </span>
+        ${buttons.map(
+          (b) =>
+            html`<button
+              class="icon-btn subtle${b.cls ?? ""}"
+              type="button"
+              title=${t(b.label)}
+              aria-label=${t(b.label)}
+              @click=${b.run}
+            >
+              ${b.glyph}
+            </button>`,
+        )}`,
       this.element,
     );
   }
 
   dispose(): void {
+    document.removeEventListener("click", this.onDocClick);
     groupActions.delete(this);
   }
 }

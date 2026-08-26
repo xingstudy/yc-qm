@@ -73,6 +73,7 @@ export interface DeployService {
   renameDeployment(id: string, name: string): Promise<Deployment>;
   setDeploymentDisplayName(id: string, displayName: string): Promise<Deployment>;
   reachDeployment(idOrName: string, principalId: string, opts?: ReachOptions): Promise<Reach>;
+  deploymentLogs(idOrName: string, opts: { tailLines: number }): Promise<string | null>;
   gitRepoPath(idOrName: string): Promise<string | null>;
   pushGit<T>(id: string, runReceivePack: () => Promise<{ result: T; ok: boolean }>): Promise<T>;
   reapIdleDeployments(ttlMs: number, now?: number): Promise<number>;
@@ -128,6 +129,17 @@ function validateDisplayName(displayName: string): void {
   if (displayName.length > DISPLAY_NAME_MAX) throw new Error(`display name too long (max ${DISPLAY_NAME_MAX} chars)`);
 }
 
+function deploymentEntrypoint(d: Deployment | null): string | undefined {
+  if (!d) return undefined;
+  return d.versions.find((v) => v.version === d.currentVersion)?.entrypoint || undefined;
+}
+
+function requiredEntrypoint(input: string | undefined, d: Deployment | null): string {
+  const entrypoint = input ?? deploymentEntrypoint(d);
+  if (!entrypoint) throw new Error('publish requires an entrypoint, e.g. "node server.js"');
+  return entrypoint;
+}
+
 export function createDeployService(deps: DeployServiceDeps): DeployService {
   const leaderLease = deps.leaderLease ?? createNoopLeaderLease();
   const advisoryLock = deps.advisoryLock ?? createNoopAdvisoryLock();
@@ -168,26 +180,26 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     await deps.deployStore.setAppliedVersion(id, version);
   };
 
-  const liveEndpoint = async (d: Deployment): Promise<DeployEndpoint> => {
-    if (!deps.provider.resolveEndpoint || d.endpoint == null) return d.endpoint!;
-    const version = d.versions.find((v) => v.version === d.currentVersion);
-    if (!version) return d.endpoint;
-    const resolved = await deps.provider.resolveEndpoint(d, version);
-    if (resolved) {
-      if (!endpointsEqual(resolved, d.endpoint)) await deps.deployStore.setEndpoint(d.id, resolved);
-      return resolved;
-    }
+  const liveEndpoint = async (d: Deployment): Promise<DeployEndpoint | null> => {
     return withDeployLock(d.id, async () => {
-      const cur = (await deps.deployStore.get(d.id)) ?? d;
-      const v = cur.versions.find((x) => x.version === cur.currentVersion) ?? version;
-      const again = await deps.provider.resolveEndpoint!(cur, v);
-      if (again) {
-        if (!endpointsEqual(again, cur.endpoint)) await deps.deployStore.setEndpoint(cur.id, again);
-        return again;
+      const cur = await deps.deployStore.get(d.id);
+      if (!cur || cur.status !== "running" || cur.endpoint == null) return null;
+      const v = cur.versions.find((x) => x.version === cur.currentVersion);
+      if (!v) return null;
+      let endpoint = cur.endpoint;
+      if (deps.provider.resolveEndpoint) {
+        const resolved = await deps.provider.resolveEndpoint(cur, v);
+        if (resolved) {
+          if (!endpointsEqual(resolved, cur.endpoint)) await deps.deployStore.setEndpoint(cur.id, resolved);
+          endpoint = resolved;
+        } else {
+          const fresh = await applyVersion(cur.id, v, cur.appliedVersion ?? cur.currentVersion);
+          await markVersionRunning(cur.id, v.version, fresh);
+          endpoint = fresh;
+        }
       }
-      const fresh = await applyVersion(cur.id, v, cur.appliedVersion ?? cur.currentVersion);
-      await markVersionRunning(cur.id, v.version, fresh);
-      return fresh;
+      await deps.deployStore.touch(cur.id, Date.now());
+      return endpoint;
     });
   };
 
@@ -484,8 +496,15 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       if (!d || d.status !== "running" || d.endpoint == null) return { status: "not_found" };
       if (!opts.bypassAcl && !(await reachAllowed(d, principalId))) return { status: "denied" };
       const endpoint = await liveEndpoint(d);
-      await deps.deployStore.touch(d.id, Date.now());
+      if (!endpoint) return { status: "not_found" };
       return { status: "ok", endpoint };
+    },
+
+    async deploymentLogs(idOrName, opts): Promise<string | null> {
+      if (!deps.provider.logs) return null;
+      const d = (await deps.deployStore.get(idOrName)) ?? (await deps.deployStore.getByName(idOrName));
+      if (!d || d.status !== "running") return null;
+      return deps.provider.logs(d, opts);
     },
 
     async gitRepoPath(idOrName) {
@@ -572,9 +591,10 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
           resource: existing.id,
           scopeLabel: existing.ownerScopeId,
         });
-        if (input.entrypoint && input.files) {
+        if ((input.entrypoint !== undefined || input.files !== undefined) && input.files) {
+          const entrypoint = requiredEntrypoint(input.entrypoint, existing);
           await this.redeploy(existing.id, {
-            entrypoint: input.entrypoint,
+            entrypoint,
             files: input.files,
             ...(input.homeFiles ? { homeFiles: input.homeFiles } : {}),
             ...(input.env ? { env: input.env } : {}),
@@ -597,7 +617,6 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         return (await deps.deployStore.get(existing.id))!;
       }
 
-      if (!input.entrypoint) throw new Error("publish requires an entrypoint");
       const files = input.files ?? [];
       const existing = input.name !== undefined ? await deps.deployStore.getByName(input.name) : null;
       let d: Deployment;
@@ -609,18 +628,20 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         ) {
           throw new Error(`deployment name taken: ${input.name}`);
         }
+        const entrypoint = requiredEntrypoint(input.entrypoint, existing);
         d = await this.redeploy(existing.id, {
-          entrypoint: input.entrypoint,
+          entrypoint,
           files,
           ...(input.homeFiles ? { homeFiles: input.homeFiles } : {}),
           ...(input.env ? { env: input.env } : {}),
         });
         isCreate = false;
       } else {
+        const entrypoint = requiredEntrypoint(input.entrypoint, existing);
         d = await this.deploy({
           ownerScopeId,
           createdBy,
-          entrypoint: input.entrypoint,
+          entrypoint,
           files,
           ...(input.homeFiles ? { homeFiles: input.homeFiles } : {}),
           ...(input.name !== undefined ? { name: input.name } : {}),
