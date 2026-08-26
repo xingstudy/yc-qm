@@ -8,18 +8,18 @@ emailed to an allowed address.
 
 ## Endpoints
 
-| Route                                   | Reached by                                  | Notes                                                                          |
-| --------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------ |
-| `GET /authorize`                        | browser, via the portal at `/idp/authorize` | validates the request and renders the email form                               |
-| `POST /authorize`                       | browser, via the portal                     | validates the address, then emails a link out of band                          |
-| `GET /verify`                           | browser, via the portal at `/idp/verify`    | consumes the link and redirects to the portal's `/auth/callback` with a code   |
-| `GET /wecom/login`                      | browser, via the portal at `/idp/wecom`     | starts optional WeCom QR sign-in                                               |
-| `GET /wecom/callback`                   | WeCom, via the portal at `/idp/wecom`       | resolves the scanned member and redirects to the portal with a code            |
-| `POST /token`                           | portal, over the private network            | HTTP Basic client auth, authorization-code grant, PKCE S256                    |
-| `GET /userinfo`                         | portal, over the private network            | Bearer access token, verified statelessly                                      |
-| `GET /.well-known/jwks.json`            | portal, over the private network            | the ES256 public key                                                           |
-| `GET /.well-known/openid-configuration` | operators                                   | discovery, for debugging                                                       |
-| `GET /healthz`                          | the platform                                | liveness                                                                       |
+| Route                                   | Reached by                                  | Notes                                                                        |
+| --------------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------- |
+| `GET /authorize`                        | browser, via the portal at `/idp/authorize` | validates the request and renders the email form                             |
+| `POST /authorize`                       | browser, via the portal                     | validates the address, then emails a link out of band                        |
+| `GET /verify`                           | browser, via the portal at `/idp/verify`    | consumes the link and redirects to the portal's `/auth/callback` with a code |
+| `GET /wecom/login`                      | browser, via the portal at `/idp/wecom`     | starts optional WeCom QR sign-in                                             |
+| `GET /wecom/callback`                   | WeCom, via the portal at `/idp/wecom`       | resolves the scanned member and redirects to the portal with a code          |
+| `POST /token`                           | portal, over the private network            | HTTP Basic client auth, authorization-code grant, PKCE S256                  |
+| `GET /userinfo`                         | portal, over the private network            | Bearer access token, verified statelessly                                    |
+| `GET /.well-known/jwks.json`            | portal, over the private network            | the ES256 public key                                                         |
+| `GET /.well-known/openid-configuration` | operators                                   | discovery, for debugging                                                     |
+| `GET /healthz`                          | the platform                                | liveness                                                                     |
 
 The broker is never published directly. The portal republishes only the three
 browser-facing routes under `AUTH_BROKER_PREFIX` (`/idp` by default), which is

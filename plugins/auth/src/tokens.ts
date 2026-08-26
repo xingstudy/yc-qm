@@ -199,12 +199,9 @@ export class TokenSigner {
   async openAccess(token: string, nowMs?: number): Promise<AccessClaims | null> {
     const payload = await this.open("access", token, nowMs);
     if (!payload || typeof payload.sub !== "string") return null;
-    const principal =
-      typeof payload.pr === "string" && payload.pr
-        ? payload.pr
-        : typeof payload.em === "string" && payload.em
-          ? payload.em
-          : "";
+    const claimedPrincipal = typeof payload.pr === "string" && payload.pr ? payload.pr : "";
+    const fallbackEmail = typeof payload.em === "string" && payload.em ? payload.em : "";
+    const principal = claimedPrincipal || fallbackEmail;
     if (!principal) return null;
     const email = typeof payload.em === "string" && payload.em ? payload.em : undefined;
     const name = typeof payload.nm === "string" && payload.nm ? payload.nm : undefined;

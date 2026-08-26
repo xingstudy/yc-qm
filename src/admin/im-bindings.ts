@@ -15,6 +15,13 @@ export interface AdminImBinding {
 const PROVIDERS = new Set<AdminImProviderId>(["wechat", "feishu", "work-wechat", "qq", "dingtalk"]);
 const IM_BINDINGS_SUFFIX = "#im-bindings";
 
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string") return value;
+  }
+  return null;
+}
+
 function hasResource(rawResources: Record<string, unknown>, provider: AdminImProviderId): boolean {
   const raw = rawResources[provider];
   if (typeof raw !== "object" || raw === null) return false;
@@ -56,18 +63,8 @@ export function parseAdminImBindings(value: unknown): AdminImBinding[] {
       status: binding.status,
       botName: typeof binding.botName === "string" ? binding.botName : null,
       externalDisplayName: typeof binding.externalDisplayName === "string" ? binding.externalDisplayName : null,
-      externalTenantId:
-        typeof binding.externalTenantId === "string"
-          ? binding.externalTenantId
-          : typeof resource.externalTenantId === "string"
-            ? resource.externalTenantId
-            : null,
-      externalTenantName:
-        typeof binding.externalTenantName === "string"
-          ? binding.externalTenantName
-          : typeof resource.externalTenantName === "string"
-            ? resource.externalTenantName
-            : null,
+      externalTenantId: firstString(binding.externalTenantId, resource.externalTenantId),
+      externalTenantName: firstString(binding.externalTenantName, resource.externalTenantName),
       connectedAt: typeof binding.connectedAt === "number" ? binding.connectedAt : null,
     });
   }

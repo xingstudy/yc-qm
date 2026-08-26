@@ -45,6 +45,10 @@ function normalizeEmail(raw: string): string {
   return raw.trim().toLowerCase();
 }
 
+function nonBlankString(value: unknown): string {
+  return typeof value === "string" && value.trim() ? value : "";
+}
+
 function emailIdentity(email: string): AuthIdentity {
   return { principal: email, email, emailVerified: true };
 }
@@ -78,31 +82,16 @@ async function weComIdentityByCode(cfg: AuthConfig, code: string, fetchImpl: typ
   identityUrl.searchParams.set("access_token", accessToken);
   identityUrl.searchParams.set("code", code);
   const identityData = await weComJson(fetchImpl, identityUrl, "WeCom identity lookup");
-  const userId =
-    typeof identityData.UserId === "string"
-      ? identityData.UserId
-      : typeof identityData.userid === "string"
-        ? identityData.userid
-        : "";
+  const userId = nonBlankString(identityData.UserId) || nonBlankString(identityData.userid);
   if (!userId) throw new Error("WeCom identity lookup returned no user id");
 
   const userUrl = new URL(`${WECOM_API_BASE_URL}/cgi-bin/user/get`);
   userUrl.searchParams.set("access_token", accessToken);
   userUrl.searchParams.set("userid", userId);
   const userData = await weComJson(fetchImpl, userUrl, "WeCom user lookup");
-  const rawEmail =
-    typeof userData.email === "string" && userData.email.trim()
-      ? userData.email
-      : typeof userData.biz_mail === "string"
-        ? userData.biz_mail
-        : "";
+  const rawEmail = nonBlankString(userData.email) || nonBlankString(userData.biz_mail);
   const email = normalizeEmail(rawEmail);
-  const rawName =
-    typeof userData.name === "string" && userData.name.trim()
-      ? userData.name
-      : typeof userData.alias === "string" && userData.alias.trim()
-        ? userData.alias
-        : userId;
+  const rawName = nonBlankString(userData.name) || nonBlankString(userData.alias) || userId;
   const name = rawName.trim().slice(0, 200);
   if (validEmail(email)) return { principal: email, email, emailVerified: true, ...(name ? { name } : {}) };
   return {
@@ -406,15 +395,11 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
     const state = params.get("state") ?? "";
     const request = await signer.openRequest(state, now());
     if (!request) {
-      return problem(
-        res,
-        400,
-        "This WeCom sign-in expired",
-        "Start again from the page you were trying to reach.",
-      );
+      return problem(res, 400, "This WeCom sign-in expired", "Start again from the page you were trying to reach.");
     }
     const weComCode = params.get("code") ?? "";
-    if (!weComCode) return problem(res, 400, "WeCom sign-in was cancelled", "Start again when you're ready to sign in.");
+    if (!weComCode)
+      return problem(res, 400, "WeCom sign-in was cancelled", "Start again when you're ready to sign in.");
     let identity: AuthIdentity;
     try {
       identity = await weComIdentityByCode(cfg, weComCode, fetchImpl);

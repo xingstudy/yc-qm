@@ -1077,16 +1077,16 @@ test("WeCom remembers an opened direct chat and sends Bot locator messages", asy
 
   await waitFor(() => {
     const stored = uiState.get(`${user}#im-bindings`)?.value as
-      {
-        resources?: {
-          "work-wechat"?: {
-            externalUserId?: string;
-            externalChatId?: string;
-            externalTenantId?: string;
-            externalTenantName?: string;
+      | {
+          resources?: {
+            "work-wechat"?: {
+              externalUserId?: string;
+              externalChatId?: string;
+              externalTenantId?: string;
+              externalTenantName?: string;
+            };
           };
-        };
-      }
+        }
       | undefined;
     return stored?.resources?.["work-wechat"]?.externalUserId === "wecom-locate-user-id";
   });

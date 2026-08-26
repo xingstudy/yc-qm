@@ -16,7 +16,7 @@ interface SmtpSettings {
   tls: SmtpTlsMode;
 }
 
-export interface WeComLoginConfig {
+interface WeComLoginConfig {
   corpId: string;
   agentId: string;
   secret: string;

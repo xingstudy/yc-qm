@@ -76,7 +76,9 @@ test("the footer user pill opens the IM channel popover", () => {
   assert.match(shell, /const started = await startRequest/);
   assert.match(shell, /else \{\s+const authorization = WecomAIBotSDK\.openBotInfoAuthWindow/);
   assert.match(shell, /const authorization = WecomAIBotSDK\.openBotInfoAuthWindow/);
-  assert.ok(shell.indexOf("const authWindow = openWeComAuthWindow()") < shell.indexOf("const started = await startRequest"));
+  assert.ok(
+    shell.indexOf("const authWindow = openWeComAuthWindow()") < shell.indexOf("const started = await startRequest"),
+  );
   assert.ok(shell.indexOf("const started = await startRequest") < shell.indexOf("WecomAIBotSDK.openBotInfoAuthWindow"));
   assert.doesNotMatch(shell, /\/api\/im-bindings\/work-wechat\/preflight/);
   assert.doesNotMatch(shell, /preflightState/);

@@ -188,10 +188,9 @@ test("WeCom QR sign-in issues the same OIDC code using the member email", async 
   assert.equal(qr.searchParams.get("redirect_uri"), `${ISSUER}/wecom/callback`);
   assert.equal(qr.searchParams.get("state"), request);
 
-  const callback = await fetch(
-    `${h.base}/wecom/callback?code=wecom-code&state=${encodeURIComponent(request)}`,
-    { redirect: "manual" },
-  );
+  const callback = await fetch(`${h.base}/wecom/callback?code=wecom-code&state=${encodeURIComponent(request)}`, {
+    redirect: "manual",
+  });
   assert.equal(callback.status, 302, await callback.text());
   const location = new URL(callback.headers.get("location")!);
   assert.equal(`${location.origin}${location.pathname}`, REDIRECT_URI);
@@ -245,10 +244,9 @@ test("WeCom QR sign-in works when the member has no email", async (t) => {
   const page = await fetch(`${h.base}/authorize?${query}`);
   assert.equal(page.status, 200);
   const request = hiddenRequestToken(await page.text());
-  const callback = await fetch(
-    `${h.base}/wecom/callback?code=wecom-code&state=${encodeURIComponent(request)}`,
-    { redirect: "manual" },
-  );
+  const callback = await fetch(`${h.base}/wecom/callback?code=wecom-code&state=${encodeURIComponent(request)}`, {
+    redirect: "manual",
+  });
   assert.equal(callback.status, 302, await callback.text());
   const location = new URL(callback.headers.get("location")!);
   assert.equal(`${location.origin}${location.pathname}`, REDIRECT_URI);
