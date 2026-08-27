@@ -695,6 +695,28 @@ test("concurrent WeChat status polling shares one provider request and skips unc
   assert.equal(uiState.get(`${user}#im-bindings`)?.updatedAt, before);
 });
 
+test("expired WeChat update sessions are forgotten before the bridge polls again", async () => {
+  const user = "wechat-expired-session";
+  await startWechat(user);
+  await confirmWechat(user, "wx-bot-expired", "wx-user-expired");
+  const turnsBefore = coreTurns.length;
+  weixinUpdates.push({ ret: -14, errmsg: "session timeout" });
+
+  await pollWeixinAccount(user, "wx-bot-expired");
+
+  const stored = uiState.get(`${user}#im-bindings`)?.value as
+    { bindings?: { wechat?: unknown }; resources?: { wechat?: unknown } } | undefined;
+  assert.equal(coreTurns.length, turnsBefore);
+  assert.equal(stored?.bindings?.wechat, undefined);
+  assert.equal(stored?.resources?.wechat, undefined);
+
+  const restart = await startWechat(user);
+  const body = (await restart.json()) as { binding: { status: string; resourceId?: string } };
+  assert.equal(restart.status, 200);
+  assert.equal(body.binding.status, "pending");
+  assert.equal(body.binding.resourceId, undefined);
+});
+
 test("WeChat bridge forwards messages and sends deliveries through iLink", async () => {
   coreTurns.length = 0;
   coreRunResponses.set("run-1", [

@@ -2990,12 +2990,18 @@ async function startImBinding(user: string, provider: ImProviderId): Promise<ImB
   throw new Error("不支持的 IM 平台");
 }
 
-async function removeImBinding(user: string, provider: ImProviderId, forgetResource = false): Promise<boolean> {
+async function removeImBinding(
+  user: string,
+  provider: ImProviderId,
+  forgetResource = false,
+  expectedResourceId?: string,
+): Promise<boolean> {
   const state = await readImBindings(user);
   const binding = state.bindings[provider];
   const resource = state.resources[provider];
   if (!binding && !(forgetResource && resource)) return false;
   const resourceId = resource?.resourceId;
+  if (expectedResourceId && resourceId !== expectedResourceId) return false;
   const ownerReservation =
     forgetResource && resourceId ? await reserveImResourceOwner(user, provider, resourceId, true) : undefined;
   delete state.bindings[provider];
@@ -3757,6 +3763,13 @@ export async function pollWeixinAccount(user: string, expectedResourceId: string
     WEIXIN_API_TIMEOUT_MS,
   );
   if ((response.ret ?? 0) !== 0 || (response.errcode ?? 0) !== 0) {
+    const code = (response.errcode ?? 0) !== 0 ? response.errcode : response.ret;
+    if (code === -14) {
+      if (!requireLease || ownsImBridge(user, "wechat", expectedResourceId)) {
+        await removeImBinding(user, "wechat", true, expectedResourceId);
+      }
+      return;
+    }
     throw new Error(`Weixin getupdates failed: ${response.errcode ?? response.ret} ${response.errmsg ?? ""}`);
   }
   if (requireLease && !ownsImBridge(user, "wechat", expectedResourceId)) return;
