@@ -90,17 +90,23 @@ export function createPostgresDeliveryStore(connectionString: string): DeliveryS
     },
     async claimPending(type, ttlMs, targetPrefix) {
       const rows = await q(
-        `UPDATE deliveries
-            SET claim_expires_at = (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT + $3
-          WHERE id IN (
+        `WITH now_ms AS (
+            SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT AS value
+          ), claimable AS (
             SELECT id FROM deliveries
+             CROSS JOIN now_ms
              WHERE delivered_at IS NULL AND NOT shadow AND destination->>'type' = $1
                AND ($2::text IS NULL OR left(destination->>'target', length($2)) = $2)
-               AND (claim_expires_at IS NULL
-                 OR claim_expires_at <= (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT)
+               AND (claim_expires_at IS NULL OR claim_expires_at <= now_ms.value)
              ORDER BY created_at
                FOR UPDATE SKIP LOCKED
           )
+          UPDATE deliveries
+             SET claim_expires_at = now_ms.value + $3
+            FROM claimable, now_ms
+           WHERE deliveries.id = claimable.id
+             AND delivered_at IS NULL
+             AND (claim_expires_at IS NULL OR claim_expires_at <= now_ms.value)
           RETURNING *`,
         [type, targetPrefix ?? null, ttlMs],
       );
