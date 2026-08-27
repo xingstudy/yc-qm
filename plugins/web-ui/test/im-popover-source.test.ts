@@ -27,10 +27,7 @@ test("the footer user pill opens the IM channel popover", () => {
   assert.match(shell, /image: wecomLogo/);
   assert.match(shell, /id: "qq",\s+label: "QQ"/);
   assert.match(shell, /id: "dingtalk",\s+label: "DingTalk"/);
-  assert.match(
-    shell,
-    /const VISIBLE_IM_PROVIDER_OPTIONS = IM_PROVIDER_OPTIONS\.filter\(\(option\) => option\.id === "work-wechat"\)/,
-  );
+  assert.match(shell, /const VISIBLE_IM_PROVIDER_OPTIONS = IM_PROVIDER_OPTIONS;/);
   assert.match(shell, /<svg viewBox=\$\{option\.viewBox\}/);
   assert.match(shell, /=> svg`<path d=\$\{path\}/);
   assert.doesNotMatch(imLogoSource, /icon\(MessageSquare/);
