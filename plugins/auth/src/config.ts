@@ -20,6 +20,7 @@ interface WeComLoginConfig {
   corpId: string;
   agentId: string;
   secret: string;
+  redirectUri: string;
 }
 
 export interface AuthConfig {
@@ -89,6 +90,7 @@ function parseJwk(raw: string | undefined): Record<string, unknown> | null {
 
 export function readConfig(env: NodeJS.ProcessEnv): AuthConfig {
   const issuer = (env.AUTH_ISSUER ?? `http://localhost:${env.PORT ?? 8099}`).replace(/\/$/, "");
+  const wecomRedirectUri = env.AUTH_WECOM_REDIRECT_URI?.trim() || `${issuer}/wecom/callback`;
   const publicPath = issuerPath(issuer);
   const transport: EmailTransportKind = env.AUTH_EMAIL_TRANSPORT?.trim() === "smtp" ? "smtp" : "resend";
   return {
@@ -125,6 +127,7 @@ export function readConfig(env: NodeJS.ProcessEnv): AuthConfig {
       corpId: env.AUTH_WECOM_CORP_ID?.trim() ?? "",
       agentId: env.AUTH_WECOM_AGENT_ID?.trim() ?? "",
       secret: env.AUTH_WECOM_SECRET?.trim() ?? "",
+      redirectUri: wecomRedirectUri,
     },
   };
 }
@@ -246,6 +249,7 @@ export function bootProblems(cfg: AuthConfig, isProd: boolean): string[] {
     if (isProductionPlaceholder(cfg.wecomLogin.corpId)) problems.push("AUTH_WECOM_CORP_ID is required");
     if (isProductionPlaceholder(cfg.wecomLogin.agentId)) problems.push("AUTH_WECOM_AGENT_ID is required");
     if (isProductionPlaceholder(cfg.wecomLogin.secret)) problems.push("AUTH_WECOM_SECRET is required");
+    push(httpsUrlProblem("AUTH_WECOM_REDIRECT_URI", cfg.wecomLogin.redirectUri, isProd));
   }
   for (const [name, limit] of [
     ["AUTH_SEND_LIMIT_PER_EMAIL", cfg.sendLimitPerEmail],

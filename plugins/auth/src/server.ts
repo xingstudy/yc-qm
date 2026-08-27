@@ -223,7 +223,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
     const u = new URL(WECOM_QRCONNECT_URL);
     u.searchParams.set("appid", cfg.wecomLogin.corpId);
     u.searchParams.set("agentid", cfg.wecomLogin.agentId);
-    u.searchParams.set("redirect_uri", `${cfg.issuer}/wecom/callback`);
+    u.searchParams.set("redirect_uri", cfg.wecomLogin.redirectUri);
     u.searchParams.set("state", state);
     return u.toString();
   };

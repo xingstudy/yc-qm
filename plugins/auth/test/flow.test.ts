@@ -147,6 +147,7 @@ test("WeCom QR sign-in issues the same OIDC code using the member email", async 
       AUTH_WECOM_CORP_ID: "wwcorp",
       AUTH_WECOM_AGENT_ID: "1000002",
       AUTH_WECOM_SECRET: "wecom-secret",
+      AUTH_WECOM_REDIRECT_URI: "https://verified.example.test/corp/wecom",
     },
     fetchImpl: async (input) => {
       const url = new URL(input.toString());
@@ -185,7 +186,7 @@ test("WeCom QR sign-in issues the same OIDC code using the member email", async 
   assert.equal(`${qr.origin}${qr.pathname}`, "https://open.work.weixin.qq.com/wwopen/sso/qrConnect");
   assert.equal(qr.searchParams.get("appid"), "wwcorp");
   assert.equal(qr.searchParams.get("agentid"), "1000002");
-  assert.equal(qr.searchParams.get("redirect_uri"), `${ISSUER}/wecom/callback`);
+  assert.equal(qr.searchParams.get("redirect_uri"), "https://verified.example.test/corp/wecom");
   assert.equal(qr.searchParams.get("state"), request);
 
   const callback = await fetch(`${h.base}/wecom/callback?code=wecom-code&state=${encodeURIComponent(request)}`, {

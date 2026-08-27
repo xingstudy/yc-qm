@@ -185,6 +185,24 @@ test("the issuer path drives the public form action", () => {
   assert.equal(readConfig(testEnv({ AUTH_ISSUER: "https://agent.example.test" })).publicPath, "");
 });
 
+test("WeCom sign-in callback can use a public URL separate from the issuer", () => {
+  assert.equal(readConfig(testEnv()).wecomLogin.redirectUri, `${readConfig(testEnv()).issuer}/wecom/callback`);
+  assert.equal(
+    readConfig(testEnv({ AUTH_WECOM_REDIRECT_URI: "https://verified.example.test/corp/wecom" })).wecomLogin.redirectUri,
+    "https://verified.example.test/corp/wecom",
+  );
+  assert.match(
+    problemsFor({
+      AUTH_WECOM_CORP_ID: "wwcorp",
+      AUTH_WECOM_AGENT_ID: "1000002",
+      AUTH_WECOM_SECRET: "wecom-secret",
+      AUTH_WECOM_REDIRECT_URI: "http://verified.example.test/corp/wecom",
+      CORE_SIGNING_SECRET: "a".repeat(48),
+    }),
+    /AUTH_WECOM_REDIRECT_URI must be https/,
+  );
+});
+
 test("`node src/index.ts` refuses to boot on a placeholder configuration and serves /healthz once fixed", async () => {
   const base = {
     ...process.env,
