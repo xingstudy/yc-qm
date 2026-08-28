@@ -2007,10 +2007,10 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
     name: "share",
     label: "share",
     description:
-      "Share or move one of YOUR artifacts — a file, skill, deployment, or cron — to another context " +
+      "Share, unshare, or move one of YOUR artifacts — a file, skill, deployment, or cron — to another context " +
       "you belong to, the way a coworker forwards something they made. ONE verb for all four types.\n" +
       "Default (move omitted/false) SHARES it: adds a grant so the target can reach it, while it keeps " +
-      "living in its current home with you as its creator (Google-Docs style). move:true MOVES it: " +
+      "living in its current home with you as its creator (Google-Docs style). unshare:true removes that target's access. move:true MOVES it: " +
       "changes its home scope to the target (the creator is unchanged); supported for skills and deployments — moving a deployment to a teammate makes THEM the owner (ownership transfer; existing shares survive).\n" +
       '`toScope` is where it goes: "org" (everyone), a scope id (channel:<id>, team:<id>, personal:<id>), ' +
       "or a teammate's NAME (core resolves it — you can't author a raw address). Sharing/moving into a " +
@@ -2038,6 +2038,11 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
             "false (default) shares (adds a grant); true moves the home scope (skills only). A move never takes a permission.",
         }),
       ),
+      unshare: Type.Optional(
+        Type.Boolean({
+          description: "true removes the target's existing access. It cannot be combined with move:true.",
+        }),
+      ),
     }),
     async execute(callId, params) {
       const tc = ref.current;
@@ -2047,13 +2052,15 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
         type: params.type,
         id: params.id,
         ...(params.move ? { move: true } : {}),
+        ...(params.unshare ? { unshare: true } : {}),
       });
       const r = await tc.shareArtifact({
         type: params.type,
         id: params.id,
-        ...splitToScope(params.toScope),
+        ...splitToScope(params.toScope, params.type),
         ...(params.permission !== undefined ? { permission: params.permission } : {}),
         ...(params.move !== undefined ? { move: params.move } : {}),
+        ...(params.unshare !== undefined ? { unshare: params.unshare } : {}),
       });
       if (isUnavailable(r)) return unavailable(callId, "share");
       if (!r.ok) {
@@ -2062,7 +2069,9 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
           : "";
         return recordResult(callId, { tool: "share", error: r.code }, text(`[error] ${r.message}${cand}`), true);
       }
-      const did = r.verb === "move" ? "Moved" : "Shared";
+      let did = "Shared";
+      if (r.verb === "move") did = "Moved";
+      else if (r.verb === "unshare") did = "Unshared";
       return recordResult(
         callId,
         { tool: "share", verb: r.verb, type: r.type, id: r.id, target: r.target.scope },

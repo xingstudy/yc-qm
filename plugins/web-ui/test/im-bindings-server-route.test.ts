@@ -258,6 +258,14 @@ const core = createServer((req: IncomingMessage, res) => {
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify(body));
     };
+    if (req.method === "GET" && url.pathname === "/v1/internal/auth/session") {
+      send(200, { principalId: "alice", sessionVersion: 1 });
+      return;
+    }
+    if (req.method === "GET" && /^\/v1\/internal\/auth\/users\/[^/]+\/session-version$/.test(url.pathname)) {
+      send(200, { sessionVersion: 1 });
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/ilink/bot/get_bot_qrcode") {
       weixinQrRequests += 1;
       send(200, { qrcode: `qr-${weixinQrRequests}`, qrcode_img_content: `https://weixin.test/qr/${weixinQrRequests}` });

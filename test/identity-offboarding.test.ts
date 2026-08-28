@@ -20,9 +20,10 @@ describe("offboarding: directory sync and the /v1/principals routes drive deacti
   let server: Server;
   let base: string;
   let built: BuiltApp;
+  let nextTimestamp = Math.floor(Date.now() / 1000);
 
   const signedPost = (path: string) => {
-    const ts = Math.floor(Date.now() / 1000);
+    const ts = nextTimestamp++;
     return fetch(`${base}${path}`, {
       method: "POST",
       headers: {
@@ -41,7 +42,17 @@ describe("offboarding: directory sync and the /v1/principals routes drive deacti
       }),
     );
     await built.identity.hydrate();
-    server = createServer(built.app, { signingSecret: SECRET, identity: built.identity, auditLog: built.auditLog });
+    await built.organization.provisionPlayground("U-manual");
+    await built.organization.provisionPlayground("admin-alice");
+    await built.organization.provisionPlayground("admin-bob");
+    server = createServer(built.app, {
+      signingSecret: SECRET,
+      identity: built.identity,
+      organization: built.organization,
+      admin: built.admin,
+      advisoryLock: built.advisoryLock,
+      auditLog: built.auditLog,
+    });
     await new Promise<void>((resolve) => server.listen(0, resolve));
     base = `http://localhost:${(server.address() as AddressInfo).port}`;
   });
@@ -69,10 +80,16 @@ describe("offboarding: directory sync and the /v1/principals routes drive deacti
   });
 
   it("the deactivate/reactivate routes flip classification and are audited", async () => {
+    const initial = await built.organization.checkActive("U-manual");
+    assert.equal(initial?.status, "active");
     const off = await signedPost("/v1/principals/U-manual/deactivate");
     assert.equal(off.status, 200);
     assert.deepEqual(await off.json(), { ok: true, principalId: "U-manual", active: false });
     assert.equal(built.identity.classify("U-manual").type, "guest");
+    const suspended = await built.organization.checkActive("U-manual");
+    assert.equal(suspended?.status, "suspended");
+    assert.ok(suspended && initial && suspended.sessionVersion > initial.sessionVersion);
+    assert.equal((await signedPost("/v1/principals/U-manual/deactivate")).status, 200);
 
     await built.app.upsertDirectory([member("U-manual")]);
     assert.equal(built.identity.classify("U-manual").type, "guest");
@@ -81,8 +98,13 @@ describe("offboarding: directory sync and the /v1/principals routes drive deacti
     assert.equal(on.status, 200);
     assert.deepEqual(await on.json(), { ok: true, principalId: "U-manual", active: true });
     assert.equal(built.identity.classify("U-manual").type, "internal");
+    const active = await built.organization.checkActive("U-manual");
+    assert.equal(active?.status, "active");
+    assert.ok(active && suspended && active.sessionVersion > suspended.sessionVersion);
     assert.ok(
-      (await built.auditLog.events()).some((e) => e.action === "principal.reactivate" && e.principalId === "U-manual"),
+      (await built.auditLog.events()).some(
+        (e) => e.action === "org.user.status" && e.resource === "U-manual" && e.status === "active",
+      ),
     );
   });
 
@@ -96,5 +118,13 @@ describe("offboarding: directory sync and the /v1/principals routes drive deacti
       headers: { "content-type": "application/json", "x-agent-capability": cap },
     });
     assert.equal(res.status, 401);
+  });
+
+  it("the principals route cannot suspend the last active organization administrator", async () => {
+    assert.equal((await signedPost("/v1/principals/admin-bob/deactivate")).status, 200);
+    const blocked = await signedPost("/v1/principals/admin-alice/deactivate");
+    assert.equal(blocked.status, 409);
+    assert.deepEqual(await blocked.json(), { error: "last_active_admin" });
+    assert.equal((await built.organization.getUser("admin-alice"))?.status, "active");
   });
 });

@@ -321,8 +321,11 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     if (r.skill) visibleSkillByDir.set(safeSkillDirName(r.skill.manifest.name), r);
   }
   const ensureSkillTree = async (skillDir: string): Promise<void> => {
+    const authorized = await visibleSkillsForTurn();
     if (laidTrees.has(skillDir)) return;
-    const r = visibleSkillByDir.get(skillDir);
+    const r = authorized.find(
+      (candidate) => candidate.skill && safeSkillDirName(candidate.skill.manifest.name) === skillDir,
+    );
     if (!r) return;
     const start = Date.now();
     try {
@@ -567,6 +570,23 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     if (ownerCleanupError) throw ownerCleanupError;
   };
 
+  const destroyForAuthorizationChange = async (): Promise<void> => {
+    if (provisionInFlight) await provisionInFlight.catch(() => {});
+    provisionInFlight = null;
+    const handles = new Set<SandboxHandle>();
+    for (const handle of [box.handle, box.pending, scratchBox.handle, ownerAuthBox.handle, ownerAuthBox.pending]) {
+      if (handle) handles.add(handle);
+    }
+    for (const handle of reachBoxes.values()) handles.add(handle);
+    box.handle = null;
+    box.pending = null;
+    scratchBox.handle = null;
+    ownerAuthBox.handle = null;
+    ownerAuthBox.pending = null;
+    reachBoxes.clear();
+    await Promise.all([...handles].map((handle) => deps.sandbox.teardown(handle, { destroy: true })));
+  };
+
   return {
     box,
     scratchBox,
@@ -579,6 +599,7 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     ensureSkillTree,
     provisionForReach,
     reclaimBox,
+    destroyForAuthorizationChange,
     provisionPending: () => provisionInFlight !== null,
   };
 }

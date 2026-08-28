@@ -2811,6 +2811,16 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+      .identity-chip button {
+        width: auto;
+        min-width: 0;
+        padding: 0 2px;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1;
+      }
       .sc-semantics {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -4762,14 +4772,8 @@
                           ><input type="checkbox" id="sc-enabled" style="width: auto" checked /> Credential is
                           enabled</label
                         >
-                        <p class="hint sc-broker-only" style="margin-bottom: 6px">Principals with access</p>
-                        <p class="hint sc-env-only hidden" style="margin-bottom: 6px">
-                          Access: every all-internal conversation. Env delivery is not gated by grants — rooms with
-                          externals get nothing, everyone else gets the env var.
-                        </p>
-                        <label
-                          class="sc-broker-only"
-                          style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-bottom: 6px"
+                        <p class="hint" style="margin-bottom: 6px">Principals with access</p>
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-bottom: 6px"
                           ><input
                             type="radio"
                             name="sc-share"
@@ -4780,22 +4784,22 @@
                           />
                           Everyone in this organization</label
                         >
-                        <label
-                          class="sc-broker-only"
-                          style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-bottom: 6px"
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-bottom: 6px"
                           ><input type="radio" name="sc-share" value="people" style="width: auto" /> Only selected
-                          people or teams</label
+                          organization subjects</label
                         >
-                        <input
-                          type="text"
-                          id="sc-people"
-                          class="sc-broker-only"
-                          list="sc-people-options"
-                          placeholder="Principal IDs, comma-separated"
-                          style="width: 100%"
-                        />
+                        <div class="grant-form">
+                          <input
+                            type="text"
+                            id="sc-people"
+                            list="sc-people-options"
+                            placeholder="Search organization members, units, or access groups"
+                            style="width: 100%"
+                          />
+                          <button type="button" id="sc-subject-add">Add subject</button>
+                        </div>
                         <datalist id="sc-people-options"></datalist>
-                        <div class="identity-chips sc-broker-only" id="sc-people-chips"></div>
+                        <div class="identity-chips" id="sc-people-chips"></div>
                       </div>
                       <aside class="editor-panel" aria-live="polite">
                         <h3>Effective capability</h3>
@@ -4967,6 +4971,185 @@
       const $ = (id) => document.getElementById(id);
       const ADMIN_LOCALE_KEY = "qm:locale";
       const ADMIN_ZH = {
+        "Access mode": "访问模式",
+        "Access group": "访问组",
+        "Organization members": "组织成员",
+        "Members on this page": "本页成员",
+        Selected: "已选择",
+        "All members": "全部成员",
+        "Unassigned primary unit": "未分配主部门",
+        "Enterprise email": "企业邮箱",
+        "Job title": "职务",
+        "Work mobile": "工作手机",
+        "Employee number": "员工编号",
+        "Member profile": "成员资料",
+        "Save profile": "保存资料",
+        "Profile saved.": "资料已保存。",
+        "Member changed elsewhere. Reload before saving.": "成员资料已在其他位置更新，请重新加载后再保存。",
+        "Couldn't save member profile.": "无法保存成员资料。",
+        "Primary unit": "主部门",
+        "Save primary unit": "保存主部门",
+        "Couldn't save primary unit.": "无法保存主部门。",
+        "Keep the previous unit membership": "保留原部门成员关系",
+        "Organization units": "组织节点",
+        "No memberships.": "暂无直接组织关系。",
+        "Add membership": "添加组织关系",
+        "Couldn't remove membership.": "无法移除组织关系。",
+        "Couldn't add membership.": "无法添加组织关系。",
+        Lifecycle: "生命周期",
+        "Couldn't load impact.": "无法加载影响范围。",
+        "Status change failed.": "状态变更失败。",
+        "Identity and audit": "身份与审计",
+        "Identity bindings are read-only.": "身份绑定为只读信息。",
+        "No identity bindings.": "暂无身份绑定。",
+        "No member audit events.": "暂无成员审计事件。",
+        "Loading member detail…": "正在加载成员详情…",
+        "Couldn't load member detail.": "无法加载成员详情。",
+        "Member task": "成员任务",
+        "CSV import": "CSV 导入",
+        "Set job title": "设置职务",
+        "Set primary unit": "设置主部门",
+        "Clear primary unit": "清除主部门",
+        "Add organization unit": "添加组织节点",
+        "Remove organization unit": "移除组织节点",
+        "Add access group": "添加访问组",
+        "Remove access group": "移除访问组",
+        "Suspend members": "暂停成员",
+        "Reactivate members": "重新启用成员",
+        "Deprovision members": "成员离职",
+        "Member batch": "成员批量任务",
+        "Filter by the current unit or its subtree.": "按当前组织节点或其下级筛选。",
+        "Search name, email, title, mobile, employee number, or principal":
+          "搜索姓名、邮箱、职务、手机、员工编号或主体 ID",
+        "All access groups": "全部访问组",
+        "Apply filters": "应用筛选",
+        "Add to unit": "添加到组织节点",
+        "Remove from unit": "从组织节点移除",
+        "Add to access group": "添加到访问组",
+        "Remove from access group": "从访问组移除",
+        Suspend: "暂停",
+        Reactivate: "重新启用",
+        Deprovision: "离职",
+        "Select target": "选择目标",
+        Value: "值",
+        "Select members and a batch action.": "请选择成员和批量操作。",
+        "Batch preview failed.": "批量操作预览失败。",
+        "CSV preview failed.": "CSV 预览失败。",
+        "No organization members match.": "没有匹配的组织成员。",
+        "Last login": "最近登录",
+        previewed: "已预览",
+        running: "运行中",
+        failed: "失败",
+        ready: "就绪",
+        unchanged: "未变更",
+        error: "错误",
+        Targets: "目标",
+        Errors: "错误",
+        Unchanged: "未变更",
+        Row: "行",
+        Member: "成员",
+        Changes: "变更",
+        Warnings: "警告",
+        Target: "目标值",
+        Before: "原值",
+        After: "新值",
+        None: "无",
+        action: "操作",
+        profile: "资料",
+        displayName: "姓名",
+        email: "企业邮箱",
+        jobTitle: "职务",
+        mobile: "工作手机",
+        employeeNumber: "员工编号",
+        primaryUnit: "主部门",
+        additionalUnits: "其他组织节点",
+        accessGroups: "访问组",
+        status: "状态",
+        value: "值",
+        unit: "组织节点",
+        group: "访问组",
+        keepPreviousMembership: "保留原部门成员关系",
+        "No task items.": "没有任务条目。",
+        "Preview and per-member results are stored by Core.": "预览和逐成员结果由 Core 持久保存。",
+        "No primary unit": "未设置主部门",
+        "One primary unit and any number of additional memberships.": "可设置一个主部门和任意数量的其他组织关系。",
+        "Roles and direct memberships.": "角色和直接成员关系。",
+        member_not_found: "成员不存在",
+        duplicate_member: "成员重复",
+        duplicate_email: "企业邮箱已被使用",
+        duplicate_email_in_file: "文件内企业邮箱重复",
+        duplicate_employee_number: "员工编号已被使用",
+        duplicate_employee_number_in_file: "文件内员工编号重复",
+        unknown_primary_unit: "主部门不存在",
+        archived_primary_unit: "主部门已归档",
+        root_primary_unit: "组织根节点不能设为主部门",
+        unknown_additional_unit: "其他组织节点不存在",
+        archived_additional_unit: "其他组织节点已归档",
+        unknown_access_group: "访问组不存在",
+        archived_access_group: "访问组已归档",
+        manager_unit_conflict: "Manager 组织关系不能由此操作移除",
+        manager_group_conflict: "Manager 访问组关系不能由此操作移除",
+        primary_unit_conflict: "主部门关系不能由此操作移除",
+        invalid_transition: "成员状态转换无效",
+        invalid_jobTitle: "职务格式无效",
+        no_changes: "没有变更",
+        last_active_admin: "不能停用最后一名活跃组织管理员",
+        "Confirm and commit": "确认并提交",
+        "Fix preview errors before committing.": "请先修复预览错误再提交。",
+        "This action removes active access and invalidates existing sessions.":
+          "此操作会移除现有访问权限，并使当前会话失效。",
+        "Apply member task": "执行成员任务",
+        "The saved target set will be used.": "将使用已保存的目标集合。",
+        "Current primary unit": "当前主部门",
+        "Other units": "其他组织节点",
+        "Manager roles": "Manager 角色",
+        "Direct authorizations": "直接授权",
+        "This is the last active organization administrator.": "这是最后一名活跃组织管理员。",
+        "Existing sessions will be invalidated immediately.": "现有会话将立即失效。",
+        "Deprovisioning cannot be restored in this release.": "本版本中离职操作无法恢复。",
+        "Commit failed.": "提交失败。",
+        "Refresh task": "刷新任务",
+        Previous: "上一页",
+        Next: "下一页",
+        "Import CSV": "导入 CSV",
+        "Export current": "导出当前结果",
+        "Export all": "导出全部",
+        "Batch action": "批量操作",
+        "Selected members": "已选成员",
+        "Current filter": "当前筛选结果",
+        "Preview batch": "预览批量操作",
+        "Active and suspended": "正常和暂停",
+        "All managed statuses": "全部成员状态",
+        Deprovisioned: "已离职",
+        "Member master data and organization relationships. The Users page remains the runtime activity view.":
+          "维护成员主数据和组织关系。Users 页面仍用于查看系统使用和运行情况。",
+        "all active organization users": "组织内全部活跃用户",
+        "Change preview": "变更预览",
+        "Changes are recorded in Audit.": "变更会记录在审计日志中。",
+        "Control who may use this Skill. Use permission does not grant editing or re-sharing.":
+          "控制谁可以使用此技能。使用权限不包含编辑或再次分享权限。",
+        "Couldn't save Skill Access.": "无法保存技能访问权限。",
+        "Couldn't search people.": "无法搜索人员。",
+        "Effective active users": "实际可用的活跃用户",
+        "Enter at least two characters.": "请至少输入两个字符。",
+        "Entire organization": "整个组织",
+        "Home context": "所属上下文",
+        "current active members of the home context": "所属上下文的当前活跃成员",
+        "Last updated by": "最后更新人",
+        "No active user will be able to use this Skill.": "没有任何活跃用户能够使用此技能。",
+        "No matching people.": "没有匹配的人员。",
+        Person: "人员",
+        "Policy changed. Reload this Skill before saving again.": "策略已发生变化，请重新加载技能后再保存。",
+        "Save access": "保存访问权限",
+        "Saving…": "正在保存…",
+        "Search people": "搜索人员",
+        "Search people to add…": "搜索要添加的人员…",
+        "Searching…": "正在搜索…",
+        "Selected people and groups": "指定人员和组",
+        "Skill Access": "技能访问权限",
+        "Skill Access saved.": "技能访问权限已保存。",
+        "Too many searches. Try again shortly.": "搜索过于频繁，请稍后重试。",
+        "Unavailable for this home context": "此所属上下文暂无法统计",
         Admin: "管理",
         "Admin navigation": "管理导航",
         "Admin content": "管理内容",
@@ -5228,10 +5411,15 @@
         "one per line; blank = any path": "每行一个；留空 = 任意路径",
         "Credential is enabled": "启用此凭据",
         "Principals with access": "可访问的主体",
-        "Access: every all-internal conversation. Env delivery is not gated by grants — rooms with externals get nothing, everyone else gets the env var.":
-          "访问范围：所有纯内部对话。环境变量交付不受授权限制——含外部成员的聊天室不会获得，其他对话均可获得该环境变量。",
         "Everyone in this organization": "组织内所有人",
-        "Only selected people or teams": "仅所选人员或团队",
+        "Only selected organization subjects": "仅所选组织主体",
+        "Search organization members, units, or access groups": "搜索组织成员、组织节点或访问组",
+        "Add subject": "添加主体",
+        "Select a search result first.": "请先选择搜索结果。",
+        "Add at least one organization subject or choose organization-wide access.":
+          "请至少添加一个组织主体，或选择组织内所有人。",
+        "Shared credentials support organization users, units, access groups, or the entire organization.":
+          "共享凭据支持组织成员、组织节点、访问组或整个组织。",
         "Effective capability": "实际能力",
         State: "状态",
         Enabled: "已启用",
@@ -5251,7 +5439,6 @@
         "Any path": "任意路径",
         "Any path on this host": "此主机上的任意路径",
         Access: "访问权限",
-        "Every all-internal conversation — grants don't gate env delivery": "所有纯内部对话——授权不会限制环境变量交付",
         "No principal selected": "未选择主体",
         "Required before first save": "首次保存前必填",
         "Will replace the stored secret": "将替换已存储密钥",
@@ -5670,8 +5857,8 @@
         "No key": "无密钥",
         "Could not remove this provider.": "无法移除此提供商。",
         "Could not save this provider.": "无法保存此提供商。",
-        "Injected into all-internal conversations; rooms with externals get nothing":
-          "注入所有纯内部对话；含外部成员的聊天室不会获得",
+        "Injected only into entitled all-internal conversations; rooms with externals get nothing":
+          "仅注入获得授权的纯内部对话；含外部成员的聊天室不会获得",
         "Never served by the credential broker": "绝不会由凭据代理提供",
         regex: "正则表达式",
         optional: "可选",
@@ -5696,7 +5883,6 @@
         "A secret is required before saving.": "保存前必须填写密钥。",
         "Organization-wide access selected": "已选择组织范围访问",
         "Organization-wide": "组织范围",
-        "Principal IDs, comma-separated": "主体 ID，以逗号分隔",
         "•••• set (re-enter to replace)": "•••• 已设置（重新输入以替换）",
         "Saving requires the client secret — re-enter it to keep this connector working.":
           "保存时需要客户端密钥——请重新输入，以保持此连接器正常工作。",
@@ -6148,9 +6334,33 @@
         Impersonate: "模拟身份",
         "Ack emoji": "确认表情",
         "Org tree": "组织架构",
+        "Directory visibility": "目录可见范围",
+        "Subject type": "主体类型",
+        Subject: "主体",
+        User: "用户",
+        "Organization unit": "组织节点",
+        "Access group": "访问组",
+        "User search": "用户搜索",
+        "Directory rule": "目录规则",
+        "Use default rule (all organization)": "使用默认规则（全组织）",
+        "All organization": "全组织",
+        "Limited roots": "受限范围",
+        "No organization directory": "不可查看组织目录",
+        "Include descendants": "包含下级",
+        "Current unit only": "仅当前节点",
+        "This subject will not see any organization members.": "该主体将看不到任何组织成员。",
+        "Load policy": "加载策略",
+        "Policy loaded.": "策略已加载。",
+        "Using default rule.": "正在使用默认规则。",
+        "Policy saved.": "策略已保存。",
+        "Select a subject.": "请选择主体。",
+        "Load this subject first.": "请先加载该主体。",
+        "Policy changed. Reload before saving again.": "策略已被更改，请重新加载后再保存。",
+        "Personal rules override unit and access-group rules. Limited roots are merged and enforced by the server.":
+          "个人规则会覆盖组织节点和访问组规则；多个受限范围由服务端合并并强制执行。",
         "Active units": "活跃节点",
         "Archived units": "已归档节点",
-        "Active units in display order. Select one to manage it.": "活跃节点按显示顺序排列。选择一个节点进行管理。",
+        "Active and archived units. Select one to manage it.": "活跃和已归档节点。选择一个节点进行管理。",
         "No active units yet.": "尚无活跃节点。",
         "Select a unit on the left to manage it.": "在左侧选择一个节点进行管理。",
         "Loading unit detail...": "正在加载节点详情…",
@@ -6162,7 +6372,19 @@
         organization: "组织",
         "No members yet.": "尚无成员。",
         "Add member": "添加成员",
+        "Add members": "批量添加成员",
         "Add a principal to this unit as a member or manager.": "将主体添加为此节点的成员或管理员。",
+        "Add up to 100 principal ids to this unit in one change.": "一次最多可向此节点添加 100 个主体 ID。",
+        "Add up to 100 principal ids to this group in one change.": "一次最多可向此访问组添加 100 个主体 ID。",
+        "principal ids separated by commas or spaces": "用逗号或空格分隔主体 ID",
+        "Search users": "搜索用户",
+        "Search results": "搜索结果",
+        "Search by name, email, or principal id": "按姓名、邮箱或主体 ID 搜索",
+        "Type at least 2 characters": "请至少输入 2 个字符",
+        "No matching users": "没有匹配的用户",
+        "Select a user": "选择用户",
+        "Search failed.": "搜索失败。",
+        "Choose a new parent": "请选择新的父节点",
         "New child unit": "新建子节点",
         "Create a unit under the selected one.": "在所选节点下新建一个节点。",
         Name: "名称",
@@ -6179,19 +6401,33 @@
         Move: "移动",
         "Pick a new parent first.": "请先选择新的父节点。",
         "Archive unit": "归档节点",
+        "Restore unit": "恢复节点",
+        "Restore this unit to the active tree.": "将此节点恢复到活跃树。",
+        "It leaves the active tree; the server refuses while it still has active children or members.":
+          "该节点将离开活跃树；如果仍有活跃子节点或成员，服务端会拒绝归档。",
         "Archived units leave the active tree. The server refuses while the unit still has active children or members and reports the impact.":
           "归档后节点将离开活跃树。节点仍有活跃子节点或成员时，服务端会拒绝并报告影响。",
         "Couldn't add member.": "无法添加成员。",
+        "Unavailable users:": "不可用用户：",
+        "No members were added. Unavailable users:": "未添加任何成员。不可用用户：",
+        "Archive blocked.": "无法归档。",
+        "Active child units:": "活跃子节点：",
+        "Active members:": "活跃成员：",
+        "Remove members and archive child units first.": "请先移除成员并归档子节点。",
+        "Restore the parent unit first:": "请先恢复父节点：",
+        "Parent:": "父节点：",
         "Couldn't create the unit.": "无法新建节点。",
         "Couldn't rename the unit.": "无法重命名节点。",
         "Couldn't move the unit.": "无法移动节点。",
+        "Couldn't preview the move.": "无法预览节点移动。",
         "Couldn't archive the unit.": "无法归档节点。",
+        "Couldn't restore the unit.": "无法恢复节点。",
         "Couldn't remove the member.": "无法移除成员。",
         "Access groups": "访问组",
         "Active groups": "活跃访问组",
         "Archived groups": "已归档访问组",
-        "Active groups and their member counts. Select one to manage it.":
-          "活跃访问组及其成员数量。选择一个访问组进行管理。",
+        "Active and archived groups. Select one to load its members.":
+          "活跃和已归档访问组。选择一个访问组以加载其成员。",
         "No active groups yet.": "尚无活跃访问组。",
         "Select a group on the left to manage it.": "在左侧选择一个访问组进行管理。",
         "Loading group detail...": "正在加载访问组详情…",
@@ -6203,9 +6439,13 @@
         "Update the group name.": "更新访问组名称。",
         "Couldn't rename the group.": "无法重命名访问组。",
         "Archive group": "归档访问组",
+        "Restore group": "恢复访问组",
+        "Restore this group and its preserved membership.": "恢复此访问组及其保留的成员关系。",
+        "It leaves the active list; its membership is preserved.": "该访问组将离开活跃列表，成员关系会保留。",
         "Archived groups leave the active list; their membership is preserved.":
           "归档后访问组将离开活跃列表，成员关系保留。",
         "Couldn't archive the group.": "无法归档访问组。",
+        "Couldn't restore the group.": "无法恢复访问组。",
       };
       const normalizeAdminLocale = (value) => {
         const normalized = String(value || "").toLowerCase();
@@ -6248,6 +6488,8 @@
         if (match) return `${match[1]} 个会话`;
         match = value.match(/^([\d,.]+[kKmM]?) people$/);
         if (match) return `${match[1]} 人`;
+        match = value.match(/^([\d,.]+[kKmM]?) selected subjects?$/);
+        if (match) return `已选择 ${match[1]} 个授权主体`;
         match = value.match(/^([\d,.]+[kKmM]?) skills?$/);
         if (match) return `${match[1]} 个技能`;
         match = value.match(/^([\d,.]+[kKmM]?) scopes?$/);
@@ -6427,6 +6669,15 @@
         if (match) return `跳转到 Slack 镜像频道 ${match[1]} 中的此消息`;
         match = value.match(/^…and ([\d,.]+) more$/);
         if (match) return `…以及另外 ${match[1]} 项`;
+        match = value.match(/^(\d+) active units and (\d+) active members will move\.( Continue\?)?$/);
+        if (match) return `${match[1]} 个活跃节点和 ${match[2]} 名活跃成员将随之移动。${match[3] ? " 是否继续？" : ""}`;
+        match = value.match(
+          /^Move "(.+)" under "(.+)"\? (\d+) active units and (\d+) active members will move\. Continue\?$/,
+        );
+        if (match)
+          return `将“${match[1]}”移动到“${match[2]}”下？${match[3]} 个活跃节点和 ${match[4]} 名活跃成员将随之移动。是否继续？`;
+        match = value.match(/^Too many searches\. Try again in (\d+) seconds?\.$/);
+        if (match) return `搜索过于频繁，请在 ${match[1]} 秒后重试。`;
         return null;
       };
       const adminTr = (source) => {
@@ -6495,9 +6746,11 @@
             "onboarding",
             "governance",
             "connectors",
+            "org-members",
             "users",
             "org-units",
             "org-groups",
+            "org-directory",
             "keychain",
             "egress",
             "audit",
@@ -6517,8 +6770,10 @@
         governance: "Governance",
         connectors: "Connectors",
         users: "Users",
+        "org-members": "Organization members",
         "org-units": "Org tree",
         "org-groups": "Access groups",
+        "org-directory": "Directory visibility",
         keychain: "Keychain",
         user: "User",
         metrics: "Metrics",
@@ -6552,14 +6807,17 @@
       const ORG_WIDE = new Set([
         "retention",
         "users",
+        "org-members",
         "org-units",
         "org-groups",
+        "org-directory",
         "keychain",
         "connectors",
         "judgments",
         "ackemoji",
       ]);
-      const ENDPOINT = { history: "sessions", files: "files", live: "runs" };
+      const MANAGER_VIEWS = new Set(["org-units", "org-groups"]);
+      const ENDPOINT = { history: "sessions", files: "files", live: "runs", "org-members": "org-users" };
       const HISTORY_PAGE_SIZE = 50;
 
       const TRANSCRIPT_PAGE_SIZE = 500;
@@ -6567,6 +6825,7 @@
       let scope = "org:acme";
       let view = DEFAULT_VIEW;
       let orgId = "acme";
+      let managerMode = false;
 
       const brandSelfLabel = () =>
         document.querySelector('meta[name="brand-self-label"]')?.getAttribute("content") || "Agent";
@@ -7113,7 +7372,8 @@
         $("org-tag").textContent = "· " + me.data.org;
         orgId = me.data.org;
         $("who-name").textContent = me.data.principal;
-        if (me.data.isAdmin === false) {
+        managerMode = me.data.isAdmin === false && me.data.isManager === true;
+        if (me.data.isAdmin === false && !managerMode) {
           $("who").classList.remove("hidden");
           $("na-sub").textContent = me.data.principal;
           $("na-org").textContent = me.data.org;
@@ -7123,7 +7383,7 @@
         showView("app-view", "Signed in as " + me.data.principal);
 
         if (!new URLSearchParams(location.search).get("scope")) scope = "org:" + orgId;
-        loadScopeDirectory();
+        if (!managerMode) loadScopeDirectory();
         route();
       }
       const signOut = async () => {
@@ -7171,24 +7431,26 @@
             h.textContent = adminTr(s.label);
             nav.appendChild(h);
           }
-          s.views.forEach((v) => {
-            const b = document.createElement("button");
-            b.className = "tab" + (s.label ? "" : " tab-top") + (v === view ? " active" : "");
-            b.type = "button";
-            if (ICONS[v]) b.innerHTML = ICONS[v];
-            b.appendChild(document.createTextNode(adminTr(VIEW_TITLE[v] || v[0].toUpperCase() + v.slice(1))));
-            if (v === view) b.setAttribute("aria-current", "page");
-            if (DISABLED_VIEWS.has(v)) {
-              b.disabled = true;
-              b.title = adminTr("Coming back soon");
-            } else b.onclick = () => setView(v);
+          s.views
+            .filter((v) => !managerMode || MANAGER_VIEWS.has(v))
+            .forEach((v) => {
+              const b = document.createElement("button");
+              b.className = "tab" + (s.label ? "" : " tab-top") + (v === view ? " active" : "");
+              b.type = "button";
+              if (ICONS[v]) b.innerHTML = ICONS[v];
+              b.appendChild(document.createTextNode(adminTr(VIEW_TITLE[v] || v[0].toUpperCase() + v.slice(1))));
+              if (v === view) b.setAttribute("aria-current", "page");
+              if (DISABLED_VIEWS.has(v)) {
+                b.disabled = true;
+                b.title = adminTr("Coming back soon");
+              } else b.onclick = () => setView(v);
 
-            if (v === "judgments" && view === "ackemoji") {
-              b.classList.add("active");
-              b.setAttribute("aria-current", "page");
-            }
-            nav.appendChild(b);
-          });
+              if (v === "judgments" && view === "ackemoji") {
+                b.classList.add("active");
+                b.setAttribute("aria-current", "page");
+              }
+              nav.appendChild(b);
+            });
         });
         revealActiveTab();
       }
@@ -7268,6 +7530,10 @@
 
       let transcriptObserver = null;
       function render(st) {
+        if (managerMode && !MANAGER_VIEWS.has(st.view)) {
+          st = { view: "org-units", scope: `org:${orgId}`, session: null, page: 1 };
+          history.replaceState(st, "", stateToUrl(st));
+        }
         if (transcriptObserver) {
           transcriptObserver.disconnect();
           transcriptObserver = null;
@@ -7771,7 +8037,10 @@
       let soulVersion = 0;
       let soulSaved = "";
       let soulHistory = [];
-      let serviceCredDirectory = [];
+      let serviceCredSubjects = new Map();
+      let serviceCredentialSelectedSubjects = [];
+      let serviceCredentialSearchTimer = null;
+      let serviceCredentialSearchSeq = 0;
       function updateSoulWorkbench() {
         const draft = $("soul").value;
         $("soul-saved").textContent = soulSaved || adminTr("No saved instructions");
@@ -8251,15 +8520,7 @@
             add(r.data.browseModel, r.data.browseModel);
           sel.value = r.data.browseModel || "";
         }
-        serviceCredDirectory = r.data.directoryMembers || [];
-        const options = $("sc-people-options");
-        options.textContent = "";
-        serviceCredDirectory.forEach((member) => {
-          const option = document.createElement("option");
-          option.value = member.principalId;
-          option.label = member.displayName;
-          options.appendChild(option);
-        });
+        loadServiceCredentialSubjects(r.data.organizationAccessSubjects || {});
         renderServiceCreds(r.data.serviceCredentials || []);
         if (scopeChanged) resetScForm();
         loadedGovernanceScope = scope;
@@ -8283,15 +8544,7 @@
       async function refreshServiceCredentialConflict() {
         const fresh = await api("GET", "/api/scopes/" + encodeURIComponent(scope));
         if (!fresh.ok) return false;
-        serviceCredDirectory = fresh.data.directoryMembers || [];
-        const options = $("sc-people-options");
-        options.textContent = "";
-        serviceCredDirectory.forEach((member) => {
-          const option = document.createElement("option");
-          option.value = member.principalId;
-          option.label = member.displayName;
-          options.appendChild(option);
-        });
+        loadServiceCredentialSubjects(fresh.data.organizationAccessSubjects || {}, true);
         const credentials = fresh.data.serviceCredentials || [];
         const refreshedEditing = credentials.find((credential) => credential.slug === scEditing);
         if (refreshedEditing) scEditVersion = refreshedEditing.updatedAt;
@@ -8304,7 +8557,6 @@
       let scEditVersion = null;
       let scSnapshot = "";
       let serviceCredList = [];
-      let serviceCredentialResolutionError = "";
       function renderServiceCreds(list) {
         serviceCredList = list;
         const root = $("sc-list");
@@ -8404,9 +8656,8 @@
         $("sc-share-org").checked = orgWide;
         document.querySelector("input[name=sc-share][value=people]").checked = !orgWide;
 
-        $("sc-people").value = orgWide
-          ? ""
-          : (c.grantees || []).map((g) => (g.startsWith("personal:") ? g.slice("personal:".length) : g)).join(", ");
+        serviceCredentialSelectedSubjects = orgWide ? [] : [...new Set(c.grantees || [])];
+        $("sc-people").value = "";
         syncScPeople();
         captureScForm();
         renderServiceCreds(serviceCredList);
@@ -8438,6 +8689,7 @@
         $("sc-enabled").checked = true;
         $("sc-share-org").checked = true;
         document.querySelector("input[name=sc-share][value=people]").checked = false;
+        serviceCredentialSelectedSubjects = [];
         $("sc-people").value = "";
         syncScPeople();
         captureScForm();
@@ -8455,41 +8707,96 @@
       function syncScPeople() {
         const orgWide = $("sc-share-org").checked;
         $("sc-people").disabled = orgWide;
+        $("sc-subject-add").disabled = orgWide;
         $("sc-people").placeholder = adminTr(
-          orgWide ? "Organization-wide access selected" : "Principal IDs, comma-separated",
+          orgWide ? "Organization-wide access selected" : "Search organization members, units, or access groups",
         );
         renderServiceCredentialCapability();
       }
+      function serviceCredentialSubjectKindLabel(kind) {
+        if (kind === "user") return adminTr("User");
+        if (kind === "org_unit") return adminTr("Organization unit");
+        return adminTr("Access group");
+      }
+      function renderServiceCredentialSubjectOptions() {
+        const options = $("sc-people-options");
+        options.textContent = "";
+        [...serviceCredSubjects.values()]
+          .filter((subject) => subject.status === undefined || subject.status === "active")
+          .sort((left, right) => left.name.localeCompare(right.name))
+          .forEach((subject) => {
+            const option = document.createElement("option");
+            option.value = subject.scopeId;
+            option.label = subject.name + " — " + serviceCredentialSubjectKindLabel(subject.kind);
+            options.appendChild(option);
+          });
+      }
+      function loadServiceCredentialSubjects(catalog, preserveSelected = false) {
+        const retained = preserveSelected
+          ? serviceCredentialSelectedSubjects.flatMap((scopeId) => {
+              const subject = serviceCredSubjects.get(scopeId);
+              return subject ? [[scopeId, subject]] : [];
+            })
+          : [];
+        serviceCredSubjects = new Map(retained);
+        (catalog.users || []).forEach((user) => {
+          const scopeId = "personal:" + user.principalId;
+          serviceCredSubjects.set(scopeId, {
+            scopeId,
+            kind: "user",
+            name: user.displayName || user.email || user.principalId,
+            status: user.status,
+          });
+        });
+        (catalog.units || []).forEach((unit) => {
+          const scopeId = "org-unit:" + unit.id;
+          serviceCredSubjects.set(scopeId, { scopeId, kind: "org_unit", name: unit.name });
+        });
+        (catalog.groups || []).forEach((group) => {
+          const scopeId = "access-group:" + group.id;
+          serviceCredSubjects.set(scopeId, { scopeId, kind: "access_group", name: group.name });
+        });
+        renderServiceCredentialSubjectOptions();
+      }
+      async function searchServiceCredentialUsers(query) {
+        const search = query.trim();
+        clearTimeout(serviceCredentialSearchTimer);
+        const seq = ++serviceCredentialSearchSeq;
+        if (search.length < 2 || /^(personal|org-unit|access-group):/.test(search)) return;
+        serviceCredentialSearchTimer = setTimeout(async () => {
+          const response = await api("GET", "/api/org-users/search?q=" + encodeURIComponent(search));
+          if (seq !== serviceCredentialSearchSeq || !response.ok) return;
+          (response.data.users || []).forEach((user) => {
+            if (user.status !== "active") return;
+            const scopeId = "personal:" + user.principalId;
+            serviceCredSubjects.set(scopeId, {
+              scopeId,
+              kind: "user",
+              name: user.displayName || user.email || user.principalId,
+              status: user.status,
+            });
+          });
+          renderServiceCredentialSubjectOptions();
+        }, 180);
+      }
+      function addServiceCredentialSubject() {
+        const scopeId = $("sc-people").value.trim();
+        const subject = serviceCredSubjects.get(scopeId);
+        if (!subject || (subject.status !== undefined && subject.status !== "active")) {
+          return setStatus("st-service-credentials", "Select a search result first.", "err");
+        }
+        if (!serviceCredentialSelectedSubjects.includes(scopeId)) serviceCredentialSelectedSubjects.push(scopeId);
+        $("sc-people").value = "";
+        setStatus("st-service-credentials", "", "");
+        updateScFormDirty();
+      }
       function serviceCredentialGrantees() {
-        serviceCredentialResolutionError = "";
-        return $("sc-share-org").checked
-          ? [scope]
-          : $("sc-people")
-              .value.split(",")
-              .map((s) => s.trim())
-              .filter(Boolean)
-              .map((id) => {
-                if (/^(personal|team|org|channel|group):/.test(id)) return id;
-                const q = id.toLowerCase();
-                const identifiers = serviceCredDirectory.filter(
-                  (member) => member.principalId.toLowerCase() === q || member.slackId?.toLowerCase() === q,
-                );
-                if (identifiers.length === 1) return "personal:" + identifiers[0].principalId;
-                const names = serviceCredDirectory.filter((member) => member.displayName.toLowerCase() === q);
-                if (names.length === 1) return "personal:" + names[0].principalId;
-                if (names.length > 1 || identifiers.length > 1)
-                  serviceCredentialResolutionError =
-                    "\u201c" + id + "\u201d matches multiple people. Use an exact principal ID.";
-                return "personal:" + id;
-              });
+        return $("sc-share-org").checked ? [scope] : [...serviceCredentialSelectedSubjects];
       }
       function serviceCredentialPrincipalLabel(grantee) {
         if (grantee.startsWith("org:")) return adminTr("Everyone in this organization");
-        const id = grantee.startsWith("personal:") ? grantee.slice("personal:".length) : grantee;
-        const member = serviceCredDirectory.find(
-          (candidate) => candidate.principalId === id || candidate.slackId === id,
-        );
-        return member ? member.displayName + " (" + id + ")" : grantee;
+        const subject = serviceCredSubjects.get(grantee);
+        return subject ? subject.name + " — " + serviceCredentialSubjectKindLabel(subject.kind) : grantee;
       }
       function renderServiceCredentialCapability() {
         if (!$("sc-cap-host")) return;
@@ -8516,7 +8823,7 @@
             ? adminTr("Sandbox env") + " $" + $("sc-envkey").value.trim()
             : adminTr("Env var not set");
           $("sc-cap-auth").textContent = adminTr(
-            "Injected into all-internal conversations; rooms with externals get nothing",
+            "Injected only into entitled all-internal conversations; rooms with externals get nothing",
           );
           $("sc-cap-methods").textContent = "—";
           $("sc-cap-paths").textContent = adminTr("Never served by the credential broker");
@@ -8536,9 +8843,8 @@
           $("sc-cap-methods").textContent = (methods.length ? methods : ["GET"]).join(", ");
           $("sc-cap-paths").textContent = paths.length ? paths.join(", ") : adminTr("Any path on this host");
         }
-        $("sc-cap-principals").textContent = envDelivery
-          ? adminTr("Every all-internal conversation — grants don't gate env delivery")
-          : grantees.map(serviceCredentialPrincipalLabel).join(", ") || adminTr("No principal selected");
+        $("sc-cap-principals").textContent =
+          grantees.map(serviceCredentialPrincipalLabel).join(", ") || adminTr("No principal selected");
         const editing = serviceCredList.find((c) => c.slug === scEditing);
         let secretStatus = "Required before first save";
         if ($("sc-secret").value) secretStatus = "Will replace the stored secret";
@@ -8552,15 +8858,22 @@
             chip.className = "identity-chip";
             const label = serviceCredentialPrincipalLabel(grantee);
             chip.textContent = label;
-            if (/^(channel|group):/.test(grantee)) {
-              const unsupported = document.createElement("small");
-              unsupported.textContent = adminTr("unsupported · remove before saving");
-              chip.appendChild(unsupported);
-            } else if (label === grantee) {
+            if (label === grantee) {
               const unresolved = document.createElement("small");
               unresolved.textContent = adminTr("unresolved");
               chip.appendChild(unresolved);
             }
+            const remove = document.createElement("button");
+            remove.type = "button";
+            remove.textContent = "×";
+            remove.setAttribute("aria-label", adminTr("Remove") + " " + label);
+            remove.onclick = () => {
+              serviceCredentialSelectedSubjects = serviceCredentialSelectedSubjects.filter(
+                (subject) => subject !== grantee,
+              );
+              updateScFormDirty();
+            };
+            chip.appendChild(remove);
             chips.appendChild(chip);
           });
       }
@@ -8586,9 +8899,7 @@
             .map((s) => s.trim())
             .filter(Boolean),
           enabled: $("sc-enabled").checked,
-          // Grants don't gate env delivery, so an env credential always carries the org grant —
-          // the picker is hidden and a narrower selection must not ride along from broker mode.
-          grantees: delivery === "env" ? [scope] : serviceCredentialGrantees(),
+          grantees: serviceCredentialGrantees(),
           ...(scEditing && scEditVersion != null ? { expectedUpdatedAt: scEditVersion } : {}),
         };
       }
@@ -8616,17 +8927,18 @@
           if (!/^[A-Z][A-Z0-9_]*$/.test(body.envKey)) return "Env var must be UPPER_SNAKE_CASE.";
           if (body.envKey.startsWith("AGENT_")) return "AGENT_* env vars are reserved for the platform.";
         } else if (!body.host) return "Host is required.";
-        if (body.delivery !== "env" && !$("sc-share-org").checked && !body.grantees.length)
-          return "Add at least one person or choose org-wide access.";
-        if (body.delivery !== "env" && serviceCredentialResolutionError) return serviceCredentialResolutionError;
+        if (!$("sc-share-org").checked && !body.grantees.length)
+          return "Add at least one organization subject or choose organization-wide access.";
         const unsupported = body.grantees.find(
-          (grantee) => /^(channel|group):/.test(grantee) || /^personal:[^,]*:/.test(grantee),
+          (grantee) =>
+            grantee !== scope &&
+            (!/^(personal|org-unit|access-group):[^:]+$/.test(grantee) || !serviceCredSubjects.has(grantee)),
         );
         if (unsupported)
           return (
             "Remove unsupported legacy grant \u201c" +
             unsupported +
-            "\u201d before saving. Shared credentials support people, teams, or the organization."
+            "\u201d before saving. Shared credentials support organization users, units, access groups, or the entire organization."
           );
         return "";
       }
@@ -10070,6 +10382,13 @@
           else updateSectionDirty(saveKeyForTarget(e.target));
         }
       });
+      $("sc-people").addEventListener("input", () => searchServiceCredentialUsers($("sc-people").value));
+      $("sc-people").addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        addServiceCredentialSubject();
+      });
+      $("sc-subject-add").onclick = addServiceCredentialSubject;
       resetScForm();
 
       let dataReq = 0;
@@ -10092,8 +10411,10 @@
           deployments: renderDeployments,
           retention: renderRetention,
           users: renderUsers,
+          "org-members": renderOrgMembers,
           "org-units": renderOrgUnits,
           "org-groups": renderOrgGroups,
+          "org-directory": renderOrgDirectory,
           keychain: renderKeychain,
         })[view](root, data);
       }
@@ -11352,6 +11673,206 @@
         root.appendChild(card);
         root.appendChild(detail);
       }
+      async function skillAccessCard(skill, access) {
+        const body = document.createElement("div");
+        body.className = "stack";
+        const modeLabel = document.createElement("label");
+        modeLabel.className = "field";
+        const modeTitle = document.createElement("span");
+        modeTitle.textContent = adminTr("Access mode");
+        const mode = document.createElement("select");
+        for (const option of [
+          ["home", "Home context"],
+          ["organization", "Entire organization"],
+          ["restricted", "Selected people and groups"],
+        ]) {
+          const node = document.createElement("option");
+          node.value = option[0];
+          node.textContent = adminTr(option[1]);
+          mode.appendChild(node);
+        }
+        mode.value = access.mode;
+        modeLabel.append(modeTitle, mode);
+        body.appendChild(modeLabel);
+
+        const selected = new Map((access.subjects || []).map((subject) => [subject.kind + ":" + subject.id, subject]));
+        const candidates = new Map(selected);
+        const catalog = await api("GET", "/api/org-directory");
+        if (catalog.ok && catalog.data) {
+          for (const unit of catalog.data.units || [])
+            candidates.set("org_unit:" + unit.id, { kind: "org_unit", id: unit.id, name: unit.name });
+          for (const group of catalog.data.groups || [])
+            candidates.set("access_group:" + group.id, { kind: "access_group", id: group.id, name: group.name });
+        }
+        const subjects = document.createElement("div");
+        subjects.className = "stack";
+        const searchLabel = document.createElement("label");
+        searchLabel.textContent = adminTr("Search people");
+        const search = document.createElement("input");
+        search.type = "search";
+        search.placeholder = adminTr("Search people to add…");
+        searchLabel.appendChild(search);
+        const people = document.createElement("div");
+        people.className = "stack";
+        people.setAttribute("role", "status");
+        people.setAttribute("aria-live", "polite");
+        let searchTimer = 0;
+        let searchSequence = 0;
+        const setPeopleStatus = (message, error = false) => {
+          people.textContent = message;
+          people.setAttribute("role", error ? "alert" : "status");
+          people.setAttribute("aria-live", error ? "assertive" : "polite");
+        };
+        const searchPeople = async () => {
+          const query = search.value.trim();
+          const sequence = ++searchSequence;
+          setPeopleStatus("");
+          if (query.length < 2) {
+            if (query) setPeopleStatus(adminTr("Enter at least two characters."));
+            return;
+          }
+          setPeopleStatus(adminTr("Searching…"));
+          const result = await api("GET", "/api/org-users/search?q=" + encodeURIComponent(query));
+          if (sequence !== searchSequence || search.value.trim() !== query) return;
+          if (!result.ok) {
+            setPeopleStatus(
+              result.status === 429
+                ? adminTr("Too many searches. Try again shortly.")
+                : adminTr("Couldn't search people."),
+              true,
+            );
+            return;
+          }
+          for (const [key, candidate] of candidates) {
+            if (candidate.kind === "user" && !selected.has(key)) candidates.delete(key);
+          }
+          const users = (result.data && result.data.users) || [];
+          for (const user of users) {
+            const candidate = {
+              kind: "user",
+              id: user.principalId,
+              name: user.displayName || user.email || user.principalId,
+            };
+            candidates.set("user:" + candidate.id, candidate);
+          }
+          setPeopleStatus(users.length ? "" : adminTr("No matching people."));
+          renderSubjects();
+        };
+        search.oninput = () => {
+          clearTimeout(searchTimer);
+          searchTimer = setTimeout(searchPeople, 250);
+        };
+        subjects.append(searchLabel, people);
+
+        const checklist = document.createElement("div");
+        checklist.className = "stack";
+        subjects.appendChild(checklist);
+        const preview = document.createElement("p");
+        preview.className = "metric-note";
+        const status = document.createElement("p");
+        status.className = "metric-note";
+        const audit = document.createElement("p");
+        audit.className = "metric-note";
+        const warning = document.createElement("p");
+        warning.className = "metric-note err";
+        warning.setAttribute("role", "alert");
+        const save = document.createElement("button");
+        save.type = "button";
+        save.className = "rowbtn primary";
+        save.textContent = adminTr("Save access");
+
+        const renderSubjects = () => {
+          checklist.textContent = "";
+          for (const [key, candidate] of [...candidates].sort((a, b) =>
+            String(a[1].name || a[1].id).localeCompare(String(b[1].name || b[1].id)),
+          )) {
+            const label = document.createElement("label");
+            label.className = "checkline";
+            const check = document.createElement("input");
+            check.type = "checkbox";
+            check.checked = selected.has(key);
+            check.disabled = mode.value !== "restricted";
+            check.onchange = () => {
+              if (check.checked) selected.set(key, candidate);
+              else selected.delete(key);
+              updatePreview();
+            };
+            const text = document.createElement("span");
+            const kindLabel = {
+              user: "Person",
+              org_unit: "Organization unit",
+              access_group: "Access group",
+            }[candidate.kind];
+            text.textContent = (candidate.name || candidate.id) + " · " + adminTr(kindLabel || candidate.kind);
+            label.append(check, text);
+            checklist.appendChild(label);
+          }
+          updatePreview();
+        };
+        const updatePreview = () => {
+          subjects.classList.toggle("hidden", mode.value !== "restricted");
+          preview.textContent =
+            adminTr("Change preview") +
+            ": " +
+            (mode.value === "home"
+              ? adminTr("current active members of the home context")
+              : mode.value === "organization"
+                ? adminTr("all active organization users")
+                : plural(selected.size, "selected subject")) +
+            ". " +
+            adminTr("Changes are recorded in Audit.");
+          audit.textContent =
+            adminTr("Effective active users") +
+            ": " +
+            String(access.effectiveSummary?.activeUsers ?? adminTr("Unavailable for this home context")) +
+            " · " +
+            adminTr("Last updated by") +
+            " " +
+            (access.updatedBy || "—") +
+            (access.updatedAt ? " · " + fmtTime(access.updatedAt) : "");
+          warning.textContent =
+            mode.value === "restricted" && selected.size === 0
+              ? adminTr("No active user will be able to use this Skill.")
+              : "";
+          warning.classList.toggle("hidden", !warning.textContent);
+        };
+        mode.onchange = () => {
+          if (mode.value !== "restricted") selected.clear();
+          renderSubjects();
+        };
+        save.onclick = async () => {
+          save.disabled = true;
+          status.textContent = adminTr("Saving…");
+          const response = await api("PUT", "/api/skills/" + encodeURIComponent(skill.id) + "/access", {
+            mode: mode.value,
+            subjects: mode.value === "restricted" ? [...selected.values()].map(({ kind, id }) => ({ kind, id })) : [],
+            expectedRevision: access.revision,
+          });
+          save.disabled = false;
+          if (!response.ok) {
+            status.textContent =
+              response.status === 409
+                ? adminTr("Policy changed. Reload this Skill before saving again.")
+                : response.data?.message || adminTr("Couldn't save Skill Access.");
+            status.className = "metric-note err";
+            return;
+          }
+          access = response.data;
+          status.textContent = adminTr("Skill Access saved.");
+          status.className = "metric-note ok";
+          mode.value = access.mode;
+          selected.clear();
+          for (const subject of access.subjects || []) selected.set(subject.kind + ":" + subject.id, subject);
+          renderSubjects();
+        };
+        body.append(subjects, warning, preview, audit, save, status);
+        renderSubjects();
+        return dataCard(
+          adminTr("Skill Access"),
+          adminTr("Control who may use this Skill. Use permission does not grant editing or re-sharing."),
+          body,
+        );
+      }
       async function openSkillDetail(holder, rep, group) {
         group = group && group.length ? group : [rep];
         holder.textContent = "";
@@ -11443,6 +11964,8 @@
               ),
             ),
           );
+        const accessResponse = await api("GET", "/api/skills/" + encodeURIComponent(k.id) + "/access");
+        if (accessResponse.ok && accessResponse.data) box.appendChild(await skillAccessCard(k, accessResponse.data));
         const pre = document.createElement("pre");
         pre.className = "skillbody";
         pre.textContent = k.body || adminTr("(empty)");
@@ -12965,20 +13488,1152 @@
         drawLists();
       }
 
+      function renderOrgMembers(root, initial) {
+        defaultShell({
+          stats: [
+            [(initial.users || []).length, "Members on this page"],
+            [orgMemberSelectedIds.size, "Selected"],
+          ],
+        });
+        const state = {
+          data: initial,
+          units: [],
+          groups: [],
+          q: "",
+          statuses: ["active", "suspended"],
+          groupId: "",
+          missingPrimaryUnit: false,
+        };
+        const status = document.createElement("p");
+        status.className = "status";
+        status.id = "st-org-members";
+        const tree = document.createElement("div");
+        tree.className = "org-tree";
+        const workspace = document.createElement("div");
+        const layout = document.createElement("div");
+        layout.className = "org-layout";
+        layout.append(dataCard("Organization", "Filter by the current unit or its subtree.", tree), workspace);
+        root.append(layout, status);
+
+        const pathFor = (unitId) => {
+          const byId = new Map(state.units.map((unit) => [unit.id, unit]));
+          const names = [];
+          const seen = new Set();
+          let unit = byId.get(unitId);
+          while (unit && !seen.has(unit.id)) {
+            seen.add(unit.id);
+            names.unshift(unit.name);
+            unit = unit.parentId ? byId.get(unit.parentId) : null;
+          }
+          return names.join(" / ");
+        };
+        const queryString = (includeCursor = true) => {
+          const params = new URLSearchParams();
+          if (state.q) params.set("q", state.q);
+          params.set("status", state.statuses.join(","));
+          if (orgMemberUnitId) {
+            params.set("unitId", orgMemberUnitId);
+            params.set("includeDescendants", String(orgMemberIncludeDescendants));
+          }
+          if (state.groupId) params.set("groupId", state.groupId);
+          if (state.missingPrimaryUnit) params.set("missingPrimaryUnit", "true");
+          if (includeCursor && orgMemberCursor) params.set("cursor", orgMemberCursor);
+          params.set("limit", "50");
+          return params.toString();
+        };
+        const refresh = async (reset = false) => {
+          if (reset) {
+            orgMemberCursor = null;
+            orgMemberCursorHistory = [];
+            orgMemberSelectedIds.clear();
+          }
+          setStatus("st-org-members", adminTr("Loading members…"), "");
+          const response = await api("GET", "/api/org-users?" + queryString());
+          if (!response.ok)
+            return setApiStatus("st-org-members", response.data?.message, "Couldn't load members.", "err");
+          state.data = response.data;
+          setStatus("st-org-members", "", "");
+          drawWorkspace();
+        };
+        const drawTree = () => {
+          tree.textContent = "";
+          const all = document.createElement("button");
+          all.type = "button";
+          all.className = "org-node" + (orgMemberUnitId === null && !state.missingPrimaryUnit ? " active" : "");
+          all.textContent = adminTr("All members");
+          all.onclick = () => {
+            orgMemberUnitId = null;
+            state.missingPrimaryUnit = false;
+            drawTree();
+            refresh(true);
+          };
+          const missing = document.createElement("button");
+          missing.type = "button";
+          missing.className = "org-node" + (state.missingPrimaryUnit ? " active" : "");
+          missing.textContent = adminTr("Unassigned primary unit");
+          missing.onclick = () => {
+            orgMemberUnitId = null;
+            state.missingPrimaryUnit = true;
+            drawTree();
+            refresh(true);
+          };
+          tree.append(all, missing);
+          const active = state.units.filter((unit) => unit.status === "active");
+          const byParent = new Map();
+          active.forEach((unit) => {
+            const key =
+              unit.parentId && active.some((candidate) => candidate.id === unit.parentId) ? unit.parentId : "";
+            const list = byParent.get(key) || [];
+            list.push(unit);
+            byParent.set(key, list);
+          });
+          byParent.forEach((list) =>
+            list.sort((left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name)),
+          );
+          const walk = (parentId, depth) => {
+            (byParent.get(parentId) || []).forEach((unit) => {
+              const button = document.createElement("button");
+              button.type = "button";
+              button.className = "org-node" + (orgMemberUnitId === unit.id ? " active" : "");
+              button.style.paddingLeft = 10 + depth * 18 + "px";
+              button.textContent = unit.name;
+              button.onclick = () => {
+                orgMemberUnitId = unit.id;
+                state.missingPrimaryUnit = false;
+                drawTree();
+                refresh(true);
+              };
+              tree.appendChild(button);
+              walk(unit.id, depth + 1);
+            });
+          };
+          walk("", 0);
+        };
+        const inputOf = (type, value, placeholder) => {
+          const input = document.createElement("input");
+          input.type = type;
+          input.value = value ?? "";
+          if (placeholder) input.placeholder = adminTr(placeholder);
+          return input;
+        };
+        const selectOf = (options, value) => {
+          const select = document.createElement("select");
+          options.forEach(([optionValue, label]) => {
+            const option = document.createElement("option");
+            option.value = optionValue;
+            option.textContent = adminTr(label);
+            select.appendChild(option);
+          });
+          select.value = value;
+          return select;
+        };
+        const buttonOf = (label, run, cls = "") => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = adminTr(label);
+          button.className = cls;
+          button.onclick = run;
+          return button;
+        };
+        const jobBox = document.createElement("div");
+        const rememberJob = (job) => {
+          try {
+            localStorage.setItem("qm:organization-member-job", JSON.stringify({ id: job.id, kind: job.kind }));
+          } catch {}
+        };
+        const renderJob = (data) => {
+          jobBox.textContent = "";
+          if (!data?.job) return;
+          rememberJob(data.job);
+          const summary = data.job.summary || {};
+          const memberActionLabel = (value) =>
+            adminTr(
+              {
+                set_job_title: "Set job title",
+                set_primary_unit: "Set primary unit",
+                clear_primary_unit: "Clear primary unit",
+                add_unit: "Add organization unit",
+                remove_unit: "Remove organization unit",
+                add_group: "Add access group",
+                remove_group: "Remove access group",
+                suspend: "Suspend members",
+                reactivate: "Reactivate members",
+                deprovision: "Deprovision members",
+              }[value] ||
+                value ||
+                "Member batch",
+            );
+          const previewValue = (value) => {
+            if (value === null || value === undefined || value === "") return adminTr("None");
+            if (Array.isArray(value)) return value.map(previewValue).join(", ") || adminTr("None");
+            if (typeof value !== "object") return adminTr(String(value));
+            if ("id" in value) return `${value.name || value.id} (${value.id})`;
+            if ("before" in value || "after" in value) {
+              return `${adminTr("Before")}: ${previewValue(value.before)} → ${adminTr("After")}: ${previewValue(value.after)}`;
+            }
+            return Object.entries(value)
+              .map(([key, nested]) => `${adminTr(key)}: ${previewValue(nested)}`)
+              .join(" · ");
+          };
+          const action = data.job.kind === "import" ? adminTr("CSV import") : memberActionLabel(summary.action);
+          const target = summary.target ? previewValue(summary.target) : "";
+          const facts = document.createElement("p");
+          facts.className = "subline";
+          facts.textContent = `${adminTr("Action")}: ${action}${target ? ` · ${adminTr("Target")}: ${target}` : ""} · ${adminTr("Status")}: ${adminTr(data.job.status)} · ${adminTr("Targets")}: ${Number(summary.affectedMembers || summary.total || 0)} · ${adminTr("Ready")}: ${Number(summary.ready || 0)} · ${adminTr("Errors")}: ${Number(summary.errors || 0)} · ${adminTr("Unchanged")}: ${Number(summary.unchanged || 0)}`;
+          const items = table(
+            ["Row", "Member", "Changes", "Status", "Errors", "Warnings"],
+            (data.items || []).map((item) => [
+              { text: String(item.itemIndex + 1), cls: "num" },
+              { text: item.principalId || "—", cls: "mono" },
+              Object.entries(item.changes || {})
+                .map(([key, value]) =>
+                  key === "action"
+                    ? `${adminTr("Action")}: ${memberActionLabel(value)}`
+                    : `${adminTr(key)}: ${previewValue(value)}`,
+                )
+                .join(" · ") || "—",
+              adminTr(item.status),
+              (item.errors || []).map(adminTr).join(", ") || "—",
+              (item.warnings || []).map(adminTr).join(", ") || "—",
+            ]),
+            "No task items.",
+          );
+          const controls = document.createElement("div");
+          controls.className = "grant-form";
+          if (data.job.status === "previewed") {
+            const commit = buttonOf(
+              "Confirm and commit",
+              async () => {
+                if (Number(summary.errors || 0) > 0)
+                  return setStatus("st-org-members", "Fix preview errors before committing.", "err");
+                const destructive = ["suspend", "deprovision"].includes(summary.action)
+                  ? adminTr(" This action removes active access and invalidates existing sessions.")
+                  : "";
+                if (
+                  !confirm(
+                    `${adminTr("Apply member task")}: ${action}${target ? ` · ${adminTr("Target")}: ${target}` : ""}? ${adminTr("The saved target set will be used.")}${destructive}`,
+                  )
+                )
+                  return;
+                commit.disabled = true;
+                const endpoint = data.job.kind === "import" ? "imports" : "batches";
+                const result = await api(
+                  "POST",
+                  `/api/org-users/${endpoint}/${encodeURIComponent(data.job.id)}/commit`,
+                  {
+                    inputHash: data.job.inputHash,
+                  },
+                );
+                commit.disabled = false;
+                if (!result.ok)
+                  return setApiStatus(
+                    "st-org-members",
+                    result.data?.message,
+                    result.data?.error || "Commit failed.",
+                    "err",
+                  );
+                renderJob(result.data);
+                await refresh(true);
+              },
+              "primary",
+            );
+            commit.disabled = Number(summary.errors || 0) > 0;
+            controls.appendChild(commit);
+          }
+          controls.appendChild(
+            buttonOf("Refresh task", async () => {
+              const endpoint = data.job.kind === "import" ? "imports" : "batches";
+              const result = await api(
+                "GET",
+                `/api/org-users/${endpoint}/${encodeURIComponent(data.job.id)}?offset=${Number(data.itemOffset || 0)}&limit=${Number(data.itemLimit || 100)}`,
+              );
+              if (result.ok) renderJob(result.data);
+            }),
+          );
+          const pageOffset = Number(data.itemOffset || 0);
+          const pageLimit = Number(data.itemLimit || 100);
+          const pageTotal = Number(data.itemTotal || 0);
+          const loadPage = async (offset) => {
+            const endpoint = data.job.kind === "import" ? "imports" : "batches";
+            const result = await api(
+              "GET",
+              `/api/org-users/${endpoint}/${encodeURIComponent(data.job.id)}?offset=${Math.max(0, offset)}&limit=${pageLimit}`,
+            );
+            if (result.ok) renderJob(result.data);
+          };
+          if (pageOffset > 0) controls.appendChild(buttonOf("Previous", () => loadPage(pageOffset - pageLimit)));
+          if (pageOffset + pageLimit < pageTotal)
+            controls.appendChild(buttonOf("Next", () => loadPage(pageOffset + pageLimit)));
+          const body = document.createElement("div");
+          body.append(facts, controls, items);
+          jobBox.appendChild(dataCard("Member task", "Preview and per-member results are stored by Core.", body));
+        };
+        const loadRememberedJob = async () => {
+          let saved = null;
+          try {
+            saved = JSON.parse(localStorage.getItem("qm:organization-member-job") || "null");
+          } catch {}
+          if (!saved?.id || !["import", "batch"].includes(saved.kind)) return;
+          const endpoint = saved.kind === "import" ? "imports" : "batches";
+          const response = await api("GET", `/api/org-users/${endpoint}/${encodeURIComponent(saved.id)}`);
+          if (response.ok) renderJob(response.data);
+        };
+        const openDetail = async (principalId) => {
+          setStatus("st-org-members", adminTr("Loading member detail…"), "");
+          const response = await api("GET", "/api/org-users/" + encodeURIComponent(principalId));
+          if (!response.ok)
+            return setApiStatus("st-org-members", response.data?.message, "Couldn't load member detail.", "err");
+          setStatus("st-org-members", "", "");
+          const data = response.data;
+          const user = data.user;
+          const detail = document.createElement("div");
+          const form = document.createElement("div");
+          form.className = "grant-form";
+          const fields = [
+            ["displayName", "Name"],
+            ["email", "Enterprise email"],
+            ["jobTitle", "Job title"],
+            ["mobile", "Work mobile"],
+            ["employeeNumber", "Employee number"],
+          ].map(([key, label]) => {
+            const input = inputOf("text", user[key] || "", label);
+            const field = document.createElement("div");
+            field.className = "f grow";
+            const caption = document.createElement("label");
+            caption.textContent = adminTr(label);
+            field.append(caption, input);
+            form.appendChild(field);
+            return [key, input];
+          });
+          const save = buttonOf(
+            "Save profile",
+            async () => {
+              const body = { expectedProfileRevision: user.profileRevision };
+              fields.forEach(([key, input]) => (body[key] = input.value));
+              const result = await api("PATCH", "/api/org-users/" + encodeURIComponent(principalId), body);
+              if (!result.ok) {
+                if (result.status === 409)
+                  return setStatus("st-org-members", "Member changed elsewhere. Reload before saving.", "err");
+                return setApiStatus("st-org-members", result.data?.message, "Couldn't save member profile.", "err");
+              }
+              setStatus("st-org-members", "Profile saved.", "ok");
+              await refresh(false);
+              await openDetail(principalId);
+            },
+            "primary",
+          );
+          form.appendChild(save);
+          detail.appendChild(
+            dataCard(
+              "Member profile",
+              `${adminTr("Principal")}: ${user.principalId} · ${adminTr("Last login")}: ${user.lastLoginAt ? fmtTime(user.lastLoginAt) : "—"}`,
+              form,
+            ),
+          );
+
+          const primaryRow = document.createElement("div");
+          primaryRow.className = "grant-form";
+          const currentPrimary = (data.unitMembers || []).find((member) => member.isPrimary);
+          const primary = selectOf(
+            [
+              ["", "No primary unit"],
+              ...state.units
+                .filter((unit) => unit.status === "active" && unit.kind !== "organization")
+                .map((unit) => [unit.id, pathFor(unit.id)]),
+            ],
+            currentPrimary?.unitId || "",
+          );
+          const keep = inputOf("checkbox", "", "");
+          keep.checked = true;
+          const keepLabel = document.createElement("label");
+          keepLabel.append(keep, document.createTextNode(" " + adminTr("Keep the previous unit membership")));
+          primaryRow.append(
+            primary,
+            keepLabel,
+            buttonOf("Save primary unit", async () => {
+              const result = await api("PUT", `/api/org-users/${encodeURIComponent(principalId)}/primary-unit`, {
+                unitId: primary.value || null,
+                keepPreviousMembership: keep.checked,
+              });
+              if (!result.ok)
+                return setApiStatus("st-org-members", result.data?.message, "Couldn't save primary unit.", "err");
+              await refresh(false);
+              await openDetail(principalId);
+            }),
+          );
+          detail.appendChild(
+            dataCard("Primary unit", "One primary unit and any number of additional memberships.", primaryRow),
+          );
+
+          const relationSection = (kind) => {
+            const isUnit = kind === "unit";
+            const memberships = isUnit ? data.unitMembers || [] : data.groupMembers || [];
+            const resources = isUnit ? state.units : state.groups;
+            const idKey = isUnit ? "unitId" : "groupId";
+            const endpoint = isUnit ? "org-units" : "org-groups";
+            const byId = new Map(resources.map((resource) => [resource.id, resource]));
+            const body = document.createElement("div");
+            body.appendChild(
+              actionTable(
+                [isUnit ? "Unit" : "Access group", "Role", isUnit ? "Primary" : "", ""],
+                memberships,
+                (member) => [
+                  byId.get(member[idKey])?.name || member[idKey],
+                  member.role,
+                  isUnit && member.isPrimary ? adminTr("Yes") : "",
+                  {
+                    action: {
+                      label: "Remove",
+                      danger: true,
+                      disabled: isUnit && member.isPrimary,
+                      run: async () => {
+                        const result = await api(
+                          "DELETE",
+                          `/api/${endpoint}/${encodeURIComponent(member[idKey])}/members/${encodeURIComponent(principalId)}`,
+                        );
+                        if (!result.ok)
+                          return setApiStatus(
+                            "st-org-members",
+                            result.data?.message,
+                            "Couldn't remove membership.",
+                            "err",
+                          );
+                        await openDetail(principalId);
+                      },
+                    },
+                  },
+                ],
+                "No memberships.",
+              ),
+            );
+            const add = document.createElement("div");
+            add.className = "grant-form";
+            const resource = selectOf(
+              resources.filter((item) => item.status === "active").map((item) => [item.id, item.name]),
+              "",
+            );
+            const role = selectOf(
+              [
+                ["member", "member"],
+                ["manager", "manager"],
+              ],
+              "member",
+            );
+            add.append(
+              resource,
+              role,
+              buttonOf("Add membership", async () => {
+                if (!resource.value) return;
+                const result = await api("POST", `/api/${endpoint}/${encodeURIComponent(resource.value)}/members`, {
+                  principalId,
+                  role: role.value,
+                });
+                if (!result.ok)
+                  return setApiStatus("st-org-members", result.data?.message, "Couldn't add membership.", "err");
+                await openDetail(principalId);
+              }),
+            );
+            body.appendChild(add);
+            return dataCard(isUnit ? "Organization units" : "Access groups", "Roles and direct memberships.", body);
+          };
+          detail.append(relationSection("unit"), relationSection("group"));
+
+          const lifecycle = document.createElement("div");
+          lifecycle.className = "grant-form";
+          const transitions =
+            user.status === "active"
+              ? [
+                  ["suspended", "Suspend"],
+                  ["deprovisioned", "Deprovision"],
+                ]
+              : user.status === "suspended"
+                ? [
+                    ["active", "Reactivate"],
+                    ["deprovisioned", "Deprovision"],
+                  ]
+                : [];
+          transitions.forEach(([target, label]) => {
+            lifecycle.appendChild(
+              buttonOf(
+                label,
+                async () => {
+                  const preview = await api("GET", `/api/org-users/${encodeURIComponent(principalId)}/impact`);
+                  if (!preview.ok)
+                    return setApiStatus("st-org-members", preview.data?.message, "Couldn't load impact.", "err");
+                  const impact = preview.data.impact;
+                  const primaryUnit = state.units.find((unit) => unit.id === impact.primaryUnitId);
+                  const managerRoles = Number(impact.unitManagerCount || 0) + Number(impact.groupManagerCount || 0);
+                  const warnings = [
+                    adminTr("Existing sessions will be invalidated immediately."),
+                    ...(target === "deprovisioned"
+                      ? [adminTr("Deprovisioning cannot be restored in this release.")]
+                      : []),
+                    ...(impact.lastActiveAdmin ? [adminTr("This is the last active organization administrator.")] : []),
+                  ];
+                  const message = `${adminTr(label)} ${user.displayName}? ${adminTr("Current primary unit")}: ${primaryUnit?.name || adminTr("None")}, ${adminTr("Other units")}: ${Math.max(0, Number(impact.unitCount || 0) - (impact.primaryUnitId ? 1 : 0))}, ${adminTr("Manager roles")}: ${managerRoles}, ${adminTr("Access groups")}: ${impact.groupCount}, ${adminTr("Direct authorizations")}: ${impact.directAuthorizationCount}. ${warnings.join(" ")}`;
+                  if (!confirm(message)) return;
+                  const result = await api("POST", `/api/org-users/${encodeURIComponent(principalId)}/status`, {
+                    status: target,
+                  });
+                  if (!result.ok)
+                    return setApiStatus(
+                      "st-org-members",
+                      result.data?.message,
+                      result.data?.error || "Status change failed.",
+                      "err",
+                    );
+                  await refresh(true);
+                },
+                target === "deprovisioned" ? "danger" : "",
+              ),
+            );
+          });
+          detail.appendChild(dataCard("Lifecycle", `${adminTr("Current status:")} ${adminTr(user.status)}`, lifecycle));
+          const history = document.createElement("div");
+          history.appendChild(
+            table(
+              ["Time", "Action", "Actor", "Result"],
+              (data.auditEvents || []).map((event) => [
+                event.at ? fmtTime(event.at) : "—",
+                event.action || "—",
+                event.principalId || "—",
+                event.result || "—",
+              ]),
+              "No member audit events.",
+            ),
+          );
+          const bindings = document.createElement("p");
+          bindings.className = "subline";
+          bindings.textContent =
+            (data.identities || []).map((identity) => `${identity.issuer} · ${identity.subject}`).join("\n") ||
+            adminTr("No identity bindings.");
+          history.prepend(bindings);
+          detail.appendChild(dataCard("Identity and audit", "Identity bindings are read-only.", history));
+          workspace.textContent = "";
+          workspace.append(detail, jobBox);
+        };
+
+        const drawWorkspace = () => {
+          workspace.textContent = "";
+          const toolbar = document.createElement("div");
+          toolbar.className = "grant-form";
+          const search = inputOf("search", state.q, "Search name, email, title, mobile, employee number, or principal");
+          const statusFilter = selectOf(
+            [
+              ["active,suspended", "Active and suspended"],
+              ["active", "Active"],
+              ["suspended", "Suspended"],
+              ["deprovisioned", "Deprovisioned"],
+              ["active,suspended,deprovisioned", "All managed statuses"],
+            ],
+            state.statuses.join(","),
+          );
+          const groupFilter = selectOf(
+            [["", "All access groups"], ...state.groups.map((group) => [group.id, group.name])],
+            state.groupId,
+          );
+          const subtree = inputOf("checkbox", "", "");
+          subtree.checked = orgMemberIncludeDescendants;
+          const subtreeLabel = document.createElement("label");
+          subtreeLabel.append(subtree, document.createTextNode(" " + adminTr("Include descendants")));
+          const apply = buttonOf(
+            "Apply filters",
+            () => {
+              state.q = search.value.trim();
+              state.statuses = statusFilter.value.split(",");
+              state.groupId = groupFilter.value;
+              orgMemberIncludeDescendants = subtree.checked;
+              refresh(true);
+            },
+            "primary",
+          );
+          toolbar.append(search, statusFilter, groupFilter, subtreeLabel, apply);
+
+          const bulk = document.createElement("div");
+          bulk.className = "grant-form";
+          const selectionMode = selectOf(
+            [
+              ["selected", "Selected members"],
+              ["filter", "Current filter"],
+            ],
+            orgMemberSelectionMode,
+          );
+          selectionMode.onchange = () => {
+            orgMemberSelectionMode = selectionMode.value;
+          };
+          const action = selectOf(
+            [
+              ["", "Batch action"],
+              ["set_job_title", "Set job title"],
+              ["set_primary_unit", "Set primary unit"],
+              ["clear_primary_unit", "Clear primary unit"],
+              ["add_unit", "Add to unit"],
+              ["remove_unit", "Remove from unit"],
+              ["add_group", "Add to access group"],
+              ["remove_group", "Remove from access group"],
+              ["suspend", "Suspend"],
+              ["reactivate", "Reactivate"],
+              ["deprovision", "Deprovision"],
+            ],
+            "",
+          );
+          const target = selectOf([["", "Select target"]], "");
+          const value = inputOf("text", "", "Value");
+          const syncAction = () => {
+            target.textContent = "";
+            const targetKind = action.value.includes("group") ? "group" : action.value.includes("unit") ? "unit" : "";
+            [
+              ["", "Select target"],
+              ...(targetKind === "group" ? state.groups : targetKind === "unit" ? state.units : [])
+                .filter(
+                  (item) =>
+                    item.status === "active" && !(action.value === "set_primary_unit" && item.kind === "organization"),
+                )
+                .map((item) => [item.id, item.name]),
+            ].forEach(([optionValue, label]) => {
+              const option = document.createElement("option");
+              option.value = optionValue;
+              option.textContent = adminTr(label);
+              target.appendChild(option);
+            });
+            target.hidden = !targetKind || action.value === "clear_primary_unit";
+            value.hidden = action.value !== "set_job_title";
+          };
+          action.onchange = syncAction;
+          syncAction();
+          const previewBatch = buttonOf("Preview batch", async () => {
+            if ((orgMemberSelectionMode === "selected" && !orgMemberSelectedIds.size) || !action.value)
+              return setStatus("st-org-members", "Select members and a batch action.", "err");
+            let actionBody = { type: action.value };
+            if (action.value === "set_job_title") actionBody.value = value.value || null;
+            if (["set_primary_unit", "add_unit", "remove_unit"].includes(action.value))
+              actionBody.unitId = target.value;
+            if (["add_group", "remove_group"].includes(action.value)) actionBody.groupId = target.value;
+            if (["set_primary_unit", "clear_primary_unit"].includes(action.value))
+              actionBody.keepPreviousMembership = true;
+            const response = await fetch(API_BASE + "/api/org-users/batches/preview", {
+              method: "POST",
+              headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
+              body: JSON.stringify({
+                ...(orgMemberSelectionMode === "filter"
+                  ? {
+                      query: {
+                        q: state.q,
+                        statuses: state.statuses,
+                        ...(orgMemberUnitId ? { unitId: orgMemberUnitId } : {}),
+                        ...(orgMemberUnitId ? { includeDescendants: orgMemberIncludeDescendants } : {}),
+                        ...(state.groupId ? { groupId: state.groupId } : {}),
+                        ...(state.missingPrimaryUnit ? { missingPrimaryUnit: true } : {}),
+                      },
+                    }
+                  : { principalIds: [...orgMemberSelectedIds] }),
+                action: actionBody,
+              }),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok)
+              return setApiStatus("st-org-members", data?.message, data?.error || "Batch preview failed.", "err");
+            renderJob(data);
+          });
+          const upload = document.createElement("input");
+          upload.type = "file";
+          upload.accept = ".csv,text/csv";
+          upload.hidden = true;
+          upload.onchange = async () => {
+            const file = upload.files?.[0];
+            if (!file) return;
+            const response = await fetch(API_BASE + "/api/org-users/imports/preview", {
+              method: "POST",
+              headers: { "content-type": "text/csv", "idempotency-key": crypto.randomUUID() },
+              body: file,
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) return setApiStatus("st-org-members", data?.message, "CSV preview failed.", "err");
+            renderJob(data);
+          };
+          const importButton = buttonOf("Import CSV", () => upload.click());
+          const exportCurrent = buttonOf("Export current", () => {
+            location.href = API_BASE + "/api/org-users/export?" + queryString(false);
+          });
+          const exportAll = buttonOf("Export all", () => {
+            location.href = API_BASE + "/api/org-users/export?all=true";
+          });
+          bulk.append(
+            selectionMode,
+            action,
+            target,
+            value,
+            previewBatch,
+            importButton,
+            exportCurrent,
+            exportAll,
+            upload,
+          );
+
+          const users = state.data.users || [];
+          const unitMembers = state.data.unitMembers || [];
+          const tableNode = document.createElement("table");
+          const head = document.createElement("thead");
+          const headRow = document.createElement("tr");
+          const selectAll = inputOf("checkbox", "", "");
+          selectAll.checked = users.length > 0 && users.every((user) => orgMemberSelectedIds.has(user.principalId));
+          selectAll.onchange = () => {
+            users.forEach((user) =>
+              selectAll.checked
+                ? orgMemberSelectedIds.add(user.principalId)
+                : orgMemberSelectedIds.delete(user.principalId),
+            );
+            drawWorkspace();
+          };
+          [
+            selectAll,
+            "Name",
+            "Job title",
+            "Primary unit",
+            "Work mobile",
+            "Enterprise email",
+            "Status",
+            "Last login",
+          ].forEach((label) => {
+            const cell = document.createElement("th");
+            if (label?.nodeType) cell.appendChild(label);
+            else cell.textContent = adminTr(label);
+            headRow.appendChild(cell);
+          });
+          head.appendChild(headRow);
+          const body = document.createElement("tbody");
+          users.forEach((user) => {
+            const row = document.createElement("tr");
+            row.tabIndex = 0;
+            row.onclick = () => openDetail(user.principalId);
+            const selected = inputOf("checkbox", "", "");
+            selected.checked = orgMemberSelectedIds.has(user.principalId);
+            selected.onclick = (event) => event.stopPropagation();
+            selected.onchange = () => {
+              if (selected.checked) orgMemberSelectedIds.add(user.principalId);
+              else orgMemberSelectedIds.delete(user.principalId);
+            };
+            const primary = unitMembers.find((member) => member.principalId === user.principalId && member.isPrimary);
+            [
+              selected,
+              user.displayName,
+              user.jobTitle || "—",
+              primary ? pathFor(primary.unitId) : "—",
+              user.mobile || "—",
+              user.email || "—",
+              adminTr(user.status),
+              user.lastLoginAt ? relTime(user.lastLoginAt) : "—",
+            ].forEach((value) => {
+              const cell = document.createElement("td");
+              if (value?.nodeType) cell.appendChild(value);
+              else cell.textContent = String(value);
+              row.appendChild(cell);
+            });
+            body.appendChild(row);
+          });
+          tableNode.append(head, body);
+          if (!users.length) {
+            const empty = document.createElement("p");
+            empty.className = "empty";
+            empty.textContent = adminTr("No organization members match.");
+            workspace.append(toolbar, bulk, empty, jobBox);
+            return;
+          }
+          const paging = document.createElement("div");
+          paging.className = "grant-form";
+          const previous = buttonOf("Previous", async () => {
+            orgMemberCursor = orgMemberCursorHistory.pop() || null;
+            await refresh(false);
+          });
+          previous.disabled = orgMemberCursorHistory.length === 0;
+          const next = buttonOf("Next", async () => {
+            if (!state.data.cursor) return;
+            orgMemberCursorHistory.push(orgMemberCursor);
+            orgMemberCursor = state.data.cursor;
+            await refresh(false);
+          });
+          next.disabled = !state.data.cursor;
+          paging.append(previous, next);
+          const listBody = document.createElement("div");
+          listBody.append(toolbar, bulk, tableNode, paging);
+          workspace.append(
+            dataCard(
+              "Organization members",
+              "Member master data and organization relationships. The Users page remains the runtime activity view.",
+              listBody,
+            ),
+            jobBox,
+          );
+        };
+        drawWorkspace();
+        void Promise.all([api("GET", "/api/org-units"), api("GET", "/api/org-groups")]).then(([units, groups]) => {
+          state.units = units.ok ? units.data.units || [] : [];
+          state.groups = groups.ok ? groups.data.groups || [] : [];
+          drawTree();
+          drawWorkspace();
+        });
+        void loadRememberedJob();
+      }
+
       let orgUnitSelectedId = null;
       let orgGroupSelectedId = null;
+      let orgMemberUnitId = null;
+      let orgMemberIncludeDescendants = true;
+      let orgMemberCursor = null;
+      let orgMemberCursorHistory = [];
+      let orgMemberSelectionMode = "selected";
+      const orgMemberSelectedIds = new Set();
+      function organizationUserSearch(memberInput, currentPrincipalIds) {
+        const searchInput = document.createElement("input");
+        searchInput.type = "search";
+        searchInput.placeholder = adminTr("Search by name, email, or principal id");
+        searchInput.spellcheck = false;
+        searchInput.autocapitalize = "none";
+        const results = document.createElement("select");
+        const excluded = new Set(currentPrincipalIds);
+        let timer = null;
+        let sequence = 0;
+        const resetResults = (label) => {
+          results.textContent = "";
+          const option = document.createElement("option");
+          option.value = "";
+          option.textContent = adminTr(label);
+          results.appendChild(option);
+          results.disabled = true;
+        };
+        const populate = (users) => {
+          results.textContent = "";
+          const placeholder = document.createElement("option");
+          placeholder.value = "";
+          placeholder.textContent = adminTr(users.length ? "Select a user" : "No matching users");
+          results.appendChild(placeholder);
+          users.forEach((user) => {
+            const option = document.createElement("option");
+            option.value = user.principalId;
+            const identity = user.email || user.principalId;
+            option.textContent = `${user.displayName || user.principalId} — ${identity} (${user.status})`;
+            results.appendChild(option);
+          });
+          results.disabled = users.length === 0;
+        };
+        resetResults("Type at least 2 characters");
+        searchInput.oninput = () => {
+          clearTimeout(timer);
+          const query = searchInput.value.trim();
+          sequence += 1;
+          const request = sequence;
+          if (query.length < 2) return resetResults("Type at least 2 characters");
+          timer = setTimeout(async () => {
+            const response = await api("GET", "/api/org-users/search?q=" + encodeURIComponent(query));
+            if (request !== sequence) return;
+            if (!response.ok) {
+              if (response.status === 429) {
+                const seconds = Math.max(1, Math.ceil(Number(response.data?.retryAfterMs || 1000) / 1000));
+                return resetResults(`Too many searches. Try again in ${seconds} seconds.`);
+              }
+              return resetResults("Search failed.");
+            }
+            populate((response.data.users || []).filter((user) => !excluded.has(user.principalId)));
+          }, 180);
+        };
+        results.onchange = () => {
+          const principalId = results.value;
+          if (!principalId) return;
+          const ids = [
+            ...new Set(
+              memberInput.value
+                .split(/[\s,]+/)
+                .map((id) => id.trim())
+                .filter(Boolean)
+                .concat(principalId),
+            ),
+          ];
+          memberInput.value = ids.join(", ");
+          memberInput.dispatchEvent(new Event("input"));
+          searchInput.value = "";
+          sequence += 1;
+          resetResults("Type at least 2 characters");
+          searchInput.focus();
+        };
+        return [searchInput, results];
+      }
+      function renderOrgDirectory(root, d) {
+        const units = (d.units || []).filter((unit) => unit.status === "active");
+        const groups = (d.groups || []).filter((group) => group.status === "active");
+        defaultShell({
+          stats: [
+            [units.length, "Active units"],
+            [groups.length, "Active groups"],
+          ],
+        });
+
+        const body = document.createElement("div");
+        body.className = "stack";
+        const subjectRow = document.createElement("div");
+        subjectRow.className = "grant-form";
+        const kind = document.createElement("select");
+        [
+          ["user", "User"],
+          ["org_unit", "Organization unit"],
+          ["access_group", "Access group"],
+        ].forEach(([value, label]) => {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = adminTr(label);
+          kind.appendChild(option);
+        });
+        const subject = document.createElement("select");
+        const userSearch = document.createElement("input");
+        userSearch.type = "search";
+        userSearch.placeholder = adminTr("Search by name, email, or principal id");
+        userSearch.className = "hidden";
+        userSearch.spellcheck = false;
+        userSearch.autocapitalize = "none";
+        const userResults = document.createElement("select");
+        userResults.className = "hidden";
+        let userTimer = null;
+        let userSequence = 0;
+        const policy = document.createElement("select");
+        [
+          ["default", "Use default rule (all organization)"],
+          ["all", "All organization"],
+          ["limited", "Limited roots"],
+          ["none", "No organization directory"],
+        ].forEach(([value, label]) => {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = adminTr(label);
+          policy.appendChild(option);
+        });
+        const roots = document.createElement("div");
+        roots.className = "org-tree";
+        roots.style.maxHeight = "360px";
+        roots.style.overflow = "auto";
+        let revision = 0;
+        let loadedSubject = "";
+        const selectedRoots = new Map();
+
+        const field = (label, control) => {
+          const holder = document.createElement("div");
+          holder.className = "f grow";
+          const text = document.createElement("label");
+          text.textContent = adminTr(label);
+          holder.append(text, control);
+          return holder;
+        };
+
+        const subjectId = () => (kind.value === "user" ? userResults.value : subject.value);
+        const drawRoots = () => {
+          roots.textContent = "";
+          roots.classList.toggle("hidden", policy.value !== "limited");
+          if (policy.value !== "limited") return;
+          if (!units.length) {
+            const empty = document.createElement("p");
+            empty.className = "empty";
+            empty.textContent = adminTr("No active units yet.");
+            roots.appendChild(empty);
+            return;
+          }
+          units
+            .slice()
+            .sort((left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name))
+            .forEach((unit) => {
+              const row = document.createElement("label");
+              row.className = "org-node";
+              row.style.display = "grid";
+              row.style.gridTemplateColumns = "auto minmax(0,1fr) minmax(150px,auto)";
+              row.style.gap = "10px";
+              const checked = document.createElement("input");
+              checked.type = "checkbox";
+              checked.checked = selectedRoots.has(unit.id);
+              const name = document.createElement("span");
+              name.textContent = unit.name;
+              const descendants = document.createElement("select");
+              [
+                ["true", "Include descendants"],
+                ["false", "Current unit only"],
+              ].forEach(([value, label]) => {
+                const option = document.createElement("option");
+                option.value = value;
+                option.textContent = adminTr(label);
+                descendants.appendChild(option);
+              });
+              descendants.value = selectedRoots.get(unit.id) === false ? "false" : "true";
+              descendants.disabled = !checked.checked;
+              checked.onchange = () => {
+                if (checked.checked) selectedRoots.set(unit.id, descendants.value === "true");
+                else selectedRoots.delete(unit.id);
+                descendants.disabled = !checked.checked;
+              };
+              descendants.onchange = () => {
+                if (checked.checked) selectedRoots.set(unit.id, descendants.value === "true");
+              };
+              row.append(checked, name, descendants);
+              roots.appendChild(row);
+            });
+          if (selectedRoots.size === 0) {
+            const warning = document.createElement("p");
+            warning.className = "status err";
+            warning.textContent = adminTr("This subject will not see any organization members.");
+            roots.prepend(warning);
+          }
+        };
+
+        const resetUserResults = (label) => {
+          userResults.textContent = "";
+          const option = document.createElement("option");
+          option.value = "";
+          option.textContent = adminTr(label);
+          userResults.appendChild(option);
+          userResults.disabled = true;
+        };
+
+        const populateSubjects = () => {
+          subject.textContent = "";
+          const values = kind.value === "org_unit" ? units : groups;
+          values.forEach((value) => {
+            const option = document.createElement("option");
+            option.value = value.id;
+            option.textContent = value.name;
+            subject.appendChild(option);
+          });
+          const user = kind.value === "user";
+          subject.classList.toggle("hidden", user);
+          userSearch.classList.toggle("hidden", !user);
+          userResults.classList.toggle("hidden", !user);
+          policy.value = "default";
+          revision = 0;
+          loadedSubject = "";
+          selectedRoots.clear();
+          drawRoots();
+        };
+
+        const loadPolicy = async () => {
+          const id = subjectId();
+          if (!id) return;
+          setStatus("st-org-directory", adminTr("Loading"), "");
+          const response = await api(
+            "GET",
+            "/api/org-directory/" + encodeURIComponent(kind.value) + "/" + encodeURIComponent(id),
+          );
+          if (!response.ok) {
+            return setApiStatus("st-org-directory", response.data?.message, "Couldn't load directory policy.", "err");
+          }
+          const value = response.data?.policy || null;
+          loadedSubject = kind.value + ":" + id;
+          revision = Number(value?.revision || 0);
+          policy.value = value?.mode || "default";
+          selectedRoots.clear();
+          (value?.roots || []).forEach((entry) => selectedRoots.set(entry.unitId, entry.includeDescendants !== false));
+          drawRoots();
+          setStatus("st-org-directory", value ? adminTr("Policy loaded.") : adminTr("Using default rule."), "ok");
+        };
+
+        kind.onchange = populateSubjects;
+        subject.onchange = loadPolicy;
+        userResults.onchange = loadPolicy;
+        userSearch.oninput = () => {
+          clearTimeout(userTimer);
+          const query = userSearch.value.trim();
+          const request = ++userSequence;
+          if (query.length < 2) return resetUserResults("Type at least 2 characters");
+          userTimer = setTimeout(async () => {
+            const response = await api("GET", "/api/org-users/search?q=" + encodeURIComponent(query));
+            if (request !== userSequence) return;
+            if (!response.ok) return resetUserResults("Search failed.");
+            userResults.textContent = "";
+            const users = response.data?.users || [];
+            const placeholder = document.createElement("option");
+            placeholder.value = "";
+            placeholder.textContent = adminTr(users.length ? "Select a user" : "No matching users");
+            userResults.appendChild(placeholder);
+            users.forEach((user) => {
+              const option = document.createElement("option");
+              option.value = user.principalId;
+              option.textContent = `${user.displayName || user.principalId} — ${user.email || user.principalId}`;
+              userResults.appendChild(option);
+            });
+            userResults.disabled = users.length === 0;
+          }, 180);
+        };
+        policy.onchange = drawRoots;
+
+        const load = document.createElement("button");
+        load.type = "button";
+        load.textContent = adminTr("Load policy");
+        load.onclick = loadPolicy;
+        const save = document.createElement("button");
+        save.type = "button";
+        save.className = "primary";
+        save.textContent = adminTr("Save policy");
+        save.onclick = async () => {
+          const id = subjectId();
+          if (!id) return setStatus("st-org-directory", adminTr("Select a subject."), "err");
+          const key = kind.value + ":" + id;
+          if (loadedSubject !== key) return setStatus("st-org-directory", adminTr("Load this subject first."), "err");
+          save.disabled = true;
+          const path = "/api/org-directory/" + encodeURIComponent(kind.value) + "/" + encodeURIComponent(id);
+          const response =
+            policy.value === "default"
+              ? await api("DELETE", path + "?expectedRevision=" + encodeURIComponent(revision))
+              : await api("PUT", path, {
+                  mode: policy.value,
+                  roots:
+                    policy.value === "limited"
+                      ? [...selectedRoots].map(([unitId, includeDescendants]) => ({ unitId, includeDescendants }))
+                      : [],
+                  expectedRevision: revision,
+                });
+          save.disabled = false;
+          if (!response.ok) {
+            if (response.status === 409) {
+              setStatus("st-org-directory", adminTr("Policy changed. Reload before saving again."), "err");
+              return loadPolicy();
+            }
+            return setApiStatus("st-org-directory", response.data?.message, "Couldn't save directory policy.", "err");
+          }
+          await loadPolicy();
+          setStatus("st-org-directory", adminTr("Policy saved."), "ok");
+        };
+
+        resetUserResults("Type at least 2 characters");
+        populateSubjects();
+        subjectRow.append(
+          field("Subject type", kind),
+          field("Subject", subject),
+          field("User search", userSearch),
+          userResults,
+          load,
+        );
+        const policyRow = document.createElement("div");
+        policyRow.className = "grant-form";
+        policyRow.append(field("Directory rule", policy), save);
+        const status = document.createElement("p");
+        status.id = "st-org-directory";
+        status.className = "status";
+        body.append(subjectRow, policyRow, roots, status);
+        root.appendChild(
+          dataCard(
+            "Directory visibility",
+            "Personal rules override unit and access-group rules. Limited roots are merged and enforced by the server.",
+            body,
+          ),
+        );
+      }
       function renderOrgUnits(root, d) {
         const all = d.units || [];
         const units = all.filter((u) => u.status === "active");
+        const archivedUnits = all.filter((u) => u.status === "archived").sort((a, b) => a.name.localeCompare(b.name));
         defaultShell({
           stats: [
             [units.length, "Active units"],
             [all.length - units.length, "Archived units"],
           ],
         });
-        if (!units.some((u) => u.id === orgUnitSelectedId)) orgUnitSelectedId = units[0]?.id ?? null;
+        if (!all.some((u) => u.id === orgUnitSelectedId))
+          orgUnitSelectedId = units[0]?.id ?? archivedUnits[0]?.id ?? null;
 
-        const byId = new Map(units.map((u) => [u.id, u]));
+        const byId = new Map(all.map((u) => [u.id, u]));
         const byParent = new Map();
         units.forEach((u) => {
           const key = u.parentId && byId.has(u.parentId) ? u.parentId : "";
@@ -12998,8 +14653,41 @@
           return out;
         };
         const fail = (r, fallback) => {
-          if (r.status === 409 && r.data?.impact)
-            return setStatus("st-org-units", r.data.error + " " + JSON.stringify(r.data.impact), "err", true, false);
+          if (r.status === 409 && r.data?.impact) {
+            const message =
+              adminTr("Archive blocked.") +
+              " " +
+              adminTr("Active child units:") +
+              " " +
+              Number(r.data.impact.activeChildUnits || 0) +
+              ". " +
+              adminTr("Active members:") +
+              " " +
+              Number(r.data.impact.activeMembers || 0) +
+              ". " +
+              adminTr("Remove members and archive child units first.");
+            return setStatus("st-org-units", message, "err", true, false);
+          }
+          if (r.status === 409 && r.data?.error === "conflict") {
+            const selected = byId.get(orgUnitSelectedId);
+            const parent = selected?.parentId ? byId.get(selected.parentId) : null;
+            const parentLabel = parent?.name || selected?.parentId || "—";
+            return setStatus(
+              "st-org-units",
+              adminTr("Restore the parent unit first:") + " " + parentLabel,
+              "err",
+              true,
+              false,
+            );
+          }
+          if (Array.isArray(r.data?.invalidPrincipalIds) && r.data.invalidPrincipalIds.length)
+            return setStatus(
+              "st-org-units",
+              adminTr("No members were added. Unavailable users:") + " " + r.data.invalidPrincipalIds.join(", "),
+              "err",
+              true,
+              false,
+            );
           setApiStatus("st-org-units", r.data?.message, fallback, "err");
         };
         const mkField = (cls, labelText, control) => {
@@ -13053,7 +14741,7 @@
         const layout = document.createElement("div");
         layout.className = "org-layout";
         layout.append(
-          dataCard("Organization", "Active units in display order. Select one to manage it.", treeList),
+          dataCard("Organization", "Active and archived units. Select one to manage it.", treeList),
           detail,
         );
         root.appendChild(layout);
@@ -13061,6 +14749,14 @@
         st.className = "status";
         st.id = "st-org-units";
         root.appendChild(st);
+
+        const selectUnit = (unitId) => {
+          if (orgUnitSelectedId === unitId) return;
+          setStatus("st-org-units", "", "");
+          orgUnitSelectedId = unitId;
+          drawTree();
+          loadDetail();
+        };
 
         const drawTree = () => {
           treeList.textContent = "";
@@ -13078,17 +14774,27 @@
               b.className = "org-node" + (u.id === orgUnitSelectedId ? " active" : "");
               b.style.paddingLeft = 10 + depth * 18 + "px";
               b.textContent = u.name;
-              b.onclick = () => {
-                if (orgUnitSelectedId === u.id) return;
-                orgUnitSelectedId = u.id;
-                drawTree();
-                loadDetail();
-              };
+              b.onclick = () => selectUnit(u.id);
               treeList.appendChild(b);
               walkRows(u.id, depth + 1);
             });
           };
           walkRows("", 0);
+          if (archivedUnits.length) {
+            const label = document.createElement("p");
+            label.className = "empty";
+            label.textContent = adminTr("Archived units");
+            treeList.appendChild(label);
+            archivedUnits.forEach((u) => {
+              const b = document.createElement("button");
+              b.type = "button";
+              b.className = "org-node" + (u.id === orgUnitSelectedId ? " active" : "");
+              const parent = u.parentId ? byId.get(u.parentId) : null;
+              b.textContent = u.name + (parent ? ` — ${adminTr("Parent:")} ${parent.name}` : "");
+              b.onclick = () => selectUnit(u.id);
+              treeList.appendChild(b);
+            });
+          }
         };
 
         async function loadDetail() {
@@ -13130,17 +14836,25 @@
           );
           summary.appendChild(
             actionTable(
-              ["Principal", "Role", ""],
+              ["Name", "Job title", "Enterprise email", "Status", "Role", "Primary", ""],
               members,
               (m) => [
-                { text: m.principalId, cls: "mono" },
+                m.user?.displayName || m.principalId,
+                m.user?.jobTitle || "—",
+                m.user?.email || "—",
+                adminTr(m.user?.status || "unknown"),
                 { badge: adminTr(m.role), kind: m.role === "manager" ? "info" : "muted" },
+                m.isPrimary ? adminTr("Yes") : "",
                 {
-                  action: {
-                    label: "Remove",
-                    danger: true,
-                    run: () => removeMember(unit, m),
-                  },
+                  ...(managerMode && m.role === "manager"
+                    ? { text: "" }
+                    : {
+                        action: {
+                          label: "Remove",
+                          danger: true,
+                          run: () => removeMember(unit, m),
+                        },
+                      }),
                 },
               ],
               "No members yet.",
@@ -13148,33 +14862,76 @@
           );
           detail.appendChild(dataCard(unit.name, "", summary, { titleI18n: false }));
 
-          const memberInput = textInput("", "principal id (e.g. U07ABCD)");
+          if (unit.status === "archived") {
+            if (managerMode) return;
+            const restoreForm = document.createElement("div");
+            restoreForm.className = "grant-form";
+            const parent = unit.parentId ? byId.get(unit.parentId) : null;
+            if (parent) {
+              const parentInfo = document.createElement("p");
+              parentInfo.className = "status";
+              parentInfo.textContent = adminTr("Parent:") + " " + parent.name;
+              restoreForm.appendChild(parentInfo);
+            }
+            restoreForm.appendChild(
+              actionBtn("Restore unit", "primary", async () => {
+                const r = await api("PATCH", "/api/org-units/" + encodeURIComponent(unit.id), { status: "active" });
+                if (r.ok) renderData();
+                else fail(r, "Couldn't restore the unit.");
+              }),
+            );
+            detail.appendChild(dataCard("Restore unit", "Restore this unit to the active tree.", restoreForm));
+            return;
+          }
+
+          const memberInput = textInput("", "principal ids separated by commas or spaces");
+          const [memberSearch, memberSearchResults] = organizationUserSearch(
+            memberInput,
+            members.map((member) => member.principalId),
+          );
+          memberInput.addEventListener("input", () => setStatus("st-org-units", "", ""));
           const roleSel = selectOf(
-            [
-              ["member", adminTr("member")],
-              ["manager", adminTr("manager")],
-            ],
+            managerMode
+              ? [["member", adminTr("member")]]
+              : [
+                  ["member", adminTr("member")],
+                  ["manager", adminTr("manager")],
+                ],
             "member",
           );
           const addForm = document.createElement("div");
           addForm.className = "grant-form";
           addForm.append(
+            mkField("grow", "Search users", memberSearch),
+            mkField("grow", "Search results", memberSearchResults),
             mkField("grow", "Principal id", memberInput),
             mkField("", "Role", roleSel),
-            actionBtn("Add member", "primary", async () => {
-              const principalId = memberInput.value.trim();
-              if (!principalId) return setStatus("st-org-units", "Principal id required.", "err");
+            actionBtn("Add members", "primary", async () => {
+              const principalIds = [
+                ...new Set(
+                  memberInput.value
+                    .split(/[\s,]+/)
+                    .map((id) => id.trim())
+                    .filter(Boolean),
+                ),
+              ];
+              if (!principalIds.length) return setStatus("st-org-units", "Principal id required.", "err");
               const r = await api("POST", "/api/org-units/" + encodeURIComponent(unit.id) + "/members", {
-                principalId,
+                principalIds,
                 role: roleSel.value,
               });
               if (r.ok) {
+                setStatus("st-org-units", "", "");
                 detail.textContent = "";
                 drawDetail(r.data.unit || unit, r.data.members || []);
               } else fail(r, "Couldn't add member.");
             }),
           );
-          detail.appendChild(dataCard("Add member", "Add a principal to this unit as a member or manager.", addForm));
+          detail.appendChild(
+            dataCard("Add members", "Add up to 100 principal ids to this unit in one change.", addForm),
+          );
+
+          if (managerMode) return;
 
           const childName = textInput("");
           const childKind = selectOf(
@@ -13225,57 +14982,106 @@
           );
           detail.appendChild(dataCard("Rename", "Update the unit name and display order.", renameForm));
 
-          const excluded = descendantsOf(unit.id);
-          const candidates = units.filter((u) => !excluded.has(u.id));
-          const parentSel = selectOf(
-            candidates.map((u) => [u.id, u.name]),
-            unit.parentId,
-          );
-          const moveForm = document.createElement("div");
-          moveForm.className = "grant-form";
-          moveForm.append(
-            mkField("grow", "New parent", parentSel),
-            actionBtn("Move", "", async () => {
-              if (!parentSel.value) return setStatus("st-org-units", "Pick a new parent first.", "err");
-              const r = await api("PATCH", "/api/org-units/" + encodeURIComponent(unit.id), {
-                parentId: parentSel.value,
-              });
-              if (r.ok) renderData();
-              else fail(r, "Couldn't move the unit.");
-            }),
-          );
-          detail.appendChild(
-            dataCard(
-              "Move unit",
-              "Attach this unit under a different parent. It cannot move under itself or its descendants.",
-              moveForm,
-            ),
-          );
-
-          const archiveForm = document.createElement("div");
-          archiveForm.className = "grant-form";
-          archiveForm.appendChild(
-            actionBtn("Archive unit", "danger", async () => {
-              if (
-                !confirm(
-                  'Archive "' +
-                    unit.name +
-                    '"? It leaves the active tree; the server refuses while it still has active children or members.',
-                )
-              )
+          if (unit.parentId !== null) {
+            const excluded = descendantsOf(unit.id);
+            const candidates = units.filter((u) => !excluded.has(u.id) && u.id !== unit.parentId);
+            const parentSel = selectOf(
+              [["", adminTr("Choose a new parent")], ...candidates.map((u) => [u.id, u.name])],
+              "",
+            );
+            const moveForm = document.createElement("div");
+            moveForm.className = "grant-form";
+            const moveImpact = document.createElement("p");
+            moveImpact.className = "status";
+            const refreshMoveImpact = async () => {
+              const parentId = parentSel.value;
+              if (!parentId) {
+                moveImpact.textContent = "";
                 return;
-              const r = await api("PATCH", "/api/org-units/" + encodeURIComponent(unit.id), { status: "archived" });
-              if (r.ok) renderData();
-              else fail(r, "Couldn't archive the unit.");
-            }),
-          );
-          detail.appendChild(
-            dataCard(
-              "Archive unit",
-              "Archived units leave the active tree. The server refuses while the unit still has active children or members and reports the impact.",
-              archiveForm,
-            ),
-          );
+              }
+              const r = await api(
+                "GET",
+                "/api/org-units/" + encodeURIComponent(unit.id) + "/impact?newParentId=" + encodeURIComponent(parentId),
+              );
+              if (parentId !== parentSel.value) return;
+              moveImpact.textContent = adminTr(
+                r.ok
+                  ? `${r.data.impact.activeUnits} active units and ${r.data.impact.activeMembers} active members will move.`
+                  : r.data?.message || `Couldn't preview the move (${r.status}).`,
+              );
+              moveImpact.className = "status" + (r.ok ? "" : " err");
+            };
+            parentSel.onchange = refreshMoveImpact;
+            moveForm.append(
+              mkField("grow", "New parent", parentSel),
+              moveImpact,
+              actionBtn("Move", "", async () => {
+                if (!parentSel.value) return setStatus("st-org-units", "Pick a new parent first.", "err");
+                const preview = await api(
+                  "GET",
+                  "/api/org-units/" +
+                    encodeURIComponent(unit.id) +
+                    "/impact?newParentId=" +
+                    encodeURIComponent(parentSel.value),
+                );
+                if (!preview.ok) return fail(preview, "Couldn't preview the move.");
+                const target = byId.get(parentSel.value);
+                if (!target) return setStatus("st-org-units", "Pick a new parent first.", "err");
+                if (
+                  !confirm(
+                    adminTr(
+                      `Move "${unit.name}" under "${target.name}"? ${preview.data.impact.activeUnits} active units and ${preview.data.impact.activeMembers} active members will move. Continue?`,
+                    ),
+                  )
+                )
+                  return;
+                const r = await api("PATCH", "/api/org-units/" + encodeURIComponent(unit.id), {
+                  parentId: parentSel.value,
+                });
+                if (r.ok) renderData();
+                else fail(r, "Couldn't move the unit.");
+              }),
+            );
+            detail.appendChild(
+              dataCard(
+                "Move unit",
+                "Attach this unit under a different parent. It cannot move under itself or its descendants.",
+                moveForm,
+              ),
+            );
+            refreshMoveImpact();
+
+            const archiveForm = document.createElement("div");
+            archiveForm.className = "grant-form";
+            archiveForm.appendChild(
+              actionBtn("Archive unit", "danger", async () => {
+                if (
+                  !confirm(
+                    adminTr("Archive unit") +
+                      ' "' +
+                      unit.name +
+                      '"? ' +
+                      adminTr(
+                        "It leaves the active tree; the server refuses while it still has active children or members.",
+                      ),
+                  )
+                )
+                  return;
+                const r = await api("PATCH", "/api/org-units/" + encodeURIComponent(unit.id), {
+                  status: "archived",
+                });
+                if (r.ok) renderData();
+                else fail(r, "Couldn't archive the unit.");
+              }),
+            );
+            detail.appendChild(
+              dataCard(
+                "Archive unit",
+                "Archived units leave the active tree. The server refuses while the unit still has active children or members and reports the impact.",
+                archiveForm,
+              ),
+            );
+          }
         }
 
         async function removeMember(unit, m) {
@@ -13296,16 +15102,28 @@
       function renderOrgGroups(root, d) {
         const all = d.groups || [];
         const groups = all.filter((g) => g.status === "active").sort((a, b) => a.name.localeCompare(b.name));
+        const archivedGroups = all.filter((g) => g.status === "archived").sort((a, b) => a.name.localeCompare(b.name));
         defaultShell({
           stats: [
             [groups.length, "Active groups"],
             [all.length - groups.length, "Archived groups"],
           ],
         });
-        if (!groups.some((g) => g.id === orgGroupSelectedId)) orgGroupSelectedId = groups[0]?.id ?? null;
+        if (!all.some((g) => g.id === orgGroupSelectedId))
+          orgGroupSelectedId = groups[0]?.id ?? archivedGroups[0]?.id ?? null;
 
-        const byId = new Map(groups.map((g) => [g.id, g]));
-        const fail = (r, fallback) => setApiStatus("st-org-groups", r.data?.message, fallback, "err");
+        const byId = new Map(all.map((g) => [g.id, g]));
+        const fail = (r, fallback) => {
+          if (Array.isArray(r.data?.invalidPrincipalIds) && r.data.invalidPrincipalIds.length)
+            return setStatus(
+              "st-org-groups",
+              adminTr("No members were added. Unavailable users:") + " " + r.data.invalidPrincipalIds.join(", "),
+              "err",
+              true,
+              false,
+            );
+          setApiStatus("st-org-groups", r.data?.message, fallback, "err");
+        };
         const mkField = (cls, labelText, control) => {
           const f = document.createElement("div");
           f.className = "f" + (cls ? " " + cls : "");
@@ -13350,7 +15168,7 @@
         const layout = document.createElement("div");
         layout.className = "org-layout";
         layout.append(
-          dataCard("Access groups", "Active groups and their member counts. Select one to manage it.", groupList),
+          dataCard("Access groups", "Active and archived groups. Select one to load its members.", groupList),
           detail,
         );
         root.appendChild(layout);
@@ -13373,22 +15191,31 @@
             } else fail(r, "Couldn't create the group.");
           }),
         );
-        root.appendChild(dataCard("New access group", "Create a named group to manage member access.", createForm));
+        if (!managerMode) {
+          root.appendChild(dataCard("New access group", "Create a named group to manage member access.", createForm));
+        }
         root.appendChild(st);
 
         const counts = new Map();
         const countNodes = new Map();
+        const selectGroup = (groupId) => {
+          if (orgGroupSelectedId === groupId) return;
+          setStatus("st-org-groups", "", "");
+          orgGroupSelectedId = groupId;
+          drawList();
+          loadDetail();
+        };
         const drawList = () => {
           groupList.textContent = "";
           countNodes.clear();
-          if (!groups.length) {
+          if (!groups.length && !archivedGroups.length) {
             const p = document.createElement("p");
             p.className = "empty";
             p.textContent = adminTr("No active groups yet.");
             groupList.appendChild(p);
             return;
           }
-          groups.forEach((g) => {
+          const appendGroup = (g) => {
             const b = document.createElement("button");
             b.type = "button";
             b.className = "org-node with-count" + (g.id === orgGroupSelectedId ? " active" : "");
@@ -13401,28 +15228,23 @@
             if (known !== undefined) count.textContent = String(known);
             b.append(name, count);
             countNodes.set(g.id, count);
-            b.onclick = () => {
-              if (orgGroupSelectedId === g.id) return;
-              orgGroupSelectedId = g.id;
-              drawList();
-              loadDetail();
-            };
+            b.onclick = () => selectGroup(g.id);
             groupList.appendChild(b);
-          });
+          };
+          groups.forEach(appendGroup);
+          if (archivedGroups.length) {
+            const label = document.createElement("p");
+            label.className = "empty";
+            label.textContent = adminTr("Archived groups");
+            groupList.appendChild(label);
+            archivedGroups.forEach(appendGroup);
+          }
         };
         const setCount = (groupId, members) => {
           counts.set(groupId, members.length);
           const node = countNodes.get(groupId);
           if (node && node.isConnected) node.textContent = String(members.length);
         };
-        const loadCounts = () => {
-          groups.forEach(async (g) => {
-            if (g.id === orgGroupSelectedId) return;
-            const r = await api("GET", "/api/org-groups/" + encodeURIComponent(g.id));
-            if (r.ok) setCount(g.id, r.data.members || []);
-          });
-        };
-
         async function loadDetail() {
           detail.textContent = "";
           const selected = byId.get(orgGroupSelectedId);
@@ -13462,17 +15284,24 @@
           );
           summary.appendChild(
             actionTable(
-              ["Principal", "Role", ""],
+              ["Name", "Job title", "Enterprise email", "Status", "Role", ""],
               members,
               (m) => [
-                { text: m.principalId, cls: "mono" },
+                m.user?.displayName || m.principalId,
+                m.user?.jobTitle || "—",
+                m.user?.email || "—",
+                adminTr(m.user?.status || "unknown"),
                 { badge: adminTr(m.role), kind: m.role === "manager" ? "info" : "muted" },
                 {
-                  action: {
-                    label: "Remove",
-                    danger: true,
-                    run: () => removeMember(group, m),
-                  },
+                  ...(managerMode && m.role === "manager"
+                    ? { text: "" }
+                    : {
+                        action: {
+                          label: "Remove",
+                          danger: true,
+                          run: () => removeMember(group, m),
+                        },
+                      }),
                 },
               ],
               "No members yet.",
@@ -13480,33 +15309,73 @@
           );
           detail.appendChild(dataCard(group.name, "", summary, { titleI18n: false }));
 
-          const memberInput = textInput("", "principal id (e.g. U07ABCD)");
+          if (group.status === "archived") {
+            if (managerMode) return;
+            const restoreForm = document.createElement("div");
+            restoreForm.className = "grant-form";
+            restoreForm.appendChild(
+              actionBtn("Restore group", "primary", async () => {
+                const r = await api("PATCH", "/api/org-groups/" + encodeURIComponent(group.id), {
+                  status: "active",
+                });
+                if (r.ok) renderData();
+                else fail(r, "Couldn't restore the group.");
+              }),
+            );
+            detail.appendChild(
+              dataCard("Restore group", "Restore this group and its preserved membership.", restoreForm),
+            );
+            return;
+          }
+
+          const memberInput = textInput("", "principal ids separated by commas or spaces");
+          const [memberSearch, memberSearchResults] = organizationUserSearch(
+            memberInput,
+            members.map((member) => member.principalId),
+          );
+          memberInput.addEventListener("input", () => setStatus("st-org-groups", "", ""));
           const roleSel = selectOf(
-            [
-              ["member", adminTr("member")],
-              ["manager", adminTr("manager")],
-            ],
+            managerMode
+              ? [["member", adminTr("member")]]
+              : [
+                  ["member", adminTr("member")],
+                  ["manager", adminTr("manager")],
+                ],
             "member",
           );
           const addForm = document.createElement("div");
           addForm.className = "grant-form";
           addForm.append(
+            mkField("grow", "Search users", memberSearch),
+            mkField("grow", "Search results", memberSearchResults),
             mkField("grow", "Principal id", memberInput),
             mkField("", "Role", roleSel),
-            actionBtn("Add member", "primary", async () => {
-              const principalId = memberInput.value.trim();
-              if (!principalId) return setStatus("st-org-groups", "Principal id required.", "err");
+            actionBtn("Add members", "primary", async () => {
+              const principalIds = [
+                ...new Set(
+                  memberInput.value
+                    .split(/[\s,]+/)
+                    .map((id) => id.trim())
+                    .filter(Boolean),
+                ),
+              ];
+              if (!principalIds.length) return setStatus("st-org-groups", "Principal id required.", "err");
               const r = await api("POST", "/api/org-groups/" + encodeURIComponent(group.id) + "/members", {
-                principalId,
+                principalIds,
                 role: roleSel.value,
               });
               if (r.ok) {
+                setStatus("st-org-groups", "", "");
                 detail.textContent = "";
                 drawDetail(r.data.group || group, r.data.members || []);
               } else fail(r, "Couldn't add member.");
             }),
           );
-          detail.appendChild(dataCard("Add member", "Add a principal to this group as a member or manager.", addForm));
+          detail.appendChild(
+            dataCard("Add members", "Add up to 100 principal ids to this group in one change.", addForm),
+          );
+
+          if (managerMode) return;
 
           const renameName = textInput(group.name);
           const renameForm = document.createElement("div");
@@ -13527,7 +15396,15 @@
           archiveForm.className = "grant-form";
           archiveForm.appendChild(
             actionBtn("Archive group", "danger", async () => {
-              if (!confirm('Archive "' + group.name + '"? It leaves the active list; its membership is preserved.'))
+              if (
+                !confirm(
+                  adminTr("Archive group") +
+                    ' "' +
+                    group.name +
+                    '"? ' +
+                    adminTr("It leaves the active list; its membership is preserved."),
+                )
+              )
                 return;
               const r = await api("PATCH", "/api/org-groups/" + encodeURIComponent(group.id), {
                 status: "archived",
@@ -13558,7 +15435,6 @@
 
         drawList();
         loadDetail();
-        loadCounts();
       }
 
       const fmtBytes = (n) => {

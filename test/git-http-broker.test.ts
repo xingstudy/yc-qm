@@ -185,6 +185,36 @@ test("git HTTP broker rejects a token whose principal is no longer active", asyn
   assert.match(await text(c.res), /no longer active/);
 });
 
+test("git HTTP broker rejects a stale organization session before contacting upstream", async () => {
+  const deps: ServerDeps = {
+    control: {} as ServerDeps["control"],
+    organization: {
+      checkActive: async () => ({ status: "active", sessionVersion: 5 }),
+    } as unknown as ServerDeps["organization"],
+    serviceCreds: {
+      getServiceCredentialSecret: async () => {
+        throw new Error("must not fetch credential");
+      },
+    } as unknown as ServerDeps["serviceCreds"],
+  };
+  const c = await ctx("/v1/credentials/git/gitlab/acme/repo.git/info/refs", "GET", deps);
+  c.req.headers["x-agent-capability"] = await mintCapabilityToken(
+    {
+      actorId: "U1",
+      sessionVersion: 4,
+      scopeId: "personal:U1",
+      aud: CREDENTIAL_BROKER_AUD,
+      credentials: ["gitlab"],
+      exp: Date.now() + CAPABILITY_TTL_MS,
+    },
+    SECRET,
+  );
+  await brokerGitHttp(c);
+
+  assert.equal(c.res.statusCode, 401);
+  assert.match(await text(c.res), /no longer active/);
+});
+
 test("git HTTP broker rejects a capability whose current scope membership was revoked", async () => {
   const deps: ServerDeps = {
     control: {} as ServerDeps["control"],

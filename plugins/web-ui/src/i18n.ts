@@ -5,6 +5,38 @@ export type AppLocale = "en" | "zh-CN";
 export const LOCALE_KEY = "qm:locale";
 
 const ZH: Record<string, string> = {
+  "Access group": "访问组",
+  "Access mode": "访问模式",
+  "all active organization users": "组织内所有活跃用户",
+  at: "时间",
+  "Authorized subjects": "授权主体",
+  "Change preview": "变更预览",
+  "Changes are recorded in Audit.": "变更会记录到审计日志中。",
+  "current members of the home context": "所属上下文的当前成员",
+  "Effective active users": "实际可用的活跃用户",
+  "Entire organization": "整个组织",
+  "Enter at least two characters to search for a person.": "请至少输入两个字符来搜索人员。",
+  "Failed to update Skill Access.": "无法更新技能访问权限。",
+  "Find a person": "查找人员",
+  "Home context": "所属上下文",
+  "Last updated by": "最后更新人",
+  "No active user will be able to use this Skill.": "没有任何活跃用户能够使用此技能。",
+  "No visible directory subjects.": "没有可见的组织目录主体。",
+  "Couldn't search for people.": "无法搜索人员。",
+  "Organization unit": "组织单元",
+  Person: "人员",
+  Revision: "修订版",
+  "Reload the page before retrying.": "重试前请重新加载页面。",
+  "Save access": "保存访问权限",
+  "Saving access…": "正在保存访问权限…",
+  "Search people": "搜索人员",
+  "Selected people and groups": "指定人员和组",
+  "Skill Access": "技能访问权限",
+  "The current policy was reloaded.": "已重新加载当前策略。",
+  "Unavailable for this home context": "此所属上下文暂无法统计",
+  "Use permission is separate from this Skill's home context and management permission.":
+    "使用权限独立于技能的所属上下文和管理权限。",
+  "will be evaluated at use time.": "会在使用时实时计算。",
   Admin: "管理",
   agent: "智能体",
   "another conversation": "另一个对话",
@@ -795,6 +827,14 @@ function translatePattern(source: string): string | null {
   if (match) return `${match[1]} 小时前`;
   match = source.match(/^(\d+)d ago$/);
   if (match) return `${match[1]} 天前`;
+  match = source.match(/^(\d+) selected subjects?$/);
+  if (match) return `已选择 ${match[1]} 个主体`;
+  match = source.match(/^No people found for “(.+)”\.$/);
+  if (match) return `没有找到匹配“${match[1]}”的人员。`;
+  match = source.match(
+    /^(\d+) existing subjects? (?:is|are) outside your directory view\. An organization administrator must update this policy\.$/,
+  );
+  if (match) return `有 ${match[1]} 个现有主体不在你的组织目录可见范围内，必须由组织管理员更新此策略。`;
   match = source.match(/^(\d+) conversations?$/);
   if (match) return `${match[1]} 个对话`;
   match = source.match(/^(\d+) files?$/);

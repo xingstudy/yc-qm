@@ -18,6 +18,17 @@ test("admin and web surfaces share one persisted locale", () => {
   assert.match(html, /\[\.\.\.\(navigator\.languages \|\| \[\]\), navigator\.language\]/);
 });
 
+test("Skill Access dynamic labels are translated in Chinese", () => {
+  const dictionary = adminDictionary();
+  assert.equal(dictionary.Person, "人员");
+  assert.equal(dictionary["Organization unit"], "组织节点");
+  assert.equal(dictionary["Access group"], "访问组");
+  assert.equal(dictionary["current active members of the home context"], "所属上下文的当前活跃成员");
+  assert.equal(dictionary["all active organization users"], "组织内全部活跃用户");
+  assert.equal(dictionary["Changes are recorded in Audit."], "变更会记录在审计日志中。");
+  assert.match(html, /selected subjects\?/);
+});
+
 test("admin exposes a bilingual control and translates only explicit UI sinks", () => {
   assert.match(html, /id="locale-toggle" type="button" data-i18n-skip>中文<\/button/);
   assert.match(html, /const ADMIN_ZH = \{/);

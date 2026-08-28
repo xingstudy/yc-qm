@@ -22,6 +22,13 @@ export function buildChildSpecs(i: SpecInputs): ChildSpec[] {
   const watchArgs = i.watch ? ["--watch"] : [];
   const base = { ...i.baseEnv, ...i.sandboxEnv };
   const orgId = i.baseEnv.DEV_INSTANCE_ORG_ID || "acme";
+  const orgBootstrapUsers = [
+    ...new Set(
+      [...(base.ORG_BOOTSTRAP_USERS ?? "").split(","), i.portalDevPrincipal]
+        .map((principalId) => principalId.trim())
+        .filter(Boolean),
+    ),
+  ].join(",");
   const signing: Record<string, string> = i.coreSigningSecret ? { CORE_SIGNING_SECRET: i.coreSigningSecret } : {};
   return [
     {
@@ -31,6 +38,7 @@ export function buildChildSpecs(i: SpecInputs): ChildSpec[] {
       env: {
         ...base,
         ORG_ID: orgId,
+        ORG_BOOTSTRAP_USERS: orgBootstrapUsers,
         SESSION_STORE: i.sessionStore,
         RUN_STORE: i.runStore,
         PORT: String(i.ports.core),

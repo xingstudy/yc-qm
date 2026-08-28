@@ -13,17 +13,18 @@ import { deploymentView, type App, type DeployInput } from "../app.ts";
 import { errMessage } from "../../util/errors.ts";
 import { resolveBranding } from "../../resolution/branding.ts";
 import { canonicalPayload, escapeHtml, sendJson, verifyOrReject } from "../http.ts";
-import { verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../auth/portal-identity.ts";
+import { PORTAL_IDENTITY_HEADER } from "../../auth/portal-identity.ts";
 import { audit, authorizeAdmin, isObj, orgScope } from "./shared.ts";
 import { parseScopeId, scopeId, type Permission } from "../../types.ts";
 import type { ApiCtx, BaseCtx, Route } from "./route.ts";
-import { CONFIG_DEFAULTS } from "../../config.ts";
+import { CONFIG_DEFAULTS, orgId as configOrgId } from "../../config.ts";
 import { resolveShareTarget as resolveShareTargetGrammar } from "../artifact-share.ts";
 import { mintDeployOwnerToken, verifyDeployGitAccess, verifyDeployOwnerToken } from "../../deploy/access-token.ts";
 import { APP_SHELL_PATH_PREFIX, appShellHtml } from "../../deploy/app-shell.ts";
 import { principalDestination } from "../../reach/reach.ts";
-import { portalSessionSub } from "../../deploy/viewer-session.ts";
+import { portalSessionClaims } from "../../deploy/viewer-session.ts";
 import { proxyHeaders } from "../../util/http-proxy.ts";
+import { currentPortalActor } from "../portal-actor.ts";
 
 function isDeployInput(b: unknown): b is DeployInput {
   return (
@@ -55,18 +56,9 @@ async function proxyDeployment(ctx: BaseCtx): Promise<void> {
   )
     return;
   if (deps.requireSignedPortalIdentity || deps.production) {
-    const psecret = deps.portalIdentitySecret ?? secret;
-    const rawTok = req.headers[PORTAL_IDENTITY_HEADER];
-    const tok = Array.isArray(rawTok) ? rawTok[0] : rawTok;
-    const actor = psecret && tok ? await verifyPortalIdentity(tok, psecret, Date.now()) : null;
-    if (!psecret || !actor || actor.p !== principal)
+    const actor = await currentPortalActor(req, deps, secret);
+    if (!actor || actor.p !== principal)
       return sendJson(res, 403, { error: "forbidden", message: "portal identity required" });
-    if (deps.identity) {
-      await deps.identity.refresh();
-      if (deps.identity.classify(actor.p).type !== "internal") {
-        return sendJson(res, 403, { error: "forbidden", message: "principal is no longer active" });
-      }
-    }
   }
   const reach = await app.reachDeployment(id, principal);
   return proxyReach(ctx, reach, subPath);
@@ -106,7 +98,14 @@ async function proxyAdminDeployment(ctx: BaseCtx): Promise<void> {
   )
     return;
   const deployment = (await app.listDeployments()).find((d) => d.id === parts.id);
-  const actor = await authorizeAdmin({ req, res, deps, capability: null }, deployment?.ownerScopeId ?? orgScope(deps));
+  const portalActor = await currentPortalActor(req, deps, secret);
+  if ((deps.requireSignedPortalIdentity || deps.production) && !portalActor) {
+    return sendJson(res, 401, { error: "unauthorized", message: "portal identity required" });
+  }
+  const actor = await authorizeAdmin(
+    { req, res, deps, capability: null, actor: portalActor },
+    deployment?.ownerScopeId ?? orgScope(deps),
+  );
   if (!actor) return;
   if (!deployment) return sendJson(res, 404, { error: "not_found" });
   audit(deps, {
@@ -158,6 +157,22 @@ interface DeploymentHttp2Connection {
   retiring?: boolean;
 }
 const deploymentHttp2Sessions = new Map<string, DeploymentHttp2Connection>();
+
+async function organizationSessionIsActive(
+  ctx: BaseCtx,
+  principalId: string,
+  sessionVersion: number,
+): Promise<boolean> {
+  if (ctx.deps.organization) {
+    const user = await ctx.deps.organization.checkActive(principalId);
+    return Boolean(user && user.status === "active" && user.sessionVersion === sessionVersion);
+  }
+  if (ctx.deps.identity) {
+    await ctx.deps.identity.refresh();
+    return ctx.deps.identity.classify(principalId).type === "internal";
+  }
+  return true;
+}
 
 function forwardableHeaders(req: BaseCtx["req"]): Record<string, string | string[]> {
   const out = proxyHeaders(req.headers, ["host", ...GATEWAY_AUTH_HEADERS]);
@@ -724,7 +739,11 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
   let ownerCookie: string | null = null;
   if (fromOwnerQuery) {
     const session = await verifyDeployOwnerToken(gateSecret, fromOwnerQuery, slug);
-    if (session && (await app.canManageDeployment(slug, session.sub))) {
+    if (
+      session &&
+      (await organizationSessionIsActive(ctx, session.sub, session.sv)) &&
+      (await app.canManageDeployment(slug, session.sub))
+    ) {
       const maxAge = Math.max(1, Math.floor((session.exp - Date.now()) / 1000));
       ownerCookie = `dpl_owner=${fromOwnerQuery}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
     }
@@ -746,7 +765,13 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
   const ownerCookieValue = cookieValue(req.headers.cookie, "dpl_owner");
   if (ownerCookieValue) {
     const session = await verifyDeployOwnerToken(gateSecret, ownerCookieValue, slug);
-    if (session && (await app.canManageDeployment(slug, session.sub))) ownerSub = session.sub;
+    if (
+      session &&
+      (await organizationSessionIsActive(ctx, session.sub, session.sv)) &&
+      (await app.canManageDeployment(slug, session.sub))
+    ) {
+      ownerSub = session.sub;
+    }
   }
   if (ownerSub && ctx.method === "GET" && pathname.startsWith(APP_SHELL_PATH_PREFIX)) {
     if (pathname === "/__claw__/version") {
@@ -787,7 +812,13 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
   const sessionSecret = deps.deployAppsSessionSecret;
   const loginUrl = deps.deployAppsLoginUrl;
   const wantsHtml = ctx.method === "GET" && String(req.headers.accept ?? "").includes("text/html");
-  const sub = sessionSecret ? portalSessionSub(req.headers.cookie, sessionSecret) : null;
+  const viewerSession = sessionSecret ? portalSessionClaims(req.headers.cookie, sessionSecret) : null;
+  const sub =
+    viewerSession &&
+    (!ctx.deps.organization || viewerSession.org === configOrgId()) &&
+    (await organizationSessionIsActive(ctx, viewerSession.sub, viewerSession.sv))
+      ? viewerSession.sub
+      : null;
   if (!sessionSecret || !loginUrl) {
     sendJson(res, 503, { error: "unavailable", message: "sign-in is not configured for deployment subdomains" });
     return true;
@@ -906,6 +937,17 @@ function signInFailedHtml(signIn: string): string {
 
 const deploymentId = async (app: App, idOrName: string): Promise<string | undefined> =>
   (await app.listDeployments()).find((d) => d.id === idOrName || d.name === idOrName)?.id;
+
+async function deploymentIdForCaller(
+  ctx: ApiCtx,
+  idOrName: string,
+  assertedPrincipalId?: string,
+): Promise<string | undefined> {
+  const principalId = ctx.capability?.actorId ?? ctx.actor?.p ?? assertedPrincipalId;
+  if (!principalId) return deploymentId(ctx.app, idOrName);
+  return (await ctx.app.listDeploymentsForViewer(principalId)).find((d) => d.id === idOrName || d.name === idOrName)
+    ?.id;
+}
 
 function deploymentGitParts(pathname: string): { id: string; tail: string } | null {
   const prefix = "/v1/deployments/";
@@ -1064,7 +1106,13 @@ async function serveDeploymentGit(ctx: BaseCtx): Promise<void> {
       return sendJson(ctx.res, 403, { error: "forbidden", message: "deployment git token is read-only" });
     if (
       access.principalId &&
-      !(await ctx.app.authorizesDeploymentGitAccess(parts.id, access.principalId, access.permission))
+      !(await ctx.app.authorizesDeploymentGitAccess(
+        parts.id,
+        access.principalId,
+        access.permission,
+        access.sv,
+        access.botActor,
+      ))
     ) {
       return sendJson(ctx.res, 403, { error: "forbidden", message: "deployment git access has been revoked" });
     }
@@ -1089,7 +1137,13 @@ async function serveDeploymentGit(ctx: BaseCtx): Promise<void> {
       ? await ctx.app.runDeploymentGitPush(parts.id, async () => {
           if (
             access?.principalId &&
-            !(await ctx.app.authorizesDeploymentGitAccess(parts.id, access.principalId, "write"))
+            !(await ctx.app.authorizesDeploymentGitAccess(
+              parts.id,
+              access.principalId,
+              "write",
+              access.sv,
+              access.botActor,
+            ))
           ) {
             const body = Buffer.from(
               JSON.stringify({ error: "forbidden", message: "deployment git write access has been revoked" }),
@@ -1135,6 +1189,7 @@ async function deploymentGitUrl(ctx: ApiCtx): Promise<void> {
   const result = await app.deploymentGitUrlFor(params.id!, capability.actorId, {
     secret: ctx.secret,
     baseUrl: gitUrlBase(ctx),
+    ...(capability.botActor ? { botActor: true } : {}),
   });
   if (!result) return sendJson(res, 403, { error: "forbidden", message: "no access to this deployment" });
   return sendJson(res, 200, result);
@@ -1150,13 +1205,24 @@ async function deploymentOwnerUrl(ctx: ApiCtx): Promise<void> {
   const appsDomain = deps.deployAppsDomain;
   if (!gateSecret || !appsDomain)
     return sendJson(res, 503, { error: "unavailable", message: "deployment subdomains are not configured" });
-  const deployment = await app.getDeployment(params.id!);
+  const visibleId = await deploymentIdForCaller(ctx, params.id!, sub);
+  if (!visibleId) return sendJson(res, 404, { error: "not_found" });
+  const deployment = await app.getDeployment(visibleId);
   if (!deployment) return sendJson(res, 404, { error: "not_found" });
   const slug = deployment.name ?? deployment.id;
   if (!(await app.canManageDeployment(deployment.id, sub, ctx.capability?.scopeId)))
     return sendJson(res, 403, { error: "forbidden", message: "only someone who manages this app can edit it live" });
+  const active = deps.organization ? await deps.organization.checkActive(sub) : null;
+  if (deps.organization && (!active || active.status !== "active")) {
+    return sendJson(res, 403, { error: "forbidden", message: "principal is no longer active" });
+  }
   const exp = Date.now() + OWNER_LINK_TTL_MS;
-  const token = await mintDeployOwnerToken(gateSecret, { slug, sub, exp });
+  const token = await mintDeployOwnerToken(gateSecret, {
+    slug,
+    sub,
+    sv: active?.sessionVersion ?? ctx.actor?.sv ?? 0,
+    exp,
+  });
   return sendJson(res, 200, { url: `https://${slug}.${appsDomain}/?owner=${token}`, expiresAt: exp });
 }
 
@@ -1181,7 +1247,11 @@ async function listDeployments(ctx: ApiCtx): Promise<void> {
   const deployments = await Promise.all(
     visible.map(async (d) => {
       if (!secret) return d;
-      const git = await app.deploymentGitUrlFor(d.id, principalId, { secret, baseUrl });
+      const git = await app.deploymentGitUrlFor(d.id, principalId, {
+        secret,
+        baseUrl,
+        ...(capability?.botActor ? { botActor: true } : {}),
+      });
       return git ? { ...d, gitUrl: git.url } : d;
     }),
   );
@@ -1258,8 +1328,8 @@ async function fetchDeployment(ctx: ApiCtx): Promise<void> {
 }
 
 export async function getDeployment(ctx: ApiCtx): Promise<void> {
-  const { res, app, url, secret, capability, params } = ctx;
-  const principalId = capability ? capability.actorId : url.searchParams.get("principalId");
+  const { res, app, url, secret, capability, actor, params } = ctx;
+  const principalId = capability?.actorId ?? actor?.p ?? url.searchParams.get("principalId");
   const id = params.id!;
   let deployment;
   if (principalId) {
@@ -1270,13 +1340,17 @@ export async function getDeployment(ctx: ApiCtx): Promise<void> {
   }
   if (!deployment) return sendJson(res, 404, { error: "not_found" });
   if (!principalId || !secret) return sendJson(res, 200, { deployment });
-  const git = await app.deploymentGitUrlFor(deployment.id, principalId, { secret, baseUrl: gitUrlBase(ctx) });
+  const git = await app.deploymentGitUrlFor(deployment.id, principalId, {
+    secret,
+    baseUrl: gitUrlBase(ctx),
+    ...(capability?.botActor ? { botActor: true } : {}),
+  });
   return sendJson(res, 200, { deployment: git ? { ...deployment, gitUrl: git.url } : deployment });
 }
 
 async function rollbackDeployment(ctx: ApiCtx): Promise<void> {
   const { res, app, params, body } = ctx;
-  const id = await deploymentId(app, params.id!);
+  const id = await deploymentIdForCaller(ctx, params.id!);
   if (!id) return sendJson(res, 404, { error: "not_found" });
   if (!(await callerMayManageDeployment(ctx, id))) return sendJson(res, 403, { error: "forbidden" });
   const b = body as { version?: unknown };
@@ -1292,7 +1366,7 @@ async function rollbackDeployment(ctx: ApiCtx): Promise<void> {
 
 async function redeployDeployment(ctx: ApiCtx): Promise<void> {
   const { res, app, params, body } = ctx;
-  const id = await deploymentId(app, params.id!);
+  const id = await deploymentIdForCaller(ctx, params.id!);
   if (!id) return sendJson(res, 404, { error: "not_found" });
   if (!(await callerMayManageDeployment(ctx, id))) return sendJson(res, 403, { error: "forbidden" });
   const b = body as { entrypoint?: unknown; files?: unknown };
@@ -1313,7 +1387,7 @@ async function callerMayManageDeployment(ctx: ApiCtx, id: string): Promise<boole
 
 export async function archiveDeployment(ctx: ApiCtx): Promise<void> {
   const { res, app, params } = ctx;
-  const id = await deploymentId(app, params.id!);
+  const id = await deploymentIdForCaller(ctx, params.id!);
   if (!id) return sendJson(res, 404, { error: "not_found" });
   if (!(await callerMayManageDeployment(ctx, id)))
     return sendJson(res, 403, { error: "forbidden", message: "only someone who manages this app can archive it" });
@@ -1327,7 +1401,7 @@ export async function archiveDeployment(ctx: ApiCtx): Promise<void> {
 
 export async function restoreDeployment(ctx: ApiCtx): Promise<void> {
   const { res, app, params, capability, body } = ctx;
-  const id = await deploymentId(app, params.id!);
+  const id = await deploymentIdForCaller(ctx, params.id!);
   if (!id) return sendJson(res, 404, { error: "not_found" });
   if (!(await callerMayManageDeployment(ctx, id)))
     return sendJson(res, 403, { error: "forbidden", message: "only someone who manages this app can restore it" });
@@ -1346,7 +1420,7 @@ export async function restoreDeployment(ctx: ApiCtx): Promise<void> {
 
 export async function renameDeployment(ctx: ApiCtx): Promise<void> {
   const { res, app, params, body } = ctx;
-  const id = await deploymentId(app, params.id!);
+  const id = await deploymentIdForCaller(ctx, params.id!);
   if (!id) return sendJson(res, 404, { error: "not_found" });
   if (!(await callerMayManageDeployment(ctx, id)))
     return sendJson(res, 403, { error: "forbidden", message: "only someone who manages this app can rename it" });
@@ -1362,7 +1436,7 @@ export async function renameDeployment(ctx: ApiCtx): Promise<void> {
 
 export async function setDeploymentDisplayName(ctx: ApiCtx): Promise<void> {
   const { res, app, params, body } = ctx;
-  const id = await deploymentId(app, params.id!);
+  const id = await deploymentIdForCaller(ctx, params.id!);
   if (!id) return sendJson(res, 404, { error: "not_found" });
   if (!(await callerMayManageDeployment(ctx, id)))
     return sendJson(res, 403, { error: "forbidden", message: "only someone who manages this app can rename it" });

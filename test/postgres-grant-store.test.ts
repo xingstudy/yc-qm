@@ -177,6 +177,32 @@ test("pg grant persistence serializes competing empty-set conditional replacemen
   assert.equal(saved.length, 1);
 });
 
+test("pg grant persistence shares the legacy advisory-lock namespace", { skip }, async () => {
+  const store = createPostgresGrantStore(URL!, "org-lock-compatible");
+  const ref = "legacy-lock.md";
+  const pg = (await import("pg")).default;
+  const pool = new pg.Pool({ connectionString: URL, application_name: "grant-legacy-lock-test" });
+  const legacy = await pool.connect();
+  let committed = false;
+  try {
+    await legacy.query("BEGIN");
+    await legacy.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`acl-grants:${owner}\n${ref}`]);
+    let settled = false;
+    const replacing = store
+      .replaceForResourceIfCurrent(owner, ref, [], [grant({ ref })])
+      .finally(() => (settled = true));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(settled, false);
+    await legacy.query("COMMIT");
+    committed = true;
+    assert.equal(await replacing, true);
+  } finally {
+    if (!committed) await legacy.query("ROLLBACK").catch(() => undefined);
+    legacy.release();
+    await pool.end();
+  }
+});
+
 test(
   "pg-backed AclStore: owner-only grant, dedup, permission-agnostic revoke, handle surfacing",
   { skip },

@@ -32,6 +32,7 @@ export interface SchedulerDeps {
   deliveries: DeliveryStore;
   idempotency: IdempotencyStore;
   identity: IdentityService;
+  organization?: TriggerDeps["organization"];
   run: (req: TurnRequest) => Promise<TurnResult>;
   currentScopeMembers?: CurrentScopeMembers;
   now?: () => number;
@@ -123,6 +124,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           deliveries: deps.deliveries,
           idempotency: deps.idempotency,
           identity: deps.identity,
+          ...(deps.organization ? { organization: deps.organization } : {}),
           run: deps.run,
           ...(deps.directory ? { directory: deps.directory } : {}),
           ...(deps.currentScopeMembers ? { currentScopeMembers: deps.currentScopeMembers } : {}),

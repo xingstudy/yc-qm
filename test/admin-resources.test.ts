@@ -49,6 +49,7 @@ function start(harnessId = "pi"): { base: string; built: BuiltApp; close: () => 
     deviceFlowCutover: built.deviceFlowCutover,
     brokeredServices: () => built.brokeredTools.map((tool) => tool.service),
     channelPolicy: built.channelPolicy,
+    organization: built.organization,
     harnessId,
   });
   server.listen(0);

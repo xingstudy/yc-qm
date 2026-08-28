@@ -74,7 +74,7 @@ interface ScopeResourcesView {
 interface DirectoryMatch {
   principalId: string;
   displayName: string;
-  type: string;
+  email?: string | null;
 }
 
 export const contextsState = {
@@ -477,7 +477,7 @@ function detailTpl(c: CoreContext): TemplateResult {
         </div>
         <div class="context-detail-actions">
           ${
-            c.project
+            c.project && isProjectOwner(c)
               ? html`<button class="btn context-add-member" type="button" @click=${() => toggleMemberPicker(c)}>
                   ${icon(UserPlus, 15)}<span>Add people</span>
                 </button>`
@@ -520,8 +520,9 @@ function detailTpl(c: CoreContext): TemplateResult {
           }
         </div>
         <aside class="context-settings" aria-label=${t(c.project ? "Project settings" : "Context settings")}>
-          ${c.project ? projectMembersSection(c) : nothing} ${c.project ? projectSlackSection(c) : nothing}
-          ${contextModelSection(c.scopeId)} ${channelHeaderSection(c.scopeId)} ${ambientPolicySection(c.scopeId)}
+          ${c.project ? projectMembersSection(c) : nothing}
+          ${c.project && isProjectOwner(c) ? projectSlackSection(c) : nothing} ${contextModelSection(c.scopeId)}
+          ${channelHeaderSection(c.scopeId)} ${ambientPolicySection(c.scopeId)}
         </aside>
       </div>
     </div>
@@ -777,7 +778,7 @@ function projectMembersSection(context: CoreContext): TemplateResult {
 
 function memberPicker(context: CoreContext): TemplateResult {
   const members = new Set(projectPeople(context));
-  const matches = contextsState.memberMatches.filter((match) => !members.has(match.principalId)).slice(0, 8);
+  const matches = contextsState.memberMatches.filter((match) => !members.has(match.principalId));
   const idle = !contextsState.memberSearching && !contextsState.memberBusy && !contextsState.memberError;
   let emptyNote = "";
   if (idle && contextsState.memberSearchedQuery && matches.length === 0) {
@@ -1301,9 +1302,11 @@ async function runMemberSearch(context: CoreContext, query: string): Promise<voi
   contextsState.memberSearching = true;
   drawContexts();
   try {
-    const response = await api<{ matches?: DirectoryMatch[] }>(`/api/directory/resolve?q=${encodeURIComponent(query)}`);
+    const response = await api<{ matches?: DirectoryMatch[] }>(
+      `/api/projects/${encodeURIComponent(projectId)}/member-candidates?q=${encodeURIComponent(query)}`,
+    );
     if (searchSeq !== memberSearchSeq || contextsState.memberProjectId !== projectId) return;
-    contextsState.memberMatches = (response.matches ?? []).filter((match) => match.type === "internal");
+    contextsState.memberMatches = response.matches ?? [];
     contextsState.memberSearchedQuery = query;
   } catch (error) {
     if (searchSeq !== memberSearchSeq || contextsState.memberProjectId !== projectId) return;

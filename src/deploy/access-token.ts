@@ -4,6 +4,7 @@ export interface DeployOwnerSession {
   kind: "dpl-owner";
   slug: string;
   sub: string;
+  sv: number;
   version: 1;
   exp: number;
 }
@@ -25,6 +26,7 @@ export async function verifyDeployOwnerToken(
   if (!session || session.kind !== "dpl-owner" || session.version !== 1) return null;
   if (typeof session.slug !== "string" || session.slug !== slug) return null;
   if (typeof session.sub !== "string" || !session.sub) return null;
+  if (!Number.isInteger(session.sv) || session.sv < 0) return null;
   if (typeof session.exp !== "number" || now >= session.exp) return null;
   return session;
 }
@@ -33,6 +35,8 @@ export interface DeployGitAccess {
   deploymentId: string;
   permission: "read" | "write";
   principalId?: string;
+  sv?: number;
+  botActor?: boolean;
   version: 1;
   exp: number;
 }
@@ -55,6 +59,9 @@ export async function verifyDeployGitAccess(
   )
     return null;
   if (access.principalId !== undefined && typeof access.principalId !== "string") return null;
+  if (access.sv !== undefined && (!Number.isInteger(access.sv) || access.sv < 0)) return null;
+  if (access.principalId === undefined && access.sv !== undefined) return null;
+  if (access.botActor !== undefined && typeof access.botActor !== "boolean") return null;
   if (typeof access.exp !== "number" || now >= access.exp) return null;
   return access;
 }

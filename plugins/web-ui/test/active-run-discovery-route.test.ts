@@ -18,6 +18,8 @@ const core = createServer((req: IncomingMessage, res) => {
     res.writeHead(status, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
   };
+  if (req.method === "GET" && u.pathname === "/v1/internal/auth/session")
+    return reply(200, { principalId: "alice", sessionVersion: 1 });
   if (req.method === "POST" && u.pathname === "/v1/turns") {
     let body = "";
     req.on("data", (c) => (body += c));

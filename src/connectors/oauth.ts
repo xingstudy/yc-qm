@@ -478,6 +478,7 @@ export interface OAuthState {
   clientRef?: string;
   codeVerifier?: string;
   consentLinkId?: string;
+  sessionVersion?: number;
 }
 
 const ACCOUNT_TYPES: readonly AccountType[] = ["default", "personal", "company"];
@@ -496,7 +497,8 @@ function isOAuthState(v: unknown): v is OAuthState {
     (s.accountType === undefined || (typeof s.accountType === "string" && ACCOUNT_TYPES.includes(s.accountType))) &&
     (s.clientRef === undefined || typeof s.clientRef === "string") &&
     (s.codeVerifier === undefined || typeof s.codeVerifier === "string") &&
-    (s.consentLinkId === undefined || typeof s.consentLinkId === "string")
+    (s.consentLinkId === undefined || typeof s.consentLinkId === "string") &&
+    (s.sessionVersion === undefined || (Number.isInteger(s.sessionVersion) && s.sessionVersion >= 0))
   );
 }
 

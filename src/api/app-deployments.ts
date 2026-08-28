@@ -120,10 +120,14 @@ export function createDeploymentMethods(
       if (!d) return null;
       const permission = await principalGitPermission(d, principalId);
       if (!permission) return null;
+      const session = opts.botActor ? null : await deps.organization?.checkActive(principalId);
+      if (deps.organization && !opts.botActor && session?.status !== "active") return null;
       const token = await mintDeployGitAccess(opts.secret, {
         deploymentId: d.id,
         permission,
         principalId,
+        ...(session ? { sv: session.sessionVersion } : {}),
+        ...(opts.botActor ? { botActor: true } : {}),
         exp: Date.now() + (opts.ttlMs ?? 60 * 60 * 1000),
       });
       const url = new URL(`/v1/deployments/${encodeURIComponent(d.id)}/git`, opts.baseUrl);
@@ -131,7 +135,15 @@ export function createDeploymentMethods(
       url.password = token;
       return { url: url.toString(), permission };
     },
-    async authorizesDeploymentGitAccess(id, principalId, permission) {
+    async authorizesDeploymentGitAccess(id, principalId, permission, sessionVersion, botActor) {
+      const session = botActor ? null : await deps.organization?.checkActive(principalId);
+      if (
+        deps.organization &&
+        !botActor &&
+        (session?.status !== "active" || !Number.isInteger(sessionVersion) || sessionVersion !== session.sessionVersion)
+      ) {
+        return false;
+      }
       const d = await deps.deploy.getDeployment(id);
       if (!d) return false;
       const current = await principalGitPermission(d, principalId);

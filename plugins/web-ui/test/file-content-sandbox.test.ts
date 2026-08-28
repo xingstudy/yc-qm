@@ -4,6 +4,10 @@ import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 
 const core = createServer((req: IncomingMessage, res) => {
+  if (req.method === "GET" && (req.url ?? "").startsWith("/v1/internal/auth/session")) {
+    res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(JSON.stringify({ principalId: "alice", sessionVersion: 1 }));
+  }
   if ((req.url ?? "").startsWith("/v1/files/") && (req.url ?? "").includes("/content")) {
     res.writeHead(200, {
       "content-type": "text/html; charset=utf-8",

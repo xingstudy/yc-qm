@@ -276,30 +276,46 @@ const ADMIN_TTL_MS = 60_000;
 const ADMIN_PROBE_TIMEOUT_MS = 6_500;
 const ADMIN_PROBE_ATTEMPTS = 2;
 const ADMIN_PROBE_RETRY_DELAY_MS = 250;
-const adminCache = new LRUCache<string, boolean>({ max: 10_000, ttl: ADMIN_TTL_MS });
+interface AdminProbeStatus {
+  isAdmin: boolean;
+  isManager: boolean;
+}
 
-async function adminProbeAttempt(sub: string): Promise<boolean | null> {
+const adminCache = new LRUCache<string, AdminProbeStatus>({ max: 10_000, ttl: ADMIN_TTL_MS });
+
+function portalIdentityHeaders(session: SessionClaims): Record<string, string> {
+  if (!PORTAL_IDENTITY_SECRET) return {};
+  return {
+    [PORTAL_IDENTITY_HEADER]: mintPortalIdentity(
+      {
+        p: session.sub,
+        ...(Number.isInteger(session.sv) ? { sv: session.sv } : {}),
+        exp: Date.now() + 60_000,
+      },
+      PORTAL_IDENTITY_SECRET,
+    ),
+  };
+}
+
+async function adminProbeAttempt(session: SessionClaims): Promise<AdminProbeStatus | null> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ADMIN_PROBE_TIMEOUT_MS);
   try {
-    const headers: Record<string, string> = { cookie: `admin=${encodeURIComponent(sub)}` };
-    if (PORTAL_IDENTITY_SECRET) {
-      headers[PORTAL_IDENTITY_HEADER] = mintPortalIdentity(
-        { p: sub, exp: Date.now() + 60_000 },
-        PORTAL_IDENTITY_SECRET,
-      );
-    }
+    const headers: Record<string, string> = {
+      cookie: `admin=${encodeURIComponent(session.sub)}`,
+      ...portalIdentityHeaders(session),
+    };
     const r = await fetch(`${UPSTREAMS.admin}/api/whoami`, { headers, signal: ctrl.signal });
     if (!r.ok) {
       console.warn(`[portal] admin probe returned HTTP ${r.status}`);
       return null;
     }
-    const j = (await r.json()) as { isAdmin?: unknown };
-    if (typeof j.isAdmin !== "boolean") {
+    const j = (await r.json()) as { isAdmin?: unknown; isManager?: unknown };
+    if (typeof j.isAdmin !== "boolean" || (j.isManager !== undefined && typeof j.isManager !== "boolean")) {
       console.warn("[portal] admin probe returned an invalid admin status");
       return null;
     }
-    return j.isAdmin;
+    return { isAdmin: j.isAdmin, isManager: j.isManager === true };
   } catch (error) {
     console.warn(`[portal] admin probe failed: ${errMessage(error)}`);
     return null;
@@ -308,24 +324,25 @@ async function adminProbeAttempt(sub: string): Promise<boolean | null> {
   }
 }
 
-async function adminProbe(sub: string): Promise<{ isAdmin: boolean; failed: boolean }> {
-  const hit = adminCache.get(sub);
-  if (hit !== undefined) return { isAdmin: hit, failed: false };
+async function adminProbe(session: SessionClaims): Promise<AdminProbeStatus & { failed: boolean }> {
+  const cacheKey = `${session.sub}\n${Number.isInteger(session.sv) ? session.sv : "legacy"}`;
+  const hit = adminCache.get(cacheKey);
+  if (hit !== undefined) return { ...hit, failed: false };
   for (let attempt = 0; attempt < ADMIN_PROBE_ATTEMPTS; attempt++) {
-    const isAdmin = await adminProbeAttempt(sub);
-    if (isAdmin === null) {
+    const status = await adminProbeAttempt(session);
+    if (status === null) {
       if (attempt + 1 < ADMIN_PROBE_ATTEMPTS)
         await new Promise((resolve) => setTimeout(resolve, ADMIN_PROBE_RETRY_DELAY_MS));
       continue;
     }
-    adminCache.set(sub, isAdmin);
-    return { isAdmin, failed: false };
+    adminCache.set(cacheKey, status);
+    return { ...status, failed: false };
   }
-  return { isAdmin: false, failed: true };
+  return { isAdmin: false, isManager: false, failed: true };
 }
 
-async function isAdmin(sub: string): Promise<boolean> {
-  return (await adminProbe(sub)).isAdmin;
+async function isAdmin(session: SessionClaims): Promise<boolean> {
+  return (await adminProbe(session)).isAdmin;
 }
 
 const PAGE_CSP =
@@ -429,18 +446,47 @@ export function isLoopbackAddress(address: string | null | undefined): boolean {
   );
 }
 
-function localDevSession(req: IncomingMessage, nowMs = Date.now(), ignoreLogout = false): SessionClaims | null {
+async function coreActiveSessionVersion(principalId: string): Promise<number | null> {
+  const basePath = `/v1/internal/auth/users/${encodeURIComponent(principalId)}/session-version`;
+  const path = withSourceAuthNonce(basePath, CORE_SIGNING_SECRET);
+  try {
+    const response = await fetch(`${CORE}${path}`, {
+      headers: signedHeaders(CORE_SIGNING_SECRET, "GET", path),
+      signal: AbortSignal.timeout(4_000),
+    });
+    if (!response.ok) return null;
+    const sessionVersion = ((await response.json()) as { sessionVersion?: unknown }).sessionVersion;
+    return Number.isInteger(sessionVersion) && (sessionVersion as number) >= 0 ? (sessionVersion as number) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function localDevSession(
+  req: IncomingMessage,
+  nowMs = Date.now(),
+  ignoreLogout = false,
+): Promise<SessionClaims | null> {
   if (!LOCAL_AUTH_BYPASS) return null;
   if (!isLoopbackAddress(clientIpOf(req))) return null;
   if (!ignoreLogout && readCookie(req.headers.cookie, LOCAL_LOGOUT_COOKIE) === "1") return null;
+  const sessionVersion = await coreActiveSessionVersion(LOCAL_AUTH_PRINCIPAL);
+  if (sessionVersion === null) return null;
   const now = Math.floor(nowMs / 1000);
-  return { k: "session", sub: LOCAL_AUTH_PRINCIPAL, org: ORG, iat: now, exp: now + SESSION_TTL_S };
+  return {
+    k: "session",
+    sub: LOCAL_AUTH_PRINCIPAL,
+    org: ORG,
+    sv: sessionVersion,
+    iat: now,
+    exp: now + SESSION_TTL_S,
+  };
 }
 
-function currentSession(req: IncomingMessage): SessionClaims | null {
+async function currentSession(req: IncomingMessage): Promise<SessionClaims | null> {
   return (
     openSession(readCookie(req.headers.cookie, "portal_session"), sessionKey, Date.now(), ORG, SESSION_MAX_TTL_S) ??
-    localDevSession(req)
+    (await localDevSession(req))
   );
 }
 
@@ -647,6 +693,7 @@ async function handleConsentRedeem(
   const path = withSourceAuthNonce(o.corePath, CORE_SIGNING_SECRET);
   const headers = {
     ...signedHeaders(CORE_SIGNING_SECRET, "GET", path),
+    ...portalIdentityHeaders(o.session),
     "x-consent-clicker": o.session.sub,
     "x-consent-clicker-org": o.session.org,
   };
@@ -718,6 +765,7 @@ async function handleSecretDrop(
   const path = withSourceAuthNonce(o.corePath, CORE_SIGNING_SECRET);
   const headers = {
     ...signedHeaders(CORE_SIGNING_SECRET, isPost ? "POST" : "GET", path, rawBody),
+    ...portalIdentityHeaders(o.session),
     "x-drop-owner": o.session.sub,
     "x-drop-owner-org": o.session.org,
   };
@@ -754,7 +802,9 @@ async function handleSelfConnect(res: ServerResponse, o: { provider: string; ses
     CORE_SIGNING_SECRET,
   );
   try {
-    const r = await fetch(`${CORE}${path}`, { headers: signedHeaders(CORE_SIGNING_SECRET, "GET", path) });
+    const r = await fetch(`${CORE}${path}`, {
+      headers: { ...signedHeaders(CORE_SIGNING_SECRET, "GET", path), ...portalIdentityHeaders(o.session) },
+    });
     const data = (await r.json().catch(() => ({}))) as { authorizeUrl?: string; message?: string };
     if (data.authorizeUrl) {
       res.writeHead(302, { location: data.authorizeUrl, "cache-control": "no-store" });
@@ -776,22 +826,30 @@ async function handleSelfConnect(res: ServerResponse, o: { provider: string; ses
 
 async function coreImpersonate(
   action: "start" | "stop",
-  admin: string,
+  session: SessionClaims,
   target: string,
-): Promise<{ ok: boolean; status: number; displayName?: string; message?: string }> {
+): Promise<{ ok: boolean; status: number; displayName?: string; sessionVersion?: number; message?: string }> {
   const path = withSourceAuthNonce(`/v1/admin/impersonate${action === "stop" ? "/stop" : ""}`, CORE_SIGNING_SECRET);
   const body = JSON.stringify({ target });
   const headers = {
     ...signedHeaders(CORE_SIGNING_SECRET, "POST", path, body),
-    "x-admin-actor": `${admin}@${ORG}`,
-    ...(PORTAL_IDENTITY_SECRET
-      ? { [PORTAL_IDENTITY_HEADER]: mintPortalIdentity({ p: admin, exp: Date.now() + 60_000 }, PORTAL_IDENTITY_SECRET) }
-      : {}),
+    "x-admin-actor": `${session.sub}@${ORG}`,
+    ...portalIdentityHeaders(session),
   };
   try {
     const r = await fetch(`${CORE}${path}`, { method: "POST", headers, body });
-    const j = (await r.json().catch(() => ({}))) as { displayName?: string; message?: string };
-    return { ok: r.ok, status: r.status, displayName: j.displayName, message: j.message };
+    const j = (await r.json().catch(() => ({}))) as {
+      displayName?: string;
+      sessionVersion?: number;
+      message?: string;
+    };
+    return {
+      ok: r.ok,
+      status: r.status,
+      displayName: j.displayName,
+      sessionVersion: j.sessionVersion,
+      message: j.message,
+    };
   } catch (e) {
     return { ok: false, status: 502, message: errMessage(e) };
   }
@@ -877,13 +935,33 @@ async function mintPlaygroundSession(req: IncomingMessage, res: ServerResponse):
     nowMs: Date.now(),
   });
   if (!allowed) return null;
+  const principalId = `playground-${randomToken(8)}`;
+  const body = JSON.stringify({ principalId });
+  const path = withSourceAuthNonce("/v1/internal/auth/users/playground", CORE_SIGNING_SECRET);
+  let sessionVersion: number | null = null;
+  try {
+    const response = await fetch(`${CORE}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...signedHeaders(CORE_SIGNING_SECRET, "POST", path, body) },
+      body,
+      signal: AbortSignal.timeout(4_000),
+    });
+    if (response.ok) {
+      const value = ((await response.json()) as { sessionVersion?: unknown }).sessionVersion;
+      if (Number.isInteger(value) && (value as number) >= 0) sessionVersion = value as number;
+    }
+  } catch {
+    sessionVersion = null;
+  }
+  if (sessionVersion === null) return null;
   const now = Math.floor(Date.now() / 1000);
   const session: SessionClaims = {
     k: "session",
-    sub: `playground-${randomToken(8)}`,
+    sub: principalId,
     org: ORG,
     name: "Guest",
     anon: true,
+    sv: sessionVersion,
     auth: now,
     iat: now,
     exp: now + SESSION_TTL_S,
@@ -974,17 +1052,17 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     );
   }
 
-  let session = currentSession(req);
+  let session = await currentSession(req);
   if (session) renewSessionCookie(req, res);
 
   if (pathname === "/auth/impersonate" && method === "POST") {
     if (!session) return json(res, 401, { error: "sign in" });
     if (!sameOriginRequest(req)) return json(res, 403, { error: "forbidden", message: "cross-origin request refused" });
-    if (!(await isAdmin(session.sub))) return json(res, 403, { error: "forbidden", message: "admin access required" });
+    if (!(await isAdmin(session))) return json(res, 403, { error: "forbidden", message: "admin access required" });
     const target = (url.searchParams.get("target") ?? "").trim();
     if (!target) return json(res, 400, { error: "bad_request", message: "target required" });
     if (target === session.sub) return json(res, 400, { error: "bad_request", message: "cannot impersonate yourself" });
-    const result = await coreImpersonate("start", session.sub, target);
+    const result = await coreImpersonate("start", session, target);
     if (!result.ok) {
       const status = result.status === 403 || result.status === 400 ? result.status : 502;
       return json(res, status, {
@@ -998,6 +1076,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       actor: session.sub,
       target,
       org: session.org,
+      ...(Number.isInteger(result.sessionVersion) ? { sv: result.sessionVersion } : {}),
       iat: now,
       exp: now + IMPERSONATE_TTL_S,
     };
@@ -1015,7 +1094,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (!sameOriginRequest(req)) return json(res, 403, { error: "forbidden", message: "cross-origin request refused" });
     const imp = openImpersonation(readCookie(req.headers.cookie, "portal_impersonate"), impersonateKey, Date.now());
     setSession(res, [clearCookie("portal_impersonate", "/", SECURE_COOKIES)]);
-    if (session && imp && imp.actor === session.sub) await coreImpersonate("stop", session.sub, imp.target);
+    if (session && imp && imp.actor === session.sub) await coreImpersonate("stop", session, imp.target);
     if (wantsHtml(req)) {
       res.writeHead(303, { location: "/", "cache-control": "no-store" });
       return void res.end();
@@ -1136,6 +1215,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       search: url.search,
       principal: session.sub,
       signingSecret: CORE_SIGNING_SECRET,
+      ...(Number.isInteger(session.sv) ? { sessionVersion: session.sv } : {}),
       ...(PORTAL_IDENTITY_SECRET ? { identitySecret: PORTAL_IDENTITY_SECRET } : {}),
     });
   }
@@ -1146,8 +1226,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       if (wantsHtml(req)) return sendHtml(res, 403, nonAdminDeniedHtml({ sub: session.sub, org: session.org }));
       return json(res, 403, { error: "forbidden", message: "admin access required" });
     }
-    const probe = await adminProbe(session.sub);
-    if (!probe.isAdmin) {
+    const probe = await adminProbe(session);
+    if (!probe.isAdmin && !probe.isManager) {
       if (wantsHtml(req)) {
         const page = probe.failed ? adminUnavailableHtml() : nonAdminDeniedHtml({ sub: session.sub, org: session.org });
         return sendHtml(res, 403, page);
@@ -1159,7 +1239,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (key === "web-ui" && method === "GET" && wantsHtml(req)) {
     await refreshSurfaceConfig();
     if (modelProviderConfigured === false) {
-      if (await isAdmin(session.sub)) {
+      if (await isAdmin(session)) {
         res.writeHead(302, { location: "/admin/onboarding", "cache-control": "no-store" });
         return void res.end();
       }
@@ -1169,11 +1249,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   let principal = session.sub;
   let impersonator: string | undefined;
+  let forwardedSessionVersion = Number.isInteger(session.sv) ? session.sv : undefined;
   if (key === "web-ui") {
     const imp = openImpersonation(readCookie(req.headers.cookie, "portal_impersonate"), impersonateKey, Date.now());
-    if (imp && imp.actor === session.sub && imp.org === session.org && (await isAdmin(session.sub))) {
+    if (imp && imp.actor === session.sub && imp.org === session.org && (await isAdmin(session))) {
       principal = imp.target;
       impersonator = session.sub;
+      forwardedSessionVersion = Number.isInteger(imp.sv) ? imp.sv : undefined;
     }
   }
 
@@ -1187,14 +1269,15 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     principal,
     ...(!impersonator && session.name ? { displayName: session.name } : {}),
     ...(impersonator ? { impersonator } : {}),
-    ...(!impersonator && typeof session.sv === "number" ? { sessionVersion: session.sv } : {}),
+    ...(impersonator && Number.isInteger(session.sv) ? { impersonatorSessionVersion: session.sv } : {}),
+    ...(Number.isInteger(forwardedSessionVersion) ? { sessionVersion: forwardedSessionVersion } : {}),
     ...(PORTAL_IDENTITY_SECRET ? { identitySecret: PORTAL_IDENTITY_SECRET } : {}),
   });
 }
 
 async function authLogin(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const returnTo = sanitizeReturnTo(url.searchParams.get("returnTo"), PUBLIC_URL, APPS_DOMAIN);
-  const localSession = localDevSession(req, Date.now(), true);
+  const localSession = await localDevSession(req, Date.now(), true);
   if (localSession) {
     setSession(res, [
       ...sessionCookieSet(seal(localSession, sessionKey)),
@@ -1246,7 +1329,7 @@ const LOGIN_DENIAL_MESSAGES: Record<string, string> = {
 };
 
 async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-  const existingSession = currentSession(req);
+  const existingSession = await currentSession(req);
   const stateParam = url.searchParams.get("state") ?? "";
   const cookieTmp = openTmp(readCookie(req.headers.cookie, "portal_oidc_tmp"), tmpKey, Date.now());
   const cookieMatches = Boolean(cookieTmp && stateParam && safeEqual(stateParam, cookieTmp.state));
@@ -1305,11 +1388,6 @@ async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL)
     return fail(errMessage(e, "sign-in failed"));
   }
 
-  if (existingSession && existingSession.sub !== sub) {
-    await portalLoginTransactions.complete(stateParam, claimId, "failed");
-    return fail("this browser is already signed in to a different account — sign out before using this link", 409);
-  }
-
   const loginBody = JSON.stringify({
     principalId: sub,
     issuer,
@@ -1341,16 +1419,27 @@ async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL)
   const loginData = (await loginRes.json().catch(() => ({}))) as {
     status?: string;
     reason?: string;
-    user?: { sessionVersion?: unknown; displayName?: unknown };
+    user?: { principalId?: unknown; sessionVersion?: unknown; displayName?: unknown };
   };
   if (loginData.status === "denied") {
     await portalLoginTransactions.complete(stateParam, claimId, "failed");
     return fail(LOGIN_DENIAL_MESSAGES[loginData.reason ?? ""] ?? "sign-in is not permitted for this account", 403);
   }
+  const canonicalPrincipalId = loginData.user?.principalId;
   const sessionVersion = loginData.user?.sessionVersion;
-  if (loginData.status !== "ok" || typeof sessionVersion !== "number" || !Number.isFinite(sessionVersion)) {
+  if (
+    loginData.status !== "ok" ||
+    typeof canonicalPrincipalId !== "string" ||
+    !canonicalPrincipalId ||
+    typeof sessionVersion !== "number" ||
+    !Number.isInteger(sessionVersion)
+  ) {
     await portalLoginTransactions.complete(stateParam, claimId, "failed");
     return fail("sign-in service temporarily unavailable", 503);
+  }
+  if (existingSession && existingSession.sub !== canonicalPrincipalId) {
+    await portalLoginTransactions.complete(stateParam, claimId, "failed");
+    return fail("this browser is already signed in to a different account — sign out before using this link", 409);
   }
   if (typeof loginData.user?.displayName === "string" && loginData.user.displayName.trim()) {
     name = loginData.user.displayName.trim().slice(0, 200);
@@ -1362,7 +1451,7 @@ async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL)
   const now = Math.floor(Date.now() / 1000);
   const session: SessionClaims = {
     k: "session",
-    sub,
+    sub: canonicalPrincipalId,
     org: ORG,
     auth: now,
     iat: now,

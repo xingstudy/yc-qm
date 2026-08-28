@@ -45,6 +45,12 @@ test("submit and debounce share runMemberSearch", () => {
   assert.match(submit, /runMemberSearch\(/);
 });
 
+test("project member search uses the visibility-filtered organization directory endpoint", () => {
+  assert.match(source, /\/api\/projects\/\$\{encodeURIComponent\(projectId\)\}\/member-candidates\?q=/);
+  assert.doesNotMatch(source, /\/api\/directory\/resolve/);
+  assert.doesNotMatch(source, /match\.type === "internal"/);
+});
+
 test("no-match searches render visible feedback", () => {
   assert.match(source, /memberSearchedQuery/);
   assert.match(source, /No matches for/);
@@ -64,14 +70,14 @@ test("typing supersedes an in-flight search", () => {
   assert.match(sched, /memberSearching = false/);
 });
 
-test("result cap applies after the member filter", () => {
-  assert.match(source, /\.filter\(\(match\) => !members\.has\(match\.principalId\)\)\.slice\(0, 8\)/);
+test("all server-filtered member candidates remain reachable", () => {
+  assert.match(source, /\.filter\(\(match\) => !members\.has\(match\.principalId\)\)/);
+  assert.doesNotMatch(source, /\.filter\(\(match\) => !members\.has\(match\.principalId\)\)\.slice/);
 });
 
-test("every project member can invite while only the owner can remove people", () => {
+test("only the project owner can invite or remove people", () => {
   const detail = source.match(/function detailTpl\([^]*?\n\}/)?.[0] ?? "";
   const members = source.match(/function projectMembersSection\([^]*?\n\}/)?.[0] ?? "";
-  assert.match(detail, /\$\{\s*c\.project\s*\? html`<button class="btn context-add-member"/);
-  assert.doesNotMatch(detail, /c\.project && isProjectOwner\(c\)/);
+  assert.match(detail, /c\.project && isProjectOwner\(c\)/);
   assert.match(members, /isProjectOwner\(context\) && principalId !== project\.ownerId/);
 });

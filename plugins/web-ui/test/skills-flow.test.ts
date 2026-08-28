@@ -164,3 +164,38 @@ test("archive uses a modal dialog with an impact description and managed focus",
     /querySelector<HTMLElement>\("\.list-search input"\)[\s\S]*querySelector<HTMLElement>\("\.list-page-action"\)/,
   );
 });
+
+test("Skill Access loads filtered directory subjects and saves with CAS", () => {
+  const start = bodyOf("startEdit");
+  assert.match(start, /\/api\/skills\/\$\{encodeURIComponent\(s\.id\)\}\/access/);
+  assert.match(start, /\/api\/org\/tree/);
+  assert.match(start, /\/api\/org\/users\?limit=100/);
+  assert.match(start, /\/api\/org\/access-groups/);
+  assert.match(start, /mergeAccessCandidates\(\s*access\.subjects/);
+  const search = bodyOf("searchAccessUsers");
+  assert.match(search, /\/api\/org\/users\?q=\$\{encodeURIComponent\(query\)\}&limit=100/);
+  assert.match(search, /response\.users\.map/);
+  assert.match(search, /request !== accessSearchSeq/);
+  assert.match(search, /editing\?\.id !== skillId/);
+  assert.match(search, /candidate\.kind !== "user" \|\| selected\.has/);
+  const save = bodyOf("saveSkillAccess");
+  assert.match(save, /expectedRevision: editingAccess\.revision/);
+  assert.match(save, /The current policy was reloaded/);
+  const pane = bodyOf("skillAccessPane");
+  assert.match(pane, /organizationModeAllowed/);
+  assert.match(pane, /hiddenSubjectCount/);
+  assert.match(pane, /No active user will be able to use this Skill/);
+  assert.match(pane, /effectiveSummary\.activeUsers/);
+  assert.match(pane, /updatedBy/);
+});
+
+test("Skill Access BFF forwards policy and directory requests to unified core routes", () => {
+  const server = readFileSync(new URL("../server/index.ts", import.meta.url), "utf8");
+  assert.match(
+    server,
+    /path: "\/api\/skills\/:id\/access"[\s\S]*`\/v1\/skills\/\$\{encodeURIComponent\(id\)\}\/access`/,
+  );
+  assert.match(server, /path: "\/api\/org\/tree"[\s\S]*"\/v1\/org\/tree"/);
+  assert.match(server, /path: "\/api\/org\/users"[\s\S]*`\/v1\/org\/users\?\$\{query\.toString\(\)\}`/);
+  assert.match(server, /path: "\/api\/org\/access-groups"[\s\S]*`\/v1\/org\/access-groups\?\$\{query\.toString\(\)\}`/);
+});

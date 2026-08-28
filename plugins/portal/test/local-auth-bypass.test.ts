@@ -9,6 +9,10 @@ const upstream = createServer((req: IncomingMessage, res) => {
     res.writeHead(200, { "content-type": "application/json" });
     return void res.end(JSON.stringify({ status: "created" }));
   }
+  if (req.method === "GET" && pathname === "/v1/internal/auth/users/local-admin/session-version") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(JSON.stringify({ principalId: "local-admin", sessionVersion: 2 }));
+  }
   if (req.url === "/api/whoami") {
     const m = (req.headers.cookie ?? "").match(/admin=([^;]+)/);
     const sub = m ? decodeURIComponent(m[1] ?? "") : "";

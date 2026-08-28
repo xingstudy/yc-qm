@@ -174,6 +174,11 @@ function start() {
   return { base, built, close: () => new Promise<void>((r) => server.close(() => r())) };
 }
 
+async function turnAsActiveUser(s: ReturnType<typeof start>, request: TurnRequest) {
+  await s.built.organization.provisionPlayground(request.actor.externalId);
+  return s.built.app.turn(request);
+}
+
 test("/v1/admin/users: org_admin sees the roster + grants; a non-admin is denied; audited", async () => {
   const s = start();
   try {
@@ -183,7 +188,7 @@ test("/v1/admin/users: org_admin sees the roster + grants; a non-admin is denied
       conversation: { kind: "dm", threadRef: "dm:U1:t1" },
       text: "hello",
     };
-    assert.equal((await s.built.app.turn(dm)).status, "ok");
+    assert.equal((await turnAsActiveUser(s, dm)).status, "ok");
 
     const r = await fetch(`${s.base}/v1/admin/users`, { headers: { "x-admin-actor": "admin-alice@default-org" } });
     assert.equal(r.status, 200);
@@ -262,7 +267,7 @@ test("/v1/admin/users/:principalId: per-user detail — stats, conversations, pe
       conversation: { kind: "dm", threadRef: "dm:U1:t1" },
       text: "hello",
     };
-    assert.equal((await s.built.app.turn(dm)).status, "ok");
+    assert.equal((await turnAsActiveUser(s, dm)).status, "ok");
 
     const r = await fetch(`${s.base}/v1/admin/users/U1`, { headers: { "x-admin-actor": "admin-alice@default-org" } });
     assert.equal(r.status, 200);
@@ -297,7 +302,7 @@ test("/v1/admin/users/:principalId/onboarding: org_admin sets/resets state, refl
       conversation: { kind: "dm", threadRef: "dm:U1:t1" },
       text: "hi",
     };
-    assert.equal((await s.built.app.turn(dm)).status, "ok");
+    assert.equal((await turnAsActiveUser(s, dm)).status, "ok");
     const adminHdr = { "x-admin-actor": "admin-alice@default-org", "content-type": "application/json" };
     const detail = async () =>
       (await (await fetch(`${s.base}/v1/admin/users/U1`, { headers: adminHdr })).json()) as any;
@@ -334,7 +339,7 @@ test("/v1/admin/users/:principalId/reset: deletes the user's personal sessions +
       conversation: { kind: "dm", threadRef: "dm:U1:t1" },
       text: "hi",
     };
-    assert.equal((await s.built.app.turn(dm)).status, "ok");
+    assert.equal((await turnAsActiveUser(s, dm)).status, "ok");
     const adminHdr = { "x-admin-actor": "admin-alice@default-org" };
     const detail = async () =>
       (await (await fetch(`${s.base}/v1/admin/users/U1`, { headers: adminHdr })).json()) as any;
@@ -437,7 +442,7 @@ test("/v1/admin/users: a freshly promoted user shows as admin in the roster", as
       conversation: { kind: "dm", threadRef: "dm:U9:t1" },
       text: "hi",
     };
-    assert.equal((await s.built.app.turn(dm)).status, "ok");
+    assert.equal((await turnAsActiveUser(s, dm)).status, "ok");
     await fetch(`${s.base}/v1/admin/grants`, {
       method: "POST",
       headers: { "x-admin-actor": "admin-alice@default-org", "content-type": "application/json" },

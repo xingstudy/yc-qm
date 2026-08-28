@@ -496,6 +496,7 @@ test("org env-delivery credentials ride provision env under their envKey — rea
     dataDir: mkdtempSync(join(tmpdir(), "ap-")),
     signingSecret: "test-secret",
     apiBaseUrl: "https://core.example.com",
+    orgBootstrapUsers: ["U1"],
   });
   const { app, sandbox, serviceCreds, acl } = buildApp(config);
   const org = scopeId("org", "default-org");
@@ -547,6 +548,7 @@ test("a disabled or broker-delivery credential never rides provision env", async
     dataDir: mkdtempSync(join(tmpdir(), "ap-")),
     signingSecret: "test-secret",
     apiBaseUrl: "https://core.example.com",
+    orgBootstrapUsers: ["U1"],
   });
   const { app, sandbox, serviceCreds, acl } = buildApp(config);
   const org = scopeId("org", "default-org");
@@ -589,6 +591,7 @@ test("a credential flipped away from env between the metadata read and the secre
     dataDir: mkdtempSync(join(tmpdir(), "ap-")),
     signingSecret: "test-secret",
     apiBaseUrl: "https://core.example.com",
+    orgBootstrapUsers: ["U1"],
   });
   const { app, sandbox, serviceCreds, acl } = buildApp(config);
   const org = scopeId("org", "default-org");
@@ -623,6 +626,7 @@ test("env-delivery injection is all-internal only, and an existing env key (keyc
     dataDir: mkdtempSync(join(tmpdir(), "ap-")),
     signingSecret: "test-secret",
     apiBaseUrl: "https://core.example.com",
+    orgBootstrapUsers: ["U1"],
   });
   const { app, sandbox, serviceCreds, acl } = buildApp(config);
   const org = scopeId("org", "default-org");
@@ -662,6 +666,7 @@ test("env-delivery credentials are gated by service-cred grants — no grant, no
     dataDir: mkdtempSync(join(tmpdir(), "ap-")),
     signingSecret: "test-secret",
     apiBaseUrl: "https://core.example.com",
+    orgBootstrapUsers: ["U1", "somebody-else"],
   });
   const { app, sandbox, serviceCreds, acl } = buildApp(config);
   const org = scopeId("org", "default-org");
@@ -697,6 +702,106 @@ test("env-delivery credentials are gated by service-cred grants — no grant, no
     "steel-org-key",
     "a personal grant to the actor admits the env var",
   );
+});
+
+test("service credentials follow organization unit descendants and access-group membership changes", async () => {
+  const built = buildApp(
+    testConfig({
+      dataDir: mkdtempSync(join(tmpdir(), "ap-")),
+      signingSecret: "test-secret",
+      apiBaseUrl: "https://core.example.com",
+      orgBootstrapUsers: ["U1"],
+    }),
+  );
+  const org = scopeId("org", "default-org");
+  await built.serviceCreds.setServiceCredential(org, {
+    slug: "browse-steel",
+    name: "Steel",
+    delivery: "env",
+    envKey: "STEEL_API_KEY",
+    secret: "steel-org-key",
+    host: "",
+  });
+  const department = await built.organization.createUnit({
+    parentId: "root",
+    name: "Engineering",
+    kind: "department",
+    actor: "admin",
+  });
+  const team = await built.organization.createUnit({
+    parentId: department.id,
+    name: "Platform",
+    kind: "team",
+    actor: "admin",
+  });
+  assert.equal(
+    (
+      await built.organization.addUnitMember({
+        unitId: team.id,
+        principalId: "U1",
+        role: "member",
+        actor: "admin",
+      })
+    ).ok,
+    true,
+  );
+  await grantCred(built.acl, org, "browse-steel", `org-unit:${department.id}`);
+  let captured: ProvisionOptions | undefined;
+  const realProvision = built.sandbox.provision.bind(built.sandbox);
+  built.sandbox.provision = (layers, opts) => {
+    captured = opts;
+    return realProvision(layers, opts);
+  };
+
+  let result = await built.app.turn(dm("!run unit", { conversation: { kind: "dm", threadRef: "dm:U1:unit1" } }));
+  assert.equal(result.status, "ok");
+  assert.equal(captured?.env?.STEEL_API_KEY, "steel-org-key");
+
+  assert.equal(
+    (
+      await built.organization.removeUnitMember({
+        unitId: team.id,
+        principalId: "U1",
+        actor: "admin",
+      })
+    ).ok,
+    true,
+  );
+  result = await built.app.turn(dm("!run unit", { conversation: { kind: "dm", threadRef: "dm:U1:unit2" } }));
+  assert.equal(result.status, "ok");
+  assert.equal(captured?.env?.STEEL_API_KEY, undefined);
+
+  await built.acl.revoke(org, "service-cred:browse-steel", `org-unit:${department.id}`, "admin");
+  const group = await built.organization.createGroup({ name: "Operators", actor: "admin" });
+  assert.equal(
+    (
+      await built.organization.addGroupMember({
+        groupId: group.id,
+        principalId: "U1",
+        role: "member",
+        actor: "admin",
+      })
+    ).ok,
+    true,
+  );
+  await grantCred(built.acl, org, "browse-steel", `access-group:${group.id}`);
+  result = await built.app.turn(dm("!run group", { conversation: { kind: "dm", threadRef: "dm:U1:group1" } }));
+  assert.equal(result.status, "ok");
+  assert.equal(captured?.env?.STEEL_API_KEY, "steel-org-key");
+
+  assert.equal(
+    (
+      await built.organization.removeGroupMember({
+        groupId: group.id,
+        principalId: "U1",
+        actor: "admin",
+      })
+    ).ok,
+    true,
+  );
+  result = await built.app.turn(dm("!run group", { conversation: { kind: "dm", threadRef: "dm:U1:group2" } }));
+  assert.equal(result.status, "ok");
+  assert.equal(captured?.env?.STEEL_API_KEY, undefined);
 });
 
 test("admin-configured browse step limit rides provision env (BROWSE_LAB_MAX_STEPS)", async () => {
@@ -841,7 +946,7 @@ test("browse derives key and base URL from a custom provider's admin config", as
 });
 
 test("an explicit browse key credential overrides the provider-derived key", async () => {
-  const built = freshApp();
+  const built = freshApp({ orgBootstrapUsers: ["U1"] });
   const { app, sandbox, serviceCreds, acl } = built;
   let captured: ProvisionOptions | undefined;
   const realProvision = sandbox.provision.bind(sandbox);

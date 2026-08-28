@@ -3754,6 +3754,36 @@ a.chat-row-open {
   margin-top: 18px;
   font-size: 13px;
 }
+.skill-access-card {
+  display: grid;
+  gap: 14px;
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--secondary) 45%, var(--background));
+}
+.skill-access-card .skill-form-heading {
+  margin-bottom: 0;
+}
+.skill-access-subjects {
+  display: grid;
+  gap: 8px;
+}
+.skill-access-subject {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 36px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--background);
+}
+.skill-access-subject input {
+  margin: 0;
+}
+.skill-access-subject .card-meta {
+  white-space: nowrap;
+}
 .skill-archive-dialog p {
   margin: 18px 0 0;
   color: var(--muted-foreground);

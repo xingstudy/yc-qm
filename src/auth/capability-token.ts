@@ -20,6 +20,7 @@ type BlobTransferClaims = CapabilityClaims & { aud: typeof BLOB_TRANSFER_AUD; bl
 
 export interface CapabilityClaims {
   actorId: string;
+  sessionVersion?: number;
   aud?: string;
   scopeId: ScopeId;
   scopeVersion?: string;
@@ -74,6 +75,8 @@ export async function verifyCapabilityToken(
     return null;
   }
   if (claims.timezone !== undefined && !isValidCapabilityTimezone(claims.timezone)) return null;
+  if (claims.sessionVersion !== undefined && (!Number.isInteger(claims.sessionVersion) || claims.sessionVersion < 0))
+    return null;
   if (claims.scopeVersion !== undefined && typeof claims.scopeVersion !== "string") return null;
   if (claims.destinations !== undefined && !Array.isArray(claims.destinations)) return null;
   if (claims.credentials !== undefined && !Array.isArray(claims.credentials)) return null;

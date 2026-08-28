@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
+import { mintPortalIdentity } from "../../chassis/src/portal-identity.ts";
 
 interface Call {
   method: string;
@@ -34,7 +35,11 @@ const { handler } = await import("../server/index.ts");
 const surface = createServer((req, res) => void handler(req, res));
 await new Promise<void>((resolve) => surface.listen(0, resolve));
 const base = `http://localhost:${(surface.address() as AddressInfo).port}`;
-const headers = { cookie: "webuiuser=alice", "content-type": "application/json" };
+const portalIdentity = mintPortalIdentity(
+  { p: "alice", sv: 4, exp: Date.now() + 60_000 },
+  process.env.CORE_SIGNING_SECRET,
+);
+const headers = { "x-portal-identity": portalIdentity, "content-type": "application/json" };
 
 test.after(() => {
   surface.close();
@@ -82,12 +87,12 @@ test("core's viewer gate still fails closed — a run core denies is relayed as 
 
 test("the portal identity is forwarded to core, so its viewer gate is meaningful", async () => {
   const before = calls.length;
-  await fetch(`${base}/api/runs/r-visible`, { headers: { ...headers, "x-portal-identity": "tok-forward-check" } });
+  await fetch(`${base}/api/runs/r-visible`, { headers });
   const coreCall = calls.slice(before).find((c) => c.method === "GET" && c.url.startsWith("/v1/runs/r-visible"));
   assert.ok(coreCall, "web-ui must call core");
   assert.equal(
     coreCall?.portalIdentity,
-    "tok-forward-check",
+    portalIdentity,
     "web-ui must forward x-portal-identity — dropping it would silently disable core's viewer gate",
   );
 });

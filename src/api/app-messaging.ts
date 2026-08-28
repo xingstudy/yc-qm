@@ -65,6 +65,7 @@ export function createMessagingMethods(
   | "channelMember"
   | "channelVisibleTo"
   | "resolveRecipient"
+  | "resolveVisibleRecipient"
   | "resolveChannel"
   | "directoryMembers"
   | "directoryChannels"
@@ -366,6 +367,35 @@ export function createMessagingMethods(
     },
     resolveRecipient(query) {
       return deps.directory.resolve(query);
+    },
+    async resolveVisibleRecipient(actorId, query, opts) {
+      if (!deps.organization) return deps.directory.resolve(query);
+      const status = deps.admin
+        ? await deps.admin.adminStatusOf({ id: actorId, type: "internal" }).catch(() => ({ isAdmin: false }))
+        : { isAdmin: false };
+      const resolved = await deps.organization.directory.resolveUser(
+        { principalId: actorId, isAdmin: opts?.allowAdminElevation === true && status.isAdmin },
+        query,
+      );
+      if (!resolved || resolved.kind === "none") return { kind: "none" };
+      if (resolved.kind === "ambiguous") {
+        return {
+          kind: "ambiguous",
+          candidates: resolved.users.map((user) => ({
+            principalId: user.principalId,
+            displayName: user.displayName,
+            type: "internal",
+          })),
+        };
+      }
+      return {
+        kind: "one",
+        member: {
+          principalId: resolved.user.principalId,
+          displayName: resolved.user.displayName,
+          type: "internal",
+        },
+      };
     },
     resolveChannel(query) {
       return deps.directory.resolveChannel(query);

@@ -3,6 +3,7 @@ import { BlobHashMismatchError, BlobTooLargeError, MAX_BLOB_BYTES } from "../../
 import { CAPABILITY_HEADER } from "../contract.ts";
 import { canonicalPayload, headerValue, pipeToResponse, sendJson, verifyOrReject } from "../http.ts";
 import type { BaseCtx, Route } from "./route.ts";
+import { currentCapabilityActor } from "../capability-actor.ts";
 
 type BlobDir = "read" | "write";
 
@@ -19,6 +20,11 @@ async function authorizeBlob(ctx: BaseCtx, dir: BlobDir, blobId: string | null):
     if (!claims) {
       req.resume();
       sendJson(res, 403, { error: "forbidden", message: "blob-transfer capability token not valid for this transfer" });
+      return false;
+    }
+    if (!(await currentCapabilityActor(ctx.deps, claims))) {
+      req.resume();
+      sendJson(res, 401, { error: "unauthorized", message: "principal is no longer active" });
       return false;
     }
     if (!(await ctx.app.authorizesCapabilityScope(claims))) {

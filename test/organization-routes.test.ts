@@ -12,15 +12,19 @@ import { mintSignedPayload } from "../src/auth/signed-token.ts";
 import { CONTROL_PLANE_AUD, mintCapabilityToken } from "../src/auth/capability-token.ts";
 import { buildApp, type BuiltApp } from "../src/wiring.ts";
 import type { Config } from "../src/config.ts";
+import type { RateLimiter } from "../src/ratelimit/rate-limiter.ts";
 import { testConfig } from "./support/test-config.ts";
+import { scopeId } from "../src/types.ts";
 
 const SECRET = "test-signing-secret".repeat(3);
 const PATH = "/v1/internal/auth/users/login";
 const PID = "portal-identity-secret-for-org-tests-01";
 const CAP = "capability-secret-for-org-tests-000001";
 const INVITE_PATH = "/v1/admin/org/users";
+const USER_SEARCH_PATH = "/v1/admin/org/users/search";
 const UNITS_PATH = "/v1/admin/org/units";
 const GROUPS_PATH = "/v1/admin/org/access-groups";
+const DIRECTORY_POLICY_PATH = "/v1/admin/org/directory-visibility";
 
 function start(overrides: Partial<Config> = {}): { built: BuiltApp; base: string; close: () => Promise<void> } {
   const built = buildApp(
@@ -42,6 +46,7 @@ async function seedActive(built: BuiltApp, principalId: string): Promise<void> {
 
 async function startAdmin(
   overrides: Partial<Config> = {},
+  deps: { rateLimiter?: RateLimiter } = {},
 ): Promise<{ built: BuiltApp; base: string; close: () => Promise<void> }> {
   const built = buildApp(
     testConfig({
@@ -57,6 +62,8 @@ async function startAdmin(
     admin: built.admin,
     organization: built.organization,
     auditLog: built.auditLog,
+    advisoryLock: built.advisoryLock,
+    ...deps,
   });
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
@@ -74,7 +81,7 @@ async function adminFetch(
   const raw = JSON.stringify(body);
   const headers = {
     ...sign(method, path, raw),
-    "x-portal-identity": await mintSignedPayload({ p: portalUser, exp: Date.now() + 60_000 }, PID),
+    "x-portal-identity": await mintSignedPayload({ p: portalUser, sv: 2, exp: Date.now() + 60_000 }, PID),
   };
   return fetch(`${base}${path}`, { method, headers, body: raw });
 }
@@ -130,7 +137,7 @@ test("unknown user auto-joins under domain_auto_join, then logs in via the bound
     assert.equal(second.status, 200);
     assert.deepEqual(await second.json(), {
       status: "ok",
-      user: { principalId: "U-alice", status: "active", sessionVersion: 1, displayName: "Alice Again" },
+      user: { principalId: "U-alice", status: "active", sessionVersion: 1, displayName: "Alice" },
     });
   } finally {
     await srv.close();
@@ -178,6 +185,193 @@ test("system:-prefixed principal ids cannot acquire human accounts", async () =>
   }
 });
 
+test("directory APIs filter tree, search, details, and pagination with a personal multi-root policy", async () => {
+  const srv = await startAdmin();
+  try {
+    for (const principalId of ["viewer", "alice", "bob"]) await seedActive(srv.built, principalId);
+    const engineering = await createUnitAsAdmin(srv.base, {
+      parentId: "root",
+      name: "Engineering",
+      kind: "department",
+    });
+    const finance = await createUnitAsAdmin(srv.base, {
+      parentId: "root",
+      name: "Finance",
+      kind: "department",
+    });
+    for (const [unitId, principalId] of [
+      [engineering.id, "alice"],
+      [finance.id, "bob"],
+    ]) {
+      const added = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${unitId}/members`, "admin-alice", {
+        principalId,
+        role: "member",
+      });
+      assert.equal(added.status, 200);
+    }
+    const policyPath = `${DIRECTORY_POLICY_PATH}/user/viewer`;
+    const saved = await adminFetch(srv.base, "PUT", policyPath, "admin-alice", {
+      mode: "limited",
+      roots: [{ unitId: engineering.id, includeDescendants: true }],
+      expectedRevision: 0,
+    });
+    assert.equal(saved.status, 200);
+    const conflict = await adminFetch(srv.base, "PUT", policyPath, "admin-alice", {
+      mode: "none",
+      roots: [],
+      expectedRevision: 0,
+    });
+    assert.equal(conflict.status, 409);
+
+    const tree = await adminGet(srv.base, "/v1/org/tree", "viewer");
+    assert.equal(tree.status, 200);
+    assert.deepEqual(
+      ((await tree.json()) as any).units.map((unit: any) => unit.id),
+      [engineering.id],
+    );
+    const hiddenUnit = await adminGet(srv.base, `/v1/org/units/${finance.id}`, "viewer");
+    assert.equal(hiddenUnit.status, 404);
+    const search = await adminGet(srv.base, "/v1/org/users?q=&limit=1", "viewer");
+    assert.equal(search.status, 200);
+    const first: any = await search.json();
+    assert.deepEqual(
+      first.users.map((account: any) => account.principalId),
+      ["alice"],
+    );
+    assert.equal(first.cursor, null);
+    const me = await adminGet(srv.base, "/v1/me", "viewer");
+    assert.equal(me.status, 200);
+    assert.equal(((await me.json()) as any).user.principalId, "viewer");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("project member candidates and add validation both use the organization directory", async () => {
+  const srv = await startAdmin();
+  try {
+    for (const principalId of ["owner", "candidate"]) await seedActive(srv.built, principalId);
+    const project = await srv.built.app.createProject("owner", "Directory project");
+    assert.ok(project);
+    const path = `/v1/projects/${project!.id}/member-candidates?principalId=owner&q=cand`;
+    const hidden = await srv.built.organization.setDirectoryPolicy({
+      subjectKind: "user",
+      subjectId: "owner",
+      mode: "none",
+      roots: [],
+      expectedRevision: 0,
+      actor: "admin-alice",
+    });
+    assert.equal(hidden.ok, true);
+    const hiddenCandidates = await adminGet(srv.base, path, "owner");
+    assert.equal(hiddenCandidates.status, 200);
+    assert.deepEqual((await hiddenCandidates.json()) as any, { matches: [] });
+    assert.equal((await srv.built.app.addProjectMember(project!.id, "owner", "candidate")).status, "invalid_member");
+    const restored = await srv.built.organization.deleteDirectoryPolicy({
+      subjectKind: "user",
+      subjectId: "owner",
+      expectedRevision: 1,
+      actor: "admin-alice",
+    });
+    assert.equal(restored.ok, true);
+    const candidates = await adminGet(srv.base, path, "owner");
+    assert.equal(candidates.status, 200);
+    assert.deepEqual(
+      ((await candidates.json()) as any).matches.map((match: any) => match.principalId),
+      ["candidate"],
+    );
+    assert.equal((await srv.built.app.addProjectMember(project!.id, "owner", "candidate")).status, "ok");
+    const originalSearch = srv.built.organization.directory.searchUsers.bind(srv.built.organization.directory);
+    const searches: Array<{ excludePrincipalIds?: readonly string[] }> = [];
+    srv.built.organization.directory.searchUsers = async (actor, input) => {
+      searches.push(input);
+      return originalSearch(actor, input);
+    };
+    const after = await adminGet(srv.base, path, "owner");
+    assert.equal(after.status, 200);
+    assert.deepEqual((await after.json()) as any, { matches: [] });
+    assert.equal(searches.length, 1);
+    assert.deepEqual(new Set(searches[0]?.excludePrincipalIds), new Set(["owner", "candidate"]));
+  } finally {
+    await srv.close();
+  }
+});
+
+test("unattended admin capabilities do not elevate organization directory visibility", async () => {
+  const srv = await startAdmin();
+  try {
+    await seedActive(srv.built, "hidden-candidate");
+    const policy = await srv.built.organization.setDirectoryPolicy({
+      subjectKind: "user",
+      subjectId: "admin-alice",
+      mode: "none",
+      roots: [],
+      expectedRevision: 0,
+      actor: "admin-alice",
+    });
+    assert.equal(policy.ok, true);
+    const session = await srv.built.organization.checkActive("admin-alice");
+    const cap = await mintCapabilityToken(
+      {
+        actorId: "admin-alice",
+        sessionVersion: session!.sessionVersion,
+        scopeId: "personal:admin-alice",
+        aud: CONTROL_PLANE_AUD,
+        exp: Date.now() + 60_000,
+      },
+      CAP,
+    );
+    const directory = await fetch(`${srv.base}/v1/org/users?q=hidden&limit=10`, {
+      headers: { "x-agent-capability": cap },
+    });
+    assert.equal(directory.status, 200);
+    assert.deepEqual(((await directory.json()) as any).users, []);
+    const project = await srv.built.app.createProject("admin-alice", "Restricted candidates");
+    assert.ok(project);
+    const candidates = await fetch(
+      `${srv.base}/v1/projects/${project!.id}/member-candidates?principalId=admin-alice&q=hidden`,
+      { headers: { "x-agent-capability": cap } },
+    );
+    assert.equal(candidates.status, 200);
+    assert.deepEqual(await candidates.json(), { matches: [] });
+    assert.equal((await srv.built.app.resolveVisibleRecipient("admin-alice", "hidden-candidate")).kind, "none");
+    assert.equal(
+      (
+        await srv.built.app.resolveVisibleRecipient("admin-alice", "hidden-candidate", {
+          allowAdminElevation: true,
+        })
+      ).kind,
+      "one",
+    );
+  } finally {
+    await srv.close();
+  }
+});
+
+test("playground provisioning creates a durable active user with an authoritative session version", async () => {
+  const srv = start();
+  const path = "/v1/internal/auth/users/playground";
+  try {
+    const raw = JSON.stringify({ principalId: "playground-0123456789abcdef" });
+    const created = await fetch(`${srv.base}${path}`, { method: "POST", headers: sign("POST", path, raw), body: raw });
+    assert.equal(created.status, 200);
+    assert.deepEqual(await created.json(), { principalId: "playground-0123456789abcdef", sessionVersion: 1 });
+    assert.deepEqual(await srv.built.organization.checkActive("playground-0123456789abcdef"), {
+      status: "active",
+      sessionVersion: 1,
+    });
+    const invalidRaw = JSON.stringify({ principalId: "playground-invalid" });
+    const invalid = await fetch(`${srv.base}${path}`, {
+      method: "POST",
+      headers: sign("POST", path, invalidRaw),
+      body: invalidRaw,
+    });
+    assert.equal(invalid.status, 400);
+  } finally {
+    await srv.close();
+  }
+});
+
 test("unknown user is denied not_invited under invite_only admission", async () => {
   const srv = start({ orgAdmission: "invite_only" });
   try {
@@ -205,8 +399,12 @@ test("admin invite creates an invited user with the exact response shape", async
       "createdBy",
       "displayName",
       "email",
+      "employeeNumber",
+      "jobTitle",
       "lastLoginAt",
+      "mobile",
       "principalId",
+      "profileRevision",
       "sessionVersion",
       "status",
       "updatedAt",
@@ -308,16 +506,12 @@ test("suspending a user via PATCH denies subsequent logins; unknown users are 40
     const suspendInvited = await adminFetch(srv.base, "PATCH", `${INVITE_PATH}/U-erin`, "admin-alice", {
       status: "suspended",
     });
-    assert.equal(suspendInvited.status, 200);
+    assert.equal(suspendInvited.status, 409);
     const firstLogin = await login(
       srv.base,
       loginBody({ principalId: "U-erin", subject: "sub-erin", email: "erin@example.com", displayName: "Erin" }),
     );
-    assert.deepEqual(
-      await firstLogin.json(),
-      { status: "denied", reason: "suspended" },
-      "an invited user with no bound identity is still matched by email and denied",
-    );
+    assert.equal(((await firstLogin.json()) as any).status, "ok");
   } finally {
     await srv.close();
   }
@@ -355,10 +549,59 @@ test("deprovisioning a UUID-keyed user via PATCH denies subsequent logins", asyn
   }
 });
 
+test("concurrent administrator suspensions cannot leave the organization without an active admin", async () => {
+  const srv = await startAdmin();
+  try {
+    await seedActive(srv.built, "admin-bob");
+    await srv.built.admin.createGrant(
+      { id: "admin-alice", type: "internal" },
+      { principalId: "admin-bob", scopeId: scopeId("org", "default-org"), role: "org_admin" },
+    );
+    const responses = await Promise.all([
+      adminFetch(srv.base, "POST", `${INVITE_PATH}/admin-alice/status`, "admin-alice", { status: "suspended" }),
+      adminFetch(srv.base, "POST", `${INVITE_PATH}/admin-bob/status`, "admin-bob", { status: "suspended" }),
+    ]);
+    assert.deepEqual(responses.map((response) => response.status).sort(), [200, 409]);
+    const users = await Promise.all([
+      srv.built.organization.getUser("admin-alice"),
+      srv.built.organization.getUser("admin-bob"),
+    ]);
+    assert.equal(users.filter((user) => user?.status === "active").length, 1);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("case-variant administrator grants still protect the last active account", async () => {
+  const srv = await startAdmin({
+    adminGrants: "Admin@Example.com:org_admin,Backup@Example.com:org_admin",
+  });
+  try {
+    await seedActive(srv.built, "admin@example.com");
+    await seedActive(srv.built, "backup@example.com");
+    assert.equal(
+      (
+        await adminFetch(srv.base, "POST", `${INVITE_PATH}/backup@example.com/status`, "Admin@Example.com", {
+          status: "suspended",
+        })
+      ).status,
+      200,
+    );
+    const blocked = await adminFetch(srv.base, "POST", `${INVITE_PATH}/admin@example.com/status`, "Admin@Example.com", {
+      status: "suspended",
+    });
+    assert.equal(blocked.status, 409);
+    assert.equal(((await blocked.json()) as any).error, "last_active_admin");
+  } finally {
+    await srv.close();
+  }
+});
+
 test("non-admin actors are forbidden (403); a missing portal identity is unauthorized (401)", async () => {
   const srv = await startAdmin();
   try {
     await seedActive(srv.built, "U-nobody");
+    const adminSession = await srv.built.organization.checkActive("admin-alice");
     const forbidden = await adminFetch(srv.base, "POST", INVITE_PATH, "U-nobody", {
       principalId: "U-dave",
       email: "dave@example.com",
@@ -371,6 +614,7 @@ test("non-admin actors are forbidden (403); a missing portal identity is unautho
     const cap = await mintCapabilityToken(
       {
         actorId: "admin-alice",
+        sessionVersion: adminSession!.sessionVersion,
         scopeId: "personal:admin-alice",
         aud: CONTROL_PLANE_AUD,
         liveActor: true,
@@ -405,9 +649,11 @@ test("non-admin actors are forbidden (403); a missing portal identity is unautho
 test("non-personal capability tokens are denied admin content reads (audit, errors, egress)", async () => {
   const srv = await startAdmin();
   try {
+    const adminSession = await srv.built.organization.checkActive("admin-alice");
     const cap = await mintCapabilityToken(
       {
         actorId: "admin-alice",
+        sessionVersion: adminSession!.sessionVersion,
         scopeId: "channel:C1",
         aud: CONTROL_PLANE_AUD,
         liveActor: true,
@@ -461,10 +707,73 @@ async function adminGet(base: string, path: string, portalUser: string): Promise
   return fetch(`${base}${path}`, {
     headers: {
       ...sign("GET", path, ""),
-      "x-portal-identity": await mintSignedPayload({ p: portalUser, exp: Date.now() + 60_000 }, PID),
+      "x-portal-identity": await mintSignedPayload({ p: portalUser, sv: 2, exp: Date.now() + 60_000 }, PID),
     },
   });
 }
+
+test("Skill Access routes use authenticated identity and CAS replacement", async () => {
+  const srv = await startAdmin();
+  try {
+    await seedActive(srv.built, "U-skill-reader");
+    const skill = await srv.built.skills.create({
+      scopeId: "personal:admin-alice",
+      createdBy: "admin-alice",
+      manifest: {
+        name: "org-route-skill",
+        description: "Route authorization fixture",
+        requiredCapabilities: [],
+        body: "Use the route fixture",
+      },
+    });
+    await srv.built.skills.review(skill.id, "admin-alice", []);
+    await srv.built.skills.publish(skill.id);
+    const path = `/v1/skills/${encodeURIComponent(skill.id)}/access`;
+    const initial = await adminGet(srv.base, path, "admin-alice");
+    assert.equal(initial.status, 200);
+    const initialBody = (await initial.json()) as { mode: string; revision: number };
+    assert.equal(initialBody.mode, "home");
+    assert.equal(initialBody.revision, 1);
+    const forgedAdminHeader = await fetch(`${srv.base}${path}`, {
+      headers: { ...sign("GET", path, ""), "x-admin-actor": "admin-alice" },
+    });
+    assert.equal(forgedAdminHeader.status, 401);
+    const updated = await adminFetch(srv.base, "PUT", path, "admin-alice", {
+      mode: "restricted",
+      subjects: [{ kind: "user", id: "U-skill-reader" }],
+      expectedRevision: 1,
+    });
+    assert.equal(updated.status, 200);
+    assert.equal(((await updated.json()) as { revision: number }).revision, 2);
+    const detailPath = `/v1/skills/${encodeURIComponent(skill.id)}`;
+    const ownerResponse = await adminGet(srv.base, `${detailPath}?principalId=admin-alice`, "admin-alice");
+    const ownerBody = await ownerResponse.text();
+    assert.equal(ownerResponse.status, 200, ownerBody);
+    const ownerDetail = JSON.parse(ownerBody) as {
+      skill: { createdBy?: string };
+    };
+    assert.equal(ownerDetail.skill.createdBy, "admin-alice");
+    const readerDetail = await adminGet(srv.base, `${detailPath}?principalId=U-skill-reader`, "U-skill-reader");
+    assert.equal(readerDetail.status, 200);
+    assert.equal(((await readerDetail.json()) as { skill: { createdBy?: string } }).skill.createdBy, undefined);
+    const conflict = await adminFetch(srv.base, "PUT", path, "admin-alice", {
+      mode: "home",
+      subjects: [],
+      expectedRevision: 1,
+    });
+    assert.equal(conflict.status, 409);
+    assert.equal(((await conflict.json()) as { currentRevision: number }).currentRevision, 2);
+    const raw = JSON.stringify({ mode: "home", subjects: [], expectedRevision: 2 });
+    const missingIdentity = await fetch(`${srv.base}${path}`, {
+      method: "PUT",
+      headers: sign("PUT", path, raw),
+      body: raw,
+    });
+    assert.equal(missingIdentity.status, 401);
+  } finally {
+    await srv.close();
+  }
+});
 
 async function createUnitAsAdmin(base: string, body: Record<string, unknown>): Promise<any> {
   const res = await adminFetch(base, "POST", UNITS_PATH, "admin-alice", body);
@@ -652,6 +961,41 @@ test("ambiguous multi-key patches are rejected or fail atomically", async () => 
   }
 });
 
+test("unit membership batches commit once and move impact previews the affected subtree", async () => {
+  const srv = await startAdmin();
+  try {
+    const source = await createUnitAsAdmin(srv.base, { parentId: "root", name: "Source", kind: "department" });
+    const child = await createUnitAsAdmin(srv.base, { parentId: source.id, name: "Child", kind: "team" });
+    const target = await createUnitAsAdmin(srv.base, { parentId: "root", name: "Target", kind: "department" });
+    await seedActive(srv.built, "U-batch-1");
+    await seedActive(srv.built, "U-batch-2");
+    const revision = await srv.built.organizationStore.getAuthzRevision("default-org");
+    const added = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${source.id}/members`, "admin-alice", {
+      principalIds: ["U-batch-1", "U-batch-2", "U-batch-1"],
+      role: "member",
+    });
+    assert.equal(added.status, 200);
+    assert.deepEqual(((await added.json()) as any).members.map((member: any) => member.principalId).sort(), [
+      "U-batch-1",
+      "U-batch-2",
+    ]);
+    assert.equal(await srv.built.organizationStore.getAuthzRevision("default-org"), revision + 1);
+    const childAdd = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${child.id}/members`, "admin-alice", {
+      principalId: "U-batch-2",
+      role: "member",
+    });
+    assert.equal(childAdd.status, 200);
+    const path = `${UNITS_PATH}/${source.id}/impact?newParentId=${encodeURIComponent(target.id)}`;
+    const preview = await adminGet(srv.base, path, "admin-alice");
+    assert.equal(preview.status, 200);
+    assert.deepEqual(((await preview.json()) as any).impact, { activeUnits: 2, activeMembers: 2 });
+    const invalid = await adminGet(srv.base, `${UNITS_PATH}/${source.id}/impact`, "admin-alice");
+    assert.equal(invalid.status, 400);
+  } finally {
+    await srv.close();
+  }
+});
+
 test("archiving a populated unit conflicts with an impact summary and restore reopens it", async () => {
   const srv = await startAdmin();
   try {
@@ -712,6 +1056,42 @@ test("archiving a populated unit conflicts with an impact summary and restore re
   }
 });
 
+test("an archived child restore conflicts until its parent is active", async () => {
+  const srv = await startAdmin();
+  try {
+    const parent = await createUnitAsAdmin(srv.base, { parentId: "root", name: "Parent", kind: "department" });
+    const child = await createUnitAsAdmin(srv.base, { parentId: parent.id, name: "Child", kind: "team" });
+    assert.equal(
+      (await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${child.id}`, "admin-alice", { status: "archived" })).status,
+      200,
+    );
+    assert.equal(
+      (await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${parent.id}`, "admin-alice", { status: "archived" })).status,
+      200,
+    );
+    const blocked = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${child.id}`, "admin-alice", {
+      status: "active",
+    });
+    assert.equal(blocked.status, 409);
+    assert.equal(((await blocked.json()) as any).error, "conflict");
+    assert.equal(
+      (await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${parent.id}`, "admin-alice", { status: "active" })).status,
+      200,
+    );
+    assert.equal(
+      (
+        await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${child.id}`, "admin-alice", {
+          status: "active",
+          sortOrder: 1,
+        })
+      ).status,
+      200,
+    );
+  } finally {
+    await srv.close();
+  }
+});
+
 test("a non-admin active user without a manager role is forbidden from unit reads and member writes", async () => {
   const srv = await startAdmin();
   try {
@@ -721,21 +1101,109 @@ test("a non-admin active user without a manager role is forbidden from unit read
       principalId: "U-plain",
       role: "member",
     });
-    assert.equal(added.status, 403);
-    const removed = await adminFetch(
-      srv.base,
-      "DELETE",
-      `${UNITS_PATH}/${unit.id}/members/U-plain`,
-      "U-plain",
-      {},
-    );
-    assert.equal(removed.status, 403);
+    assert.equal(added.status, 404);
+    const removed = await adminFetch(srv.base, "DELETE", `${UNITS_PATH}/${unit.id}/members/U-plain`, "U-plain", {});
+    assert.equal(removed.status, 404);
     const list = await adminGet(srv.base, UNITS_PATH, "U-plain");
     assert.equal(list.status, 403);
     const detail = await adminGet(srv.base, `${UNITS_PATH}/${unit.id}`, "U-plain");
     assert.equal(detail.status, 403);
     const patched = await adminFetch(srv.base, "PATCH", `${UNITS_PATH}/${unit.id}`, "U-plain", { name: "H" });
     assert.equal(patched.status, 403);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("organization admins and managers can search assignable users without receiving deprovisioned matches", async () => {
+  const srv = await startAdmin();
+  try {
+    await srv.built.organization.invite({
+      principalId: "U-alice-search",
+      email: "alice.search@example.com",
+      displayName: "Alice Search",
+      actor: "admin-alice",
+    });
+    await srv.built.organization.setStatus({
+      principalId: "U-alice-search",
+      status: "active",
+      actor: "admin-alice",
+    });
+    await srv.built.organization.invite({
+      principalId: "U-search-suspended",
+      email: "suspended.search@example.com",
+      displayName: "Suspended Search",
+      actor: "admin-alice",
+    });
+    await srv.built.organization.setStatus({
+      principalId: "U-search-suspended",
+      status: "suspended",
+      actor: "admin-alice",
+    });
+    await seedActive(srv.built, "U-search-manager");
+    await seedActive(srv.built, "U-search-deprovisioned");
+    await srv.built.organization.setStatus({
+      principalId: "U-search-deprovisioned",
+      status: "deprovisioned",
+      actor: "admin-alice",
+    });
+    const unit = await createUnitAsAdmin(srv.base, { parentId: "root", name: "Search", kind: "team" });
+    await adminFetch(srv.base, "POST", `${UNITS_PATH}/${unit.id}/members`, "admin-alice", {
+      principalId: "U-search-manager",
+      role: "manager",
+    });
+    const path = `${USER_SEARCH_PATH}?q=search`;
+    const adminResult = await adminGet(srv.base, path, "admin-alice");
+    assert.equal(adminResult.status, 200);
+    assert.deepEqual(
+      ((await adminResult.json()) as { users: Array<{ principalId: string }> }).users.map((user) => user.principalId),
+      ["U-alice-search", "U-search-manager"],
+    );
+    const managerResult = await adminGet(srv.base, path, "U-search-manager");
+    assert.equal(managerResult.status, 200);
+    assert.equal(((await managerResult.json()) as { users: unknown[] }).users.length, 2);
+    const hidden = await srv.built.organization.setDirectoryPolicy({
+      subjectKind: "user",
+      subjectId: "U-search-manager",
+      mode: "none",
+      roots: [],
+      expectedRevision: 0,
+      actor: "admin-alice",
+    });
+    assert.equal(hidden.ok, true);
+    const hiddenResult = await adminGet(srv.base, path, "U-search-manager");
+    assert.equal(hiddenResult.status, 200);
+    assert.deepEqual((await hiddenResult.json()) as { users: unknown[] }, { users: [] });
+    assert.equal((await adminGet(srv.base, `${USER_SEARCH_PATH}?q=x`, "admin-alice")).status, 400);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("organization user search is rate limited per actor", async () => {
+  let calls = 0;
+  const srv = await startAdmin(
+    {},
+    {
+      rateLimiter: {
+        async check(key) {
+          assert.equal(key, "org-user-search:admin-alice");
+          calls += 1;
+          return calls === 1 ? { allowed: true } : { allowed: false, retryAfterMs: 5000 };
+        },
+      },
+    },
+  );
+  try {
+    const path = `${USER_SEARCH_PATH}?q=admin`;
+    assert.equal((await adminGet(srv.base, path, "admin-alice")).status, 200);
+    const limited = await adminGet(srv.base, path, "admin-alice");
+    assert.equal(limited.status, 429);
+    assert.deepEqual(await limited.json(), {
+      error: "rate_limited",
+      message: "too many organization user searches; try again later",
+      retryAfterMs: 5000,
+    });
   } finally {
     await srv.close();
   }
@@ -753,6 +1221,14 @@ test("unit managers add and remove member-role members only inside their managed
       role: "manager",
     });
     assert.equal(grant.status, 200);
+    const list = await adminGet(srv.base, UNITS_PATH, "U-mgr");
+    assert.equal(list.status, 200);
+    assert.deepEqual(
+      ((await list.json()) as any).units.map((unit: any) => unit.id),
+      [managed.id],
+    );
+    assert.equal((await adminGet(srv.base, `${UNITS_PATH}/${managed.id}`, "U-mgr")).status, 200);
+    assert.equal((await adminGet(srv.base, `${UNITS_PATH}/${sibling.id}`, "U-mgr")).status, 404);
     const added = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${managed.id}/members`, "U-mgr", {
       principalId: "U-join",
       role: "member",
@@ -761,25 +1237,24 @@ test("unit managers add and remove member-role members only inside their managed
     const addedBody: any = await added.json();
     assert.equal(addedBody.members.length, 2);
     assert.equal(addedBody.members.find((m: any) => m.principalId === "U-join").role, "member");
-    const removed = await adminFetch(
-      srv.base,
-      "DELETE",
-      `${UNITS_PATH}/${managed.id}/members/U-join`,
-      "U-mgr",
-      {},
-    );
+    const removed = await adminFetch(srv.base, "DELETE", `${UNITS_PATH}/${managed.id}/members/U-join`, "U-mgr", {});
     assert.equal(removed.status, 200);
     assert.equal(((await removed.json()) as any).members.length, 1);
     const crossUnit = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${sibling.id}/members`, "U-mgr", {
       principalId: "U-join",
       role: "member",
     });
-    assert.equal(crossUnit.status, 403);
+    assert.equal(crossUnit.status, 404);
     const managerGrant = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${managed.id}/members`, "U-mgr", {
       principalId: "U-join",
       role: "manager",
     });
     assert.equal(managerGrant.status, 403);
+    const managerDemotion = await adminFetch(srv.base, "POST", `${UNITS_PATH}/${managed.id}/members`, "U-mgr", {
+      principalId: "U-mgr",
+      role: "member",
+    });
+    assert.equal(managerDemotion.status, 403);
     const managerRevoke = await adminFetch(
       srv.base,
       "DELETE",
@@ -826,13 +1301,7 @@ test("a manager on a parent unit manages members in descendant units", async () 
       role: "member",
     });
     assert.equal(added.status, 200);
-    const removed = await adminFetch(
-      srv.base,
-      "DELETE",
-      `${UNITS_PATH}/${child.id}/members/U-join2`,
-      "U-mgr2",
-      {},
-    );
+    const removed = await adminFetch(srv.base, "DELETE", `${UNITS_PATH}/${child.id}/members/U-join2`, "U-mgr2", {});
     assert.equal(removed.status, 200);
   } finally {
     await srv.close();
@@ -862,7 +1331,7 @@ test("a suspended manager is rejected by the portal gate before authorization ru
   }
 });
 
-test("member add rejects unknown or deprovisioned principals with 400 missing_user", async () => {
+test("member add reports unknown or deprovisioned principals without partially writing", async () => {
   const srv = await startAdmin();
   try {
     const unit = await createUnitAsAdmin(srv.base, { parentId: "root", name: "E2", kind: "team" });
@@ -870,8 +1339,12 @@ test("member add rejects unknown or deprovisioned principals with 400 missing_us
       principalId: "U-ghost",
       role: "member",
     });
-    assert.equal(unknown.status, 400);
-    assert.equal(((await unknown.json()) as any).error, "missing_user");
+    assert.equal(unknown.status, 404);
+    assert.deepEqual((await unknown.json()) as any, {
+      error: "not_found",
+      message: "one or more organization users are unavailable",
+      invalidPrincipalIds: ["U-ghost"],
+    });
     await seedActive(srv.built, "U-dep");
     const deprovisioned = await adminFetch(srv.base, "PATCH", `${INVITE_PATH}/U-dep`, "admin-alice", {
       status: "deprovisioned",
@@ -881,8 +1354,12 @@ test("member add rejects unknown or deprovisioned principals with 400 missing_us
       principalId: "U-dep",
       role: "member",
     });
-    assert.equal(res.status, 400);
-    assert.equal(((await res.json()) as any).error, "missing_user");
+    assert.equal(res.status, 404);
+    assert.deepEqual((await res.json()) as any, {
+      error: "not_found",
+      message: "one or more organization users are unavailable",
+      invalidPrincipalIds: ["U-dep"],
+    });
     const badRoles: Array<Record<string, unknown>> = [
       {},
       { principalId: "U-x" },
@@ -901,9 +1378,11 @@ test("member add rejects unknown or deprovisioned principals with 400 missing_us
 test("capability tokens are denied org unit routes", async () => {
   const srv = await startAdmin();
   try {
+    const adminSession = await srv.built.organization.checkActive("admin-alice");
     const cap = await mintCapabilityToken(
       {
         actorId: "admin-alice",
+        sessionVersion: adminSession!.sessionVersion,
         scopeId: "personal:admin-alice",
         aud: CONTROL_PLANE_AUD,
         liveActor: true,
@@ -972,6 +1451,40 @@ test("admin creates, lists, and reads access groups with members", async () => {
   }
 });
 
+test("access group member batches are deduplicated and atomic", async () => {
+  const srv = await startAdmin();
+  try {
+    const group = await createGroupAsAdmin(srv.base, { name: "Batch" });
+    await seedActive(srv.built, "U-group-1");
+    await seedActive(srv.built, "U-group-2");
+    const before = await srv.built.organizationStore.getAuthzRevision("default-org");
+    const added = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${group.id}/members`, "admin-alice", {
+      principalIds: ["U-group-1", "U-group-2", "U-group-1"],
+      role: "member",
+    });
+    assert.equal(added.status, 200);
+    assert.deepEqual(((await added.json()) as any).members.map((member: any) => member.principalId).sort(), [
+      "U-group-1",
+      "U-group-2",
+    ]);
+    assert.equal(await srv.built.organizationStore.getAuthzRevision("default-org"), before + 1);
+    const failed = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${group.id}/members`, "admin-alice", {
+      principalIds: ["U-group-1", "U-missing"],
+      role: "manager",
+    });
+    assert.equal(failed.status, 404);
+    assert.deepEqual((await failed.json()) as any, {
+      error: "not_found",
+      message: "one or more organization users are unavailable",
+      invalidPrincipalIds: ["U-missing"],
+    });
+    const detail = await adminGet(srv.base, `${GROUPS_PATH}/${group.id}`, "admin-alice");
+    assert.ok(((await detail.json()) as any).members.every((member: any) => member.role === "member"));
+  } finally {
+    await srv.close();
+  }
+});
+
 test("admin renames, archives, and restores access groups via PATCH with invalid input rejected 400", async () => {
   const srv = await startAdmin();
   try {
@@ -1025,15 +1538,9 @@ test("a non-admin active user without a manager role is forbidden from group rea
       principalId: "U-gplain",
       role: "member",
     });
-    assert.equal(added.status, 403);
-    const removed = await adminFetch(
-      srv.base,
-      "DELETE",
-      `${GROUPS_PATH}/${group.id}/members/U-gplain`,
-      "U-gplain",
-      {},
-    );
-    assert.equal(removed.status, 403);
+    assert.equal(added.status, 404);
+    const removed = await adminFetch(srv.base, "DELETE", `${GROUPS_PATH}/${group.id}/members/U-gplain`, "U-gplain", {});
+    assert.equal(removed.status, 404);
     const list = await adminGet(srv.base, GROUPS_PATH, "U-gplain");
     assert.equal(list.status, 403);
     const detail = await adminGet(srv.base, `${GROUPS_PATH}/${group.id}`, "U-gplain");
@@ -1057,6 +1564,14 @@ test("group managers add and remove member-role members only in their own group"
       role: "manager",
     });
     assert.equal(grant.status, 200);
+    const list = await adminGet(srv.base, GROUPS_PATH, "U-gmgr");
+    assert.equal(list.status, 200);
+    assert.deepEqual(
+      ((await list.json()) as any).groups.map((group: any) => group.id),
+      [managed.id],
+    );
+    assert.equal((await adminGet(srv.base, `${GROUPS_PATH}/${managed.id}`, "U-gmgr")).status, 200);
+    assert.equal((await adminGet(srv.base, `${GROUPS_PATH}/${other.id}`, "U-gmgr")).status, 404);
     const added = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${managed.id}/members`, "U-gmgr", {
       principalId: "U-gjoin",
       role: "member",
@@ -1065,25 +1580,24 @@ test("group managers add and remove member-role members only in their own group"
     const addedBody: any = await added.json();
     assert.equal(addedBody.members.length, 2);
     assert.equal(addedBody.members.find((m: any) => m.principalId === "U-gjoin").role, "member");
-    const removed = await adminFetch(
-      srv.base,
-      "DELETE",
-      `${GROUPS_PATH}/${managed.id}/members/U-gjoin`,
-      "U-gmgr",
-      {},
-    );
+    const removed = await adminFetch(srv.base, "DELETE", `${GROUPS_PATH}/${managed.id}/members/U-gjoin`, "U-gmgr", {});
     assert.equal(removed.status, 200);
     assert.equal(((await removed.json()) as any).members.length, 1);
     const crossGroup = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${other.id}/members`, "U-gmgr", {
       principalId: "U-gjoin",
       role: "member",
     });
-    assert.equal(crossGroup.status, 403);
+    assert.equal(crossGroup.status, 404);
     const managerGrant = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${managed.id}/members`, "U-gmgr", {
       principalId: "U-gjoin",
       role: "manager",
     });
     assert.equal(managerGrant.status, 403);
+    const managerDemotion = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${managed.id}/members`, "U-gmgr", {
+      principalId: "U-gmgr",
+      role: "member",
+    });
+    assert.equal(managerDemotion.status, 403);
     const managerRevoke = await adminFetch(
       srv.base,
       "DELETE",
@@ -1113,6 +1627,11 @@ test("group managers add and remove member-role members only in their own group"
       role: "member",
     });
     assert.equal(adminUnknown.status, 404);
+    const archivedManaged = await adminFetch(srv.base, "PATCH", `${GROUPS_PATH}/${managed.id}`, "admin-alice", {
+      status: "archived",
+    });
+    assert.equal(archivedManaged.status, 200);
+    assert.equal((await adminGet(srv.base, GROUPS_PATH, "U-gmgr")).status, 403);
   } finally {
     await srv.close();
   }
@@ -1126,8 +1645,12 @@ test("group member add rejects unknown, deprovisioned, or archived targets with 
       principalId: "U-ghost",
       role: "member",
     });
-    assert.equal(unknown.status, 400);
-    assert.equal(((await unknown.json()) as any).error, "missing_user");
+    assert.equal(unknown.status, 404);
+    assert.deepEqual((await unknown.json()) as any, {
+      error: "not_found",
+      message: "one or more organization users are unavailable",
+      invalidPrincipalIds: ["U-ghost"],
+    });
     await seedActive(srv.built, "U-gdep");
     const deprovisioned = await adminFetch(srv.base, "PATCH", `${INVITE_PATH}/U-gdep`, "admin-alice", {
       status: "deprovisioned",
@@ -1137,8 +1660,12 @@ test("group member add rejects unknown, deprovisioned, or archived targets with 
       principalId: "U-gdep",
       role: "member",
     });
-    assert.equal(res.status, 400);
-    assert.equal(((await res.json()) as any).error, "missing_user");
+    assert.equal(res.status, 404);
+    assert.deepEqual((await res.json()) as any, {
+      error: "not_found",
+      message: "one or more organization users are unavailable",
+      invalidPrincipalIds: ["U-gdep"],
+    });
     const archivedGroup = await createGroupAsAdmin(srv.base, { name: "Arc" });
     await adminFetch(srv.base, "PATCH", `${GROUPS_PATH}/${archivedGroup.id}`, "admin-alice", { status: "archived" });
     const archivedAdd = await adminFetch(
@@ -1168,9 +1695,11 @@ test("group member add rejects unknown, deprovisioned, or archived targets with 
 test("capability tokens are denied org access group routes", async () => {
   const srv = await startAdmin();
   try {
+    const adminSession = await srv.built.organization.checkActive("admin-alice");
     const cap = await mintCapabilityToken(
       {
         actorId: "admin-alice",
+        sessionVersion: adminSession!.sessionVersion,
         scopeId: "personal:admin-alice",
         aud: CONTROL_PLANE_AUD,
         liveActor: true,

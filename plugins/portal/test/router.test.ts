@@ -7,6 +7,8 @@ import { exportJWK, SignJWT } from "jose";
 
 let whoamiProbes = 0;
 let lastConsentClicker: string | null = null;
+let lastConsentIdentity: string | null = null;
+let lastSelfConnectIdentity: string | null = null;
 let lastImpersonateIdentity: string | null = null;
 let agentApiRequests = 0;
 const VALID_AGENT_CAPABILITY = "valid.agent.capability";
@@ -32,6 +34,7 @@ let tokenExchanges = 0;
 let loginTransactionUnavailable = false;
 let userLoginMode: "ok" | "denied" | "down" = "ok";
 let userLoginDenyReason = "not_invited";
+let userLoginCanonicalPrincipal: string | null = null;
 let lastUserLoginBody: Record<string, unknown> | null = null;
 
 const upstream = createServer((req: IncomingMessage, res) => {
@@ -117,7 +120,7 @@ const upstream = createServer((req: IncomingMessage, res) => {
         JSON.stringify({
           status: "ok",
           user: {
-            principalId: lastUserLoginBody.principalId,
+            principalId: userLoginCanonicalPrincipal ?? lastUserLoginBody.principalId,
             status: "active",
             sessionVersion: 7,
             displayName: "Core User Name",
@@ -192,17 +195,25 @@ const upstream = createServer((req: IncomingMessage, res) => {
   }
   if (typeof req.url === "string" && req.url.startsWith("/v1/connectors/oauth/consent/redeem/")) {
     lastConsentClicker = (req.headers["x-consent-clicker"] as string | undefined) ?? null;
+    lastConsentIdentity =
+      typeof req.headers["x-portal-identity"] === "string" ? req.headers["x-portal-identity"] : null;
     res.writeHead(200, { "content-type": "application/json" });
     return void res.end(
       JSON.stringify({ status: "authorize", authorizeUrl: "https://accounts.google.test/o/oauth2?x=1" }),
     );
+  }
+  if (typeof req.url === "string" && req.url.startsWith("/v1/connectors/oauth/google/start")) {
+    lastSelfConnectIdentity =
+      typeof req.headers["x-portal-identity"] === "string" ? req.headers["x-portal-identity"] : null;
+    res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(JSON.stringify({ message: "provider unavailable" }));
   }
   if (req.url === "/api/whoami") {
     whoamiProbes++;
     const m = (req.headers.cookie ?? "").match(/admin=([^;]+)/);
     const sub = m ? decodeURIComponent(m[1] ?? "") : "";
     res.writeHead(200, { "content-type": "application/json" });
-    return void res.end(JSON.stringify({ isAdmin: sub === "U-admin" }));
+    return void res.end(JSON.stringify({ isAdmin: sub === "U-admin", isManager: sub === "U-manager" }));
   }
   if (typeof req.url === "string" && req.url.startsWith("/v1/admin/impersonate")) {
     lastImpersonateIdentity =
@@ -215,7 +226,9 @@ const upstream = createServer((req: IncomingMessage, res) => {
       res.writeHead(ok ? 200 : 403, { "content-type": "application/json" });
       res.end(
         JSON.stringify(
-          ok ? { ok: true, displayName: "Alice Example" } : { error: "forbidden", message: "admin grant required" },
+          ok
+            ? { ok: true, displayName: "Alice Example", sessionVersion: 11 }
+            : { error: "forbidden", message: "admin grant required" },
         ),
       );
     });
@@ -259,7 +272,14 @@ function sessionCookie(sub: string, ageS = 0, sv?: number): string {
 function portalIdentityClaims(body: unknown): Record<string, unknown> {
   const token = (body as { headers: Record<string, string> }).headers["x-portal-identity"];
   assert.ok(token, "the hop carries a signed portal identity");
-  return JSON.parse(Buffer.from(token.slice(0, token.lastIndexOf(".")), "base64url").toString("utf8")) as Record<string, unknown>;
+  return portalTokenClaims(token);
+}
+
+function portalTokenClaims(token: string): Record<string, unknown> {
+  return JSON.parse(Buffer.from(token.slice(0, token.lastIndexOf(".")), "base64url").toString("utf8")) as Record<
+    string,
+    unknown
+  >;
 }
 
 test.after(() => {
@@ -314,6 +334,22 @@ test("valid session: upstream receives ONLY the synthesized cookie, prefix strip
   assert.equal(body.headers["x-admin-actor"], undefined);
 });
 
+test("surface writes preserve idempotency keys without forwarding forged identity", async () => {
+  const response = await fetch(`${base}/admin/api/x`, {
+    method: "POST",
+    headers: {
+      cookie: sessionCookie("U-admin"),
+      origin: PUBLIC,
+      "idempotency-key": "member-job-1",
+      "x-admin-actor": "EVIL@acme",
+    },
+  });
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { headers: Record<string, string> };
+  assert.equal(body.headers["idempotency-key"], "member-job-1");
+  assert.equal(body.headers["x-admin-actor"], undefined);
+});
+
 test("web-ui /app-edit drops x-frame-options so its own frame-ancestors CSP can allow the app origin", async () => {
   const editPage = await fetch(`${base}/app-edit?slug=demo`, { headers: { cookie: sessionCookie("U1") } });
   assert.equal(editPage.status, 200);
@@ -333,6 +369,13 @@ test("admin tier (derived gate): non-admin sub is 403 before the upstream; admin
   assert.equal(ok.status, 200);
   const body = (await ok.json()) as { cookie: string };
   assert.equal(body.cookie, "admin=U-admin");
+});
+
+test("organization managers reach the constrained admin surface", async () => {
+  const response = await fetch(`${base}/admin/api/me`, { headers: { cookie: sessionCookie("U-manager") } });
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { cookie?: string };
+  assert.equal(body.cookie, "admin=U-manager");
 });
 
 test("admin gate fails closed for an unknown sub (whoami false ⇒ 403)", async () => {
@@ -403,8 +446,9 @@ test("new human path /connect/redeem/:id: session-gated; with session forwards t
   assert.match(noSession.headers.get("location") ?? "", /^\/auth\/login\?returnTo=%2Fconnect%2Fredeem%2Fabc-123/);
 
   lastConsentClicker = null;
+  lastConsentIdentity = null;
   const r = await fetch(`${base}/connect/redeem/abc-123?p=google`, {
-    headers: { cookie: sessionCookie("eve@acme") },
+    headers: { cookie: sessionCookie("eve@acme", 0, 7) },
     redirect: "manual",
   });
   assert.equal(r.status, 302);
@@ -414,14 +458,16 @@ test("new human path /connect/redeem/:id: session-gated; with session forwards t
     "eve@acme",
     "the verified session sub is forwarded to core, never an identity from the link",
   );
+  assert.equal(portalTokenClaims(lastConsentIdentity ?? "").sv, 7);
 });
 
 test("new human path /connect/:provider/self-connect: session-gated; with session it starts a personal flow via core", async () => {
   const noSession = await fetch(`${base}/connect/google/self-connect`, { redirect: "manual" });
   assert.equal(noSession.status, 302);
   assert.match(noSession.headers.get("location") ?? "", /^\/auth\/login/);
+  lastSelfConnectIdentity = null;
   const r = await fetch(`${base}/connect/google/self-connect`, {
-    headers: { cookie: sessionCookie("eve@acme") },
+    headers: { cookie: sessionCookie("eve@acme", 0, 8) },
     redirect: "manual",
   });
   assert.equal(
@@ -429,6 +475,7 @@ test("new human path /connect/:provider/self-connect: session-gated; with sessio
     200,
     "reaches core (the mock returns no authorizeUrl, so the portal renders a page rather than 404ing)",
   );
+  assert.equal(portalTokenClaims(lastSelfConnectIdentity ?? "").sv, 8);
 });
 
 test("new human path /drop/:id: form GET reaches the core /v1 drop form with x-drop-owner; POST /drop/:id never redirects (no session → 401, cross-origin → 403)", async () => {
@@ -437,7 +484,7 @@ test("new human path /drop/:id: form GET reaches the core /v1 drop form with x-d
   assert.match(noSession.headers.get("location") ?? "", /^\/auth\/login/);
 
   const form = await fetch(`${base}/drop/drop-1/form?t=link-token-1`, {
-    headers: { cookie: sessionCookie("owner@acme") },
+    headers: { cookie: sessionCookie("owner@acme", 0, 9) },
     redirect: "manual",
   });
   assert.equal(form.status, 200);
@@ -449,6 +496,7 @@ test("new human path /drop/:id: form GET reaches the core /v1 drop form with x-d
     "owner@acme",
     "the verified session sub is forwarded to core as the drop owner",
   );
+  assert.equal(portalIdentityClaims(fb).sv, 9);
 
   assert.equal(
     (await fetch(`${base}/drop/drop-1`, { method: "POST", headers: { origin: PUBLIC } })).status,
@@ -467,7 +515,7 @@ test("new human path /drop/:id: form GET reaches the core /v1 drop form with x-d
 
   const ok = await fetch(`${base}/drop/drop-1?t=link-token-1`, {
     method: "POST",
-    headers: { origin: PUBLIC, cookie: sessionCookie("owner@acme"), "content-type": "application/json" },
+    headers: { origin: PUBLIC, cookie: sessionCookie("owner@acme", 0, 9), "content-type": "application/json" },
     body: JSON.stringify({ secret: "s3cr3t" }),
   });
   assert.equal(ok.status, 200);
@@ -475,6 +523,7 @@ test("new human path /drop/:id: form GET reaches the core /v1 drop form with x-d
   assert.match(ob.url, /^\/v1\/keychain\/drops\/drop-1(\?|$)/);
   assert.match(ob.url, /[?&]t=link-token-1/, "the submit leg forwards the token too — the redeem check depends on it");
   assert.equal(ob.headers["x-drop-owner"], "owner@acme");
+  assert.equal(portalIdentityClaims(ob).sv, 9);
 });
 
 test("deployments are OFF by default (404 even with a session)", async () => {
@@ -635,6 +684,21 @@ async function runCookieLoginCallback(): Promise<{ response: Response; state: st
   });
   return { response, state };
 }
+
+test("auth/callback stores the canonical principal returned by the organization login", async () => {
+  userLoginCanonicalPrincipal = "U-canonical";
+  try {
+    const { response, state } = await runCookieLoginCallback();
+    assert.equal(response.status, 302);
+    assert.equal(loginTransactions.get(state)?.status, "succeeded");
+    const issued = /portal_session=([^;]+)/.exec(response.headers.get("set-cookie") ?? "")?.[1] ?? "";
+    const claims = open(decodeURIComponent(issued), sessionKey) as { sub?: unknown; sv?: unknown } | null;
+    assert.equal(claims?.sub, "U-canonical");
+    assert.equal(claims?.sv, 7);
+  } finally {
+    userLoginCanonicalPrincipal = null;
+  }
+});
 
 test("auth/callback issues no session when core denies the organization user", async () => {
   const exchangesBefore = tokenExchanges;
@@ -935,7 +999,7 @@ test("impersonate: an admin starts it; the web-ui hop carries target + impersona
   assert.match(stop.headers.get("set-cookie") ?? "", /portal_impersonate=;[^,]*Max-Age=0/);
 });
 
-test("impersonate: the minted identity targets the impersonated user without the admin's session version", async () => {
+test("impersonate: the minted identity targets the impersonated user with the target's session version", async () => {
   const start = await fetch(`${base}/auth/impersonate?target=alice@acme`, {
     method: "POST",
     headers: { cookie: sessionCookie("U-admin", 0, 7), origin: PUBLIC, accept: "application/json" },
@@ -954,7 +1018,7 @@ test("impersonate: the minted identity targets the impersonated user without the
   const claims = portalIdentityClaims(await web.json());
   assert.equal(claims.p, "alice@acme");
   assert.equal(claims.imp, "U-admin");
-  assert.equal("sv" in claims, false, "impersonation never forwards the admin's session version");
+  assert.equal(claims.sv, 11, "impersonation forwards the core-issued target session version");
 
   await fetch(`${base}/auth/impersonate/stop`, {
     method: "POST",

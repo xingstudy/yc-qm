@@ -4,7 +4,14 @@ import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/po
 
 const IDENTITY_TTL_MS = 60_000;
 
-const FORWARD_REQUEST_HEADERS = ["content-type", "accept", "accept-language", "user-agent", "accept-encoding"];
+const FORWARD_REQUEST_HEADERS = [
+  "content-type",
+  "accept",
+  "accept-language",
+  "user-agent",
+  "accept-encoding",
+  "idempotency-key",
+];
 
 const DROP_RESPONSE_HEADERS = new Set([
   "connection",
@@ -89,6 +96,7 @@ export interface SurfaceTarget {
   principal: string;
   displayName?: string;
   impersonator?: string;
+  impersonatorSessionVersion?: number;
   sessionVersion?: number;
   identitySecret?: string;
   nowMs?: number;
@@ -108,9 +116,8 @@ export function proxyToSurface(req: IncomingMessage, res: ServerResponse, t: Sur
         p: t.principal,
         ...(t.displayName ? { n: t.displayName } : {}),
         ...(t.impersonator ? { imp: t.impersonator } : {}),
-        ...(typeof t.sessionVersion === "number" && Number.isFinite(t.sessionVersion)
-          ? { sv: t.sessionVersion }
-          : {}),
+        ...(Number.isInteger(t.impersonatorSessionVersion) ? { isv: t.impersonatorSessionVersion } : {}),
+        ...(Number.isInteger(t.sessionVersion) ? { sv: t.sessionVersion } : {}),
         exp: now + IDENTITY_TTL_MS,
       },
       t.identitySecret,
@@ -152,6 +159,7 @@ export interface DeploymentTarget {
   search: string;
   principal: string;
   signingSecret: string | undefined;
+  sessionVersion?: number;
   identitySecret?: string;
 }
 
@@ -163,7 +171,11 @@ export function proxyToDeployment(req: IncomingMessage, res: ServerResponse, t: 
   const base: Record<string, string> = { host: core.host, "x-as-principal": t.principal, ...signed };
   if (t.identitySecret)
     base[PORTAL_IDENTITY_HEADER] = mintPortalIdentity(
-      { p: t.principal, exp: Date.now() + IDENTITY_TTL_MS },
+      {
+        p: t.principal,
+        ...(Number.isInteger(t.sessionVersion) ? { sv: t.sessionVersion } : {}),
+        exp: Date.now() + IDENTITY_TTL_MS,
+      },
       t.identitySecret,
     );
   const headers = safeForwardHeaders(req, base);

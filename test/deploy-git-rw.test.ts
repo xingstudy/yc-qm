@@ -30,7 +30,14 @@ const GIT_ENV = {
   GIT_COMMITTER_EMAIL: "t@t",
 };
 
-function fixture(urls: { apiBaseUrl?: string; publicUrl?: string } = {}) {
+function fixture(
+  options: {
+    apiBaseUrl?: string;
+    publicUrl?: string;
+    organization?: { checkActive(principalId: string): Promise<{ status: string; sessionVersion: number } | null> };
+  } = {},
+) {
+  const { organization, ...urls } = options;
   const deployStore = createDeployStore({ git: { repoRoot: mkdtempSync(join(tmpdir(), "git-rw-repo-")) } });
   const acl: AclStore = createAclStore();
   const deploy = createDeployService({
@@ -51,18 +58,30 @@ function fixture(urls: { apiBaseUrl?: string; publicUrl?: string } = {}) {
     directory: createDirectoryStore(),
     sessions: createMemorySessionStore(),
     identity,
+    ...(organization ? { organization } : {}),
   } as unknown as Parameters<typeof createApp>[0]);
-  const server: Server = createServer(app, { signingSecret: SECRET, identity, ...urls });
+  const server: Server = createServer(app, {
+    signingSecret: SECRET,
+    identity,
+    ...(organization ? { organization } : {}),
+    ...urls,
+  } as Parameters<typeof createServer>[1]);
   server.listen(0);
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return { app, deploy, acl, identity, base, close: () => new Promise<void>((r) => server.close(() => r())) };
 }
 
-async function gitUrl(base: string, deploymentId: string, permission: "read" | "write"): Promise<string> {
+async function gitUrl(
+  base: string,
+  deploymentId: string,
+  permission: "read" | "write",
+  sessionVersion?: number,
+): Promise<string> {
   const token = await mintDeployGitAccess(SECRET, {
     deploymentId,
     permission,
     principalId: "U1",
+    ...(sessionVersion !== undefined ? { sv: sessionVersion } : {}),
     exp: Date.now() + 60_000,
   });
   const url = new URL(`/v1/deployments/${encodeURIComponent(deploymentId)}/git`, base);
@@ -172,6 +191,78 @@ test("a write token minted before principal deactivation is revoked at push time
     const url = await gitUrl(f.base, d.id, "write");
     await f.identity.deactivate("U1");
     assert.equal(await pushStatus(url), 403);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a Git token minted before suspension stays revoked after the principal is reactivated", async () => {
+  let organizationState: { status: "active" | "suspended"; sessionVersion: number } = {
+    status: "active",
+    sessionVersion: 1,
+  };
+  const organization = {
+    checkActive: async (principalId: string) => (principalId === "U1" ? organizationState : null),
+  };
+  const f = fixture({ organization });
+  try {
+    const d = await f.app.deploy({
+      ownerScopeId: scopeId("personal", "U1"),
+      createdBy: "U1",
+      entrypoint: "node server.js",
+      files: [{ path: "server.js", data: "console.log('v1')" }],
+    });
+    const url = await gitUrl(f.base, d.id, "write", organizationState.sessionVersion);
+    assert.notEqual(await pushStatus(url), 403);
+    organizationState = { status: "suspended", sessionVersion: 2 };
+    assert.equal(await pushStatus(url), 403);
+    organizationState = { status: "active", sessionVersion: 3 };
+    assert.equal(await pushStatus(url), 403);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a verified bot can mint and use deployment Git access when organization membership is enabled", async () => {
+  const organization = {
+    checkActive: async (principalId: string) =>
+      principalId === "U1" ? { status: "active" as const, sessionVersion: 1 } : null,
+  };
+  const f = fixture({ organization });
+  try {
+    const d = await f.app.deploy({
+      ownerScopeId: scopeId("personal", "U1"),
+      createdBy: "U1",
+      entrypoint: "node server.js",
+      files: [{ path: "server.js", data: "console.log('v1')" }],
+    });
+    await f.acl.grant({
+      ownerScopeId: scopeId("personal", "U1"),
+      ref: `deployment:${d.id}`,
+      granteeScopeId: scopeId("personal", "B-DEPLOY"),
+      permission: "write",
+      grantedBy: "U1",
+    });
+    const capability = await mintCapabilityToken(
+      {
+        actorId: "B-DEPLOY",
+        scopeId: scopeId("personal", "B-DEPLOY"),
+        botActor: true,
+        liveActor: true,
+        exp: Date.now() + CAPABILITY_TTL_MS,
+      },
+      SECRET,
+    );
+    const response = await fetch(`${f.base}/v1/deployments/${encodeURIComponent(d.id)}/git-url`, {
+      headers: { "x-agent-capability": capability },
+    });
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { url: string };
+    const access = await verifyDeployGitAccess(SECRET, new URL(body.url).password);
+    assert.equal(access?.principalId, "B-DEPLOY");
+    assert.equal(access?.botActor, true);
+    assert.equal(access?.sv, undefined);
+    assert.notEqual(await pushStatus(body.url), 403);
   } finally {
     await f.close();
   }

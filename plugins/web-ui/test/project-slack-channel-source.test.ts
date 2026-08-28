@@ -8,7 +8,7 @@ const bridge = readFileSync(new URL("../src/core-bridge.ts", import.meta.url), "
 
 test("project detail offers a Slack home-channel section", () => {
   assert.match(source, /function projectSlackSection\(/);
-  assert.match(source, /c\.project \? projectSlackSection\(c\) : nothing/);
+  assert.match(source, /c\.project && isProjectOwner\(c\) \? projectSlackSection\(c\) : nothing/);
   assert.match(source, /Link a channel/);
 });
 

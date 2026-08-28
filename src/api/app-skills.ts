@@ -195,6 +195,11 @@ export function createSkillMethods(
   | "getSkill"
   | "archiveSkill"
   | "listVisibleSkills"
+  | "getSkillAccess"
+  | "setSkillAccess"
+  | "canManageSkillAccess"
+  | "addSkillAccessSubject"
+  | "removeSkillAccessSubject"
   | "canManageSkill"
   | "updateOwnedSkill"
   | "restoreOwnedSkill"
@@ -210,6 +215,21 @@ export function createSkillMethods(
   | "deleteOwnedSkill"
 > {
   const { canManageSkill, republishIfShared, currentResourceScopesForViewer } = h;
+  const accessActor = async (principalId: string, allowAdminElevation: boolean) => {
+    const status = deps.admin
+      ? await deps.admin.adminStatusOf({ id: principalId, type: "internal" }).catch(() => ({ isAdmin: false }))
+      : { isAdmin: false };
+    return { principalId, isAdmin: allowAdminElevation && status.isAdmin };
+  };
+  const canManageSkillForPrincipal = async (
+    skill: Awaited<ReturnType<App["getSkill"]>>,
+    principalId: string,
+    allowAdminElevation: boolean,
+  ) => {
+    if (!skill) return false;
+    if (!deps.skillAccessRepository) return canManageSkill(skill, principalId);
+    return deps.skillAccessRepository.canManage(skill.id, await accessActor(principalId, allowAdminElevation));
+  };
   return {
     listSkills() {
       return deps.skills.list();
@@ -237,6 +257,7 @@ export function createSkillMethods(
       const shared = member.filter((sid): sid is ScopeId => sid !== null);
       const teams = (actor.teamIds ?? []).map((t) => scopeId("team", t));
       const ordered = [...new Set([scopeId("personal", principalId), ...shared, ...teams, scopeId("org", orgIdOf())])];
+      if (deps.skillAccess) return deps.skillAccess.visibleForUser(principalId, ordered);
       const entitled = (p: Principal, label: ScopeId, sess: ScopeId, org: ScopeId) =>
         principalEntitledToScope(p, label, sess, org) || accessibleScopes.has(label);
       const granted = (
@@ -252,12 +273,42 @@ export function createSkillMethods(
       ).map((g) => ({ id: parseRef(g.ref).id, ownerScopeId: g.ownerScopeId }));
       return deps.skills.visibleFor(ordered, granted);
     },
-    canManageSkill(skill, principalId) {
-      return canManageSkill(skill, principalId);
+    async getSkillAccess(skillId, actor) {
+      if (!deps.skillAccessRepository) return null;
+      return deps.skillAccessRepository.getAccess(skillId, actor);
+    },
+    async setSkillAccess(skillId, actor, input) {
+      if (!deps.skillAccessRepository) return null;
+      return deps.skillAccessRepository.setAccess(skillId, actor, input);
+    },
+    async canManageSkillAccess(skillId, principalId, allowAdminElevation) {
+      if (!deps.skillAccessRepository)
+        return canManageSkillForPrincipal(await deps.skills.get(skillId), principalId, allowAdminElevation);
+      return deps.skillAccessRepository.canManage(skillId, await accessActor(principalId, allowAdminElevation));
+    },
+    async addSkillAccessSubject(skillId, principalId, subject, allowAdminElevation) {
+      if (!deps.skillAccessRepository) return null;
+      return deps.skillAccessRepository.addAccessSubject(
+        skillId,
+        await accessActor(principalId, allowAdminElevation),
+        subject,
+      );
+    },
+    async removeSkillAccessSubject(skillId, principalId, subject, allowAdminElevation) {
+      if (!deps.skillAccessRepository) return null;
+      return deps.skillAccessRepository.removeAccessSubject(
+        skillId,
+        await accessActor(principalId, allowAdminElevation),
+        subject,
+      );
+    },
+    canManageSkill(skill, principalId, allowAdminElevation) {
+      return canManageSkillForPrincipal(skill, principalId, allowAdminElevation);
     },
     async updateOwnedSkill(id, principalId, patch, opts) {
       const skill = await deps.skills.get(id);
-      if (!skill || !(await canManageSkill(skill, principalId))) return null;
+      if (!skill || !(await canManageSkillForPrincipal(skill, principalId, opts?.allowAdminElevation === true)))
+        return null;
       if (triggerBlocksSharedSkill(skill.scopeId, opts?.liveActor === true)) return "trigger_blocked";
       if (skill.status === "archived") return null;
       const manifest = {
@@ -265,7 +316,7 @@ export function createSkillMethods(
         description: patch.description ?? skill.manifest.description,
         body: patch.body ?? skill.manifest.body,
       };
-      const updated = await deps.skills.update(id, manifest);
+      const updated = await deps.skills.update(id, manifest, principalId);
       const live = await republishIfShared(updated, principalId);
       deps.auditLog.record({
         at: Date.now(),
@@ -276,11 +327,16 @@ export function createSkillMethods(
       });
       return live;
     },
-    async restoreOwnedSkill(id, principalId) {
+    async restoreOwnedSkill(id, principalId, allowAdminElevation) {
       const skill = await deps.skills.get(id);
-      if (!skill || skill.status !== "archived" || !(await canManageSkill(skill, principalId))) return null;
+      if (
+        !skill ||
+        skill.status !== "archived" ||
+        !(await canManageSkillForPrincipal(skill, principalId, allowAdminElevation))
+      )
+        return null;
       await deps.skills.review(id, principalId, skill.manifest.requiredCapabilities);
-      const restored = await deps.skills.publish(id);
+      const restored = await deps.skills.publish(id, principalId);
       deps.auditLog.record({
         at: Date.now(),
         principalId,
@@ -411,12 +467,12 @@ export function createSkillMethods(
       });
       return published;
     },
-    async deleteOwnedSkill({ principalId, id, liveActor }) {
+    async deleteOwnedSkill({ principalId, id, liveActor, allowAdminElevation }) {
       const skill = await deps.skills.get(id);
       if (!skill) return "missing";
-      if (!(await canManageSkill(skill, principalId))) return "forbidden";
+      if (!(await canManageSkillForPrincipal(skill, principalId, allowAdminElevation === true))) return "forbidden";
       if (triggerBlocksSharedSkill(skill.scopeId, liveActor === true)) return "trigger_blocked";
-      await deps.skills.archive(id);
+      await deps.skills.archive(id, principalId);
       deps.auditLog.record({
         at: Date.now(),
         principalId,

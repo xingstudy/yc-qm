@@ -15,6 +15,11 @@ const core = createServer((req: IncomingMessage, res) => {
   let raw = "";
   req.on("data", (chunk) => (raw += chunk));
   req.on("end", () => {
+    if ((req.url ?? "").startsWith("/v1/internal/auth/session")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ principalId: "alice", sessionVersion: 1 }));
+      return;
+    }
     calls.push({
       method: req.method ?? "GET",
       url: req.url ?? "",

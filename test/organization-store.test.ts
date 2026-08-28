@@ -15,8 +15,12 @@ const user = (over: Partial<OrganizationUser> = {}): OrganizationUser => ({
   principalId: "alice@acme.com",
   email: "alice@acme.com",
   displayName: "Alice",
+  jobTitle: null,
+  mobile: null,
+  employeeNumber: null,
   status: "active",
   sessionVersion: 1,
+  profileRevision: 1,
   createdAt: 1,
   updatedAt: 1,
   lastLoginAt: null,
@@ -38,10 +42,41 @@ test("memory organization store: put/get/findByEmail/list round-trip", async () 
   assert.equal((await s.getUser("default-org", "alice@acme.com"))?.sessionVersion, 2, "upsert replaces");
 });
 
+test("memory organization store: user search is filtered, bounded, assignable, and org-scoped", async () => {
+  const s = createMemoryOrganizationStore();
+  await s.putUser(user({ principalId: "U-alice", email: "alice@example.com", displayName: "Alice Zhang" }));
+  await s.putUser(user({ principalId: "U-alina", email: "alina@example.com", displayName: "Alina" }));
+  await s.putUser(user({ principalId: "U-deleted", email: "alice.deleted@example.com", status: "deprovisioned" }));
+  await s.putUser(user({ principalId: "U-pending", email: "alice.pending@example.com", status: "invited" }));
+  await s.putUser(user({ principalId: "U-paused", email: "alice.paused@example.com", status: "suspended" }));
+  await s.putUser(user({ orgId: "other-org", principalId: "U-other", displayName: "Alice Other" }));
+  assert.deepEqual(
+    (await s.searchUsers("default-org", "ali", 1)).map((candidate) => candidate.principalId),
+    ["U-alice"],
+  );
+  assert.deepEqual(
+    (await s.searchUsers("default-org", "example.com", 20)).map((candidate) => candidate.principalId),
+    ["U-alice", "U-alina"],
+  );
+  await s.putUser(user({ principalId: "U-literal", email: "literal%_@example.com", displayName: "Literal %_" }));
+  assert.deepEqual(
+    (await s.searchUsers("default-org", "%_", 20)).map((candidate) => candidate.principalId),
+    ["U-literal"],
+  );
+});
+
 test("memory organization store: identities are keyed by issuer+subject", async () => {
   const s = createMemoryOrganizationStore();
   assert.equal(await s.getIdentity("default-org", "https://idp", "sub-1"), null);
-  await s.putIdentity({ orgId: "default-org", issuer: "https://idp", subject: "sub-1", principalId: "alice@acme.com", emailAtLink: "alice@acme.com", createdAt: 1, updatedAt: 1 });
+  await s.putIdentity({
+    orgId: "default-org",
+    issuer: "https://idp",
+    subject: "sub-1",
+    principalId: "alice@acme.com",
+    emailAtLink: "alice@acme.com",
+    createdAt: 1,
+    updatedAt: 1,
+  });
   assert.equal((await s.getIdentity("default-org", "https://idp", "sub-1"))?.principalId, "alice@acme.com");
   assert.equal(await s.getIdentity("default-org", "https://other", "sub-1"), null);
 });
@@ -66,6 +101,7 @@ const unitMember = (over: Partial<OrgUnitMember> = {}): OrgUnitMember => ({
   unitId: "unit-a",
   principalId: "alice@acme.com",
   role: "member",
+  isPrimary: false,
   createdAt: 1,
   createdBy: "system:bootstrap",
   ...over,
@@ -121,7 +157,7 @@ test("memory organization store: ensureOrgRoot creates root and revision 1, seco
 
 test("memory organization store: ensureOrgRoot never regresses an existing revision", async () => {
   const s = createMemoryOrganizationStore();
-  await s.transact(async (tx) => {
+  await s.transact("default-org", async (tx) => {
     await tx.bumpRevision("default-org");
   });
   assert.equal(await s.getAuthzRevision("default-org"), 2);
@@ -130,6 +166,17 @@ test("memory organization store: ensureOrgRoot never regresses an existing revis
   const root = await s.getUnit("default-org", "root");
   assert.equal(root?.kind, "organization");
   assert.equal(root?.status, "active");
+});
+
+test("memory organization store: rejects a second active root and archiving the root", async () => {
+  const s = createMemoryOrganizationStore();
+  await s.ensureOrgRoot({ orgId: "default-org", name: "Acme", actor: "system:bootstrap", now: 1 });
+  await assert.rejects(s.putUnit(unit({ id: "other-root", parentId: null, kind: "organization" })), /active root/);
+  await assert.rejects(
+    s.putUnit(unit({ id: "root", parentId: null, kind: "organization", status: "archived" })),
+    /remain active/,
+  );
+  assert.equal((await s.listUnits("default-org")).length, 1);
 });
 
 test("memory organization store: putUnit maintains closure self-rows, isDescendant and listSubtreeUnitIds reflect the tree", async () => {
@@ -152,7 +199,7 @@ test("memory organization store: transact moveUnitSubtree re-links the subtree a
   await s.putUnit(unit({ id: "unit-c" }));
   await s.putUnit(unit({ id: "unit-b", parentId: "unit-a" }));
   await s.putUnit(unit({ id: "unit-b1", parentId: "unit-b" }));
-  await s.transact(async (tx) => {
+  await s.transact("default-org", async (tx) => {
     await tx.moveUnitSubtree("default-org", "unit-b", "unit-c");
   });
   assert.equal(await s.isDescendant("default-org", "unit-c", "unit-b1"), true);
@@ -173,7 +220,13 @@ test("memory organization store: listManagedSubtreeUnitIds gives a manager their
   await s.putUnitMember(unitMember({ unitId: "unit-b", principalId: "alice@acme.com", role: "manager" }));
   await s.putUnitMember(unitMember({ unitId: "unit-b", principalId: "bob@acme.com", role: "member" }));
   assert.deepEqual((await s.listManagedSubtreeUnitIds("default-org", "alice@acme.com")).sort(), ["unit-b", "unit-b1"]);
-  assert.deepEqual(await s.listManagedSubtreeUnitIds("default-org", "bob@acme.com"), [], "plain members manage nothing");
+  assert.deepEqual(
+    await s.listManagedSubtreeUnitIds("default-org", "bob@acme.com"),
+    [],
+    "plain members manage nothing",
+  );
+  await s.putUnit(unit({ id: "unit-b", parentId: "unit-a", status: "archived" }));
+  assert.deepEqual(await s.listManagedSubtreeUnitIds("default-org", "alice@acme.com"), []);
 });
 
 test("memory organization store: unitImpact counts active child units and members whose user exists and is not deprovisioned (missing user rows do not count)", async () => {
@@ -200,13 +253,16 @@ test("memory organization store: unitImpact counts active child units and member
 test("memory organization store: transact flushes buffered audits after success and none when fn throws", async () => {
   const auditLog = createAuditLog();
   const s = createMemoryOrganizationStore({ auditLog });
-  await s.transact(async (tx) => {
+  await s.transact("default-org", async (tx) => {
     await tx.audit(auditEvent("org.unit.create"));
     await tx.audit(auditEvent("org.unit.move"));
   });
-  assert.deepEqual((await auditLog.events()).map((e) => e.action), ["org.unit.create", "org.unit.move"]);
+  assert.deepEqual(
+    (await auditLog.events()).map((e) => e.action),
+    ["org.unit.create", "org.unit.move"],
+  );
   await assert.rejects(
-    s.transact(async (tx) => {
+    s.transact("default-org", async (tx) => {
       await tx.audit(auditEvent("org.unit.archive"));
       throw new Error("boom");
     }),
@@ -214,18 +270,70 @@ test("memory organization store: transact flushes buffered audits after success 
   );
   assert.equal((await auditLog.events()).length, 2, "failed transaction flushes nothing");
   const unlogged = createMemoryOrganizationStore();
-  await unlogged.transact(async (tx) => {
+  await unlogged.transact("default-org", async (tx) => {
     await tx.audit(auditEvent("org.unit.create"));
   });
+});
+
+test("memory organization store: transact rolls back organization state and rejects cross-org access", async () => {
+  const auditLog = createAuditLog();
+  const s = createMemoryOrganizationStore({ auditLog });
+  await assert.rejects(
+    s.transact("default-org", async (tx) => {
+      await tx.putUser(user({ principalId: "new-user" }));
+      await tx.putIdentity({
+        orgId: "default-org",
+        issuer: "https://idp",
+        subject: "new-subject",
+        principalId: "new-user",
+        emailAtLink: null,
+        createdAt: 1,
+        updatedAt: 1,
+      });
+      await tx.bumpRevision("default-org");
+      await tx.audit(auditEvent("org.user.activate"));
+      throw new Error("boom");
+    }),
+    /boom/,
+  );
+  assert.equal(await s.getUser("default-org", "new-user"), null);
+  assert.equal(await s.getIdentity("default-org", "https://idp", "new-subject"), null);
+  assert.equal(await s.getAuthzRevision("default-org"), 0);
+  assert.equal((await auditLog.events()).length, 0);
+
+  await assert.rejects(
+    s.transact("default-org", (tx) => tx.getUser("other-org", "new-user")),
+    /scope mismatch/,
+  );
+});
+
+test("memory organization store: readers cannot observe uncommitted transaction state", async () => {
+  const s = createMemoryOrganizationStore();
+  let entered!: () => void;
+  let release!: () => void;
+  const transactionEntered = new Promise<void>((resolve) => (entered = resolve));
+  const transactionRelease = new Promise<void>((resolve) => (release = resolve));
+  const running = s.transact("default-org", async (tx) => {
+    await tx.putUser(user({ principalId: "pending" }));
+    entered();
+    await transactionRelease;
+  });
+  await transactionEntered;
+  assert.equal(await s.getUser("default-org", "pending"), null);
+  release();
+  await running;
+  assert.equal((await s.getUser("default-org", "pending"))?.principalId, "pending");
 });
 
 test("memory organization store: bumpRevision increments and returns 2, 3, ... per org", async () => {
   const s = createMemoryOrganizationStore();
   await s.ensureOrgRoot({ orgId: "default-org", name: "Acme", actor: "system:bootstrap", now: 1 });
   await s.ensureOrgRoot({ orgId: "other-org", name: "Other", actor: "system:bootstrap", now: 1 });
-  await s.transact(async (tx) => {
+  await s.transact("default-org", async (tx) => {
     assert.equal(await tx.bumpRevision("default-org"), 2);
     assert.equal(await tx.bumpRevision("default-org"), 3);
+  });
+  await s.transact("other-org", async (tx) => {
     assert.equal(await tx.bumpRevision("other-org"), 2, "per-org counter");
   });
   assert.equal(await s.getAuthzRevision("default-org"), 3);
@@ -238,12 +346,19 @@ test("memory organization store: group CRUD and members round-trip, removeGroupM
   await s.putGroup(group());
   await s.putGroup(group({ id: "grp-b", name: "Group B", orgId: "other-org" }));
   assert.equal((await s.getGroup("default-org", "grp-a"))?.name, "Group A");
-  assert.deepEqual((await s.listGroups("default-org")).map((g) => g.id), ["grp-a"], "org isolation");
+  assert.deepEqual(
+    (await s.listGroups("default-org")).map((g) => g.id),
+    ["grp-a"],
+    "org isolation",
+  );
   await s.putGroup(group({ name: "Group A v2", updatedAt: 2 }));
   assert.equal((await s.getGroup("default-org", "grp-a"))?.name, "Group A v2", "upsert replaces");
   await s.putGroupMember(groupMember({ principalId: "alice@acme.com" }));
   await s.putGroupMember(groupMember({ principalId: "bob@acme.com", role: "manager" }));
   assert.equal((await s.listGroupMembers("default-org", "grp-a")).length, 2);
+  assert.deepEqual(await s.listManagedGroupIds("default-org", "bob@acme.com"), ["grp-a"]);
+  await s.putGroup(group({ status: "archived" }));
+  assert.deepEqual(await s.listManagedGroupIds("default-org", "bob@acme.com"), []);
   await s.removeGroupMember("default-org", "grp-a", "alice@acme.com");
   const remaining = await s.listGroupMembers("default-org", "grp-a");
   assert.equal(remaining.length, 1);

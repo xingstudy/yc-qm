@@ -15,6 +15,10 @@ const upstream = createServer((req: IncomingMessage, res) => {
     res.writeHead(200, { "content-type": "application/json" });
     return void res.end(JSON.stringify({ status: "created" }));
   }
+  if (req.method === "POST" && pathname === "/v1/internal/auth/users/playground") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(JSON.stringify({ sessionVersion: 1 }));
+  }
   if (req.method === "POST" && req.url?.startsWith("/v1/auth/broker/claim")) {
     claimCalls++;
     const chunks: Buffer[] = [];

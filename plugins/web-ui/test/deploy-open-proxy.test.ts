@@ -10,6 +10,10 @@ let lastCoreRequest: { url: string; principal: string } | null = null;
 
 const core = createServer((req: IncomingMessage, res) => {
   const u = req.url ?? "";
+  if (req.method === "GET" && u.startsWith("/v1/internal/auth/session")) {
+    res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(JSON.stringify({ principalId: "alice", sessionVersion: 1 }));
+  }
   lastCoreRequest = { url: u, principal: String(req.headers["x-as-principal"] ?? "") };
   if (!u.startsWith("/d/")) {
     res.writeHead(404, { "content-type": "application/json" });

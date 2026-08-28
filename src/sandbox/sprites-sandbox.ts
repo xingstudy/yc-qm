@@ -339,9 +339,9 @@ export function createSpritesSandbox(workspace: WorkspaceStore, opts: SpritesSan
           mintToken: (grant) =>
             mintCapabilityToken(
               {
-                actorId: "sprites-sandbox",
+                actorId: "system:sprites-sandbox",
                 aud: BLOB_TRANSFER_AUD,
-                scopeId: "personal:sprites-sandbox",
+                scopeId: "personal:system:sprites-sandbox",
                 blob: grant,
                 exp: Date.now() + BLOB_TRANSFER_TTL_MS,
               },

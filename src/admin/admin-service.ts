@@ -4,6 +4,7 @@ import { parseScopeId, scopeId } from "../types.ts";
 import type { AdminGrant, AdminGrantStore, AdminRole } from "./admin-grant-store.ts";
 import { personKey, samePerson } from "../directory/person.ts";
 import { createAdminGrantStore, createMemoryAdminGrantPersistence } from "./admin-grant-store.ts";
+import type { AdvisoryLock } from "../persistence/advisory-lock.ts";
 
 export type { AdminGrant } from "./admin-grant-store.ts";
 
@@ -68,6 +69,12 @@ export function bootAdminGrantSeed(rawAdminGrants: string | undefined, orgId: st
 
 export interface AdminServiceOptions {
   now?: () => number;
+  advisoryLock?: AdvisoryLock;
+  isActivePrincipal?: (principalId: string) => Promise<boolean>;
+}
+
+export function adminLivenessLockKey(orgId: string): string {
+  return `organization-admin-liveness:${orgId}`;
 }
 
 export function createAdminService(store?: AdminGrantStore, opts: AdminServiceOptions = {}): AdminService {
@@ -75,9 +82,17 @@ export function createAdminService(store?: AdminGrantStore, opts: AdminServiceOp
   const grants: AdminGrantStore =
     store ?? createAdminGrantStore(createMemoryAdminGrantPersistence(), { seed: defaultAdminGrants(orgId) });
   const now = opts.now ?? (() => Date.now());
+  const withLivenessLock = <T>(fn: () => Promise<T>): Promise<T> =>
+    opts.advisoryLock?.withLock(adminLivenessLockKey(orgId), fn) ?? fn();
+
+  async function activeAdminStatus(principal: Principal): Promise<AdminStatus> {
+    const status = adminStatusFromGrants(await grants.list(), principal.id);
+    if (!status.isAdmin || !opts.isActivePrincipal) return status;
+    return (await opts.isActivePrincipal(principal.id)) ? status : { isAdmin: false };
+  }
 
   async function isOrgAdmin(actor: Principal): Promise<boolean> {
-    return adminStatusFromGrants(await grants.list(), actor.id).role === "org_admin";
+    return (await activeAdminStatus(actor)).role === "org_admin";
   }
 
   return {
@@ -94,44 +109,57 @@ export function createAdminService(store?: AdminGrantStore, opts: AdminServiceOp
       return isOrgAdmin(principal);
     },
     async adminStatusOf(principal) {
-      return adminStatusFromGrants(await grants.list(), principal.id);
+      return activeAdminStatus(principal);
     },
     listGrants() {
       return grants.list();
     },
     async createGrant(actor, input) {
-      if (!(await isOrgAdmin(actor))) throw new AdminError(403, "only an org admin may grant admin roles");
-      const principalId = input.principalId?.trim();
-      if (!principalId) throw new AdminError(400, "principalId required");
-      const { role } = input;
-      if (role !== "org_admin") {
-        throw new AdminError(400, "role must be org_admin");
-      }
-      const parsed = parseScopeId(input.scopeId);
-      if (parsed.kind !== "org" || parsed.ref !== orgId) {
-        throw new AdminError(400, `org_admin scope must be org:${orgId}`);
-      }
-      const grant: AdminGrant = { principalId, scopeId: input.scopeId, role, grantedBy: actor.id, createdAt: now() };
-      await grants.add(grant);
-      return grant;
+      return withLivenessLock(async () => {
+        if (!(await isOrgAdmin(actor))) throw new AdminError(403, "only an org admin may grant admin roles");
+        const principalId = input.principalId?.trim();
+        if (!principalId) throw new AdminError(400, "principalId required");
+        const { role } = input;
+        if (role !== "org_admin") {
+          throw new AdminError(400, "role must be org_admin");
+        }
+        const parsed = parseScopeId(input.scopeId);
+        if (parsed.kind !== "org" || parsed.ref !== orgId) {
+          throw new AdminError(400, `org_admin scope must be org:${orgId}`);
+        }
+        const grant: AdminGrant = { principalId, scopeId: input.scopeId, role, grantedBy: actor.id, createdAt: now() };
+        await grants.add(grant);
+        return grant;
+      });
     },
     async revokeGrant(actor, principalId, scope, role) {
-      const list = await grants.list();
-      if (adminStatusFromGrants(list, actor.id).role !== "org_admin") {
-        throw new AdminError(403, "only an org admin may revoke admin roles");
-      }
-      const matched = list.filter(
-        (g) => samePerson(g.principalId, principalId) && g.scopeId === scope && g.role === role,
-      );
-      if (role === "org_admin") {
-        const distinctOrgAdmins = new Set(
-          list.filter((g) => g.role === "org_admin").map((g) => personKey(g.principalId)),
-        );
-        if (matched.length > 0 && distinctOrgAdmins.size <= 1) {
-          throw new AdminError(400, "cannot revoke the last org admin");
+      return withLivenessLock(async () => {
+        const list = await grants.list();
+        if ((await activeAdminStatus(actor)).role !== "org_admin") {
+          throw new AdminError(403, "only an org admin may revoke admin roles");
         }
-      }
-      for (const g of matched) await grants.revoke(g.principalId, scope, role);
+        const matched = list.filter(
+          (g) => samePerson(g.principalId, principalId) && g.scopeId === scope && g.role === role,
+        );
+        if (role === "org_admin" && matched.length > 0) {
+          const currentOrgScope = scopeId("org", orgId);
+          const remaining = new Map(
+            list
+              .filter(
+                (g) =>
+                  g.role === "org_admin" && g.scopeId === currentOrgScope && !samePerson(g.principalId, principalId),
+              )
+              .map((g) => [personKey(g.principalId), g.principalId]),
+          );
+          const active = await Promise.all(
+            [...remaining.values()].map((candidate) => opts.isActivePrincipal?.(candidate) ?? Promise.resolve(true)),
+          );
+          if (!active.some(Boolean)) {
+            throw new AdminError(400, "cannot revoke the last org admin");
+          }
+        }
+        for (const g of matched) await grants.revoke(g.principalId, scope, role);
+      });
     },
   };
 }

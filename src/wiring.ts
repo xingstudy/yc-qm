@@ -3,10 +3,22 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { baseModelProviders, configuredModelForHarness, providerKeysPresent, type Config } from "./config.ts";
 import type { ServerDeps } from "./api/deps.ts";
-import { createIdentityService, type DeactivationRecord, type IdentityService } from "./identity/identity-service.ts";
+import {
+  createIdentityService,
+  type DeactivationRecord,
+  type IdentityService,
+  type IdentityStatusRecord,
+} from "./identity/identity-service.ts";
 import { createOrganizationService, type OrganizationService } from "./organization/organization-service.ts";
 import { createMemoryOrganizationStore, type OrganizationStore } from "./organization/organization-store.ts";
 import { createPostgresOrganizationStore } from "./organization/postgres-organization-store.ts";
+import {
+  createOrganizationMemberBatchService,
+  type OrganizationMemberBatchService,
+} from "./organization/member-batch-service.ts";
+import type { OrganizationMemberJobStore } from "./organization/member-job-store.ts";
+import { createPostgresOrganizationMemberJobStore } from "./organization/postgres-member-job-store.ts";
+import { validateAdminStatusTargets } from "./organization/admin-liveness.ts";
 import {
   createMemoryConfigStore,
   type ScopedConfigStore,
@@ -31,6 +43,8 @@ import { createResolutionService } from "./resolution/resolution-service.ts";
 import { createAclStore, type AclStore } from "./acl/acl-store.ts";
 import { createPostgresGrantStore } from "./acl/postgres-grant-store.ts";
 import { createSkillStore, type SkillStore, type Skill } from "./skills/skill-store.ts";
+import { createSkillAccessRepository } from "./authorization/skill-access-repository.ts";
+import { createSkillAccessResolver, type SkillAccessResolver } from "./authorization/skill-access.ts";
 import { createSkillPackStore, type SkillPack } from "./skills/skill-pack-store.ts";
 import { createSkillBundleStore, type SkillBundle, type SkillBundleStore } from "./skills/skill-bundle-store.ts";
 import { createGitFetcher, resolvePackAuth, type SkillPackFetcher } from "./skills/pack-fetcher.ts";
@@ -251,7 +265,12 @@ import {
   modelProviderAvailabilityFor,
   type HarnessId,
 } from "./model/pi-models.ts";
-import { createAdminService, bootAdminGrantSeed, type AdminService } from "./admin/admin-service.ts";
+import {
+  adminLivenessLockKey,
+  createAdminService,
+  bootAdminGrantSeed,
+  type AdminService,
+} from "./admin/admin-service.ts";
 import { createAdminGrantStore, createMapAdminGrantPersistence, type AdminGrant } from "./admin/admin-grant-store.ts";
 import { createPostgresAdminGrantStore } from "./admin/postgres-admin-grant-store.ts";
 import { createProjectStore, type Project, type ProjectStore } from "./projects/project-store.ts";
@@ -341,6 +360,7 @@ export interface BuiltApp {
   mcpToolService: McpToolService;
   acl: AclStore;
   skills: SkillStore;
+  skillAccess: SkillAccessResolver;
   skillBundles: SkillBundleStore;
   skillFetcher: SkillPackFetcher;
   auditLog: AuditLog;
@@ -355,6 +375,8 @@ export interface BuiltApp {
   identity: IdentityService;
   organization: OrganizationService;
   organizationStore: OrganizationStore;
+  organizationMemberBatch?: OrganizationMemberBatchService;
+  organizationMemberJobs?: OrganizationMemberJobStore;
   keychain?: Keychain;
   serviceCreds: ServiceCredentialStore;
   deliveries: DeliveryStore;
@@ -433,13 +455,17 @@ export function buildApp(
     canManageScope?: CanManageScope;
     managesArtifactHome?: ManagesArtifactHome;
   } = {};
-  const acl = createAclStore(config.databaseUrl ? createPostgresGrantStore(config.databaseUrl) : undefined, {
-    manages: (principalId, scopeId, authoredBy) =>
-      membership.managesArtifactHome!(scopeId, authoredBy ?? "", principalId),
-  });
+  const acl = createAclStore(
+    config.databaseUrl ? createPostgresGrantStore(config.databaseUrl, config.orgId) : undefined,
+    {
+      manages: (principalId, scopeId, authoredBy) =>
+        membership.managesArtifactHome!(scopeId, authoredBy ?? "", principalId),
+    },
+  );
   const pgArtifactMap = config.databaseUrl ? createPostgresMapFactory(config.databaseUrl) : null;
   const artifactMap = <T>(table: string): DurableMap<T> =>
     pgArtifactMap ? pgArtifactMap.map<T>(table) : createMemoryMap<T>();
+  const uiState: UiStateStore = artifactMap<PersistedUiState>("web_ui_state");
   setProviderBaseUrls(config.providerBaseUrls);
   const modelCredentials = createModelCredentialStore({
     backing: artifactMap("model_credentials"),
@@ -450,7 +476,10 @@ export function buildApp(
       ...(config.openrouterApiKey ? { openrouter: config.openrouterApiKey } : {}),
     },
   });
-  const identity = createIdentityService(artifactMap<DeactivationRecord>("deactivated_principals"));
+  const identity = createIdentityService(
+    artifactMap<DeactivationRecord>("deactivated_principals"),
+    artifactMap<IdentityStatusRecord>("organization_identity_status"),
+  );
   void identity.hydrate();
   const leaderLease: LeaderLease = pgArtifactMap
     ? createPostgresLeaderLease(pgArtifactMap.pool)
@@ -484,9 +513,12 @@ export function buildApp(
     ...(config.connectorSecretKey ? { connectorSecretKey: config.connectorSecretKey } : {}),
   });
   void configStore.hydrate?.();
-  const skills: SkillStore = createSkillStore({
-    backing: artifactMap<Skill>("skills"),
-    ...(config.skillSigningSecret ? { signingSecret: config.skillSigningSecret } : {}),
+  const skillBacking = artifactMap<Skill>("skills");
+  const skillSigningSecret = config.skillSigningSecret ?? randomBytes(32).toString("hex");
+  const baseSkills: SkillStore = createSkillStore({
+    orgId: config.orgId,
+    backing: skillBacking,
+    signingSecret: skillSigningSecret,
   });
   const skillPacks = createSkillPackStore({ backing: artifactMap<SkillPack>("skill_packs") });
   const skillBundles = createSkillBundleStore({ backing: artifactMap<SkillBundle>("skill_bundles") });
@@ -508,9 +540,10 @@ export function buildApp(
   const orgScope = scopeId("org", config.orgId);
   const postgresAuditLog = config.databaseUrl ? createPostgresAuditLog(config.databaseUrl) : null;
   const auditLog: AuditLog = postgresAuditLog ?? createAuditLog();
+  const directory = config.databaseUrl ? createPostgresDirectoryStore(config.databaseUrl) : createDirectoryStore();
   const organizationStore = postgresAuditLog
-    ? createPostgresOrganizationStore(config.databaseUrl!, { auditLog: postgresAuditLog })
-    : createMemoryOrganizationStore({ auditLog });
+    ? createPostgresOrganizationStore(config.databaseUrl!, { auditLog: postgresAuditLog, exclusiveOrgId: config.orgId })
+    : createMemoryOrganizationStore({ auditLog, skillBacking });
   const organization = createOrganizationService({
     store: organizationStore,
     orgId: config.orgId,
@@ -518,10 +551,37 @@ export function buildApp(
     autoJoinDomains: config.orgAutoJoinDomains,
     auditLog,
     identity,
+    resolveLegacyRuntimeUser: async (principalId) => {
+      await identity.refresh();
+      const [member, eligible] = await Promise.all([
+        directory.get(principalId),
+        organizationStore.legacyRuntimeAccessEligible(principalId),
+      ]);
+      return member?.type === "internal" && eligible && identity.isInternal(identity.classify(principalId));
+    },
   });
-  void organizationStore.ensureOrgRoot({ orgId: config.orgId, name: config.orgId, actor: "system:bootstrap", now: Date.now() });
-  void organization.hydrate();
-  void activateBootstrapUsers(organization, config.orgBootstrapUsers);
+  const organizationMemberJobs = config.databaseUrl
+    ? createPostgresOrganizationMemberJobStore(config.databaseUrl)
+    : undefined;
+  const organizationRootReady = organizationStore.ensureOrgRoot({
+    orgId: config.orgId,
+    name: config.orgId,
+    actor: "system:bootstrap",
+    now: Date.now(),
+  });
+  const organizationReady = Promise.all([
+    organizationRootReady,
+    organization.hydrate(),
+    activateBootstrapUsers(organization, config.orgBootstrapUsers),
+  ]).then(() => undefined);
+  const skills = createSkillAccessRepository({
+    orgId: config.orgId,
+    signingSecret: skillSigningSecret,
+    store: organizationStore,
+    base: baseSkills,
+    directory: organization.directory,
+  });
+  const skillAccessReady = organizationReady.then(() => skills.ready());
   const deploymentLayerStore = createDeploymentLayerStore({
     backing: artifactMap<StoredDeploymentLayer>("deployment_layer"),
     runtime: deploymentLayer,
@@ -550,13 +610,14 @@ export function buildApp(
         }
       : {}),
   });
-  const deploymentLayerReady = deploymentLayerStore.hydrate();
+  const deploymentLayerReady = skillAccessReady.then(() => deploymentLayerStore.hydrate());
   const deploymentLayerRefresh = createSweeper(() => deploymentLayerStore.hydrate(), 30_000, {
     label: "deployment layer refresh",
   });
   let skillsReady: Promise<void>;
   if (config.seedSkills) {
     const installCatalogs = async (): Promise<void> => {
+      await skillAccessReady;
       await installSeedSkills(skills, { dir: config.skillsSeedDir, scopeId: orgScope });
       for (const dir of config.pluginSkillDirs) {
         if (layerSkillsDir && resolve(dir) === layerSkillsDir) continue;
@@ -752,7 +813,7 @@ export function buildApp(
     if (!config.databaseUrl) throw new Error(`${kind}=postgres requires DATABASE_URL`);
     return config.databaseUrl;
   };
-  const sessions: SessionStore =
+  const sessions =
     config.sessionStore === "postgres"
       ? createPostgresSessionStore(requireDbUrl("SESSION_STORE"))
       : createMemorySessionStore();
@@ -948,7 +1009,21 @@ export function buildApp(
   const adminGrantStore = createAdminGrantStore(adminGrantPersist, {
     seed: bootAdminGrantSeed(config.adminGrants, config.orgId, !!config.databaseUrl),
   });
-  const admin = createAdminService(adminGrantStore);
+  const admin = createAdminService(adminGrantStore, {
+    advisoryLock,
+    isActivePrincipal: async (principalId) => (await organization.getUser(principalId))?.status === "active",
+  });
+  const organizationMemberBatch = organizationMemberJobs
+    ? createOrganizationMemberBatchService({
+        orgId: config.orgId,
+        store: organizationStore,
+        organization,
+        jobs: organizationMemberJobs,
+        withStatusLock: (fn) => advisoryLock.withLock(adminLivenessLockKey(config.orgId), fn),
+        validateStatusTargets: (mutations) =>
+          validateAdminStatusTargets({ orgId: config.orgId, organization, admin, advisoryLock }, mutations),
+      })
+    : undefined;
   const { strategy: memoryStrategy, memory } = createMemoryStrategy(config.memoryStrategy, {
     harness: harness.models,
     memory: baseMemory,
@@ -959,7 +1034,6 @@ export function buildApp(
     onCaptureError: (e, scope) =>
       errors.record({ category: "memory", code: "capture_failed", message: errMessage(e), scopeLabel: scope }),
   });
-  const directory = config.databaseUrl ? createPostgresDirectoryStore(config.databaseUrl) : createDirectoryStore();
   const projects = createProjectStore(artifactMap<Project>("projects"), {
     isActiveMember: (principalId) => identity.isInternal(identity.classify(principalId)),
     advisoryLock,
@@ -972,6 +1046,19 @@ export function buildApp(
   membership.canReadScope = canReadScope;
   membership.canManageScope = canManageScope;
   membership.managesArtifactHome = managesArtifactHome;
+  const skillAccess = createSkillAccessResolver({
+    orgId: config.orgId,
+    store: organizationStore,
+    skills,
+    canReadHome: (principalId, targetScopeId) => canReadScope(principalId, targetScopeId),
+    onInvalid: (skillId, reason) =>
+      errors.record({
+        category: "authorization",
+        code: "invalid_skill_access",
+        message: `${skillId}: ${reason}`,
+        scopeLabel: orgScope,
+      }),
+  });
   const deployService = createDeployService({
     deployStore,
     provider: deployProvider,
@@ -1037,6 +1124,7 @@ export function buildApp(
   }
   const orchestratorDeps: OrchestratorDeps = {
     identity,
+    organization,
     resolution,
     config: configStore,
     ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
@@ -1072,6 +1160,7 @@ export function buildApp(
     memoryPolicy: { recall: config.memoryRecall, capture: config.memoryCapture },
     memoryStrategy,
     skills,
+    skillAccess,
     skillBundles,
     skillsReady,
     advisoryLock,
@@ -1194,6 +1283,7 @@ export function buildApp(
   const providerKeys = providerKeysPresent(config);
   const app = createApp({
     identity,
+    organization,
     ...(config.publicWebUrl ? { publicWebUrl: config.publicWebUrl } : {}),
     sessions,
     orchestrator,
@@ -1214,6 +1304,8 @@ export function buildApp(
     acl,
     admin,
     skills,
+    skillAccess,
+    skillAccessRepository: skills,
     skillPacks,
     skillFetcher,
     skillBundles,
@@ -1345,6 +1437,7 @@ export function buildApp(
             deliveries,
             idempotency,
             identity,
+            organization,
             run: (req) => app.turn(req),
             directory,
             getAsk: (id) => keychain.getAsk(id),
@@ -1356,13 +1449,17 @@ export function buildApp(
     : undefined;
   const dropResolution = keychain
     ? (drop: DropResolution) =>
-        fireDropResolution({ deliveries, idempotency, identity, run: (req) => app.turn(req), directory }, drop)
+        fireDropResolution(
+          { deliveries, idempotency, identity, organization, run: (req) => app.turn(req), directory },
+          drop,
+        )
     : undefined;
   const scheduler = createScheduler({
     crons,
     deliveries,
     idempotency,
     identity,
+    organization,
     run: (req) => app.turn(req),
     leaderLease,
     directory,
@@ -1386,6 +1483,7 @@ export function buildApp(
           deliveries,
           idempotency,
           identity,
+          organization,
           run: (req) => app.turn(req),
           directory,
           currentScopeMembers,
@@ -1525,6 +1623,7 @@ export function buildApp(
       await mcpToolService.close();
       await harness.turns.close?.();
       await tasks.close?.();
+      await organizationMemberJobs?.close?.();
     },
   };
 
@@ -1555,6 +1654,7 @@ export function buildApp(
     mcpToolService,
     acl,
     skills,
+    skillAccess,
     skillBundles,
     skillFetcher,
     auditLog,
@@ -1569,6 +1669,8 @@ export function buildApp(
     identity,
     organization,
     organizationStore,
+    ...(organizationMemberBatch ? { organizationMemberBatch } : {}),
+    ...(organizationMemberJobs ? { organizationMemberJobs } : {}),
     workspace,
     memory,
     ...(keychain ? { keychain } : {}),
@@ -1595,7 +1697,7 @@ export function buildApp(
     ...(ambientJudgments ? { ambientJudgments } : {}),
     ...(ackEmojiPicks ? { ackEmojiPicks } : {}),
     channelPolicy,
-    uiState: artifactMap<PersistedUiState>("web_ui_state"),
+    uiState,
     skillSyncEngine,
     slackCore,
   };
@@ -1660,6 +1762,7 @@ export function serverDeps(
     scheduler: built.scheduler,
     identity: built.identity,
     organization: built.organization,
+    ...(built.organizationMemberBatch ? { organizationMemberBatch: built.organizationMemberBatch } : {}),
     ...(built.keychain ? { keychain: built.keychain } : {}),
     serviceCreds: built.serviceCreds,
     deliveries: built.deliveries,

@@ -203,6 +203,28 @@ describe("runTrigger: a monitor fire runs first-class live and delivers its own 
 });
 
 describe("runTrigger: an autonomous cron does NOT go live (it may be conditionally silent by design)", () => {
+  it("disables a direct-message cron before delivery when the owner is no longer active in the organization", async () => {
+    let ranTurn = false;
+    const d = deps(async () => {
+      ranTurn = true;
+      return { status: "ok" };
+    });
+    d.organization = { checkRuntimeActive: async () => ({ status: "invited", sessionVersion: 2 }) };
+    const out = await runTrigger(d, {
+      owner: "U1",
+      ownerScopeId: scopeId("personal", "U1"),
+      input: "unused",
+      message: "should not be delivered",
+      fireKey: "cron:inactive-owner",
+      surface: "cron",
+      destination: { type: "slack", target: "D-U1", audienceScopeId: scopeId("personal", "U1") },
+    });
+    assert.equal(out.authzFailed, true);
+    assert.equal(out.ran, false);
+    assert.equal(ranTurn, false);
+    assert.equal((await d.deliveries.pending("slack")).length, 0);
+  });
+
   it("threads grants for owner mode but omits them for scopeFloor and scopeShared", async () => {
     const requests: TurnRequest[] = [];
     const d = deps(async (request) => {

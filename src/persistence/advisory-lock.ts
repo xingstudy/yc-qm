@@ -54,6 +54,7 @@ export function createPostgresAdvisoryLock(
       const pool = await pg.pool();
       for (;;) {
         const client = await pool.connect();
+        let discard = false;
         try {
           const res = await client.query<{ locked: boolean }>(
             "SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked",
@@ -61,14 +62,23 @@ export function createPostgresAdvisoryLock(
           );
           const held = res.rows[0]?.locked === true;
           if (held) {
+            let outcome: { ok: true; value: T } | { ok: false; error: unknown };
             try {
-              return await fn();
-            } finally {
-              await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [key]);
+              outcome = { ok: true, value: await fn() };
+            } catch (error) {
+              outcome = { ok: false, error };
             }
+            try {
+              await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [key]);
+            } catch (error) {
+              discard = true;
+              throw error;
+            }
+            if (!outcome.ok) throw outcome.error;
+            return outcome.value;
           }
         } finally {
-          client.release();
+          client.release(discard);
         }
         if (Date.now() >= deadline) throw new Error(`timeout acquiring advisory lock for ${key}`);
         await sleep(pollMs);
@@ -78,19 +88,29 @@ export function createPostgresAdvisoryLock(
     async tryWithLock<T>(key: string, fn: () => Promise<T>): Promise<T | null> {
       const pool = await pg.pool();
       const client = await pool.connect();
+      let discard = false;
       try {
         const res = await client.query<{ locked: boolean }>(
           "SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked",
           [key],
         );
         if (res.rows[0]?.locked !== true) return null;
+        let outcome: { ok: true; value: T } | { ok: false; error: unknown };
         try {
-          return await fn();
-        } finally {
-          await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [key]);
+          outcome = { ok: true, value: await fn() };
+        } catch (error) {
+          outcome = { ok: false, error };
         }
+        try {
+          await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [key]);
+        } catch (error) {
+          discard = true;
+          throw error;
+        }
+        if (!outcome.ok) throw outcome.error;
+        return outcome.value;
       } finally {
-        client.release();
+        client.release(discard);
       }
     },
   };

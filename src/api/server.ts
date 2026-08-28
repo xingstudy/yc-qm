@@ -17,7 +17,8 @@ import {
   type SourceAuth,
 } from "../auth/source-auth.ts";
 import { verifyCapabilityToken, CONTROL_PLANE_AUD, type CapabilityClaims } from "../auth/capability-token.ts";
-import { verifyPortalIdentity, PORTAL_IDENTITY_HEADER, type PortalIdentity } from "../auth/portal-identity.ts";
+import { currentCapabilityActor } from "./capability-actor.ts";
+import type { PortalIdentity } from "../auth/portal-identity.ts";
 import { isUserScoped, userScopedField, assertedActor, isUnclassifiedWrite } from "./user-scoped-routes.ts";
 import { errMessage } from "../util/errors.ts";
 import { parseScopeId } from "../types.ts";
@@ -26,6 +27,7 @@ import { dispatch, findRoute, run, type ApiCtx, type BaseCtx, type Route, type R
 import { apiRoutes, rawRoutes } from "./routes/index.ts";
 import { proxyDeploymentSubdomain } from "./routes/deployments.ts";
 import { CAPABILITY_HEADER } from "./contract.ts";
+import { currentPortalActor } from "./portal-actor.ts";
 
 const safeDecode = (s: string): string => {
   try {
@@ -186,12 +188,9 @@ async function gate(
       sendJson(res, 401, { error: "unauthorized", message: "invalid or expired capability token" });
       return null;
     }
-    if (deps.identity) {
-      await deps.identity.refresh();
-      if (deps.identity.classify(capability.actorId).type !== "internal") {
-        sendJson(res, 401, { error: "unauthorized", message: "principal is no longer active" });
-        return null;
-      }
+    if (!(await currentCapabilityActor(deps, capability))) {
+      sendJson(res, 401, { error: "unauthorized", message: "principal is no longer active" });
+      return null;
     }
     if (
       !(await app.authorizesCapabilityScope({
@@ -248,11 +247,20 @@ async function gate(
   }
   let body: unknown = {};
   if (raw) {
-    try {
-      body = JSON.parse(raw);
-    } catch {
-      sendJson(res, 400, { error: "bad_request", message: "invalid JSON body" });
-      return null;
+    const contentType = typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : "";
+    if (contentType.toLowerCase().startsWith("text/csv")) {
+      if (raw.includes("\uFFFD")) {
+        sendJson(res, 400, { error: "bad_request", message: "invalid UTF-8 body" });
+        return null;
+      }
+      body = raw;
+    } else {
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        sendJson(res, 400, { error: "bad_request", message: "invalid JSON body" });
+        return null;
+      }
     }
   }
   if (
@@ -269,19 +277,7 @@ async function gate(
 
   let actor: PortalIdentity | null = null;
   if (!capability) {
-    const psecret = deps.portalIdentitySecret ?? secret;
-    const rawToken = req.headers[PORTAL_IDENTITY_HEADER];
-    const token = Array.isArray(rawToken) ? rawToken[0] : rawToken;
-    actor = token && psecret ? await verifyPortalIdentity(token, psecret, Date.now()) : null;
-    if (actor && deps.identity) {
-      await deps.identity.refresh();
-      if (deps.identity.classify(actor.p).type !== "internal") actor = null;
-    }
-    if (actor && deps.organization) {
-      const u = await deps.organization.checkActive(actor.p);
-      if (!u || u.status !== "active" || (typeof actor.sv === "number" && actor.sv !== u.sessionVersion))
-        actor = null;
-    }
+    actor = await currentPortalActor(req, deps, secret);
     if (!isPublicRoute && requirePortalIdentity) {
       const webTurn =
         method === "POST" &&
@@ -295,7 +291,7 @@ async function gate(
         pathname.startsWith("/v1/admin/") ||
         isUnclassifiedWrite(method, pathname);
       if (needsActor) {
-        if (!psecret || !actor) {
+        if (!actor) {
           sendJson(res, 401, { error: "unauthorized", message: "portal identity required" });
           return null;
         }
@@ -500,7 +496,10 @@ function buildServer(app: App, deps: ServerOptions, allowUnsignedSourceAuth: boo
         return;
       }
     }
-    rawBodies.set(req, await readRawBody(req));
+    rawBodies.set(
+      req,
+      await readRawBody(req, base.pathname === "/v1/admin/org/users/imports/preview" ? 5 * 1024 * 1024 : undefined),
+    );
     await ready;
     routing(req, res);
   }

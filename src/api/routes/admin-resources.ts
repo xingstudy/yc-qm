@@ -34,6 +34,7 @@ import { parseSecurityPosture, SECURITY_POSTURES, type SecurityPosture } from ".
 import type { ApprovalGrantModes } from "../../types.ts";
 import { parseEgressPolicy } from "../../resolution/egress-policy.ts";
 import { DEVICE_FLOW_CUTOVER_MODES, type DeviceFlowCutoverMode } from "../../credentials/device-flow-cutover.ts";
+import { organizationAccessSubjectFromScope } from "../../authorization/organization-access-subject.ts";
 
 type Actor = { id: string };
 
@@ -663,6 +664,7 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
       const { deps } = ctx;
       if (!deps.acl) return { error: "ACL store not wired", code: "not_found", status: 404 };
       if (!deps.serviceCreds) return { error: "credential store not wired", code: "not_found", status: 404 };
+      if (!deps.organization) return { error: "organization service not wired", code: "not_found", status: 404 };
       const bad = orgOnly(scope, "service credentials are org-scoped");
       if (bad) return bad;
       const b = ctx.body as {
@@ -882,17 +884,23 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
       if (paths?.some((path) => !path.startsWith("/") || /[\r\n]/.test(path)))
         return { error: "each allowed path prefix must be one line starting with /" };
       const desired = Array.isArray(b.grantees) ? [...new Set(b.grantees.map(String))] : undefined;
-      const badGrantee = desired?.find((g) => {
-        const parsed = parseScopeId(g);
-        return (
-          !["org", "personal", "team"].includes(parsed.kind ?? "") ||
-          !parsed.ref ||
-          parsed.ref.includes(":") ||
-          (parsed.kind === "org" && g !== scope)
-        );
+      let badGrantee = desired?.find((grantee) => {
+        if (grantee === scope) return false;
+        const subject = organizationAccessSubjectFromScope(grantee);
+        return !subject || subject.id.includes(":");
       });
+      if (badGrantee === undefined && desired) {
+        for (const grantee of desired) {
+          if (grantee !== scope && !(await deps.organization.resolveAccessSubject(grantee))) {
+            badGrantee = grantee;
+            break;
+          }
+        }
+      }
       if (badGrantee !== undefined)
-        return { error: `grantee must be this org or a valid personal:/team: scope (got ${badGrantee})` };
+        return {
+          error: `grantee must be this organization or an active organization user, unit, or access group (got ${badGrantee})`,
+        };
       const injection =
         b.injection && typeof b.injection === "object"
           ? ({

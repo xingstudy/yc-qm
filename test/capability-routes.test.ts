@@ -762,6 +762,23 @@ describe("capability-token control plane (crons + SOUL)", () => {
       members,
     });
     assert.equal((await get("/v1/soul", { "x-agent-capability": token })).status, 200);
+    const organizationServer = createServer(built.app, {
+      signingSecret: SECRET,
+      scheduler: built.scheduler,
+      config: built.config,
+      admin: built.admin,
+      organization: built.organization,
+    });
+    await new Promise<void>((resolve) => organizationServer.listen(0, "127.0.0.1", resolve));
+    try {
+      const organizationBase = `http://127.0.0.1:${(organizationServer.address() as AddressInfo).port}`;
+      assert.equal(
+        (await fetch(`${organizationBase}/v1/soul`, { headers: { "x-agent-capability": token } })).status,
+        200,
+      );
+    } finally {
+      await new Promise<void>((resolve) => organizationServer.close(() => resolve()));
+    }
     assert.equal(
       (
         await get("/v1/soul", {

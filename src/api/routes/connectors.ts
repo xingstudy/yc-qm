@@ -63,6 +63,12 @@ function safeReturnTo(value: string | null): string | undefined {
   return value;
 }
 
+async function activeSessionVersion(deps: ServerDeps, principalId: string): Promise<number | null | undefined> {
+  if (!deps.organization) return undefined;
+  const user = await deps.organization.checkActive(principalId);
+  return user?.status === "active" ? user.sessionVersion : null;
+}
+
 type HostStatus = OAuthTokenStatus & { host: string };
 
 function latestRefreshFailure(
@@ -140,6 +146,13 @@ async function oauthCallback(ctx: BaseCtx): Promise<void> {
     ) {
       throw new Error("OAuth state was already used or replay protection is unavailable");
     }
+    const sessionVersion = await activeSessionVersion(deps, state.principalId);
+    if (
+      sessionVersion === null ||
+      (deps.organization && (!Number.isInteger(state.sessionVersion) || state.sessionVersion !== sessionVersion))
+    ) {
+      throw new Error("OAuth principal is no longer active");
+    }
     const accountType = state.accountType ?? "default";
     const client = await resolverFor(deps)(oauthRoute.provider, { accountType });
     const { hosts, token } = await exchangeCode(oauthRoute.provider, code, state.redirectUri, {
@@ -215,6 +228,13 @@ async function consentRedeem(ctx: ApiCtx): Promise<void> {
       clickerConnected,
     });
   }
+  const sessionVersion = await activeSessionVersion(deps, rec.principalId);
+  if (
+    sessionVersion === null ||
+    (deps.organization && (!Number.isInteger(rec.sessionVersion) || rec.sessionVersion !== sessionVersion))
+  ) {
+    return sendJson(res, 200, { status: "invalid" });
+  }
   try {
     const client = await resolverFor(deps)(rec.provider, { accountType: rec.accountType });
     if (client.redirectAllowlist && !client.redirectAllowlist.includes(rec.redirectUri)) {
@@ -236,6 +256,7 @@ async function consentRedeem(ctx: ApiCtx): Promise<void> {
         ...(returnTo ? { returnTo } : {}),
         ...(codeVerifier ? { codeVerifier } : {}),
         consentLinkId: linkId,
+        ...(sessionVersion !== undefined ? { sessionVersion } : {}),
       },
       { secret: oauthStateSecret(deps, secret) },
     );
@@ -321,6 +342,7 @@ async function consentMint(ctx: ApiCtx): Promise<void> {
     accountType,
     redirectUri,
     ...(returnTo ? { returnTo } : {}),
+    ...(capability.sessionVersion !== undefined ? { sessionVersion: capability.sessionVersion } : {}),
   });
   audit(deps, {
     principalId: capability.actorId,
@@ -350,6 +372,9 @@ async function oauthStart(ctx: ApiCtx): Promise<void> {
   if (!principalId || !redirectUri)
     return sendJson(res, 400, { error: "bad_request", message: "principalId and redirectUri required" });
   const accountType = parseAccountType(url.searchParams.get("accountType"));
+  const sessionVersion = await activeSessionVersion(deps, principalId);
+  if (sessionVersion === null)
+    return sendJson(res, 401, { error: "unauthorized", message: "principal is no longer active" });
   try {
     const client = await resolverFor(deps)(oauthRoute.provider, { accountType });
     if (client.redirectAllowlist && !client.redirectAllowlist.includes(redirectUri)) {
@@ -371,6 +396,7 @@ async function oauthStart(ctx: ApiCtx): Promise<void> {
           ? { returnTo: safeReturnTo(url.searchParams.get("returnTo")) }
           : {}),
         ...(codeVerifier ? { codeVerifier } : {}),
+        ...(sessionVersion !== undefined ? { sessionVersion } : {}),
       },
       { secret: oauthStateSecret(deps, secret) },
     );

@@ -27,6 +27,15 @@ describe("user-scoped routes require a portal-verified actor when enforcement is
 
   before(async () => {
     built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "pid-gate-")) }));
+    for (const principalId of ["U1", "U2", "U9"]) {
+      await built.organization.invite({
+        principalId,
+        email: `${principalId.toLowerCase()}@example.com`,
+        displayName: principalId,
+        actor: "test",
+      });
+      await built.organization.setStatus({ principalId, status: "active", actor: "test" });
+    }
     server = createInsecureTestServer(built.app, {
       capabilitySecret: CAP,
       portalIdentitySecret: PID,
@@ -241,7 +250,7 @@ describe("user-scoped routes require a portal-verified actor when enforcement is
         headers: aliceHeaders,
         body: JSON.stringify(body),
       });
-      assert.equal(response.status, 403, `deployment ${suffix}`);
+      assert.equal(response.status, 404, `deployment ${suffix}`);
     }
 
     built.config.setCommandPolicy(scopeId("org", "default-org"), {

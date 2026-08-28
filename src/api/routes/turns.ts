@@ -30,6 +30,12 @@ function publicTurnOrigin(body: TurnRequest): { origin?: TurnOrigin; error?: str
 
 async function postTurn(ctx: ApiCtx): Promise<void> {
   const { res, app, url, body } = ctx;
+  if (ctx.actor?.imp) {
+    return sendJson(res, 403, {
+      error: "impersonated_turn_forbidden",
+      message: "impersonation cannot start agent runs",
+    });
+  }
   if (!isTurnRequest(body)) {
     return sendJson(res, 400, { error: "bad_request", message: "expected a TurnRequest" });
   }

@@ -14,7 +14,7 @@ import { createAclStore } from "../src/acl/acl-store.ts";
 import { createDirectoryStore } from "../src/directory/directory-store.ts";
 import { createIdentityService } from "../src/identity/identity-service.ts";
 import { createMemorySessionStore } from "../src/sessions/memory-session-store.ts";
-import { portalSessionSub } from "../src/deploy/viewer-session.ts";
+import { portalSessionClaims } from "../src/deploy/viewer-session.ts";
 import { scopeId } from "../src/types.ts";
 
 const auditLog = { record() {}, events: async () => [], tail: async () => [] };
@@ -25,36 +25,40 @@ function mintPortalSession(sub: string, expInSeconds = 3600, secret = SESSION_SE
   const key = createHmac("sha256", secret).update("portal.session.v1").digest();
   const now = Math.floor(Date.now() / 1000);
   const body = Buffer.from(
-    JSON.stringify({ k: "session", sub, org: "acme", iat: now, exp: now + expInSeconds }),
+    JSON.stringify({ k: "session", sub, org: "acme", sv: 1, iat: now, exp: now + expInSeconds }),
   ).toString("base64url");
   const sig = createHmac("sha256", key).update(body).digest("base64url");
   return `${body}.${sig}`;
 }
 
-test("portalSessionSub: verifies, and rejects tampering, expiry, wrong kind, wrong secret", () => {
+test("portalSessionClaims: verifies current identity claims and rejects malformed sessions", () => {
   const good = mintPortalSession("alice@example.com");
-  assert.equal(portalSessionSub(`portal_session=${good}`, SESSION_SECRET), "alice@example.com");
-  assert.equal(portalSessionSub(`other=1; portal_session=${good}; x=2`, SESSION_SECRET), "alice@example.com");
-  assert.equal(portalSessionSub(`portal_session=${good}x`, SESSION_SECRET), null, "tampered signature");
+  assert.deepEqual(portalSessionClaims(`portal_session=${good}`, SESSION_SECRET), {
+    sub: "alice@example.com",
+    org: "acme",
+    sv: 1,
+  });
+  assert.equal(portalSessionClaims(`other=1; portal_session=${good}; x=2`, SESSION_SECRET)?.sub, "alice@example.com");
+  assert.equal(portalSessionClaims(`portal_session=${good}x`, SESSION_SECRET), null, "tampered signature");
   assert.equal(
-    portalSessionSub(`portal_session=junk; portal_session=${good}`, SESSION_SECRET),
+    portalSessionClaims(`portal_session=junk; portal_session=${good}`, SESSION_SECRET)?.sub,
     "alice@example.com",
     "an app's junk same-named cookie cannot shadow the real session",
   );
-  assert.equal(portalSessionSub(`portal_session=${good}`, "other-secret"), null, "wrong secret");
+  assert.equal(portalSessionClaims(`portal_session=${good}`, "other-secret"), null, "wrong secret");
   assert.equal(
-    portalSessionSub(`portal_session=${mintPortalSession("alice@example.com", -10)}`, SESSION_SECRET),
+    portalSessionClaims(`portal_session=${mintPortalSession("alice@example.com", -10)}`, SESSION_SECRET),
     null,
     "expired",
   );
-  assert.equal(portalSessionSub(undefined, SESSION_SECRET), null);
-  assert.equal(portalSessionSub("portal_session=", SESSION_SECRET), null);
+  assert.equal(portalSessionClaims(undefined, SESSION_SECRET), null);
+  assert.equal(portalSessionClaims("portal_session=", SESSION_SECRET), null);
   const key = createHmac("sha256", SESSION_SECRET).update("portal.session.v1").digest();
   const body = Buffer.from(
     JSON.stringify({ k: "impersonate", sub: "eve", exp: Math.floor(Date.now() / 1000) + 60 }),
   ).toString("base64url");
   const sig = createHmac("sha256", key).update(body).digest("base64url");
-  assert.equal(portalSessionSub(`portal_session=${body}.${sig}`, SESSION_SECRET), null, "non-session claims");
+  assert.equal(portalSessionClaims(`portal_session=${body}.${sig}`, SESSION_SECRET), null, "non-session claims");
 });
 
 function httpGet(

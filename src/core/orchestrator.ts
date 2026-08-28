@@ -9,6 +9,7 @@ import type {
   TurnResult,
   PendingApproval,
   PendingApprovalRecord,
+  Principal,
 } from "../types.ts";
 import { scopeId as toScopeId, personalScope } from "../types.ts";
 import { turnOriginRequestFields } from "./turn-origin.ts";
@@ -468,6 +469,16 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       if (!deps.identity.isInternal(actor)) {
         return { status: "refused", reason: "internal-only: non-internal principals cannot interact" };
       }
+      const organizationSession =
+        actor.id.startsWith("system:") || input.botActor ? null : await deps.organization?.checkRuntimeActive(actor.id);
+      if (
+        deps.organization &&
+        !actor.id.startsWith("system:") &&
+        !input.botActor &&
+        organizationSession?.status !== "active"
+      ) {
+        return { status: "refused", reason: "organization membership is not active" };
+      }
       const managedGroupRef =
         conversation.kind === "group" &&
         conversation.channelRef &&
@@ -911,8 +922,37 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             swallowAs("orchestrator: configured connector providers", []),
           )
         : [];
-      const visibleSkillsForTurn = async (): Promise<SkillResolution[]> =>
-        filterConnectorSkills((await deps.skills?.visibleFor(skillScopes, grantedSkills)) ?? [], configuredProviders);
+      const skillAudienceIds = conversation.audience.map((principal) =>
+        principal.type === "internal" ? principal.id : `external:${principal.id}`,
+      );
+      if (!skillAudienceIds.some((principalId) => samePerson(principalId, actor.id))) skillAudienceIds.push(actor.id);
+      const skillAuthorization = deps.skillAccess
+        ? await deps.skillAccess.snapshot({
+            audienceIds: skillAudienceIds,
+            orderedScopes: skillScopes,
+            ...(input.scopeVersion ? { membershipVersion: input.scopeVersion } : {}),
+          })
+        : null;
+      const assertSkillAuthorizationCurrent = async (): Promise<void> => {
+        if (!skillAuthorization || !deps.skillAccess) return;
+        if (!managedGroupRef) return deps.skillAccess.assertCurrent(skillAuthorization);
+        const [members, membershipVersion] = await Promise.all([
+          deps.managedGroups!.members(managedGroupRef).catch(() => undefined),
+          deps.managedGroups!.version(managedGroupRef).catch(() => undefined),
+        ]);
+        if (!members || !members.includes(actor.id)) throw new ProjectRosterChanged();
+        await deps.skillAccess.assertCurrent(skillAuthorization, { audienceIds: members, membershipVersion });
+      };
+      const visibleSkillsForTurn = async (): Promise<SkillResolution[]> => {
+        if (skillAuthorization && deps.skillAccess) {
+          await assertSkillAuthorizationCurrent();
+          return filterConnectorSkills(skillAuthorization.resolutions, configuredProviders);
+        }
+        return filterConnectorSkills(
+          (await deps.skills?.visibleFor(skillScopes, grantedSkills)) ?? [],
+          configuredProviders,
+        );
+      };
       const visibleSkills = await visibleSkillsForTurn();
       const transferId = turnFileId(input.runId, input.attempt);
       const turnSessionDir = `${TURN_FILES_DIR}/${hashId([conversation.threadRef], 24)}`;
@@ -1102,6 +1142,14 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       if (!strictReadOnly && deps.serviceCreds) {
         serviceCredRecords = await deps.serviceCreds.listServiceCredentials(resolution.orgScopeId);
         if (serviceCredRecords.length > 0) {
+          const serviceCredentialEntitled = async (principal: Principal, granteeScopeId: ScopeId) => {
+            if (!deps.organization) return false;
+            if (granteeScopeId === resolution.orgScopeId) {
+              if ((actor.id.startsWith("system:") || input.botActor) && principal.type === "internal") return true;
+              return (await deps.organization.checkActive(principal.id))?.status === "active";
+            }
+            return deps.organization.accessSubjectIncludes(granteeScopeId, principal.id);
+          };
           grantedCredSlugs = new Set(
             (
               await deps.acl.grantsOfKind(
@@ -1109,7 +1157,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 conversation.audience,
                 scopeId,
                 resolution.orgScopeId,
-                principalEntitledToScope,
+                serviceCredentialEntitled,
               )
             ).map((g) => parseRef(g.ref).id),
           );
@@ -1154,6 +1202,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       let controlClaims: CapabilityClaims | undefined;
       const scopeAttestation = {
         actorId: actor.id,
+        ...(organizationSession ? { sessionVersion: organizationSession.sessionVersion } : {}),
         scopeId,
         ...(input.scopeVersion ? { scopeVersion: input.scopeVersion } : {}),
         ...(conversation.publishMembers ? { members: conversation.publishMembers } : {}),
@@ -1351,6 +1400,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         ensureSkillTree,
         provisionForReach,
         reclaimBox,
+        destroyForAuthorizationChange,
         provisionPending,
       } = createTurnSandboxes({
         deps,
@@ -1381,6 +1431,15 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         emitGapWork,
         perf,
       });
+      const authorizationPreflight = async (): Promise<void> => {
+        if (!skillAuthorization || !deps.skillAccess) return;
+        try {
+          await assertSkillAuthorizationCurrent();
+        } catch (error) {
+          await destroyForAuthorizationChange();
+          throw error;
+        }
+      };
       const leaseStart = Date.now();
       const attempt = await deps.sessions.acquireLease(session.id, "turn");
       leaseMs += Date.now() - leaseStart;
@@ -1795,6 +1854,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           );
 
         const tools = createToolContext({
+          preflight: authorizationPreflight,
           sandbox: deps.sandbox,
           provision,
           provisionScratch,
@@ -2545,6 +2605,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           ...(inbound.metas.length ? { attachments: inbound.metas } : {}),
           ...(inbound.images.length ? { images: inbound.images } : {}),
         });
+        await authorizationPreflight();
         const primarySubturnEndSeq = emittedEntries.at(-1)?.seq;
         if (
           input.addressed &&
@@ -2656,6 +2717,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             }
           }
         }
+        await authorizationPreflight();
         const totalMs = Date.now() - turnStart;
 
         const noOutbound = { attachments: [], oversized: [], empty: [], dropped: 0 };

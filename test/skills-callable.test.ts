@@ -13,6 +13,7 @@ import { testConfig } from "./support/test-config.ts";
 function freshApp() {
   const config = testConfig({
     dataDir: mkdtempSync(join(tmpdir(), "ap-skill-")),
+    orgBootstrapUsers: ["U1"],
   });
   return buildApp(config);
 }

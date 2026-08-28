@@ -51,7 +51,8 @@ function setup(): { built: BuiltApp; control: ControlService } {
 }
 
 test("unattended cron grants require a live org-admin owner and protect later patches", async () => {
-  const { control } = setup();
+  const { built, control } = setup();
+  await built.organization.backfillUser({ principalId: "admin-alice", email: null, displayName: "admin-alice" });
   const grant = ["admin.sessions.read"];
   const request = { schedule: { everyMs: 3_600_000 }, action: "scan failures", unattendedGrants: grant };
 
@@ -121,6 +122,7 @@ test("unattended cron grants require a live org-admin owner and protect later pa
 
 test("a raw unreaffirmed cron patch strips unattended grants; a live-owner patch reaffirms them", async () => {
   const { built, control } = setup();
+  await built.organization.backfillUser({ principalId: "admin-alice", email: null, displayName: "admin-alice" });
   const created = await control.createCron(
     { schedule: { everyMs: 3_600_000 }, action: "scan failures", unattendedGrants: ["admin.sessions.read"] },
     claims("admin-alice", scopeId("personal", "admin-alice"), { liveActor: true }),
@@ -684,6 +686,7 @@ test("a cron's mode (runAs) is editable in place, but only by the owner", async 
 
 test("app.turn forwards ownerKeychainUnion onto the persisted run request (else scheduled fires lose the union)", async () => {
   const { built } = setup();
+  await built.organization.backfillUser({ principalId: "U1", email: null, displayName: "U1" });
   const base = {
     surface: "cron",
     actor: { externalId: "U1" },

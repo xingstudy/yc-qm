@@ -166,6 +166,7 @@ function awaitFileFulfillment(ctx: ApiCtx, requestId: string): Promise<void> {
     const token = await mintCapabilityToken(
       {
         actorId: cap.actorId,
+        ...(cap.sessionVersion !== undefined ? { sessionVersion: cap.sessionVersion } : {}),
         scopeId: cap.scopeId,
         ...(cap.scopeVersion ? { scopeVersion: cap.scopeVersion } : {}),
         ...(cap.botActor ? { botActor: true } : {}),
