@@ -188,6 +188,32 @@ test("resolvePrincipal claim=email rejects missing or unverified emails", () => 
   );
 });
 
+test("resolvePrincipal claim=email accepts the built-in broker principal without email", () => {
+  assert.equal(
+    resolvePrincipal(
+      { claim: "email", allowedEmailDomain: "example.com", allowBrokerPrincipal: true },
+      { sub: "g", claims: {}, userinfo: { qm_principal: "wecom:wwcorp:user", qm_principal_verified: true } },
+    ),
+    "wecom:wwcorp:user",
+  );
+  assert.throws(
+    () =>
+      resolvePrincipal(
+        { claim: "email", allowBrokerPrincipal: true },
+        { sub: "g", claims: {}, userinfo: { qm_principal: "wecom:wwcorp:user", qm_principal_verified: false } },
+      ),
+    /no email/,
+  );
+  assert.throws(
+    () =>
+      resolvePrincipal(
+        { claim: "email" },
+        { sub: "g", claims: {}, userinfo: { qm_principal: "wecom:wwcorp:user", qm_principal_verified: true } },
+      ),
+    /no email/,
+  );
+});
+
 test("resolvePrincipal allowedEmailDomain gates the email suffix and the hd claim", () => {
   const rule = { claim: "email" as const, allowedEmailDomain: "example.com" };
   const ok = resolvePrincipal(rule, {

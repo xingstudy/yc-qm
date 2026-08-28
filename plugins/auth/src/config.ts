@@ -16,6 +16,13 @@ interface SmtpSettings {
   tls: SmtpTlsMode;
 }
 
+interface WeComLoginConfig {
+  corpId: string;
+  agentId: string;
+  secret: string;
+  redirectUri: string;
+}
+
 export interface AuthConfig {
   issuer: string;
   publicPath: string;
@@ -40,6 +47,7 @@ export interface AuthConfig {
   sendLimitPerIp: number;
   coreApiUrl: string;
   coreSigningSecret: string | undefined;
+  wecomLogin: WeComLoginConfig;
 }
 
 const MAX_RATE_LIMIT_SLOTS = 64;
@@ -82,6 +90,7 @@ function parseJwk(raw: string | undefined): Record<string, unknown> | null {
 
 export function readConfig(env: NodeJS.ProcessEnv): AuthConfig {
   const issuer = (env.AUTH_ISSUER ?? `http://localhost:${env.PORT ?? 8099}`).replace(/\/$/, "");
+  const wecomRedirectUri = env.AUTH_WECOM_REDIRECT_URI?.trim() || `${issuer}/wecom/callback`;
   const publicPath = issuerPath(issuer);
   const transport: EmailTransportKind = env.AUTH_EMAIL_TRANSPORT?.trim() === "smtp" ? "smtp" : "resend";
   return {
@@ -114,6 +123,12 @@ export function readConfig(env: NodeJS.ProcessEnv): AuthConfig {
     sendLimitPerIp: numberFrom(env.AUTH_SEND_LIMIT_PER_IP, 20),
     coreApiUrl: (env.CORE_API_URL ?? "http://localhost:8080").replace(/\/$/, ""),
     coreSigningSecret: env.CORE_SIGNING_SECRET,
+    wecomLogin: {
+      corpId: env.AUTH_WECOM_CORP_ID?.trim() ?? "",
+      agentId: env.AUTH_WECOM_AGENT_ID?.trim() ?? "",
+      secret: env.AUTH_WECOM_SECRET?.trim() ?? "",
+      redirectUri: wecomRedirectUri,
+    },
   };
 }
 
@@ -128,6 +143,10 @@ function validEmailDomain(value: string): boolean {
 
 export function validEmail(value: string): boolean {
   return value.length <= 254 && /^[^@\s,;<>"]+@[^@\s,;<>"]+\.[^@\s,;<>"]+$/.test(value);
+}
+
+export function weComLoginConfigured(cfg: AuthConfig): boolean {
+  return Boolean(cfg.wecomLogin.corpId && cfg.wecomLogin.agentId && cfg.wecomLogin.secret);
 }
 
 function httpsUrlProblem(label: string, value: string, requireHttps: boolean): string | null {
@@ -225,6 +244,13 @@ export function bootProblems(cfg: AuthConfig, isProd: boolean): string[] {
   if (cfg.accessTtlS > 600) problems.push("AUTH_ACCESS_TTL_S must be at most 600 seconds");
   if (cfg.requestTtlS > 3600) problems.push("AUTH_REQUEST_TTL_S must be at most 3600 seconds");
   if (cfg.sendWindowS > 3600) problems.push("AUTH_SEND_WINDOW_S must be at most 3600 seconds");
+  const wecomSet = Boolean(cfg.wecomLogin.corpId || cfg.wecomLogin.agentId || cfg.wecomLogin.secret);
+  if (wecomSet) {
+    if (isProductionPlaceholder(cfg.wecomLogin.corpId)) problems.push("AUTH_WECOM_CORP_ID is required");
+    if (isProductionPlaceholder(cfg.wecomLogin.agentId)) problems.push("AUTH_WECOM_AGENT_ID is required");
+    if (isProductionPlaceholder(cfg.wecomLogin.secret)) problems.push("AUTH_WECOM_SECRET is required");
+    push(httpsUrlProblem("AUTH_WECOM_REDIRECT_URI", cfg.wecomLogin.redirectUri, isProd));
+  }
   for (const [name, limit] of [
     ["AUTH_SEND_LIMIT_PER_EMAIL", cfg.sendLimitPerEmail],
     ["AUTH_SEND_LIMIT_PER_IP", cfg.sendLimitPerIp],

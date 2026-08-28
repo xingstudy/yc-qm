@@ -2196,6 +2196,9 @@ test("AWS secret rotation holds the deploy lease across the complete write set",
   const operator = computedSecrets(secretsConfig).filter(
     (secret) => secret.managedBy === "operator" && secret.required,
   );
+  const ambientOptional = computedSecrets(secretsConfig)
+    .filter((secret) => secret.managedBy === "operator" && !secret.required)
+    .map((secret) => [secret.name, process.env[secret.name]] as const);
   writeFileSync(join(dir, ".env"), operator.map((secret) => `${secret.name}=${TEST_SECRET_VALUE}`).join("\n"));
   const fake = statefulAws(dir, secretsConfig);
   const state = JSON.parse(readFileSync(fake.state, "utf8"));
@@ -2210,6 +2213,7 @@ test("AWS secret rotation holds the deploy lease across the complete write set",
   state.definitions[taskArn] = renderTaskDefinition(secretsConfig, "core", image, arns);
   state.dynamo = manifestItems([{ id: "current", imageLabel: "release", tasks: { core: taskArn } }], "current");
   writeFileSync(fake.state, JSON.stringify(state));
+  for (const [name] of ambientOptional) delete process.env[name];
   try {
     await awsSecretsPush(secretsConfig, dir);
     const calls = readFileSync(fake.log, "utf8");
@@ -2224,6 +2228,10 @@ test("AWS secret rotation holds the deploy lease across the complete write set",
     assert.match(calls, /ecs update-service --cluster acme-qm --service acme-core --force-new-deployment/);
     assert.equal(calls.match(/secretsmanager put-secret-value/g)?.length, operator.length);
   } finally {
+    for (const [name, value] of ambientOptional) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
     fake.restore();
     rmSync(dir, { recursive: true, force: true });
   }

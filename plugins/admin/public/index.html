@@ -6176,6 +6176,7 @@
         Owner: "所有者",
         Audience: "受众",
         Account: "账户",
+        Enterprise: "企业",
         Expiry: "到期时间",
         Purpose: "用途",
         Principal: "主体",
@@ -13258,10 +13259,16 @@
         dingtalk: "DingTalk",
       };
       const imProviderLabel = (provider) => adminTr(IM_PROVIDER_LABELS[provider] || provider || "Unknown");
+      const imBindingTenant = (binding) => binding.externalTenantName || binding.externalTenantId || "";
       const imBindingSummary = (bindings) => {
         const active = (bindings || []).filter((binding) => binding.status === "connected");
         const pending = (bindings || []).filter((binding) => binding.status === "pending");
-        const activeText = active.map((binding) => imProviderLabel(binding.provider)).join(" · ");
+        const activeText = active
+          .map((binding) => {
+            const tenant = imBindingTenant(binding);
+            return imProviderLabel(binding.provider) + (tenant ? " · " + tenant : "");
+          })
+          .join(" · ");
         const pendingText = pending.map((binding) => imProviderLabel(binding.provider)).join(" · ");
         return stacked(activeText || adminTr("None"), pendingText ? adminTr("Pending") + ": " + pendingText : "");
       };
@@ -13414,6 +13421,7 @@
               u.admin?.role || "",
               u.admin?.scopeId || "member",
               ...(u.imBindings || []).map((binding) => imProviderLabel(binding.provider)),
+              ...(u.imBindings || []).map(imBindingTenant),
             ]),
           );
 
@@ -16327,6 +16335,7 @@
           imProviderLabel(binding.provider),
           nodeCell(mutedText(adminTr(binding.status === "connected" ? "Connected" : "Pending"))),
           binding.botName || "—",
+          imBindingTenant(binding) || "—",
           binding.externalDisplayName || "—",
           binding.connectedAt ? fmtTime(binding.connectedAt) : "—",
         ]);
@@ -16334,7 +16343,7 @@
           dataCard(
             "IM channels",
             "Chat platforms currently linked to this user.",
-            table(["Platform", "Status", "Bot", "Account", "Connected at"], imRows, "No IM channels."),
+            table(["Platform", "Status", "Bot", "Enterprise", "Account", "Connected at"], imRows, "No IM channels."),
           ),
         );
 

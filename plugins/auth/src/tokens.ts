@@ -17,17 +17,22 @@ export interface LinkClaims extends AuthRequest {
   email: string;
 }
 
-export interface CodeClaims {
+export interface AuthIdentity {
+  principal: string;
+  email?: string;
+  emailVerified: boolean;
+  name?: string;
+}
+
+export interface CodeClaims extends AuthIdentity {
   clientId: string;
   redirectUri: string;
   nonce: string;
   codeChallenge: string;
-  email: string;
 }
 
-export interface AccessClaims {
+export interface AccessClaims extends AuthIdentity {
   sub: string;
-  email: string;
 }
 
 export interface SealedToken {
@@ -49,8 +54,8 @@ export function pkceMatches(codeVerifier: string, codeChallenge: string): boolea
   return safeEqual(createHash("sha256").update(codeVerifier).digest("base64url"), codeChallenge);
 }
 
-export function subjectFor(issuer: string, email: string): string {
-  return createHash("sha256").update(`${issuer}\n${email}`, "utf8").digest("base64url");
+export function subjectFor(issuer: string, principal: string): string {
+  return createHash("sha256").update(`${issuer}\n${principal}`, "utf8").digest("base64url");
 }
 
 export class TokenSigner {
@@ -134,7 +139,16 @@ export class TokenSigner {
   async sealCode(claims: CodeClaims, ttlS: number, nowMs?: number): Promise<SealedToken> {
     return this.seal(
       "code",
-      { cid: claims.clientId, ru: claims.redirectUri, no: claims.nonce, cc: claims.codeChallenge, em: claims.email },
+      {
+        cid: claims.clientId,
+        ru: claims.redirectUri,
+        no: claims.nonce,
+        cc: claims.codeChallenge,
+        pr: claims.principal,
+        ev: claims.emailVerified,
+        ...(claims.email ? { em: claims.email } : {}),
+        ...(claims.name ? { nm: claims.name } : {}),
+      },
       ttlS,
       nowMs,
     );
@@ -146,15 +160,21 @@ export class TokenSigner {
   ): Promise<{ claims: CodeClaims; jti: string; expiresAtMs: number } | null> {
     const payload = await this.open("code", token, nowMs);
     if (!payload) return null;
-    const { cid, ru, no, cc, em } = payload as Record<string, unknown>;
-    if ([cid, ru, no, cc, em].some((value) => typeof value !== "string" || !value)) return null;
+    const { cid, ru, no, cc, pr, em, ev, nm } = payload as Record<string, unknown>;
+    if ([cid, ru, no, cc, pr].some((value) => typeof value !== "string" || !value)) return null;
+    if (em !== undefined && (typeof em !== "string" || !em)) return null;
+    if (typeof ev !== "boolean") return null;
+    if (nm !== undefined && (typeof nm !== "string" || !nm)) return null;
     return {
       claims: {
         clientId: cid as string,
         redirectUri: ru as string,
         nonce: no as string,
         codeChallenge: cc as string,
-        email: em as string,
+        principal: pr as string,
+        emailVerified: ev,
+        ...(em ? { email: em as string } : {}),
+        ...(nm ? { name: nm as string } : {}),
       },
       jti: String(payload.jti),
       expiresAtMs: Number(payload.exp) * 1000,
@@ -162,13 +182,36 @@ export class TokenSigner {
   }
 
   async sealAccess(claims: AccessClaims, ttlS: number, nowMs?: number): Promise<SealedToken> {
-    return this.seal("access", { sub: claims.sub, em: claims.email }, ttlS, nowMs);
+    return this.seal(
+      "access",
+      {
+        sub: claims.sub,
+        pr: claims.principal,
+        ev: claims.emailVerified,
+        ...(claims.email ? { em: claims.email } : {}),
+        ...(claims.name ? { nm: claims.name } : {}),
+      },
+      ttlS,
+      nowMs,
+    );
   }
 
   async openAccess(token: string, nowMs?: number): Promise<AccessClaims | null> {
     const payload = await this.open("access", token, nowMs);
-    if (!payload || typeof payload.sub !== "string" || typeof payload.em !== "string") return null;
-    return { sub: payload.sub, email: payload.em };
+    if (!payload || typeof payload.sub !== "string") return null;
+    const claimedPrincipal = typeof payload.pr === "string" && payload.pr ? payload.pr : "";
+    const fallbackEmail = typeof payload.em === "string" && payload.em ? payload.em : "";
+    const principal = claimedPrincipal || fallbackEmail;
+    if (!principal) return null;
+    const email = typeof payload.em === "string" && payload.em ? payload.em : undefined;
+    const name = typeof payload.nm === "string" && payload.nm ? payload.nm : undefined;
+    return {
+      sub: payload.sub,
+      principal,
+      emailVerified: payload.ev === true || Boolean(email),
+      ...(email ? { email } : {}),
+      ...(name ? { name } : {}),
+    };
   }
 }
 
@@ -198,10 +241,28 @@ function readRequest(payload: JWTPayload): AuthRequest | null {
 
 export async function mintIdToken(
   key: SigningKey,
-  args: { issuer: string; clientId: string; sub: string; email: string; nonce: string; ttlS: number; nowMs?: number },
+  args: {
+    issuer: string;
+    clientId: string;
+    sub: string;
+    principal: string;
+    email?: string;
+    emailVerified: boolean;
+    name?: string;
+    nonce: string;
+    ttlS: number;
+    nowMs?: number;
+  },
 ): Promise<string> {
   const issuedAt = Math.floor((args.nowMs ?? Date.now()) / 1000);
-  return new SignJWT({ nonce: args.nonce, azp: args.clientId, email: args.email, email_verified: true })
+  return new SignJWT({
+    nonce: args.nonce,
+    azp: args.clientId,
+    qm_principal: args.principal,
+    qm_principal_verified: true,
+    ...(args.email ? { email: args.email, email_verified: args.emailVerified } : {}),
+    ...(args.name ? { name: args.name } : {}),
+  })
     .setProtectedHeader({ alg: ID_TOKEN_ALG, kid: key.kid, typ: "JWT" })
     .setIssuer(args.issuer)
     .setSubject(args.sub)

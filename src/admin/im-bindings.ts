@@ -7,11 +7,20 @@ export interface AdminImBinding {
   status: "pending" | "connected";
   botName: string | null;
   externalDisplayName: string | null;
+  externalTenantId: string | null;
+  externalTenantName: string | null;
   connectedAt: number | null;
 }
 
 const PROVIDERS = new Set<AdminImProviderId>(["wechat", "feishu", "work-wechat", "qq", "dingtalk"]);
 const IM_BINDINGS_SUFFIX = "#im-bindings";
+
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string") return value;
+  }
+  return null;
+}
 
 function hasResource(rawResources: Record<string, unknown>, provider: AdminImProviderId): boolean {
   const raw = rawResources[provider];
@@ -37,6 +46,10 @@ export function parseAdminImBindings(value: unknown): AdminImBinding[] {
     if (binding.status !== "pending" && binding.status !== "connected") continue;
     const providerId = provider as AdminImProviderId;
     if (binding.status === "connected" && !hasResource(rawResources, providerId)) continue;
+    const resource =
+      typeof rawResources[providerId] === "object" && rawResources[providerId] !== null
+        ? (rawResources[providerId] as Record<string, unknown>)
+        : {};
     if (
       binding.status === "pending" &&
       providerId === "wechat" &&
@@ -50,6 +63,8 @@ export function parseAdminImBindings(value: unknown): AdminImBinding[] {
       status: binding.status,
       botName: typeof binding.botName === "string" ? binding.botName : null,
       externalDisplayName: typeof binding.externalDisplayName === "string" ? binding.externalDisplayName : null,
+      externalTenantId: firstString(binding.externalTenantId, resource.externalTenantId),
+      externalTenantName: firstString(binding.externalTenantName, resource.externalTenantName),
       connectedAt: typeof binding.connectedAt === "number" ? binding.connectedAt : null,
     });
   }

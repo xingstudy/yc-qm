@@ -703,6 +703,28 @@ test("concurrent WeChat status polling shares one provider request and skips unc
   assert.equal(uiState.get(`${user}#im-bindings`)?.updatedAt, before);
 });
 
+test("expired WeChat update sessions are forgotten before the bridge polls again", async () => {
+  const user = "wechat-expired-session";
+  await startWechat(user);
+  await confirmWechat(user, "wx-bot-expired", "wx-user-expired");
+  const turnsBefore = coreTurns.length;
+  weixinUpdates.push({ ret: -14, errmsg: "session timeout" });
+
+  await pollWeixinAccount(user, "wx-bot-expired");
+
+  const stored = uiState.get(`${user}#im-bindings`)?.value as
+    { bindings?: { wechat?: unknown }; resources?: { wechat?: unknown } } | undefined;
+  assert.equal(coreTurns.length, turnsBefore);
+  assert.equal(stored?.bindings?.wechat, undefined);
+  assert.equal(stored?.resources?.wechat, undefined);
+
+  const restart = await startWechat(user);
+  const body = (await restart.json()) as { binding: { status: string; resourceId?: string } };
+  assert.equal(restart.status, 200);
+  assert.equal(body.binding.status, "pending");
+  assert.equal(body.binding.resourceId, undefined);
+});
+
 test("WeChat bridge forwards messages and sends deliveries through iLink", async () => {
   coreTurns.length = 0;
   coreRunResponses.set("run-1", [
@@ -992,9 +1014,18 @@ test("saved WeCom Bot credentials reconnect after unbind", async () => {
   const credentials = await fetch(`${base}/api/im-bindings/work-wechat/credentials`, {
     method: "POST",
     headers: headers(user),
-    body: JSON.stringify({ credentials: { botId: "wecom-reused-bot", secret: "wecom-reused-secret" } }),
+    body: JSON.stringify({
+      credentials: { botId: "wecom-reused-bot", secret: "wecom-reused-secret" },
+      externalTenantId: "wwcorp-reused",
+      externalTenantName: "复用企业",
+    }),
   });
   assert.equal(credentials.status, 200);
+  const credentialsBody = (await credentials.json()) as {
+    binding: { externalTenantId?: string; externalTenantName?: string };
+  };
+  assert.equal(credentialsBody.binding.externalTenantId, "wwcorp-reused");
+  assert.equal(credentialsBody.binding.externalTenantName, "复用企业");
 
   const saved = uiState.get(`${user}#im-bindings`)?.value as {
     resources: { "work-wechat": { encryptedSecret: string } };
@@ -1067,7 +1098,7 @@ test("WeCom remembers an opened direct chat and sends Bot locator messages", asy
       msgid: "wecom-enter-message",
       msgtype: "event",
       chattype: "single",
-      from: { userid: "wecom-locate-user-id" },
+      from: { userid: "wecom-locate-user-id", corpid: "wwcorp-locate", corp_name: "示例企业" },
       event: { eventtype: "enter_chat" },
     },
   });
@@ -1076,14 +1107,40 @@ test("WeCom remembers an opened direct chat and sends Bot locator messages", asy
 
   await waitFor(() => {
     const stored = uiState.get(`${user}#im-bindings`)?.value as
-      { resources?: { "work-wechat"?: { externalUserId?: string; externalChatId?: string } } } | undefined;
+      | {
+          resources?: {
+            "work-wechat"?: {
+              externalUserId?: string;
+              externalChatId?: string;
+              externalTenantId?: string;
+              externalTenantName?: string;
+            };
+          };
+        }
+      | undefined;
     return stored?.resources?.["work-wechat"]?.externalUserId === "wecom-locate-user-id";
   });
   const stored = uiState.get(`${user}#im-bindings`)?.value as {
-    resources: { "work-wechat": { externalUserId: string; externalChatId: string } };
+    resources: {
+      "work-wechat": {
+        externalUserId: string;
+        externalChatId: string;
+        externalTenantId: string;
+        externalTenantName: string;
+      };
+    };
   };
   assert.equal(stored.resources["work-wechat"].externalUserId, "wecom-locate-user-id");
   assert.equal(stored.resources["work-wechat"].externalChatId, "wecom-locate-user-id");
+  assert.equal(stored.resources["work-wechat"].externalTenantId, "wwcorp-locate");
+  assert.equal(stored.resources["work-wechat"].externalTenantName, "示例企业");
+  const ready = await fetch(`${base}/api/im-bindings/status?provider=work-wechat`, { headers: headers(user) });
+  const readyBody = (await ready.json()) as {
+    binding: { externalTenantId?: string; externalTenantName?: string; locatorAvailable?: boolean };
+  };
+  assert.equal(readyBody.binding.externalTenantId, "wwcorp-locate");
+  assert.equal(readyBody.binding.externalTenantName, "示例企业");
+  assert.equal(readyBody.binding.locatorAvailable, true);
 
   const locate = await fetch(`${base}/api/im-bindings/work-wechat/locate`, {
     method: "POST",

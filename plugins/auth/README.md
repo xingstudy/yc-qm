@@ -8,16 +8,18 @@ emailed to an allowed address.
 
 ## Endpoints
 
-| Route                                   | Reached by                                  | Notes                                                                          |
-| --------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------ |
-| `GET /authorize`                        | browser, via the portal at `/idp/authorize` | validates the request and renders the email form                               |
-| `POST /authorize`                       | browser, via the portal                     | always answers with the same confirmation page, then emails a link out of band |
-| `GET /verify`                           | browser, via the portal at `/idp/verify`    | consumes the link and redirects to the portal's `/auth/callback` with a code   |
-| `POST /token`                           | portal, over the private network            | HTTP Basic client auth, authorization-code grant, PKCE S256                    |
-| `GET /userinfo`                         | portal, over the private network            | Bearer access token, verified statelessly                                      |
-| `GET /.well-known/jwks.json`            | portal, over the private network            | the ES256 public key                                                           |
-| `GET /.well-known/openid-configuration` | operators                                   | discovery, for debugging                                                       |
-| `GET /healthz`                          | the platform                                | liveness                                                                       |
+| Route                                   | Reached by                                  | Notes                                                                        |
+| --------------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------- |
+| `GET /authorize`                        | browser, via the portal at `/idp/authorize` | validates the request and renders the email form                             |
+| `POST /authorize`                       | browser, via the portal                     | validates the address, then emails a link out of band                        |
+| `GET /verify`                           | browser, via the portal at `/idp/verify`    | consumes the link and redirects to the portal's `/auth/callback` with a code |
+| `GET /wecom/login`                      | browser, via the portal at `/idp/wecom`     | starts optional WeCom QR sign-in                                             |
+| `GET /wecom/callback`                   | WeCom, via the portal at `/idp/wecom`       | resolves the scanned member and redirects to the portal with a code          |
+| `POST /token`                           | portal, over the private network            | HTTP Basic client auth, authorization-code grant, PKCE S256                  |
+| `GET /userinfo`                         | portal, over the private network            | Bearer access token, verified statelessly                                    |
+| `GET /.well-known/jwks.json`            | portal, over the private network            | the ES256 public key                                                         |
+| `GET /.well-known/openid-configuration` | operators                                   | discovery, for debugging                                                     |
+| `GET /healthz`                          | the platform                                | liveness                                                                     |
 
 The broker is never published directly. The portal republishes only the three
 browser-facing routes under `AUTH_BROKER_PREFIX` (`/idp` by default), which is
@@ -50,10 +52,19 @@ store; the broker refuses to start if any of it is missing or a placeholder.
 | `AUTH_EMAIL_TRANSPORT` and the chosen transport's variables (below)             | the operator's email provider                                                                                               |
 | `AUTH_LINK_TTL_S`, `AUTH_CODE_TTL_S`, `AUTH_ACCESS_TTL_S`, `AUTH_REQUEST_TTL_S` | optional, capped                                                                                                            |
 | `AUTH_SEND_WINDOW_S`, `AUTH_SEND_LIMIT_PER_EMAIL`, `AUTH_SEND_LIMIT_PER_IP`     | optional                                                                                                                    |
+| `AUTH_WECOM_CORP_ID`, `AUTH_WECOM_AGENT_ID`, `AUTH_WECOM_SECRET`                | optional; enables WeCom QR sign-in when all three are set                                                                   |
+| `AUTH_WECOM_REDIRECT_URI`                                                       | optional; overrides the public WeCom QR callback URL                                                                        |
 | `CORE_API_URL`, `CORE_ORG_ID`, `CORE_SIGNING_SECRET`                            | the chassis core block                                                                                                      |
 
 The signing key is single, not a set: rotating it means redeploying, and links
 minted by the previous key stop verifying at that moment.
+
+WeCom QR sign-in uses the enterprise CorpID, a self-built app AgentID, and that
+app's Secret. The app callback/trusted domain must allow
+`AUTH_WECOM_REDIRECT_URI`, or `<AUTH_ISSUER>/wecom/callback` when unset. When
+WeCom returns a usable member email, the broker maps the scan back to that email
+identity; otherwise it signs the member in with a stable
+`wecom:<corpId>:<userid>` principal.
 
 ## Email transport
 

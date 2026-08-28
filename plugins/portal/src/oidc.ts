@@ -123,6 +123,7 @@ export interface PrincipalRule {
   claim: "sub" | "email";
   allowedEmailDomain?: string;
   allowedEmails?: readonly string[];
+  allowBrokerPrincipal?: boolean;
 }
 
 export function resolvePrincipal(
@@ -131,7 +132,14 @@ export function resolvePrincipal(
 ): string {
   if (rule.claim === "sub") return args.sub;
   const rawEmail = args.userinfo.email;
-  if (typeof rawEmail !== "string" || !rawEmail.includes("@")) throw new Error("identity provider returned no email");
+  if (typeof rawEmail !== "string" || !rawEmail.includes("@")) {
+    const rawPrincipal = args.userinfo.qm_principal ?? args.claims.qm_principal;
+    const verified = args.userinfo.qm_principal_verified ?? args.claims.qm_principal_verified;
+    if (rule.allowBrokerPrincipal && typeof rawPrincipal === "string" && rawPrincipal.trim()) {
+      if (verified === true || verified === "true") return rawPrincipal.trim();
+    }
+    throw new Error("identity provider returned no email");
+  }
   const verified = args.userinfo.email_verified;
   if (verified !== true && verified !== "true") throw new Error("email is not verified by the identity provider");
   const email = rawEmail.trim().toLowerCase();

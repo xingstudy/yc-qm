@@ -201,7 +201,7 @@ const IM_PROVIDER_META: Record<
     botName: "QM 企业微信智能机器人",
     kind: "wecom-aibot",
     docsUrl: "https://work.weixin.qq.com/nl/index/aicli?from=catDetail",
-    hint: "已有机器人请填写 Bot ID 和 Secret 直接绑定；仅在需要新机器人时打开企业微信扫码创建窗口。",
+    hint: "使用企业微信扫码创建或授权智能机器人；已有机器人可填写 Bot ID 和 Secret 绑定。",
     setupMode: "provision-qr",
     setupTitle: "扫码创建企业微信智能机器人",
     setupSteps: [
@@ -273,6 +273,8 @@ interface ImBindingRecord {
   externalUserId?: string;
   externalChatId?: string;
   externalDisplayName?: string;
+  externalTenantId?: string;
+  externalTenantName?: string;
   resourceId?: string;
   locatorAvailable?: boolean;
   locatorUnavailableReason?: string;
@@ -297,6 +299,8 @@ interface ImResourceRecord {
   externalUserId?: string;
   externalChatId?: string;
   externalDisplayName?: string;
+  externalTenantId?: string;
+  externalTenantName?: string;
   encryptedSecret?: string;
   createdAt: number;
   updatedAt: number;
@@ -404,6 +408,24 @@ function imStringList(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const items = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
   return items.length ? items.slice(0, 8) : undefined;
+}
+
+function imTextField(value: unknown, limit = 256): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, limit) : undefined;
+}
+
+function weComTenantInfo(from: Record<string, unknown> | undefined): {
+  externalTenantId?: string;
+  externalTenantName?: string;
+} {
+  const externalTenantId = imTextField(from?.corpid ?? from?.corp_id ?? from?.corpId);
+  const externalTenantName = imTextField(
+    from?.corpname ?? from?.corp_name ?? from?.corpName ?? from?.company_name ?? from?.companyName,
+  );
+  return {
+    ...(externalTenantId ? { externalTenantId } : {}),
+    ...(externalTenantName ? { externalTenantName } : {}),
+  };
 }
 
 function truncateUtf8(value: string, maxBytes: number, suffix: string): string {
@@ -557,6 +579,8 @@ function parseImBindings(value: unknown, revision = 0): ImBindingsState {
       ...(typeof r.externalUserId === "string" ? { externalUserId: r.externalUserId } : {}),
       ...(typeof r.externalChatId === "string" ? { externalChatId: r.externalChatId } : {}),
       ...(typeof r.externalDisplayName === "string" ? { externalDisplayName: r.externalDisplayName } : {}),
+      ...(typeof r.externalTenantId === "string" ? { externalTenantId: r.externalTenantId } : {}),
+      ...(typeof r.externalTenantName === "string" ? { externalTenantName: r.externalTenantName } : {}),
       ...(typeof r.resourceId === "string" ? { resourceId: r.resourceId } : {}),
       ...(typeof r.locatorAvailable === "boolean" ? { locatorAvailable: r.locatorAvailable } : {}),
       ...(typeof r.locatorUnavailableReason === "string"
@@ -597,6 +621,12 @@ function parseImBindings(value: unknown, revision = 0): ImBindingsState {
       ...(typeof r.externalChatId === "string" ? { externalChatId: r.externalChatId.slice(0, 256) } : {}),
       ...(typeof r.externalDisplayName === "string"
         ? { externalDisplayName: r.externalDisplayName.slice(0, 256) }
+        : {}),
+      ...(typeof r.externalTenantId === "string" && r.externalTenantId.trim()
+        ? { externalTenantId: r.externalTenantId.slice(0, 256) }
+        : {}),
+      ...(typeof r.externalTenantName === "string" && r.externalTenantName.trim()
+        ? { externalTenantName: r.externalTenantName.slice(0, 256) }
         : {}),
       ...(typeof r.encryptedSecret === "string" ? { encryptedSecret: r.encryptedSecret } : {}),
       createdAt: typeof r.createdAt === "number" ? r.createdAt : 0,
@@ -659,8 +689,12 @@ function publicImBinding(binding: ImBindingRecord, resource?: ImResourceRecord):
     ...publicBinding
   } = binding;
   const locatorAvailable = imLocatorAvailable(binding, resource);
+  const externalTenantId = publicBinding.externalTenantId ?? resource?.externalTenantId;
+  const externalTenantName = publicBinding.externalTenantName ?? resource?.externalTenantName;
   return {
     ...publicBinding,
+    ...(externalTenantId ? { externalTenantId } : {}),
+    ...(externalTenantName ? { externalTenantName } : {}),
     locatorAvailable,
     ...(locatorAvailable ? {} : { locatorUnavailableReason: imLocatorUnavailableReason(binding, resource) }),
   };
@@ -884,6 +918,8 @@ function bindingFromResource(resource: ImResourceRecord, existing?: ImBindingRec
     ...(resource.externalUserId ? { externalUserId: resource.externalUserId } : {}),
     ...(resource.externalChatId ? { externalChatId: resource.externalChatId } : {}),
     ...(resource.externalDisplayName ? { externalDisplayName: resource.externalDisplayName } : {}),
+    ...(resource.externalTenantId ? { externalTenantId: resource.externalTenantId } : {}),
+    ...(resource.externalTenantName ? { externalTenantName: resource.externalTenantName } : {}),
     connectedAt: existing?.connectedAt ?? now,
     updatedAt: now,
   };
@@ -1787,6 +1823,8 @@ interface ImConversationTarget {
   externalUserId: string;
   externalChatId: string;
   externalDisplayName: string;
+  externalTenantId?: string;
+  externalTenantName?: string;
   replyWebhook?: string;
   direct?: boolean;
 }
@@ -1820,21 +1858,43 @@ function persistImConversation(
       if (binding?.status !== "connected" || !resource || !secret) return;
       let changed = false;
       const directOwner = !resource.externalUserId || resource.externalUserId === input.externalUserId;
+      if (input.externalTenantId && resource.externalTenantId !== input.externalTenantId) {
+        const now = Date.now();
+        resource.externalTenantId = input.externalTenantId;
+        binding.externalTenantId = input.externalTenantId;
+        resource.updatedAt = now;
+        binding.updatedAt = now;
+        changed = true;
+      }
+      if (input.externalTenantName && resource.externalTenantName !== input.externalTenantName) {
+        const now = Date.now();
+        resource.externalTenantName = input.externalTenantName;
+        binding.externalTenantName = input.externalTenantName;
+        resource.updatedAt = now;
+        binding.updatedAt = now;
+        changed = true;
+      }
       if (input.direct && directOwner) {
         const externalUserId = resource.externalUserId ?? input.externalUserId;
         if (
           resource.externalUserId !== externalUserId ||
           resource.externalChatId !== input.externalChatId ||
-          resource.externalDisplayName !== input.externalDisplayName
+          resource.externalDisplayName !== input.externalDisplayName ||
+          (input.externalTenantId && resource.externalTenantId !== input.externalTenantId) ||
+          (input.externalTenantName && resource.externalTenantName !== input.externalTenantName)
         ) {
           const now = Date.now();
           resource.externalUserId = externalUserId;
           resource.externalChatId = input.externalChatId;
           resource.externalDisplayName = input.externalDisplayName;
+          if (input.externalTenantId) resource.externalTenantId = input.externalTenantId;
+          if (input.externalTenantName) resource.externalTenantName = input.externalTenantName;
           resource.updatedAt = now;
           binding.externalUserId = externalUserId;
           binding.externalChatId = input.externalChatId;
           binding.externalDisplayName = input.externalDisplayName;
+          if (input.externalTenantId) binding.externalTenantId = input.externalTenantId;
+          if (input.externalTenantName) binding.externalTenantName = input.externalTenantName;
           binding.updatedAt = now;
           changed = true;
         }
@@ -1867,6 +1927,8 @@ async function postImSdkMessageNow(
     externalUserId: string;
     externalChatId: string;
     externalDisplayName: string;
+    externalTenantId?: string;
+    externalTenantName?: string;
     text: string;
     messageId?: string;
     replyWebhook?: string;
@@ -1906,6 +1968,8 @@ function postImSdkMessage(
     externalUserId: string;
     externalChatId: string;
     externalDisplayName: string;
+    externalTenantId?: string;
+    externalTenantName?: string;
     text: string;
     messageId?: string;
     replyWebhook?: string;
@@ -1920,6 +1984,8 @@ function larkText(data: unknown): {
   externalUserId: string;
   externalChatId: string;
   externalDisplayName: string;
+  externalTenantId?: string;
+  externalTenantName?: string;
   text: string;
   messageId?: string;
   direct?: boolean;
@@ -2096,9 +2162,10 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
       if (!ownsImBridge(user, resource.provider, resource.resourceId)) return;
       const body = frame.body;
       if (!body) return;
+      if (completedMessageIds.has(body.msgid)) return;
+      const tenant = weComTenantInfo(body.from as unknown as Record<string, unknown>);
       const text = body.text.content.trim().slice(0, 40_000);
       if (!text) return;
-      if (completedMessageIds.has(body.msgid)) return;
       if (inFlightMessageIds.has(body.msgid)) {
         retryMessageFrames.set(body.msgid, frame);
         return;
@@ -2121,6 +2188,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
           externalUserId: body.from.userid,
           externalChatId: target,
           externalDisplayName: body.from.userid,
+          ...tenant,
           text,
           messageId: body.msgid,
           direct: body.chattype === "single",
@@ -2170,6 +2238,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
       )
         return;
       inFlightWelcomeIds.add(body.msgid);
+      const tenant = weComTenantInfo(body.from as unknown as Record<string, unknown>);
       const welcome = client.replyWelcome(frame, {
         msgtype: "text",
         text: {
@@ -2180,6 +2249,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         externalUserId: body.from.userid,
         externalChatId: body.from.userid,
         externalDisplayName: body.from.userid,
+        ...tenant,
         direct: true,
       }).catch((error: unknown) => console.error("[web-ui] WeCom target persistence failed:", String(error)));
       void welcome
@@ -2455,6 +2525,8 @@ async function saveImSdkResource(
   resourceId: string,
   externalUserId?: string,
   expectedQrGenerationId?: string,
+  externalTenantId?: string,
+  externalTenantName?: string,
 ): Promise<ImBindingRecord> {
   const state = await readImBindings(user);
   const existing = state.bindings[provider];
@@ -2465,6 +2537,8 @@ async function saveImSdkResource(
     resourceId: resourceId.slice(0, 256),
     botName: imProviderMeta(provider).botName,
     ...(externalUserId ? { externalUserId: externalUserId.slice(0, 256) } : {}),
+    ...(externalTenantId ? { externalTenantId: externalTenantId.slice(0, 256) } : {}),
+    ...(externalTenantName ? { externalTenantName: externalTenantName.slice(0, 256) } : {}),
     encryptedSecret: encryptImSecret({
       provider,
       credentials,
@@ -2480,6 +2554,8 @@ async function saveImSdkResource(
       status: "pending",
       botName: resource.botName,
       resourceId: resource.resourceId,
+      ...(resource.externalTenantId ? { externalTenantId: resource.externalTenantId } : {}),
+      ...(resource.externalTenantName ? { externalTenantName: resource.externalTenantName } : {}),
       authorizationState: "waiting",
       authorizationMessage: `${imProviderMeta(provider).label}机器人凭据已获取，正在验证消息连接`,
       updatedAt: now,
@@ -2929,12 +3005,18 @@ async function startImBinding(user: string, provider: ImProviderId): Promise<ImB
   throw new Error("不支持的 IM 平台");
 }
 
-async function removeImBinding(user: string, provider: ImProviderId, forgetResource = false): Promise<boolean> {
+async function removeImBinding(
+  user: string,
+  provider: ImProviderId,
+  forgetResource = false,
+  expectedResourceId?: string,
+): Promise<boolean> {
   const state = await readImBindings(user);
   const binding = state.bindings[provider];
   const resource = state.resources[provider];
   if (!binding && !(forgetResource && resource)) return false;
   const resourceId = resource?.resourceId;
+  if (expectedResourceId && resourceId !== expectedResourceId) return false;
   const ownerReservation =
     forgetResource && resourceId ? await reserveImResourceOwner(user, provider, resourceId, true) : undefined;
   delete state.bindings[provider];
@@ -3541,6 +3623,8 @@ function imTurn(
     externalUserId: string;
     externalChatId: string;
     externalDisplayName: string;
+    externalTenantId?: string;
+    externalTenantName?: string;
     text: string;
     messageId?: string;
     deliveryEditRef?: string;
@@ -3576,6 +3660,8 @@ function imTurn(
           provider,
           externalUserId: input.externalUserId,
           externalChatId: input.externalChatId,
+          ...(input.externalTenantId ? { externalTenantId: input.externalTenantId } : {}),
+          ...(input.externalTenantName ? { externalTenantName: input.externalTenantName } : {}),
         },
       },
       ...(input.messageId ? { idempotencyKey: `im:${provider}:${namespace}:${input.messageId}` } : {}),
@@ -3702,6 +3788,13 @@ export async function pollWeixinAccount(user: string, expectedResourceId: string
     WEIXIN_API_TIMEOUT_MS,
   );
   if ((response.ret ?? 0) !== 0 || (response.errcode ?? 0) !== 0) {
+    const code = (response.errcode ?? 0) !== 0 ? response.errcode : response.ret;
+    if (code === -14) {
+      if (!requireLease || ownsImBridge(user, "wechat", expectedResourceId)) {
+        await removeImBinding(user, "wechat", true, expectedResourceId);
+      }
+      return;
+    }
     throw new Error(`Weixin getupdates failed: ${response.errcode ?? response.ret} ${response.errmsg ?? ""}`);
   }
   if (requireLease && !ownsImBridge(user, "wechat", expectedResourceId)) return;
@@ -4595,12 +4688,27 @@ const apiRoutes: readonly WebRoute[] = [
       if (!isImProviderId(provider) || provider === "wechat") {
         return json(res, 400, { error: "bad_request", message: "unknown provider" });
       }
-      const body = await readJson<{ credentials?: unknown }>(req, res, false);
+      const body = await readJson<{ credentials?: unknown; externalTenantId?: unknown; externalTenantName?: unknown }>(
+        req,
+        res,
+        false,
+      );
       if (!body) return;
       const parsed = imCredentials(provider, body.credentials);
       if (!parsed) return json(res, 400, { error: "bad_request", message: "请完整填写平台凭据" });
+      const externalTenantId = imTextField(body.externalTenantId);
+      const externalTenantName = imTextField(body.externalTenantName);
       try {
-        const binding = await saveImSdkResource(user, provider, parsed.credentials, parsed.resourceId);
+        const binding = await saveImSdkResource(
+          user,
+          provider,
+          parsed.credentials,
+          parsed.resourceId,
+          undefined,
+          undefined,
+          externalTenantId,
+          externalTenantName,
+        );
         const state = await readImBindings(user);
         return json(res, 200, { binding: publicImBinding(binding, state.resources[provider]) });
       } catch (error) {

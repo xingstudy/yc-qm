@@ -95,6 +95,7 @@ export async function startHarness(
     env?: Record<string, string | undefined>;
     claims?: ClaimStore & { calls: string[][] };
     brandName?: () => string;
+    fetchImpl?: typeof fetch;
   } = {},
 ): Promise<Harness> {
   const cfg = readConfig(testEnv(options.env));
@@ -109,6 +110,7 @@ export async function startHarness(
     claims,
     mailer,
     ...(options.brandName ? { brandName: options.brandName } : {}),
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     now: () => now.ms,
     onBackgroundTask: (task) => pending.push(task),
   });

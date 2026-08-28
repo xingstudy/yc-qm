@@ -70,6 +70,14 @@ test("the broker's sign-in pages are reachable without a session", async () => {
     "/authorize?client_id=qm-portal&state=s",
     "the /idp prefix is stripped before the broker sees it",
   );
+
+  const wecomLogin = await fetch(`${base}/idp/wecom/login?request=tok`);
+  assert.equal(wecomLogin.status, 200);
+  assert.equal(seen.at(-1)!.url, "/wecom/login?request=tok");
+
+  const wecomCallback = await fetch(`${base}/idp/wecom/callback?code=c&state=s`);
+  assert.equal(wecomCallback.status, 200);
+  assert.equal(seen.at(-1)!.url, "/wecom/callback?code=c&state=s");
 });
 
 test("the verify redirect is relayed back to the browser", async () => {
@@ -196,6 +204,8 @@ test("brokerRouteFor matches only the exact public routes", () => {
   assert.equal(brokerRouteFor("GET", "/idp/authorize"), "/authorize");
   assert.equal(brokerRouteFor("POST", "/idp/authorize"), "/authorize");
   assert.equal(brokerRouteFor("GET", "/idp/verify"), "/verify");
+  assert.equal(brokerRouteFor("GET", "/idp/wecom/login"), "/wecom/login");
+  assert.equal(brokerRouteFor("GET", "/idp/wecom/callback"), "/wecom/callback");
   for (const path of ["/idp/authorize/extra", "/idpauthorize", "/idp/", "/idp", "/idp/token", "/authorize"]) {
     assert.equal(brokerRouteFor("GET", path), null, path);
   }
