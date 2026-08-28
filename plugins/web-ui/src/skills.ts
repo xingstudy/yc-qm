@@ -1,6 +1,6 @@
 import { nothing, render, type TemplateResult } from "lit";
 import { html, t } from "./i18n.ts";
-import { Box } from "lucide";
+import { Box, Search } from "lucide";
 import { api, type CoreContext } from "./core-bridge";
 import type { SkillItem } from "./composer";
 import { errMessage } from "../../chassis/src/errors";
@@ -53,6 +53,34 @@ let editingTarget: SkillItem | null = null;
 let saving = false;
 let editError = "";
 
+type SkillAccessMode = "home" | "organization" | "restricted";
+type SkillAccessSubjectKind = "user" | "org_unit" | "access_group";
+type SkillAccessSubject = { kind: SkillAccessSubjectKind; id: string; name?: string };
+type SkillAccessView = {
+  mode: SkillAccessMode;
+  subjects: SkillAccessSubject[];
+  hiddenSubjectCount: number;
+  editable: boolean;
+  organizationModeAllowed: boolean;
+  revision: number;
+  updatedAt: number;
+  updatedBy: string;
+  effectiveSummary: {
+    activeUsers: number | null;
+    orgUnits: number | null;
+    accessGroups: number | null;
+    directUsers: number | null;
+  };
+};
+
+let editingAccess: SkillAccessView | null = null;
+let accessCandidates: SkillAccessSubject[] = [];
+let accessSaving = false;
+let accessError = "";
+let accessSearch = "";
+let accessSearching = false;
+let accessSearchSeq = 0;
+
 let creating: {
   name: string;
   description: string;
@@ -89,11 +117,23 @@ async function startEdit(s: SkillItem): Promise<void> {
   editing = null;
   editingTarget = s;
   editError = "";
+  editingAccess = null;
+  accessCandidates = [];
+  accessSaving = false;
+  accessError = "";
+  accessSearch = "";
+  accessSearching = false;
   skillsNotice = t("Loading skill instructions…");
   drawSkills();
   queueMicrotask(() => skillsPageHost?.querySelector<HTMLElement>(".context-back")?.focus());
   try {
-    const r = await api<{ skill: SkillItem }>(`/api/skills/${encodeURIComponent(s.id)}`);
+    const [r, access, units, users, groups] = await Promise.all([
+      api<{ skill: SkillItem }>(`/api/skills/${encodeURIComponent(s.id)}`),
+      api<SkillAccessView>(`/api/skills/${encodeURIComponent(s.id)}/access`),
+      api<{ units: Array<{ id: string; name: string }> }>("/api/org/tree"),
+      api<{ users: Array<{ principalId: string; displayName: string }> }>("/api/org/users?limit=100"),
+      api<{ groups: Array<{ id: string; name: string }> }>("/api/org/access-groups"),
+    ]);
     if (request !== editRequestSeq) return;
     editing = {
       id: s.id,
@@ -106,6 +146,13 @@ async function startEdit(s: SkillItem): Promise<void> {
       review: null,
     };
     editingTarget = r.skill;
+    editingAccess = { ...access, subjects: access.subjects.map((subject) => ({ ...subject })) };
+    accessCandidates = mergeAccessCandidates(
+      access.subjects,
+      units.units.map((unit) => ({ kind: "org_unit" as const, id: unit.id, name: unit.name })),
+      groups.groups.map((group) => ({ kind: "access_group" as const, id: group.id, name: group.name })),
+      users.users.map((user) => ({ kind: "user" as const, id: user.principalId, name: user.displayName })),
+    );
     skillsNotice = "";
   } catch (e) {
     if (request !== editRequestSeq) return;
@@ -144,6 +191,12 @@ function closeFocusedFlow(): void {
   editingTarget = null;
   creating = null;
   editError = "";
+  editingAccess = null;
+  accessCandidates = [];
+  accessSaving = false;
+  accessError = "";
+  accessSearch = "";
+  accessSearching = false;
   createError = "";
   skillsNotice = "";
   saving = false;
@@ -240,6 +293,232 @@ function skillGroup(name: string, skills: SkillItem[]): TemplateResult {
   </section>`;
 }
 
+function accessSubjectKey(subject: SkillAccessSubject): string {
+  return `${subject.kind}:${subject.id}`;
+}
+
+function accessSubjectKindLabel(kind: SkillAccessSubject["kind"]): string {
+  if (kind === "user") return t("Person");
+  if (kind === "org_unit") return t("Organization unit");
+  return t("Access group");
+}
+
+function accessPreview(access: SkillAccessView): string {
+  if (access.mode === "home") return t("current members of the home context");
+  if (access.mode === "organization") return t("all active organization users");
+  return t(`${access.subjects.length} selected subject${access.subjects.length === 1 ? "" : "s"}`);
+}
+
+function mergeAccessCandidates(...groups: SkillAccessSubject[][]): SkillAccessSubject[] {
+  const merged = new Map<string, SkillAccessSubject>();
+  for (const subject of groups.flat()) {
+    const key = accessSubjectKey(subject);
+    const existing = merged.get(key);
+    if (!existing || (!existing.name && subject.name)) merged.set(key, { ...subject });
+  }
+  return [...merged.values()];
+}
+
+async function searchAccessUsers(): Promise<void> {
+  const query = accessSearch.trim();
+  if (query.length < 2) {
+    accessError = t("Enter at least two characters to search for a person.");
+    drawSkills();
+    return;
+  }
+  const request = ++accessSearchSeq;
+  const skillId = editing?.id;
+  const editRequest = editRequestSeq;
+  if (!skillId || !editingAccess) return;
+  accessSearching = true;
+  accessError = "";
+  drawSkills();
+  try {
+    const response = await api<{ users: Array<{ principalId: string; displayName: string }> }>(
+      `/api/org/users?q=${encodeURIComponent(query)}&limit=100`,
+    );
+    if (
+      request !== accessSearchSeq ||
+      editRequest !== editRequestSeq ||
+      editing?.id !== skillId ||
+      accessSearch.trim() !== query
+    ) {
+      return;
+    }
+    const selected = new Set(editingAccess.subjects.map(accessSubjectKey));
+    accessCandidates = mergeAccessCandidates(
+      editingAccess.subjects,
+      accessCandidates.filter((candidate) => candidate.kind !== "user" || selected.has(accessSubjectKey(candidate))),
+      response.users.map((user) => ({ kind: "user" as const, id: user.principalId, name: user.displayName })),
+    );
+    if (response.users.length === 0) accessError = t(`No people found for “${query}”.`);
+  } catch (error) {
+    if (request === accessSearchSeq && editRequest === editRequestSeq && editing?.id === skillId) {
+      accessError = errMessage(error, t("Couldn't search for people."));
+    }
+  } finally {
+    if (request === accessSearchSeq && editRequest === editRequestSeq && editing?.id === skillId) {
+      accessSearching = false;
+      drawSkills();
+    }
+  }
+}
+
+function setAccessSubject(subject: SkillAccessSubject, selected: boolean): void {
+  if (!editingAccess || !editingAccess.editable || editingAccess.mode !== "restricted") return;
+  const key = accessSubjectKey(subject);
+  const next = editingAccess.subjects.filter((candidate) => accessSubjectKey(candidate) !== key);
+  if (selected) next.push({ ...subject });
+  editingAccess.subjects = next;
+  accessError = "";
+  drawSkills();
+}
+
+async function saveSkillAccess(): Promise<void> {
+  if (!editing || !editingAccess || !editingAccess.editable || accessSaving) return;
+  accessSaving = true;
+  accessError = "";
+  drawSkills();
+  try {
+    editingAccess = await api<SkillAccessView>(`/api/skills/${encodeURIComponent(editing.id)}/access`, {
+      method: "PUT",
+      body: JSON.stringify({
+        mode: editingAccess.mode,
+        subjects: editingAccess.mode === "restricted" ? editingAccess.subjects : [],
+        expectedRevision: editingAccess.revision,
+      }),
+    });
+  } catch (error) {
+    accessError = errMessage(error, t("Failed to update Skill Access."));
+    try {
+      editingAccess = await api<SkillAccessView>(`/api/skills/${encodeURIComponent(editing.id)}/access`);
+      accessError = `${accessError} ${t("The current policy was reloaded.")}`;
+    } catch {
+      accessError = `${accessError} ${t("Reload the page before retrying.")}`;
+    }
+  } finally {
+    accessSaving = false;
+    drawSkills();
+  }
+}
+
+function skillAccessPane(): TemplateResult | typeof nothing {
+  const access = editingAccess;
+  if (!access) return nothing;
+  const selected = new Set(access.subjects.map(accessSubjectKey));
+  const candidateRows = accessCandidates.map((candidate) => {
+    const key = accessSubjectKey(candidate);
+    return html`<label class="skill-access-subject">
+      <input
+        type="checkbox"
+        .checked=${selected.has(key)}
+        ?disabled=${accessSaving || !access.editable || access.mode !== "restricted"}
+        @change=${(event: Event) => setAccessSubject(candidate, (event.target as HTMLInputElement).checked)}
+      />
+      <span>${candidate.name ?? candidate.id}</span>
+      <span class="card-meta">${accessSubjectKindLabel(candidate.kind)}</span>
+    </label>`;
+  });
+  return html`<section class="skill-impact skill-access-card">
+    <div class="skill-form-heading">
+      <div>
+        <h2>${t("Skill Access")}</h2>
+        <p>${t("Use permission is separate from this Skill's home context and management permission.")}</p>
+      </div>
+      <span class="badge">${t("Revision")} ${access.revision}</span>
+    </div>
+    ${
+      access.hiddenSubjectCount > 0
+        ? html`<div class="form-error" role="alert">
+            ${t(
+              `${access.hiddenSubjectCount} existing subject${access.hiddenSubjectCount === 1 ? " is" : "s are"} outside your directory view. An organization administrator must update this policy.`,
+            )}
+          </div>`
+        : nothing
+    }
+    <label class="skill-field">
+      <span>${t("Access mode")}</span>
+      ${fieldSelect({
+        value: access.mode,
+        disabled: accessSaving || !access.editable,
+        onChange: (value) => {
+          const mode = value as SkillAccessMode;
+          access.mode = mode;
+          if (mode !== "restricted") access.subjects = [];
+          accessError = "";
+          drawSkills();
+        },
+        options: [
+          html`<option value="home">${t("Home context")}</option>`,
+          access.organizationModeAllowed
+            ? html`<option value="organization">${t("Entire organization")}</option>`
+            : html``,
+          html`<option value="restricted">${t("Selected people and groups")}</option>`,
+        ],
+      })}
+    </label>
+    ${
+      access.mode === "restricted"
+        ? html`<div class="skill-access-subjects">
+            <strong>${t("Authorized subjects")}</strong>
+            <div class="project-member-picker">
+              <label for="skill-access-person-search">${t("Find a person")}</label>
+              <div class="project-member-search-row">
+                ${icon(Search, 16)}
+                <input
+                  id="skill-access-person-search"
+                  type="search"
+                  autocomplete="off"
+                  maxlength="100"
+                  placeholder=${t("Search by name or handle")}
+                  .value=${accessSearch}
+                  ?disabled=${accessSearching || accessSaving || !access.editable}
+                  @input=${(event: InputEvent) => {
+                    accessSearch = (event.currentTarget as HTMLInputElement).value;
+                    accessError = "";
+                  }}
+                  @keydown=${(event: KeyboardEvent) => {
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+                    void searchAccessUsers();
+                  }}
+                />
+                <button
+                  class="project-icon-button"
+                  type="button"
+                  aria-label=${t("Search people")}
+                  ?disabled=${accessSearching || accessSaving || !access.editable}
+                  @click=${() => void searchAccessUsers()}
+                >
+                  ${accessSearching ? t("Searching…") : icon(Search, 15)}
+                </button>
+              </div>
+            </div>
+            ${candidateRows.length ? candidateRows : html`<div class="card-meta">${t("No visible directory subjects.")}</div>`}
+            ${access.subjects.length === 0 ? html`<div class="form-error" role="alert">${t("No active user will be able to use this Skill.")}</div>` : nothing}
+          </div>`
+        : nothing
+    }
+    <div class="card-meta">${t("Change preview")}: ${accessPreview(access)} ${t("will be evaluated at use time.")}</div>
+    <div class="card-meta">
+      ${t("Effective active users")}: ${access.effectiveSummary.activeUsers ?? t("Unavailable for this home context")} ·
+      ${t("Last updated by")} ${access.updatedBy} ${t("at")} ${new Date(access.updatedAt).toLocaleString()} ·
+      ${t("Changes are recorded in Audit.")}
+    </div>
+    ${accessError ? html`<div class="form-error" role="alert">${accessError}</div>` : nothing}
+    <div class="actions">
+      <button
+        class="btn"
+        type="button"
+        ?disabled=${accessSaving || !access.editable}
+        @click=${() => void saveSkillAccess()}
+      >
+        ${accessSaving ? t("Saving access…") : t("Save access")}
+      </button>
+    </div>
+  </section>`;
+}
+
 function editorPane() {
   const e = editing;
   if (!e) {
@@ -303,7 +582,7 @@ function editorPane() {
           .value=${e.body}
         ></textarea>
       </label>
-      ${editError ? html`<div class="card-meta skill-shadowed">${editError}</div>` : nothing}
+      ${skillAccessPane()} ${editError ? html`<div class="card-meta skill-shadowed">${editError}</div>` : nothing}
       ${
         reviewed
           ? html`<div class="skill-impact" role="alert">
@@ -370,6 +649,9 @@ function creatorPane() {
           <p>Create a reusable procedure for yourself or a shared context.</p>
         </div>
         <span class="badge">New</span>
+      </div>
+      <div class="card-meta">
+        New Skills start with Home context access. After publishing, open Edit to configure Skill Access.
       </div>
       <label class="skill-field">
         <span>Name</span>

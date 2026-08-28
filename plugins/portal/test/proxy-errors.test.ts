@@ -57,9 +57,22 @@ const port = (server.address() as AddressInfo).port;
 const base = `http://localhost:${port}`;
 
 const sessionKey = deriveKey("proxy-errors-test-portal-secret", "portal.session.v1");
-function sessionCookie(sub: string, name?: string): string {
+function sessionCookie(sub: string, name?: string, sv?: number): string {
   const now = Math.floor(Date.now() / 1000);
-  return `portal_session=${encodeURIComponent(seal({ k: "session", sub, org: "acme", iat: now, exp: now + 3600, ...(name ? { name } : {}) }, sessionKey))}`;
+  return `portal_session=${encodeURIComponent(
+    seal(
+      {
+        k: "session",
+        sub,
+        org: "acme",
+        iat: now,
+        exp: now + 3600,
+        ...(name ? { name } : {}),
+        ...(sv !== undefined ? { sv } : {}),
+      },
+      sessionKey,
+    ),
+  )}`;
 }
 
 test.after(() => {
@@ -82,16 +95,45 @@ test("no display name on the session means no name cookie is forwarded", async (
   assert.doesNotMatch(body.cookie ?? "", /webuiuser_name=/);
 });
 
+test("the session's sv claim rides the signed portal identity to the web surface", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const cookie = `portal_session=${encodeURIComponent(
+    seal({ k: "session", sub: "U1", org: "acme", iat: now, exp: now + 3600, sv: 42 }, sessionKey),
+  )}`;
+  const r = await fetch(`${base}/web-ui/api/x`, { headers: { cookie } });
+  assert.equal(r.status, 200);
+  const body = (await r.json()) as { headers: Record<string, string> };
+  const identity = verifyPortalIdentity(
+    body.headers["x-portal-identity"] ?? "",
+    "proxy-errors-test-identity-secret",
+    Date.now(),
+  );
+  assert.equal(identity?.p, "U1");
+  assert.equal(identity?.sv, 42);
+
+  const withoutSv = await fetch(`${base}/web-ui/api/x`, { headers: { cookie: sessionCookie("U1") } });
+  const plainBody = (await withoutSv.json()) as { headers: Record<string, string> };
+  const plainIdentity = verifyPortalIdentity(
+    plainBody.headers["x-portal-identity"] ?? "",
+    "proxy-errors-test-identity-secret",
+    Date.now(),
+  );
+  assert.equal(plainIdentity?.sv, undefined);
+});
+
 test("deployment proxy binds source auth and portal identity to the signed-in principal", async () => {
-  const r = await fetch(`${base}/d/app/hello?x=1`, { headers: { cookie: sessionCookie("U1") } });
+  const r = await fetch(`${base}/d/app/hello?x=1`, { headers: { cookie: sessionCookie("U1", undefined, 42) } });
   const body = (await r.json()) as { url: string; headers: Record<string, string> };
   assert.equal(body.url, "/d/app/hello?x=1");
   assert.equal(body.headers["x-as-principal"], "U1");
   assert.match(body.headers["x-signature"] ?? "", /^v0=/);
-  assert.equal(
-    verifyPortalIdentity(body.headers["x-portal-identity"] ?? "", "proxy-errors-test-identity-secret", Date.now())?.p,
-    "U1",
+  const identity = verifyPortalIdentity(
+    body.headers["x-portal-identity"] ?? "",
+    "proxy-errors-test-identity-secret",
+    Date.now(),
   );
+  assert.equal(identity?.p, "U1");
+  assert.equal(identity?.sv, 42);
 });
 
 test("an upstream reset mid-response does not crash the portal", async () => {

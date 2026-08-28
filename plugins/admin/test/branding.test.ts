@@ -6,6 +6,10 @@ import type { AddressInfo } from "node:net";
 
 let coreBranding = { accent: "#f0652f", mark: "Y", selfLabel: "QM" };
 const core = createServer((req: IncomingMessage, res) => {
+  if (req.url === "/v1/admin/whoami") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(JSON.stringify({ isAdmin: true }));
+  }
   if ((req.url ?? "").startsWith("/v1/surface-config")) {
     res.writeHead(200, { "content-type": "application/json" });
     return void res.end(JSON.stringify({ branding: coreBranding }));

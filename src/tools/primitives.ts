@@ -364,6 +364,7 @@ export const CONTROL_UNAVAILABLE: ControlUnavailable = {
 };
 
 export interface ToolContextDeps {
+  preflight?: () => Promise<void>;
   sandbox: Sandbox;
   credentialExecServices?: readonly { service: string; binary: string }[];
   credentialExec?: ToolContext["credentialExec"];
@@ -506,7 +507,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     return Buffer.concat(chunks);
   }
 
-  return {
+  const context: ToolContext = {
     ...(deps.credentialExecServices ? { credentialExecServices: deps.credentialExecServices } : {}),
     ...(deps.credentialExec ? { credentialExec: deps.credentialExec } : {}),
     async computerStatus(): Promise<ComputerStatus> {
@@ -1059,6 +1060,18 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         ? deps.surface.staySilent(reason)
         : Promise.resolve({ ok: true as const, message: "[staying silent]" }),
   };
+  if (!deps.preflight) return context;
+  const synchronous = new Set<PropertyKey>(["mcpToolDefs", "soulRead"]);
+  return new Proxy(context, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver) as unknown;
+      if (typeof value !== "function" || synchronous.has(property)) return value;
+      return async (...args: unknown[]) => {
+        await deps.preflight!();
+        return Reflect.apply(value, target, args) as unknown;
+      };
+    },
+  });
 }
 
 const SURFACE_UNAVAILABLE_MESSAGE =

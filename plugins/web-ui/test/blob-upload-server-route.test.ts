@@ -23,6 +23,10 @@ const setTurnBody = (b: TurnBody | null): void => {
 
 const core = createServer((req: IncomingMessage, res) => {
   const u = req.url ?? "";
+  if (req.method === "GET" && u.startsWith("/v1/internal/auth/session")) {
+    res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(JSON.stringify({ principalId: "alice", sessionVersion: 1 }));
+  }
   if (req.method === "POST" && u.startsWith("/v1/blobs")) {
     const sha = String(req.headers["x-content-sha256"] ?? "");
     let size = 0;

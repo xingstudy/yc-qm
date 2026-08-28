@@ -100,14 +100,14 @@ const HOST = "mysite.apps.example.com";
 function mintPortalSession(sub: string): string {
   const key = createHmac("sha256", "portal-session-secret").update("portal.session.v1").digest();
   const now = Math.floor(Date.now() / 1000);
-  const body = Buffer.from(JSON.stringify({ k: "session", sub, org: "acme", iat: now, exp: now + 3600 })).toString(
-    "base64url",
-  );
+  const body = Buffer.from(
+    JSON.stringify({ k: "session", sub, org: "acme", sv: 1, iat: now, exp: now + 3600 }),
+  ).toString("base64url");
   return `${body}.${createHmac("sha256", key).update(body).digest("base64url")}`;
 }
 const viewerCookie = () => `portal_session=${mintPortalSession("U-viewer")}`;
 const ownerToken = (sub: string, expInMs = 60_000) =>
-  mintDeployOwnerToken(GATE_SECRET, { slug: "mysite", sub, exp: Date.now() + expInMs });
+  mintDeployOwnerToken(GATE_SECRET, { slug: "mysite", sub, sv: 1, exp: Date.now() + expInMs });
 
 test("app shell: a valid owner link becomes a host-only cookie and turns on the shell", async () => {
   const f = await widgetFixture();
@@ -323,7 +323,7 @@ test("owner-url mint: a manager gets an owner-token link; others are refused", a
     assert.doesNotMatch(url, /access=/, "the owner link carries no piggybacked capability token");
 
     const denied = await httpGet(f.port, "/v1/deployments/mysite/owner-url?principalId=U-stranger", {});
-    assert.equal(denied.status, 403, "a non-manager cannot mint an owner link");
+    assert.equal(denied.status, 404, "an app that was never shared stays undiscoverable");
   } finally {
     await f.close();
   }

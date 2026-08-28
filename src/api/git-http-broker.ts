@@ -8,6 +8,7 @@ import { CAPABILITY_HEADER } from "./contract.ts";
 import { headerValue, pipeToResponse, sendJson } from "./http.ts";
 import type { BaseCtx } from "./routes/route.ts";
 import { proxyHeaders } from "../util/http-proxy.ts";
+import { currentCapabilityActor } from "./capability-actor.ts";
 
 export const GIT_HTTP_BROKER_PREFIX = "/v1/credentials/git/";
 
@@ -131,11 +132,8 @@ export async function brokerGitHttp(ctx: BaseCtx): Promise<void> {
   const claims = await capabilityFrom(ctx);
   if (!claims)
     return sendJson(ctx.res, 401, { error: "unauthorized", message: "credential-broker capability token required" });
-  if (ctx.deps.identity) {
-    await ctx.deps.identity.refresh();
-    if (ctx.deps.identity.classify(claims.actorId).type !== "internal") {
-      return sendJson(ctx.res, 401, { error: "unauthorized", message: "principal is no longer active" });
-    }
+  if (!(await currentCapabilityActor(ctx.deps, claims))) {
+    return sendJson(ctx.res, 401, { error: "unauthorized", message: "principal is no longer active" });
   }
   if (claims.aud !== CREDENTIAL_BROKER_AUD) {
     return sendJson(ctx.res, 403, {

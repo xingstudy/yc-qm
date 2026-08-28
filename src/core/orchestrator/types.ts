@@ -10,6 +10,7 @@ import type {
 } from "../../types.ts";
 import type { TurnOrigin } from "../turn-origin.ts";
 import type { IdentityService } from "../../identity/identity-service.ts";
+import type { OrganizationService } from "../../organization/organization-service.ts";
 import type { ResolutionService } from "../../resolution/resolution-service.ts";
 import type { OrgBranding, ScopedConfigStore } from "../../resolution/config-store.ts";
 import type { ManagedGroupDirectory } from "../../resolution/scope-membership.ts";
@@ -53,6 +54,7 @@ import type { DurableMap } from "../../persistence/durable-map.ts";
 import type { BlobTransferStore } from "../../persistence/blob-transfer.ts";
 import type { AdvisoryLock } from "../../persistence/advisory-lock.ts";
 import type { SkillStore } from "../../skills/skill-store.ts";
+import type { SkillAccessResolver } from "../../authorization/skill-access.ts";
 import type { OAuthClientResolver } from "../../connectors/oauth.ts";
 import type { SkillBundleStore } from "../../skills/skill-bundle-store.ts";
 import type { BrokeredLayerTool, DeploymentLayerRuntime } from "../../deployment/load-layer.ts";
@@ -95,6 +97,7 @@ export interface OrchestratorInput extends Omit<
 
 export interface OrchestratorDeps {
   identity: IdentityService;
+  organization?: Pick<OrganizationService, "checkActive" | "checkRuntimeActive" | "accessSubjectIncludes">;
   resolution: ResolutionService;
   config?: ScopedConfigStore;
   brandingDefault?: OrgBranding;
@@ -130,6 +133,7 @@ export interface OrchestratorDeps {
   memoryPolicy?: MemoryPolicy;
   memoryStrategy?: MemoryStrategy;
   skills?: SkillStore;
+  skillAccess?: SkillAccessResolver;
   skillBundles?: SkillBundleStore;
   skillsReady?: Promise<void>;
   advisoryLock?: AdvisoryLock;

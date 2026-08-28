@@ -1,4 +1,5 @@
 import { parseScopeId } from "../../../types.ts";
+import { organizationAccessSubjectFromScope } from "../../../authorization/organization-access-subject.ts";
 import { encodeRef, serviceCredRef } from "../../../acl/resource-ref.ts";
 import { computeRetention } from "../../../admin/retention.ts";
 import {
@@ -116,14 +117,22 @@ export async function whoami(ctx: ApiCtx): Promise<void> {
   const actor = adminActorFrom(ctx);
   if (!actor) return sendJson(res, 200, { isAdmin: false, permissions: [] });
   const status = await deps.admin.adminStatusOf(actor);
-  const permissions = status.isAdmin ? ["admin"] : [];
+  const active = await deps.organization?.checkActive(actor.id);
+  const isManager =
+    !status.isAdmin &&
+    active?.status === "active" &&
+    (((await deps.organization?.listManagedSubtreeUnitIds(actor.id))?.length ?? 0) > 0 ||
+      ((await deps.organization?.listManagedGroupIds(actor.id))?.length ?? 0) > 0);
+  let permissions: string[] = [];
+  if (status.isAdmin) permissions = ["admin"];
+  else if (isManager) permissions = ["organization:manage_membership"];
   audit(deps, {
     principalId: actor.id,
     action: "admin.whoami",
     resource: "whoami",
     scopeLabel: status.scopeId ?? actor.id,
   });
-  return sendJson(res, 200, { ...status, permissions });
+  return sendJson(res, 200, { ...status, ...(isManager ? { isManager: true } : {}), permissions });
 }
 
 export async function listAdminScopes(ctx: ApiCtx): Promise<void> {
@@ -280,6 +289,41 @@ export async function getScopeConfig(ctx: ApiCtx): Promise<void> {
       };
     }),
   );
+  const organizationAccessSubjects = { users: [], units: [], groups: [] } as {
+    users: Array<{ principalId: string; displayName: string; email: string | null; status: string }>;
+    units: Array<{ id: string; name: string; kind: string }>;
+    groups: Array<{ id: string; name: string }>;
+  };
+  if (parseScopeId(targetScope).kind === "org" && deps.organization) {
+    const userIds = [
+      ...new Set(
+        serviceCredentials.flatMap((credential) => [
+          ...credential.grantees.flatMap((grantee) => {
+            const subject = organizationAccessSubjectFromScope(grantee);
+            return subject?.kind === "user" ? [subject.id] : [];
+          }),
+          ...credential.recentUsagePrincipals,
+        ]),
+      ),
+    ];
+    const [users, units, groups] = await Promise.all([
+      deps.organization.getOrganizationUsersByIds(userIds),
+      deps.organization.listUnits(),
+      deps.organization.listGroups(),
+    ]);
+    organizationAccessSubjects.users = users.map((user) => ({
+      principalId: user.principalId,
+      displayName: user.displayName,
+      email: user.email,
+      status: user.status,
+    }));
+    organizationAccessSubjects.units = units
+      .filter((unit) => unit.status === "active")
+      .map((unit) => ({ id: unit.id, name: unit.name, kind: unit.kind }));
+    organizationAccessSubjects.groups = groups
+      .filter((group) => group.status === "active")
+      .map((group) => ({ id: group.id, name: group.name }));
+  }
   const values: Record<string, unknown> = {};
   for (const r of ADMIN_RESOURCES) {
     if (r.readKey && r.get) values[r.readKey] = await r.get(deps, targetScope);
@@ -329,7 +373,7 @@ export async function getScopeConfig(ctx: ApiCtx): Promise<void> {
     ...values,
     soulVersion: deps.config.soulVersion(targetScope),
     soulHistory: deps.config.soulHistory(targetScope),
-    directoryMembers: parseScopeId(targetScope).kind === "org" ? ((await deps.directory?.list()) ?? []) : [],
+    organizationAccessSubjects,
     baseModelDefault: defaultModelForHarness(deps.harnessId ?? "pi", deps.baseModelDefault),
     baseModelOptions: modelsFor(deps.harnessId ?? "pi"),
     harnessDefault: deps.harnessId ?? "pi",

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
-import { buildApp, type BuiltApp } from "../src/wiring.ts";
+import { activateBootstrapUsers, buildApp, type BuiltApp } from "../src/wiring.ts";
 import { createServer } from "../src/api/server.ts";
 import {
   createKeychain,
@@ -573,6 +573,7 @@ describe("/v1/keychain/asks — the consent ladder end to end", async () => {
 
   before(async () => {
     built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "kc-asks-")), signingSecret: SECRET }));
+    await activateBootstrapUsers(built.organization, ["U_ALICE", "U_BOB"]);
     await built.app.upsertDirectory([
       { principalId: "U_ALICE", displayName: "Alice", type: "internal" },
       { principalId: "U_BOB", displayName: "Bob", type: "internal" },
@@ -934,6 +935,7 @@ test("turn e2e: trigger-fired turns mint `triggered` into the capability token; 
       apiBaseUrl: "http://core.test",
     }),
   );
+  await activateBootstrapUsers(built.organization, ["U_ALICE"]);
   // The recorded script is the backend's OUTER `sh -c` wrapper, so the export's single quotes
   // arrive shell-escaped — match the token's own alphabet instead of the quoting around it.
   const extractToken = (since: number): CapabilityClaims | null => {

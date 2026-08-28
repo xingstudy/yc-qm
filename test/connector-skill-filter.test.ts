@@ -8,6 +8,7 @@ function skill(name: string): SkillResolution {
   return {
     skill: {
       id: name,
+      orgId: "acme",
       scopeId: scopeId("org", "acme"),
       manifest: { name, description: name, requiredCapabilities: [], body: name },
       signature: "sig",

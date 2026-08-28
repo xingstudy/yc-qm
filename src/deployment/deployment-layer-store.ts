@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { createNoopAdvisoryLock, type AdvisoryLock } from "../persistence/advisory-lock.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import type { ScopeId } from "../types.ts";
@@ -321,12 +322,16 @@ export function createDeploymentLayerStore(opts: {
     });
   };
 
-  const restoreProjection = async (snapshot: Skill[]): Promise<void> => {
-    const before = new Set(snapshot.map((skill) => skill.id));
-    for (const skill of layerSkills(await opts.skills.list())) {
-      if (!before.has(skill.id)) await opts.skills.delete(skill.id);
+  const restoreProjection = async (snapshot: Skill[], expected: ReadonlyMap<string, Skill>): Promise<void> => {
+    const before = new Map(snapshot.map((skill) => [skill.id, skill]));
+    for (const [id, applied] of expected) {
+      const current = await opts.skills.get(id);
+      const previous = before.get(id);
+      if (previous ? current && isDeepStrictEqual(current, previous) : !current) continue;
+      if (!current || !isDeepStrictEqual(current, applied)) throw new Error(`deployment layer skill changed: ${id}`);
+      if (previous) await opts.skills.restore(previous, undefined, applied);
+      else await opts.skills.delete(id, undefined, applied);
     }
-    for (const skill of snapshot) await opts.skills.restore(skill);
   };
 
   const apply = async (record: StoredDeploymentLayer): Promise<void> => {
@@ -339,6 +344,10 @@ export function createDeploymentLayerStore(opts: {
     appliedHash = null;
     const all = await opts.skills.list();
     const snapshot = layerSkills(all).map((skill) => structuredClone(skill));
+    const rollbackExpected = new Map<string, Skill>();
+    const trackMutation = (skill: Skill): void => {
+      rollbackExpected.set(skill.id, structuredClone(skill));
+    };
     const wanted = new Set<string>();
     try {
       await assertNoBundleCollisions(manifests, all);
@@ -349,6 +358,7 @@ export function createDeploymentLayerStore(opts: {
           manifest,
           createdBy: LAYER_CREATED_BY,
           reviewer: LAYER_REVIEWER,
+          onMutation: trackMutation,
         });
         if (outcome === "foreign") {
           throw new Error(`deployment layer skill "${manifest.name}" collides with an existing non-layer skill`);
@@ -369,7 +379,7 @@ export function createDeploymentLayerStore(opts: {
             duplicate.status !== "archived" &&
             duplicate.manifest.name === manifest.name
           ) {
-            await opts.skills.archive(duplicate.id);
+            trackMutation(await opts.skills.archive(duplicate.id));
           }
         }
       }
@@ -379,13 +389,13 @@ export function createDeploymentLayerStore(opts: {
           skill.createdBy === LAYER_CREATED_BY &&
           !wanted.has(skill.manifest.name)
         ) {
-          await opts.skills.archive(skill.id);
+          trackMutation(await opts.skills.archive(skill.id));
         }
       }
       replaceDeploymentLayer(opts.runtime, nextRuntime);
     } catch (error) {
       try {
-        await retrying(() => restoreProjection(snapshot));
+        await retrying(() => restoreProjection(snapshot, rollbackExpected));
       } catch (rollbackError) {
         throw new DeploymentLayerMutationError(
           `${errMessage(error)}; deployment skill rollback also failed: ${errMessage(rollbackError)}`,

@@ -60,6 +60,12 @@ export function createTurnMethods(
       if (!deps.identity.isInternal(actor)) {
         return { status: "refused", reason: "internal-only: non-internal principals cannot interact" };
       }
+      if (!actor.id.startsWith("system:") && !req.botActor && deps.organization) {
+        const organizationUser = await deps.organization.checkRuntimeActive(actor.id);
+        if (organizationUser?.status !== "active") {
+          return { status: "refused", reason: "internal-only: inactive principals cannot interact" };
+        }
+      }
       let projectAudience: Principal[] | undefined;
       let projectName: string | undefined;
       let projectVersion: string | undefined;

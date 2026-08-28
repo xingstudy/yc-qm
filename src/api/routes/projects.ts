@@ -31,6 +31,23 @@ async function createProject(ctx: ApiCtx): Promise<void> {
   return project ? sendJson(ctx.res, 201, { project }) : sendJson(ctx.res, 403, { error: "forbidden" });
 }
 
+async function projectMemberCandidates(ctx: ApiCtx): Promise<void> {
+  const requested = (ctx.url.searchParams.get("principalId") ?? "").trim();
+  const principalId = capabilityPrincipal(ctx, requested);
+  if (principalId === null) return;
+  const query = (ctx.url.searchParams.get("q") ?? "").trim();
+  if (!principalId || query.length < 2 || query.length > 100) {
+    return sendJson(ctx.res, 400, { error: "bad_request", message: "principalId and a 2 to 100 character q required" });
+  }
+  const matches = await ctx.app.projectMemberCandidates(
+    ctx.params.id!,
+    principalId,
+    query,
+    (ctx.actor !== null && ctx.actor !== undefined) || ctx.capability?.liveActor === true,
+  );
+  return matches ? sendJson(ctx.res, 200, { matches }) : sendJson(ctx.res, 404, { error: "not_found" });
+}
+
 function mutationResponse(ctx: ApiCtx, result: Awaited<ReturnType<ApiCtx["app"]["addProjectMember"]>>): void {
   if (result.status === "ok") return sendJson(ctx.res, 200, { project: result.project });
   if (result.status === "not_found") return sendJson(ctx.res, 404, { error: "not_found" });
@@ -62,7 +79,15 @@ async function addProjectMember(ctx: ApiCtx): Promise<void> {
   const memberId = typeof body.memberId === "string" ? body.memberId.trim() : "";
   if (!principalId || !memberId)
     return sendJson(ctx.res, 400, { error: "bad_request", message: "principalId and memberId required" });
-  return mutationResponse(ctx, await ctx.app.addProjectMember(ctx.params.id!, principalId, memberId));
+  return mutationResponse(
+    ctx,
+    await ctx.app.addProjectMember(
+      ctx.params.id!,
+      principalId,
+      memberId,
+      (ctx.actor !== null && ctx.actor !== undefined) || ctx.capability?.liveActor === true,
+    ),
+  );
 }
 
 async function renameProject(ctx: ApiCtx): Promise<void> {
@@ -111,6 +136,12 @@ export const projectRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/projects", auth: "either", handle: listProjects },
   { method: "POST", path: "/v1/projects", auth: "either", handle: createProject },
   { method: "PATCH", path: "/v1/projects/:id", auth: "either", handle: renameProject },
+  {
+    method: "GET",
+    path: "/v1/projects/:id/member-candidates",
+    auth: "either",
+    handle: projectMemberCandidates,
+  },
   { method: "POST", path: "/v1/projects/:id/members", auth: "either", handle: addProjectMember },
   { method: "DELETE", path: "/v1/projects/:id/members/:memberId", auth: "either", handle: removeProjectMember },
   { method: "PUT", path: "/v1/projects/:id/slack-channel", auth: "either", handle: setProjectSlackChannel },

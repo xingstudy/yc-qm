@@ -17,6 +17,13 @@ import {
 import { builtInModelCatalog, selectableCatalogForHarness, selectableModelCatalog } from "../../model/model-catalog.ts";
 import { customModelCatalog } from "../../model/custom-providers.ts";
 import { errMessage } from "../../util/errors.ts";
+import { SkillAccessRequiredError } from "../../acl/acl-store.ts";
+import {
+  MAX_SKILL_ACCESS_SUBJECTS,
+  SkillAccessConflictError,
+  SkillAccessNotFoundError,
+  type SkillAccessSubject,
+} from "../../authorization/skill-access-repository.ts";
 import { renderAgentApis } from "../agent-api-catalog.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS } from "../../auth/capability-token.ts";
 import { contentTypeWithUtf8Charset, pipeToResponse, sendJson } from "../http.ts";
@@ -654,7 +661,12 @@ async function sessionCapability(ctx: ApiCtx): Promise<void> {
   const secret = deps.capabilitySecret ?? ctx.secret;
   if (!secret) return sendJson(res, 503, { error: "not_configured", message: "capability secret not set" });
   const token = await mintCapabilityToken(
-    { actorId: actor.p, scopeId: makeScopeId("personal", actor.p), exp: Date.now() + CAPABILITY_TTL_MS },
+    {
+      actorId: actor.p,
+      sessionVersion: actor.sv,
+      scopeId: makeScopeId("personal", actor.p),
+      exp: Date.now() + CAPABILITY_TTL_MS,
+    },
     secret,
   );
   return sendJson(res, 200, { token });
@@ -794,7 +806,10 @@ async function listSkills(ctx: ApiCtx): Promise<void> {
   const archivedChecks = await Promise.all(
     (await app.listSkills())
       .filter((skill) => skill.status === "archived")
-      .map(async (skill) => ({ skill, manageable: await app.canManageSkill(skill, principalId) })),
+      .map(async (skill) => ({
+        skill,
+        manageable: await app.canManageSkill(skill, principalId, allowSkillAdminElevation(ctx)),
+      })),
   );
   const archived = archivedChecks.filter((row) => row.manageable).map(({ skill }) => ({ skill, shadowed: [] }));
   const visible = resolved.flatMap((row) => [
@@ -815,7 +830,7 @@ async function listSkills(ctx: ApiCtx): Promise<void> {
       pack: r.skill.pack,
       assetCount: r.skill.manifest.files?.length ?? 0,
       requiredCapabilities: r.skill.manifest.requiredCapabilities,
-      editable: await app.canManageSkill(r.skill, principalId),
+      editable: await app.canManageSkill(r.skill, principalId, allowSkillAdminElevation(ctx)),
     })),
   );
   return sendJson(res, 200, { skills });
@@ -829,10 +844,10 @@ async function getSkillDetail(ctx: ApiCtx): Promise<void> {
   }
   if (!principalId) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
   const skill = await app.getSkill(ctx.params.id!);
+  const manageable = skill ? await app.canManageSkill(skill, principalId, allowSkillAdminElevation(ctx)) : false;
   if (
     !skill ||
-    (!(await app.canManageSkill(skill, principalId)) &&
-      !(await app.listVisibleSkills(principalId)).some((row) => row.skill?.id === skill.id))
+    (!manageable && !(await app.listVisibleSkills(principalId)).some((row) => row.skill?.id === skill.id))
   ) {
     return sendJson(res, 404, { error: "not_found" });
   }
@@ -846,16 +861,87 @@ async function getSkillDetail(ctx: ApiCtx): Promise<void> {
       scopeId: skill.scopeId,
       status: skill.status,
       version: skill.version,
-      createdBy: skill.createdBy,
+      ...(manageable ? { createdBy: skill.createdBy } : {}),
       pack: skill.pack,
       files: (skill.manifest.files ?? []).map((file) => ({ path: file.path, executable: file.executable === true })),
       requiredCapabilities: skill.manifest.requiredCapabilities,
       grantedCapabilities: skill.grantedCapabilities,
       createdAt: skill.createdAt,
       updatedAt: skill.updatedAt,
-      editable: await app.canManageSkill(skill, principalId),
+      editable: manageable,
     },
   });
+}
+
+function allowSkillAdminElevation(ctx: ApiCtx): boolean {
+  return (ctx.actor !== null && ctx.actor !== undefined) || ctx.capability?.liveActor === true;
+}
+
+async function skillAccessActor(ctx: ApiCtx): Promise<{ principalId: string; isAdmin: boolean } | null> {
+  const principalId = ctx.capability?.actorId ?? ctx.actor?.p;
+  if (!principalId) return null;
+  const status = ctx.deps.admin
+    ? await ctx.deps.admin.adminStatusOf({ id: principalId, type: "internal" }).catch(() => ({ isAdmin: false }))
+    : { isAdmin: false };
+  return { principalId, isAdmin: allowSkillAdminElevation(ctx) && status.isAdmin };
+}
+
+async function getSkillAccess(ctx: ApiCtx): Promise<void> {
+  const actor = await skillAccessActor(ctx);
+  if (!actor) return sendJson(ctx.res, 401, { error: "identity_required" });
+  try {
+    const access = await ctx.app.getSkillAccess(ctx.params.id!, actor);
+    return access ? sendJson(ctx.res, 200, access) : sendJson(ctx.res, 404, { error: "not_found" });
+  } catch (error) {
+    if (error instanceof SkillAccessNotFoundError) return sendJson(ctx.res, 404, { error: "not_found" });
+    throw error;
+  }
+}
+
+async function putSkillAccess(ctx: ApiCtx): Promise<void> {
+  const actor = await skillAccessActor(ctx);
+  if (!actor) return sendJson(ctx.res, 401, { error: "identity_required" });
+  if (!isObj(ctx.body)) return sendJson(ctx.res, 400, { error: "bad_request" });
+  const mode = ctx.body.mode;
+  const expectedRevision = ctx.body.expectedRevision;
+  const rawSubjects = ctx.body.subjects;
+  if (
+    (mode !== "home" && mode !== "organization" && mode !== "restricted") ||
+    !Number.isSafeInteger(expectedRevision) ||
+    !Array.isArray(rawSubjects) ||
+    rawSubjects.length > MAX_SKILL_ACCESS_SUBJECTS
+  ) {
+    return sendJson(ctx.res, 400, { error: "bad_request" });
+  }
+  const subjects: SkillAccessSubject[] = [];
+  for (const value of rawSubjects) {
+    if (
+      !isObj(value) ||
+      (value.kind !== "user" && value.kind !== "org_unit" && value.kind !== "access_group") ||
+      typeof value.id !== "string" ||
+      !value.id
+    ) {
+      return sendJson(ctx.res, 400, { error: "bad_request" });
+    }
+    subjects.push({ kind: value.kind, id: value.id });
+  }
+  try {
+    const access = await ctx.app.setSkillAccess(ctx.params.id!, actor, {
+      mode,
+      subjects,
+      expectedRevision: expectedRevision as number,
+    });
+    return access ? sendJson(ctx.res, 200, access) : sendJson(ctx.res, 404, { error: "not_found" });
+  } catch (error) {
+    if (error instanceof SkillAccessNotFoundError) return sendJson(ctx.res, 404, { error: "not_found" });
+    if (error instanceof SkillAccessConflictError)
+      return sendJson(ctx.res, 409, {
+        error: "revision_conflict",
+        message: error.message,
+        ...(error.currentRevision === undefined ? {} : { currentRevision: error.currentRevision }),
+      });
+    throw error;
+  }
 }
 
 async function restoreSkill(ctx: ApiCtx): Promise<void> {
@@ -866,7 +952,7 @@ async function restoreSkill(ctx: ApiCtx): Promise<void> {
     return sendJson(ctx.res, 401, { error: "capability_required" });
   }
   if (!principalId) return sendJson(ctx.res, 400, { error: "bad_request", message: "principalId required" });
-  const restored = await ctx.app.restoreOwnedSkill(ctx.params.id!, principalId);
+  const restored = await ctx.app.restoreOwnedSkill(ctx.params.id!, principalId, allowSkillAdminElevation(ctx));
   return restored ? sendJson(ctx.res, 200, { ok: true }) : sendJson(ctx.res, 404, { error: "not_found" });
 }
 
@@ -894,7 +980,10 @@ async function updateSkill(ctx: ApiCtx): Promise<void> {
   if (typeof b.description === "string") patch.description = b.description;
   if (typeof b.body === "string") patch.body = b.body;
   const liveActor = capability ? livePersonCapability(capability) : true;
-  const updated = await app.updateOwnedSkill(id, principalId, patch, { liveActor });
+  const updated = await app.updateOwnedSkill(id, principalId, patch, {
+    liveActor,
+    allowAdminElevation: allowSkillAdminElevation(ctx),
+  });
   if (updated === "trigger_blocked")
     return sendJson(res, 403, { error: "forbidden", message: SHARED_SKILL_TRIGGER_REFUSAL });
   if (!updated) return sendJson(res, 404, { error: "not_found", message: "no such skill, or it isn't yours to edit" });
@@ -925,7 +1014,12 @@ async function deleteSkill(ctx: ApiCtx): Promise<void> {
     principalId = b.principalId;
   }
   const liveActor = capability ? livePersonCapability(capability) : true;
-  const outcome = await app.deleteOwnedSkill({ principalId, id, liveActor });
+  const outcome = await app.deleteOwnedSkill({
+    principalId,
+    id,
+    liveActor,
+    allowAdminElevation: allowSkillAdminElevation(ctx),
+  });
   if (outcome === "missing") return sendJson(res, 404, { error: "not_found", message: "no such skill" });
   if (outcome === "trigger_blocked")
     return sendJson(res, 403, { error: "forbidden", message: SHARED_SKILL_TRIGGER_REFUSAL });
@@ -1010,6 +1104,8 @@ async function createGrant(ctx: ApiCtx): Promise<void> {
     await app.grant(body);
     return sendJson(res, 200, { ok: true });
   } catch (e) {
+    if (e instanceof SkillAccessRequiredError)
+      return sendJson(res, 409, { error: "skill_access_required", message: "use the Skill Access API" });
     return sendJson(res, 400, { error: "grant_failed", message: errMessage(e) });
   }
 }
@@ -1027,6 +1123,8 @@ async function revokeGrant(ctx: ApiCtx): Promise<void> {
     await app.revokeGrant(b.ownerScopeId, b.ref, b.granteeScopeId, b.revokedBy);
     return sendJson(res, 200, { ok: true });
   } catch (e) {
+    if (e instanceof SkillAccessRequiredError)
+      return sendJson(res, 409, { error: "skill_access_required", message: "use the Skill Access API" });
     return sendJson(res, 400, { error: "revoke_failed", message: errMessage(e) });
   }
 }
@@ -1037,6 +1135,7 @@ const SHARE_ERROR_STATUS: Record<string, number> = {
   forbidden: 403,
   recipient_not_found: 404,
   ambiguous_recipient: 409,
+  skill_access_required: 409,
   share_failed: 400,
 };
 
@@ -1050,6 +1149,7 @@ export async function shareArtifact(ctx: ApiCtx): Promise<void> {
     toScope?: unknown;
     permission?: unknown;
     move?: unknown;
+    unshare?: unknown;
   };
   if (typeof b.type !== "string" || !isArtifactType(b.type)) {
     return sendJson(res, 400, { error: "bad_request", message: `type must be one of: ${ARTIFACT_TYPES.join(", ")}` });
@@ -1065,13 +1165,23 @@ export async function shareArtifact(ctx: ApiCtx): Promise<void> {
   if (b.permission !== undefined && b.permission !== "read" && b.permission !== "write") {
     return sendJson(res, 400, { error: "bad_request", message: 'permission must be "read" or "write"' });
   }
+  if (b.move !== undefined && typeof b.move !== "boolean") {
+    return sendJson(res, 400, { error: "bad_request", message: "move must be a boolean" });
+  }
+  if (b.unshare !== undefined && typeof b.unshare !== "boolean") {
+    return sendJson(res, 400, { error: "bad_request", message: "unshare must be a boolean" });
+  }
+  if (b.move === true && b.unshare === true) {
+    return sendJson(res, 400, { error: "bad_request", message: "move and unshare cannot both be true" });
+  }
   const result = await deps.control.shareArtifact(
     {
       type: b.type,
       id: b.id,
-      ...splitToScope(b.toScope),
+      ...splitToScope(b.toScope, b.type),
       ...(b.permission === "read" || b.permission === "write" ? { permission: b.permission } : {}),
       ...(b.move === true ? { move: true } : {}),
+      ...(b.unshare === true ? { unshare: true } : {}),
     },
     capability,
   );
@@ -1487,6 +1597,8 @@ export const surfaceRoutes: ReadonlyArray<Route<ApiCtx>> = [
     handle: agentMemory,
   },
   { method: "GET", path: "/v1/skills", auth: "source", handle: listSkills },
+  { method: "GET", path: "/v1/skills/:id/access", auth: "either", handle: getSkillAccess },
+  { method: "PUT", path: "/v1/skills/:id/access", auth: "either", handle: putSkillAccess },
   { method: "GET", path: "/v1/skills/:id", auth: "either", handle: getSkillDetail },
   { method: "POST", path: "/v1/skills", auth: "either", handle: createSkill },
   { method: "PUT", path: "/v1/skills/:id", auth: "either", handle: updateSkill },

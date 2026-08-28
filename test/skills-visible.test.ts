@@ -16,6 +16,7 @@ function freshApp() {
   const config: Config = testConfig({
     dataDir: mkdtempSync(join(tmpdir(), "ap-skvis-")),
     orgId: "acme",
+    orgBootstrapUsers: ["U1", "U2"],
     seedSkills: false,
   });
   return buildApp(config);

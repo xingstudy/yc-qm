@@ -9,6 +9,14 @@ export interface AuditEvent {
   scopeLabel: ScopeId;
   status?: string;
   detail?: string;
+  idempotencyKey?: string;
+  orgId?: string;
+  actorKind?: string;
+  requestId?: string;
+  beforeDigest?: string;
+  afterDigest?: string;
+  source?: string;
+  result?: string;
 }
 
 export interface AuditLog {

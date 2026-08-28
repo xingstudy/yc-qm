@@ -61,6 +61,7 @@ export async function fireAskResolution(
     ...(ask.requesterThreadRef ? { threadRef: ask.requesterThreadRef } : {}),
   });
   if (outcome.ran && outcome.status === "ok") return outcome;
+  if (outcome.authzFailed) return outcome;
   if (!outcome.ran && !outcome.authzFailed) {
     const cur = await deps.getAsk?.(ask.id);
     if (cur?.notifiedAt !== undefined) return outcome;
@@ -121,6 +122,7 @@ export async function fireDropResolution(deps: TriggerDeps, drop: DropResolution
     ...(drop.threadRef ? { threadRef: drop.threadRef } : {}),
   });
   if (outcome.ran && outcome.status === "ok") return outcome;
+  if (outcome.authzFailed) return outcome;
   if (drop.destination && (await destinationVisible(deps, drop.ownerId, drop.destination))) {
     await deps.deliveries.enqueue({
       destination: drop.destination,

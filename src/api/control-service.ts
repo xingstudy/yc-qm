@@ -11,6 +11,8 @@ import { sendConsentNotice } from "../triggers/consent-notice.ts";
 import { notifyOwnerOfCronEdit, type CronEditDetail } from "../triggers/edit-notice.ts";
 import { errMessage, swallow } from "../util/errors.ts";
 import { AdminError } from "../admin/admin-service.ts";
+import { SkillAccessRequiredError } from "../acl/acl-store.ts";
+import { SkillAccessConflictError, type SkillAccessSubject } from "../authorization/skill-access-repository.ts";
 import type { AdminService } from "../admin/admin-service.ts";
 import {
   livePersonCapability,
@@ -681,11 +683,16 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
     },
 
     async shareArtifact(req, capability): Promise<ShareArtifactResult> {
+      if (req.move && req.unshare)
+        return { ok: false, code: "bad_request", message: "move and unshare cannot be combined" };
       const permission: Permission = req.permission === "write" ? "write" : "read";
       const home = await app.getArtifactHome(req.type, req.id);
       if (!home) return { ok: false, code: "not_found", message: `no ${req.type} "${req.id}"` };
+      const allowAdminElevation = capability.liveActor === true;
+      if (req.type === "skill" && !(await app.canManageSkillAccess(home.id, capability.actorId, allowAdminElevation)))
+        return { ok: false, code: "not_found", message: `no skill "${req.id}"` };
 
-      const target = await resolveArtifactTarget(app, req);
+      const target = await resolveArtifactTarget(app, req, capability.actorId, allowAdminElevation);
       if (target.kind === "invalid") return { ok: false, code: "bad_request", message: target.message };
       if (target.kind === "none")
         return { ok: false, code: "recipient_not_found", message: `no teammate matches "${String(req.recipient)}"` };
@@ -700,9 +707,13 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
       const toKind = parseScopeId(toScope).kind;
 
       const isOrg = toKind === "org";
-      const orgSkillCede = isOrg && req.type === "skill";
+      const orgSkillCede = isOrg && req.type === "skill" && !req.unshare;
 
-      if (!orgSkillCede && !(await app.canManageArtifactHome(home.ownerScopeId, home.createdBy, capability.actorId))) {
+      if (
+        req.type !== "skill" &&
+        !orgSkillCede &&
+        !(await app.canManageArtifactHome(home.ownerScopeId, home.createdBy, capability.actorId))
+      ) {
         return {
           ok: false,
           code: "forbidden",
@@ -760,6 +771,50 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
           };
         }
 
+        if (req.unshare) {
+          if (req.type === "skill") {
+            const subject = skillAccessSubject(toScope);
+            if (!subject)
+              return {
+                ok: false,
+                code: "bad_request",
+                message: "Skill Access targets a person, organization unit, or access group",
+              };
+            await app.removeSkillAccessSubject(home.id, capability.actorId, subject, allowAdminElevation);
+          } else {
+            await app.revokeGrant(home.ownerScopeId, home.grantRef, toScope, capability.actorId);
+          }
+          return {
+            ok: true,
+            verb: "unshare",
+            type: req.type,
+            id: home.id,
+            target: { scope: toScope, label: target.label },
+            permission,
+          };
+        }
+
+        if (req.type === "skill") {
+          if (permission !== "read")
+            return { ok: false, code: "bad_request", message: "Skill Access grants use permission only" };
+          const subject = skillAccessSubject(toScope);
+          if (!subject)
+            return {
+              ok: false,
+              code: "bad_request",
+              message: "Skill Access targets a person, organization unit, or access group",
+            };
+          await app.addSkillAccessSubject(home.id, capability.actorId, subject, allowAdminElevation);
+          return {
+            ok: true,
+            verb: "share",
+            type: req.type,
+            id: home.id,
+            target: { scope: toScope, label: target.label },
+            permission: "read",
+          };
+        }
+
         await app.grant({
           ownerScopeId: home.ownerScopeId,
           ref: home.grantRef,
@@ -776,6 +831,9 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
           permission,
         };
       } catch (e) {
+        if (e instanceof SkillAccessRequiredError || e instanceof SkillAccessConflictError) {
+          return { ok: false, code: "skill_access_required", message: "use the Skill Access API" };
+        }
         if (e instanceof AdminError) {
           return { ok: false, code: "forbidden", message: errMessage(e) };
         }
@@ -791,9 +849,20 @@ type ArtifactTarget =
   | { kind: "ambiguous"; candidates: Array<{ id: string; label: string }> }
   | { kind: "invalid"; message: string };
 
-async function resolveArtifactTarget(app: App, req: ShareArtifactRequest): Promise<ArtifactTarget> {
+async function resolveArtifactTarget(
+  app: App,
+  req: ShareArtifactRequest,
+  actorId: string,
+  allowAdminElevation: boolean,
+): Promise<ArtifactTarget> {
+  const directSkillSubject = req.type === "skill" && req.scope && !req.recipient ? skillAccessSubject(req.scope) : null;
+  if (directSkillSubject) return { kind: "ok", scope: req.scope!, label: req.scope! };
   const r = await resolveShareTarget(
-    app,
+    req.type === "skill"
+      ? {
+          resolveRecipient: (recipient) => app.resolveVisibleRecipient(actorId, recipient, { allowAdminElevation }),
+        }
+      : app,
     { scope: req.scope, recipient: req.recipient },
     {
       invalidScope: (scope) => `invalid scope "${scope}" — use "org" or a scope id like personal:<id> or channel:<id>`,
@@ -803,4 +872,15 @@ async function resolveArtifactTarget(app: App, req: ShareArtifactRequest): Promi
   return r.kind === "ambiguous"
     ? { kind: "ambiguous", candidates: r.candidates.map((c) => ({ id: c.principalId, label: c.displayName })) }
     : r;
+}
+
+function skillAccessSubject(scope: ScopeId): SkillAccessSubject | null {
+  const separator = scope.indexOf(":");
+  if (separator <= 0 || separator === scope.length - 1) return null;
+  const kind = scope.slice(0, separator);
+  const id = scope.slice(separator + 1);
+  if (kind === "personal") return { kind: "user", id };
+  if (kind === "org-unit") return { kind: "org_unit", id };
+  if (kind === "access-group") return { kind: "access_group", id };
+  return null;
 }

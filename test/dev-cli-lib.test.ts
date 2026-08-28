@@ -366,10 +366,14 @@ test("supervised children share the selected dev org", () => {
     sandboxEnv: {},
   };
   const specs = buildChildSpecs(inputs);
-  assert.equal(specs.find((spec) => spec.name === "core")!.env.ORG_ID, "beta");
+  const core = specs.find((spec) => spec.name === "core")!;
+  assert.equal(core.env.ORG_ID, "beta");
+  assert.equal(core.env.ORG_BOOTSTRAP_USERS, "U1");
   for (const spec of specs) assert.equal(spec.env.CORE_ORG_ID, "beta");
-  inputs.baseEnv = {};
-  assert.equal(buildChildSpecs(inputs).find((spec) => spec.name === "core")!.env.ORG_ID, "acme");
+  inputs.baseEnv = { ORG_BOOTSTRAP_USERS: "U0, U1" };
+  const defaultCore = buildChildSpecs(inputs).find((spec) => spec.name === "core")!;
+  assert.equal(defaultCore.env.ORG_ID, "acme");
+  assert.equal(defaultCore.env.ORG_BOOTSTRAP_USERS, "U0,U1");
 });
 
 test("child specs omit Slack env when no Slack tokens are supplied", () => {

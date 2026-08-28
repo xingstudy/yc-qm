@@ -13,6 +13,7 @@ import type { OutgoingAttachment } from "../types.ts";
 import type { Readable } from "node:stream";
 import { type FileArtifact, type FileArtifactStore, type ListOwnedOptions } from "../files/file-artifact-store.ts";
 import type { IdentityService } from "../identity/identity-service.ts";
+import type { OrganizationService } from "../organization/organization-service.ts";
 import type { SessionStore, TranscriptEntry } from "../sessions/session-store.ts";
 import { type Sandbox } from "../sandbox/sandbox.ts";
 import type { ProcessRegistry } from "../processes/process-registry.ts";
@@ -32,6 +33,14 @@ import type { McpServerStore } from "../mcp/mcp-server-store.ts";
 import type { McpToolService } from "../mcp/mcp-tool-service.ts";
 import type { AclStore } from "../acl/acl-store.ts";
 import type { SkillStore, Skill, SkillResolution } from "../skills/skill-store.ts";
+import type { SkillAccessResolver } from "../authorization/skill-access.ts";
+import type {
+  SkillAccessActor,
+  SkillAccessRepository,
+  SkillAccessSubject,
+  SkillAccessView,
+} from "../authorization/skill-access-repository.ts";
+import type { SkillAccessMode } from "../organization/organization-store.ts";
 import type { SkillPack, NewSkillPack, SkillPackStore } from "../skills/skill-pack-store.ts";
 import type { SkillPackFetcher } from "../skills/pack-fetcher.ts";
 import { type IngestPlan, type ImportResult } from "../skills/ingest.ts";
@@ -180,6 +189,12 @@ export type ProjectView = Project & {
   members: Array<{ principalId: string; displayName: string; viaChannel?: boolean }>;
 };
 
+export interface ProjectMemberCandidate {
+  principalId: string;
+  displayName: string;
+  email: string | null;
+}
+
 type ProjectViewMutation =
   | { status: "ok"; project: ProjectView; changed: boolean }
   | { status: "not_found" | "forbidden" | "invalid_member" | "invalid_name" | "invalid_channel" | "channel_in_use" };
@@ -292,8 +307,19 @@ export interface App {
   ): Promise<SessionBackgroundOutput | null>;
   listContexts(principalId: string): Promise<ContextSummary[]>;
   listProjects(principalId: string): Promise<ProjectView[]>;
+  projectMemberCandidates(
+    id: string,
+    principalId: string,
+    query: string,
+    allowAdminElevation?: boolean,
+  ): Promise<ProjectMemberCandidate[] | null>;
   createProject(principalId: string, name: string): Promise<ProjectView | null>;
-  addProjectMember(id: string, principalId: string, memberId: string): Promise<ProjectViewMutation>;
+  addProjectMember(
+    id: string,
+    principalId: string,
+    memberId: string,
+    allowAdminElevation?: boolean,
+  ): Promise<ProjectViewMutation>;
   removeProjectMember(id: string, principalId: string, memberId: string): Promise<ProjectViewMutation>;
   setProjectSlackChannel(id: string, principalId: string, channel: string | null): Promise<ProjectViewMutation>;
   renameProject(id: string, principalId: string, name: string): Promise<ProjectViewMutation>;
@@ -404,6 +430,11 @@ export interface App {
   setDirectoryWorkspaceUrl(url: string): Promise<void>;
   directoryMeta(): Promise<DirectoryMeta>;
   resolveRecipient(query: string): Promise<RecipientResolution>;
+  resolveVisibleRecipient(
+    actorId: string,
+    query: string,
+    opts?: { allowAdminElevation?: boolean },
+  ): Promise<RecipientResolution>;
   resolveChannel(query: string): Promise<ChannelResolution>;
   directoryMember(principalId: string): Promise<DirectoryMember | null>;
   samePerson(a: string, b: string): Promise<boolean>;
@@ -432,14 +463,33 @@ export interface App {
   getSkill(id: string): Promise<Skill | null>;
   archiveSkill(id: string): Promise<Skill>;
   listVisibleSkills(principalId: string): Promise<SkillResolution[]>;
-  canManageSkill(skill: Skill, principalId: string): Promise<boolean>;
+  getSkillAccess(skillId: string, actor: SkillAccessActor): Promise<SkillAccessView | null>;
+  setSkillAccess(
+    skillId: string,
+    actor: SkillAccessActor,
+    input: { mode: SkillAccessMode; subjects: readonly SkillAccessSubject[]; expectedRevision: number },
+  ): Promise<SkillAccessView | null>;
+  canManageSkillAccess(skillId: string, principalId: string, allowAdminElevation: boolean): Promise<boolean>;
+  addSkillAccessSubject(
+    skillId: string,
+    principalId: string,
+    subject: SkillAccessSubject,
+    allowAdminElevation: boolean,
+  ): Promise<SkillAccessView | null>;
+  removeSkillAccessSubject(
+    skillId: string,
+    principalId: string,
+    subject: SkillAccessSubject,
+    allowAdminElevation: boolean,
+  ): Promise<SkillAccessView | null>;
+  canManageSkill(skill: Skill, principalId: string, allowAdminElevation: boolean): Promise<boolean>;
   updateOwnedSkill(
     id: string,
     principalId: string,
     patch: { description?: string; body?: string },
-    opts?: { liveActor?: boolean },
+    opts?: { liveActor?: boolean; allowAdminElevation?: boolean },
   ): Promise<Skill | "trigger_blocked" | null>;
-  restoreOwnedSkill(id: string, principalId: string): Promise<Skill | null>;
+  restoreOwnedSkill(id: string, principalId: string, allowAdminElevation: boolean): Promise<Skill | null>;
   listSkillPacks(): Promise<SkillPack[]>;
   getSkillPack(id: string): Promise<SkillPack | null>;
   registerSkillPack(input: NewSkillPack): Promise<SkillPack>;
@@ -460,6 +510,7 @@ export interface App {
     principalId: string;
     id: string;
     liveActor?: boolean;
+    allowAdminElevation?: boolean;
   }): Promise<"missing" | "forbidden" | "trigger_blocked" | "deleted">;
   rollbackDeployment(id: string, version: number): Promise<void>;
   archiveDeployment(id: string): Promise<void>;
@@ -485,9 +536,15 @@ export interface App {
   deploymentGitUrlFor(
     idOrName: string,
     principalId: string,
-    opts: { secret: string; baseUrl: string; ttlMs?: number },
+    opts: { secret: string; baseUrl: string; ttlMs?: number; botActor?: boolean },
   ): Promise<DeploymentGitUrl | null>;
-  authorizesDeploymentGitAccess(id: string, principalId: string, permission: "read" | "write"): Promise<boolean>;
+  authorizesDeploymentGitAccess(
+    id: string,
+    principalId: string,
+    permission: "read" | "write",
+    sessionVersion?: number,
+    botActor?: boolean,
+  ): Promise<boolean>;
   reapIdleDeployments(ttlMs: number, now?: number): Promise<number>;
   listEnvironments(): Promise<{ environment: Environment; attachments: EnvironmentAttachment[] }[]>;
   createEnvironment(input: { scopeId: ScopeId; name: string; actorId: string }): Promise<Environment>;
@@ -497,6 +554,7 @@ export interface App {
 
 export interface AppDeps {
   identity: IdentityService;
+  organization?: Pick<OrganizationService, "checkActive" | "checkRuntimeActive" | "directory">;
   publicWebUrl?: string;
   sessions: SessionStore;
   orchestrator: Orchestrator;
@@ -518,6 +576,8 @@ export interface AppDeps {
   acl: AclStore;
   admin?: AdminService;
   skills: SkillStore;
+  skillAccess?: SkillAccessResolver;
+  skillAccessRepository?: SkillAccessRepository;
   skillPacks?: SkillPackStore;
   skillFetcher?: SkillPackFetcher;
   skillBundles?: SkillBundleStore;

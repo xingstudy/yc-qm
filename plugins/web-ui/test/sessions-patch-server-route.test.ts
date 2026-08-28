@@ -25,6 +25,11 @@ const core = createServer((req: IncomingMessage, res) => {
   req.on("data", (chunk) => (raw += chunk));
   req.on("end", () => {
     const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    if ((req.url ?? "").startsWith("/v1/internal/auth/session")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ principalId: "alice", sessionVersion: 1 }));
+      return;
+    }
     calls.push({ method: req.method ?? "GET", url: req.url ?? "", body });
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ session: { id: "s1" } }));

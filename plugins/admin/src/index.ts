@@ -4,7 +4,7 @@ import { Readable } from "node:stream";
 import { createGzip, gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { signedRequestHeaders, withSourceAuthNonce } from "../../chassis/src/core-client.ts";
-import { json, readBody, cookie } from "../../chassis/src/http.ts";
+import { json, readBody, cookie, PayloadTooLargeError } from "../../chassis/src/http.ts";
 import { createBrandingCache, injectBranding, type OrgBranding } from "../../chassis/src/branding.ts";
 import { verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { errMessage } from "../../chassis/src/errors.ts";
@@ -24,8 +24,14 @@ const ADMIN_BASE_PATH = (process.env.ADMIN_BASE_PATH ?? "").replace(/\/$/, "");
 const CORE_WHOAMI_ATTEMPTS = 2;
 const CORE_WHOAMI_TIMEOUT_MS = 2_500;
 const CORE_WHOAMI_RETRY_DELAY_MS = 250;
-function signedHeaders(method: string, corePath: string, rawBody: string): Record<string, string> {
-  return signedRequestHeaders(CORE_SIGNING_SECRET, method, corePath, rawBody, { "content-type": "application/json" });
+const MEMBER_CSV_MAX_BYTES = 5 * 1024 * 1024;
+function signedHeaders(
+  method: string,
+  corePath: string,
+  rawBody: string,
+  contentType = "application/json",
+): Record<string, string> {
+  return signedRequestHeaders(CORE_SIGNING_SECRET, method, corePath, rawBody, { "content-type": contentType });
 }
 
 const BASE_HTML = readFileSync(
@@ -116,13 +122,17 @@ async function forward(
   method: "GET" | "PUT" | "POST" | "DELETE" | "PATCH",
   corePath: string,
   body?: string,
+  contentType = "application/json",
 ): Promise<void> {
   try {
     const r = await fetch(`${CORE}${corePath}`, {
       method,
       headers: {
-        ...signedHeaders(method, corePath, body ?? ""),
+        ...signedHeaders(method, corePath, body ?? "", contentType),
         "x-admin-actor": `${principal}@${ORG}`,
+        ...(typeof req.headers["idempotency-key"] === "string"
+          ? { "idempotency-key": req.headers["idempotency-key"] }
+          : {}),
         ...portalIdentityHeader(),
       },
       ...(body ? { body } : {}),
@@ -245,7 +255,9 @@ async function uploadFileFromRequest(
   }
 }
 
-async function coreWhoami(principal: string): Promise<{ isAdmin: boolean; role?: string; scopeId?: string } | null> {
+async function coreWhoami(
+  principal: string,
+): Promise<{ isAdmin: boolean; isManager?: boolean; role?: string; scopeId?: string } | null> {
   const corePath = "/v1/admin/whoami";
   const started = Date.now();
   let failure = "unknown failure";
@@ -261,9 +273,19 @@ async function coreWhoami(principal: string): Promise<{ isAdmin: boolean; role?:
         signal: AbortSignal.timeout(CORE_WHOAMI_TIMEOUT_MS),
       });
       if (r.ok) {
-        const body = (await r.json()) as { isAdmin?: unknown; role?: string; scopeId?: string };
-        if (typeof body.isAdmin !== "boolean") throw new Error("core returned an invalid admin status");
-        return { ...body, isAdmin: body.isAdmin };
+        const body = (await r.json()) as { isAdmin?: unknown; isManager?: unknown; role?: string; scopeId?: string };
+        if (
+          typeof body.isAdmin !== "boolean" ||
+          (body.isManager !== undefined && typeof body.isManager !== "boolean")
+        ) {
+          throw new Error("core returned an invalid admin status");
+        }
+        return {
+          isAdmin: body.isAdmin,
+          ...(body.isManager === true ? { isManager: true } : {}),
+          ...(typeof body.role === "string" ? { role: body.role } : {}),
+          ...(typeof body.scopeId === "string" ? { scopeId: body.scopeId } : {}),
+        };
       }
       failure = `HTTP ${r.status}`;
       if (r.status < 500 && r.status !== 429) break;
@@ -290,7 +312,24 @@ const WRITES = new Map<string, string[]>([
   ["slack-installation", ["PUT", "DELETE"]],
   ["model-providers", ["PUT", "DELETE"]],
   ["custom-providers", ["PUT", "DELETE"]],
+  ["org-units", ["POST", "PATCH", "DELETE"]],
+  ["org-groups", ["POST", "PATCH", "DELETE"]],
+  ["org-directory", ["PUT", "DELETE"]],
 ]);
+
+const CORE_PREFIX: Record<string, string> = {
+  "org-units": "org/units",
+  "org-groups": "org/access-groups",
+  "org-users": "org/users",
+  "org-directory": "org/directory-visibility",
+};
+
+function managerRouteAllowed(pathname: string): boolean {
+  return (
+    pathname === "/api/org-users/search" ||
+    ["/api/org-units", "/api/org-groups"].some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))
+  );
+}
 
 const READS = [
   "metrics",
@@ -315,6 +354,10 @@ const READS = [
   "slack-installation",
   "model-providers",
   "custom-providers",
+  "org-units",
+  "org-groups",
+  "org-users",
+  "org-directory",
 ];
 
 const server = createServer((req, res) => {
@@ -323,6 +366,7 @@ const server = createServer((req, res) => {
   void portalTokenStore
     .run(token, () => handle(req, res))
     .catch((err: unknown) => {
+      if (err instanceof PayloadTooLargeError) return json(res, 413, { error: "payload_too_large" });
       console.error("[admin] unhandled request error:", String(err));
       json(res, 500, { error: "internal_error", message: "internal server error" });
     });
@@ -372,6 +416,17 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   const principal = cookiePrincipal(req);
+  if (principal && pathname.startsWith("/api/")) {
+    const access = await coreWhoami(principal);
+    if (!access) {
+      req.resume();
+      return json(res, 502, { error: "core_unreachable", message: "could not verify admin status" });
+    }
+    if (!access.isAdmin && (!access.isManager || !managerRouteAllowed(pathname))) {
+      req.resume();
+      return json(res, 403, { error: "forbidden" });
+    }
+  }
   if (method === "GET" && pathname === "/api/scopes") {
     if (!principal) return json(res, 401, { error: "signed_out" });
     return forward(req, res, principal, "GET", "/v1/admin/scopes");
@@ -431,8 +486,52 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
   }
 
+  const skillAccessMatch = /^\/api\/skills\/([^/]+)\/access$/.exec(pathname);
+  if (skillAccessMatch && (method === "GET" || method === "PUT")) {
+    if (!principal) return json(res, 401, { error: "signed_out" });
+    const id = decodeURIComponent(skillAccessMatch[1]!);
+    const corePath = `/v1/skills/${encodeURIComponent(id)}/access`;
+    const body = method === "PUT" ? await readBody(req) : undefined;
+    return forward(req, res, principal, method, corePath, body);
+  }
+
   const rest = pathname.startsWith("/api/") ? pathname.slice("/api/".length) : "";
   const first = rest.split("/")[0] ?? "";
+
+  const orgUserProfile = /^\/api\/org-users\/([^/]+)$/.exec(pathname);
+  const orgUserStatus = /^\/api\/org-users\/([^/]+)\/status$/.exec(pathname);
+  const orgUserPrimaryUnit = /^\/api\/org-users\/([^/]+)\/primary-unit$/.exec(pathname);
+  if (
+    (orgUserProfile && method === "PATCH") ||
+    (orgUserStatus && method === "POST") ||
+    (orgUserPrimaryUnit && method === "PUT")
+  ) {
+    if (!principal) return json(res, 401, { error: "signed_out" });
+    const corePath = `/v1/admin/org/users${pathname.slice("/api/org-users".length)}`;
+    return forward(req, res, principal, method as "PATCH" | "POST" | "PUT", corePath, await readBody(req));
+  }
+
+  if (method === "GET" && pathname === "/api/org-users/export") {
+    if (!principal) return json(res, 401, { error: "signed_out" });
+    return forwardDownload(res, principal, `/v1/admin/org/users/export${url.search}`);
+  }
+
+  if (method === "POST" && pathname === "/api/org-users/imports/preview") {
+    if (!principal) return json(res, 401, { error: "signed_out" });
+    const body = await readBody(req, MEMBER_CSV_MAX_BYTES);
+    const corePath = "/v1/admin/org/users/imports/preview";
+    return forward(req, res, principal, "POST", corePath, body, "text/csv");
+  }
+
+  if (
+    method === "POST" &&
+    (pathname === "/api/org-users/batches/preview" ||
+      /^\/api\/org-users\/(?:imports|batches)\/[^/]+\/commit$/.test(pathname))
+  ) {
+    if (!principal) return json(res, 401, { error: "signed_out" });
+    const corePath = `/v1/admin/org/users${pathname.slice("/api/org-users".length)}`;
+    return forward(req, res, principal, "POST", corePath, await readBody(req));
+  }
 
   if (method === "GET" && pathname === "/api/files/download") {
     if (!principal) return json(res, 401, { error: "signed_out" });
@@ -450,7 +549,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (WRITES.get(first)?.includes(method)) {
     if (!principal) return json(res, 401, { error: "signed_out" });
     const m = method as "POST" | "PUT" | "PATCH" | "DELETE";
-    const corePath = `/v1/admin/${rest}${url.search}`;
+    const corePath = `/v1/admin/${CORE_PREFIX[first] ?? first}${rest.slice(first.length)}${url.search}`;
     return m === "DELETE"
       ? forward(req, res, principal, m, corePath)
       : forward(req, res, principal, m, corePath, await readBody(req));
@@ -458,7 +557,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   if (method === "GET" && READS.includes(first)) {
     if (!principal) return json(res, 401, { error: "signed_out" });
-    return forward(req, res, principal, "GET", `/v1/admin/${rest}${url.search}`);
+    return forward(
+      req,
+      res,
+      principal,
+      "GET",
+      `/v1/admin/${CORE_PREFIX[first] ?? first}${rest.slice(first.length)}${url.search}`,
+    );
   }
 
   if (method === "GET" && !pathname.startsWith("/api/") && !pathname.startsWith("/deployments/")) {

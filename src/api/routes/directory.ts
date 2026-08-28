@@ -3,14 +3,34 @@ import type { DirectoryMember } from "../../directory/directory-store.ts";
 import { sendJson } from "../http.ts";
 import { audit, isObj, orgScope } from "./shared.ts";
 import { type ApiCtx, type Route } from "./route.ts";
+import { orgId as configOrgId } from "../../config.ts";
+import {
+  changeManagedStatusWithAdminProtection,
+  deactivatePrincipalWithAdminProtection,
+} from "../../organization/admin-liveness.ts";
 
 const numOrUndef = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 
 async function deactivatePrincipal(ctx: ApiCtx): Promise<void> {
   const { res, deps } = ctx;
-  if (!deps.identity) return sendJson(res, 404, { error: "not_found" });
   const id = ctx.params.id!;
   if (!id) return sendJson(res, 404, { error: "not_found" });
+  if (deps.organization) {
+    const result = await deactivatePrincipalWithAdminProtection(
+      {
+        orgId: configOrgId(),
+        organization: deps.organization,
+        admin: deps.admin,
+        advisoryLock: deps.advisoryLock,
+      },
+      { principalId: id, actor: "system:principal-api" },
+    );
+    if (!result.ok) {
+      return sendJson(res, result.reason === "missing_user" ? 404 : 409, { error: result.reason });
+    }
+    return sendJson(res, 200, { ok: true, principalId: id, active: false });
+  }
+  if (!deps.identity) return sendJson(res, 404, { error: "not_found" });
   await deps.identity.deactivate(id);
   audit(deps, { principalId: id, action: "principal.deactivate", resource: "principal", scopeLabel: orgScope(deps) });
   return sendJson(res, 200, { ok: true, principalId: id, active: false });
@@ -18,9 +38,24 @@ async function deactivatePrincipal(ctx: ApiCtx): Promise<void> {
 
 async function reactivatePrincipal(ctx: ApiCtx): Promise<void> {
   const { res, deps } = ctx;
-  if (!deps.identity) return sendJson(res, 404, { error: "not_found" });
   const id = ctx.params.id!;
   if (!id) return sendJson(res, 404, { error: "not_found" });
+  if (deps.organization) {
+    const result = await changeManagedStatusWithAdminProtection(
+      {
+        orgId: configOrgId(),
+        organization: deps.organization,
+        admin: deps.admin,
+        advisoryLock: deps.advisoryLock,
+      },
+      { principalId: id, status: "active", actor: "system:principal-api" },
+    );
+    if (!result.ok) {
+      return sendJson(res, result.reason === "missing_user" ? 404 : 409, { error: result.reason });
+    }
+    return sendJson(res, 200, { ok: true, principalId: id, active: true });
+  }
+  if (!deps.identity) return sendJson(res, 404, { error: "not_found" });
   await deps.identity.reactivate(id);
   audit(deps, { principalId: id, action: "principal.reactivate", resource: "principal", scopeLabel: orgScope(deps) });
   return sendJson(res, 200, { ok: true, principalId: id, active: true });

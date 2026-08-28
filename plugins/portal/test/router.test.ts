@@ -7,6 +7,8 @@ import { exportJWK, SignJWT } from "jose";
 
 let whoamiProbes = 0;
 let lastConsentClicker: string | null = null;
+let lastConsentIdentity: string | null = null;
+let lastSelfConnectIdentity: string | null = null;
 let lastImpersonateIdentity: string | null = null;
 let agentApiRequests = 0;
 const VALID_AGENT_CAPABILITY = "valid.agent.capability";
@@ -30,6 +32,10 @@ let expectedCodeVerifier = "";
 let brokerState = "";
 let tokenExchanges = 0;
 let loginTransactionUnavailable = false;
+let userLoginMode: "ok" | "denied" | "down" = "ok";
+let userLoginDenyReason = "not_invited";
+let userLoginCanonicalPrincipal: string | null = null;
+let lastUserLoginBody: Record<string, unknown> | null = null;
 
 const upstream = createServer((req: IncomingMessage, res) => {
   const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
@@ -94,6 +100,33 @@ const upstream = createServer((req: IncomingMessage, res) => {
       }
       res.writeHead(200, { "content-type": "application/json" });
       return void res.end(JSON.stringify({ status: "missing" }));
+    });
+  }
+  if (pathname === "/v1/internal/auth/users/login" && req.method === "POST") {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    return void req.on("end", () => {
+      lastUserLoginBody = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      if (userLoginMode === "down") {
+        res.writeHead(503, { "content-type": "application/json" });
+        return void res.end(JSON.stringify({ error: "unavailable" }));
+      }
+      if (userLoginMode === "denied") {
+        res.writeHead(200, { "content-type": "application/json" });
+        return void res.end(JSON.stringify({ status: "denied", reason: userLoginDenyReason }));
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          user: {
+            principalId: userLoginCanonicalPrincipal ?? lastUserLoginBody.principalId,
+            status: "active",
+            sessionVersion: 7,
+            displayName: "Core User Name",
+          },
+        }),
+      );
     });
   }
   if (req.url === "/verify" && req.method === "POST") {
@@ -162,17 +195,25 @@ const upstream = createServer((req: IncomingMessage, res) => {
   }
   if (typeof req.url === "string" && req.url.startsWith("/v1/connectors/oauth/consent/redeem/")) {
     lastConsentClicker = (req.headers["x-consent-clicker"] as string | undefined) ?? null;
+    lastConsentIdentity =
+      typeof req.headers["x-portal-identity"] === "string" ? req.headers["x-portal-identity"] : null;
     res.writeHead(200, { "content-type": "application/json" });
     return void res.end(
       JSON.stringify({ status: "authorize", authorizeUrl: "https://accounts.google.test/o/oauth2?x=1" }),
     );
+  }
+  if (typeof req.url === "string" && req.url.startsWith("/v1/connectors/oauth/google/start")) {
+    lastSelfConnectIdentity =
+      typeof req.headers["x-portal-identity"] === "string" ? req.headers["x-portal-identity"] : null;
+    res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(JSON.stringify({ message: "provider unavailable" }));
   }
   if (req.url === "/api/whoami") {
     whoamiProbes++;
     const m = (req.headers.cookie ?? "").match(/admin=([^;]+)/);
     const sub = m ? decodeURIComponent(m[1] ?? "") : "";
     res.writeHead(200, { "content-type": "application/json" });
-    return void res.end(JSON.stringify({ isAdmin: sub === "U-admin" }));
+    return void res.end(JSON.stringify({ isAdmin: sub === "U-admin", isManager: sub === "U-manager" }));
   }
   if (typeof req.url === "string" && req.url.startsWith("/v1/admin/impersonate")) {
     lastImpersonateIdentity =
@@ -185,7 +226,9 @@ const upstream = createServer((req: IncomingMessage, res) => {
       res.writeHead(ok ? 200 : 403, { "content-type": "application/json" });
       res.end(
         JSON.stringify(
-          ok ? { ok: true, displayName: "Alice Example" } : { error: "forbidden", message: "admin grant required" },
+          ok
+            ? { ok: true, displayName: "Alice Example", sessionVersion: 11 }
+            : { error: "forbidden", message: "admin grant required" },
         ),
       );
     });
@@ -219,10 +262,24 @@ const base = `http://localhost:${(server.address() as AddressInfo).port}`;
 const sessionKey = deriveKey("router-test-portal-secret", "portal.session.v1");
 const tmpKey = deriveKey("router-test-portal-secret", "portal.tmp.v1");
 const transactionKey = deriveKey("router-test-portal-secret", "portal.oidc.transaction.v1");
-function sessionCookie(sub: string, ageS = 0): string {
+function sessionCookie(sub: string, ageS = 0, sv?: number): string {
   const now = Math.floor(Date.now() / 1000);
   const iat = now - ageS;
-  return `portal_session=${encodeURIComponent(seal({ k: "session", sub, org: "acme", iat, exp: iat + 28800 }, sessionKey))}`;
+  const claims = { k: "session", sub, org: "acme", ...(sv !== undefined ? { sv } : {}), iat, exp: iat + 28800 };
+  return `portal_session=${encodeURIComponent(seal(claims, sessionKey))}`;
+}
+
+function portalIdentityClaims(body: unknown): Record<string, unknown> {
+  const token = (body as { headers: Record<string, string> }).headers["x-portal-identity"];
+  assert.ok(token, "the hop carries a signed portal identity");
+  return portalTokenClaims(token);
+}
+
+function portalTokenClaims(token: string): Record<string, unknown> {
+  return JSON.parse(Buffer.from(token.slice(0, token.lastIndexOf(".")), "base64url").toString("utf8")) as Record<
+    string,
+    unknown
+  >;
 }
 
 test.after(() => {
@@ -277,6 +334,22 @@ test("valid session: upstream receives ONLY the synthesized cookie, prefix strip
   assert.equal(body.headers["x-admin-actor"], undefined);
 });
 
+test("surface writes preserve idempotency keys without forwarding forged identity", async () => {
+  const response = await fetch(`${base}/admin/api/x`, {
+    method: "POST",
+    headers: {
+      cookie: sessionCookie("U-admin"),
+      origin: PUBLIC,
+      "idempotency-key": "member-job-1",
+      "x-admin-actor": "EVIL@acme",
+    },
+  });
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { headers: Record<string, string> };
+  assert.equal(body.headers["idempotency-key"], "member-job-1");
+  assert.equal(body.headers["x-admin-actor"], undefined);
+});
+
 test("web-ui /app-edit drops x-frame-options so its own frame-ancestors CSP can allow the app origin", async () => {
   const editPage = await fetch(`${base}/app-edit?slug=demo`, { headers: { cookie: sessionCookie("U1") } });
   assert.equal(editPage.status, 200);
@@ -296,6 +369,13 @@ test("admin tier (derived gate): non-admin sub is 403 before the upstream; admin
   assert.equal(ok.status, 200);
   const body = (await ok.json()) as { cookie: string };
   assert.equal(body.cookie, "admin=U-admin");
+});
+
+test("organization managers reach the constrained admin surface", async () => {
+  const response = await fetch(`${base}/admin/api/me`, { headers: { cookie: sessionCookie("U-manager") } });
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { cookie?: string };
+  assert.equal(body.cookie, "admin=U-manager");
 });
 
 test("admin gate fails closed for an unknown sub (whoami false ⇒ 403)", async () => {
@@ -366,8 +446,9 @@ test("new human path /connect/redeem/:id: session-gated; with session forwards t
   assert.match(noSession.headers.get("location") ?? "", /^\/auth\/login\?returnTo=%2Fconnect%2Fredeem%2Fabc-123/);
 
   lastConsentClicker = null;
+  lastConsentIdentity = null;
   const r = await fetch(`${base}/connect/redeem/abc-123?p=google`, {
-    headers: { cookie: sessionCookie("eve@acme") },
+    headers: { cookie: sessionCookie("eve@acme", 0, 7) },
     redirect: "manual",
   });
   assert.equal(r.status, 302);
@@ -377,14 +458,16 @@ test("new human path /connect/redeem/:id: session-gated; with session forwards t
     "eve@acme",
     "the verified session sub is forwarded to core, never an identity from the link",
   );
+  assert.equal(portalTokenClaims(lastConsentIdentity ?? "").sv, 7);
 });
 
 test("new human path /connect/:provider/self-connect: session-gated; with session it starts a personal flow via core", async () => {
   const noSession = await fetch(`${base}/connect/google/self-connect`, { redirect: "manual" });
   assert.equal(noSession.status, 302);
   assert.match(noSession.headers.get("location") ?? "", /^\/auth\/login/);
+  lastSelfConnectIdentity = null;
   const r = await fetch(`${base}/connect/google/self-connect`, {
-    headers: { cookie: sessionCookie("eve@acme") },
+    headers: { cookie: sessionCookie("eve@acme", 0, 8) },
     redirect: "manual",
   });
   assert.equal(
@@ -392,6 +475,7 @@ test("new human path /connect/:provider/self-connect: session-gated; with sessio
     200,
     "reaches core (the mock returns no authorizeUrl, so the portal renders a page rather than 404ing)",
   );
+  assert.equal(portalTokenClaims(lastSelfConnectIdentity ?? "").sv, 8);
 });
 
 test("new human path /drop/:id: form GET reaches the core /v1 drop form with x-drop-owner; POST /drop/:id never redirects (no session → 401, cross-origin → 403)", async () => {
@@ -400,7 +484,7 @@ test("new human path /drop/:id: form GET reaches the core /v1 drop form with x-d
   assert.match(noSession.headers.get("location") ?? "", /^\/auth\/login/);
 
   const form = await fetch(`${base}/drop/drop-1/form?t=link-token-1`, {
-    headers: { cookie: sessionCookie("owner@acme") },
+    headers: { cookie: sessionCookie("owner@acme", 0, 9) },
     redirect: "manual",
   });
   assert.equal(form.status, 200);
@@ -412,6 +496,7 @@ test("new human path /drop/:id: form GET reaches the core /v1 drop form with x-d
     "owner@acme",
     "the verified session sub is forwarded to core as the drop owner",
   );
+  assert.equal(portalIdentityClaims(fb).sv, 9);
 
   assert.equal(
     (await fetch(`${base}/drop/drop-1`, { method: "POST", headers: { origin: PUBLIC } })).status,
@@ -430,7 +515,7 @@ test("new human path /drop/:id: form GET reaches the core /v1 drop form with x-d
 
   const ok = await fetch(`${base}/drop/drop-1?t=link-token-1`, {
     method: "POST",
-    headers: { origin: PUBLIC, cookie: sessionCookie("owner@acme"), "content-type": "application/json" },
+    headers: { origin: PUBLIC, cookie: sessionCookie("owner@acme", 0, 9), "content-type": "application/json" },
     body: JSON.stringify({ secret: "s3cr3t" }),
   });
   assert.equal(ok.status, 200);
@@ -438,6 +523,7 @@ test("new human path /drop/:id: form GET reaches the core /v1 drop form with x-d
   assert.match(ob.url, /^\/v1\/keychain\/drops\/drop-1(\?|$)/);
   assert.match(ob.url, /[?&]t=link-token-1/, "the submit leg forwards the token too — the redeem check depends on it");
   assert.equal(ob.headers["x-drop-owner"], "owner@acme");
+  assert.equal(portalIdentityClaims(ob).sv, 9);
 });
 
 test("deployments are OFF by default (404 even with a session)", async () => {
@@ -507,6 +593,23 @@ test("the browser that confirms the emailed link can complete login without the 
   assert.equal(tokenExchanges, exchangesBefore + 1);
   assert.equal(loginTransactions.get(brokerState)?.status, "succeeded");
   assert.equal(loginTransactions.get(brokerState)?.payload, null);
+  assert.deepEqual(lastUserLoginBody, {
+    principalId: "user@example.com",
+    issuer: OIDC_ISSUER,
+    subject: "router-user",
+    email: "user@example.com",
+    emailVerified: true,
+    displayName: "Router User",
+  });
+  const issued = /portal_session=([^;]+)/.exec(completed.headers.get("set-cookie") ?? "")?.[1] ?? "";
+  const issuedClaims = open(decodeURIComponent(issued), sessionKey) as {
+    sub: string;
+    sv?: number;
+    name?: string;
+  } | null;
+  assert.equal(issuedClaims?.sub, "user@example.com");
+  assert.equal(issuedClaims?.sv, 7, "the session cookie carries the core-issued session version");
+  assert.equal(issuedClaims?.name, "Core User Name", "the core-resolved display name wins over the OIDC name");
 
   const replay = await fetch(`${base}${callback.pathname}${callback.search}`, {
     headers: { cookie: handoff },
@@ -565,6 +668,72 @@ test("a missing durable transaction never falls back to the starting browser coo
   });
   assert.equal(refused.status, 400);
   assert.equal(tokenExchanges, exchangesBefore);
+});
+
+async function runCookieLoginCallback(): Promise<{ response: Response; state: string }> {
+  const login = await fetch(`${base}/auth/login`, { redirect: "manual" });
+  const authorization = new URL(login.headers.get("location") ?? "");
+  const state = authorization.searchParams.get("state") ?? "";
+  oidcNonce = authorization.searchParams.get("nonce") ?? "";
+  const payload = openEncryptedTmp(loginTransactions.get(state)?.payload ?? null, transactionKey, Date.now());
+  expectedCodeVerifier = payload?.pkceVerifier ?? "";
+  const tmpValue = /portal_oidc_tmp=([^;]+)/.exec(login.headers.get("set-cookie") ?? "")?.[1] ?? "";
+  const response = await fetch(`${base}/auth/callback?code=router-code&state=${state}`, {
+    headers: { cookie: `portal_oidc_tmp=${tmpValue}` },
+    redirect: "manual",
+  });
+  return { response, state };
+}
+
+test("auth/callback stores the canonical principal returned by the organization login", async () => {
+  userLoginCanonicalPrincipal = "U-canonical";
+  try {
+    const { response, state } = await runCookieLoginCallback();
+    assert.equal(response.status, 302);
+    assert.equal(loginTransactions.get(state)?.status, "succeeded");
+    const issued = /portal_session=([^;]+)/.exec(response.headers.get("set-cookie") ?? "")?.[1] ?? "";
+    const claims = open(decodeURIComponent(issued), sessionKey) as { sub?: unknown; sv?: unknown } | null;
+    assert.equal(claims?.sub, "U-canonical");
+    assert.equal(claims?.sv, 7);
+  } finally {
+    userLoginCanonicalPrincipal = null;
+  }
+});
+
+test("auth/callback issues no session when core denies the organization user", async () => {
+  const exchangesBefore = tokenExchanges;
+  userLoginMode = "denied";
+  try {
+    userLoginDenyReason = "not_invited";
+    const denied = await runCookieLoginCallback();
+    assert.equal(denied.response.status, 403);
+    assert.match(await denied.response.text(), /account not invited/);
+    assert.doesNotMatch(denied.response.headers.get("set-cookie") ?? "", /portal_session=[^;]/);
+    assert.equal(loginTransactions.get(denied.state)?.status, "failed");
+
+    userLoginDenyReason = "unknown";
+    const unknown = await runCookieLoginCallback();
+    assert.equal(unknown.response.status, 403);
+    assert.match(await unknown.response.text(), /sign-in is not permitted for this account/);
+    assert.doesNotMatch(unknown.response.headers.get("set-cookie") ?? "", /portal_session=[^;]/);
+    assert.equal(loginTransactions.get(unknown.state)?.status, "failed");
+  } finally {
+    userLoginMode = "ok";
+  }
+  assert.equal(tokenExchanges, exchangesBefore + 2, "OIDC verification still ran; only the core upsert denied");
+});
+
+test("auth/callback fails closed when the core organization login is unavailable", async () => {
+  userLoginMode = "down";
+  try {
+    const { response, state } = await runCookieLoginCallback();
+    assert.equal(response.status, 503);
+    assert.match(await response.text(), /sign-in service temporarily unavailable/);
+    assert.doesNotMatch(response.headers.get("set-cookie") ?? "", /portal_session=[^;]/);
+    assert.equal(loginTransactions.get(state)?.status, "failed");
+  } finally {
+    userLoginMode = "ok";
+  }
 });
 
 test("the public login entry point is bounded per client before it writes more transactions", async () => {
@@ -828,4 +997,31 @@ test("impersonate: an admin starts it; the web-ui hop carries target + impersona
   });
   assert.equal(stop.status, 200);
   assert.match(stop.headers.get("set-cookie") ?? "", /portal_impersonate=;[^,]*Max-Age=0/);
+});
+
+test("impersonate: the minted identity targets the impersonated user with the target's session version", async () => {
+  const start = await fetch(`${base}/auth/impersonate?target=alice@acme`, {
+    method: "POST",
+    headers: { cookie: sessionCookie("U-admin", 0, 7), origin: PUBLIC, accept: "application/json" },
+  });
+  assert.equal(start.status, 200);
+  const m = (start.headers.get("set-cookie") ?? "").match(/portal_impersonate=([^;]+)/);
+  assert.ok(m, "the impersonation cookie is set");
+  const impCookie = `portal_impersonate=${m![1]}`;
+
+  const plain = await fetch(`${base}/web-ui/api/x`, { headers: { cookie: sessionCookie("U-admin", 0, 7) } });
+  assert.equal(portalIdentityClaims(await plain.json()).sv, 7, "a direct hop forwards the session version");
+
+  const web = await fetch(`${base}/web-ui/api/x`, {
+    headers: { cookie: `${sessionCookie("U-admin", 0, 7)}; ${impCookie}` },
+  });
+  const claims = portalIdentityClaims(await web.json());
+  assert.equal(claims.p, "alice@acme");
+  assert.equal(claims.imp, "U-admin");
+  assert.equal(claims.sv, 11, "impersonation forwards the core-issued target session version");
+
+  await fetch(`${base}/auth/impersonate/stop`, {
+    method: "POST",
+    headers: { cookie: `${sessionCookie("U-admin")}; ${impCookie}`, origin: PUBLIC },
+  });
 });

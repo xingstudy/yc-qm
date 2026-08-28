@@ -1505,14 +1505,29 @@ async function finishImRunProgress(
   return progress;
 }
 
-function fetchImRun(
+async function fetchImRun(
   user: string,
   runId: string,
   timeoutMs = IM_RUN_PROGRESS_REQUEST_TIMEOUT_MS,
 ): Promise<{ status: number; text: string }> {
   const request = () => coreFetch("GET", `/v1/runs/${encodeURIComponent(runId)}`, "", timeoutMs);
   if (!PORTAL_IDENTITY_SECRET) return request();
-  const token = mintPortalIdentity({ p: user, exp: Date.now() + 60_000 }, PORTAL_IDENTITY_SECRET);
+  const sessionPath = `/v1/internal/auth/users/${encodeURIComponent(user)}/session-version`;
+  const session = await coreFetch("GET", sessionPath, "", timeoutMs);
+  if (session.status !== 200) return session;
+  let sessionVersion: unknown;
+  try {
+    sessionVersion = (JSON.parse(session.text) as { sessionVersion?: unknown }).sessionVersion;
+  } catch {
+    return { status: 502, text: "invalid organization session response" };
+  }
+  if (!Number.isInteger(sessionVersion) || (sessionVersion as number) < 0) {
+    return { status: 502, text: "invalid organization session response" };
+  }
+  const token = mintPortalIdentity(
+    { p: user, sv: sessionVersion as number, exp: Date.now() + 60_000 },
+    PORTAL_IDENTITY_SECRET,
+  );
   return portalTokenStore.run(token, request);
 }
 
@@ -3282,6 +3297,16 @@ function cookieUser(req: IncomingMessage): string | null {
   return resolveIdentity(req)?.user ?? null;
 }
 
+async function currentBrowserUser(req: IncomingMessage): Promise<string | null> {
+  const user = cookieUser(req);
+  if (!user) return null;
+  const raw = req.headers[PORTAL_IDENTITY_HEADER];
+  const token = Array.isArray(raw) ? raw[0] : raw;
+  if (!token) return COOKIE_AUTH ? user : null;
+  const session = await coreFetch("GET", "/v1/internal/auth/session", "", 5_000);
+  return session.status === 200 ? user : null;
+}
+
 function unauthorized(res: ServerResponse, req: IncomingMessage): void {
   const outcome = authenticate(req);
   const denied = "denied" in outcome ? outcome.denied : "unauthenticated";
@@ -4457,12 +4482,17 @@ const apiRoutes: readonly WebRoute[] = [
   },
   {
     method: "GET",
-    path: "/api/directory/resolve",
+    path: "/api/projects/:id/member-candidates",
     handle: async (c) => {
-      const { res, url } = c;
+      const { res, url, user } = c;
+      const id = c.params.id!;
       const q = (url.searchParams.get("q") ?? "").trim().slice(0, 80);
       if (!q) return json(res, 400, { error: "bad_request", message: "q required" });
-      return relayCore(res, "GET", `/v1/directory/resolve?q=${encodeURIComponent(q)}`);
+      return relayCore(
+        res,
+        "GET",
+        `/v1/projects/${encodeURIComponent(id)}/member-candidates?principalId=${encodeURIComponent(user)}&q=${encodeURIComponent(q)}`,
+      );
     },
   },
   {
@@ -4691,6 +4721,51 @@ const apiRoutes: readonly WebRoute[] = [
       const { res, user } = c;
       const id = c.params.id!;
       return relayCore(res, "GET", `/v1/skills/${encodeURIComponent(id)}?principalId=${encodeURIComponent(user)}`);
+    },
+  },
+  {
+    method: "GET",
+    path: "/api/skills/:id/access",
+    handle: async (c) => {
+      const id = c.params.id!;
+      return relayCore(c.res, "GET", `/v1/skills/${encodeURIComponent(id)}/access`);
+    },
+  },
+  {
+    method: "PUT",
+    path: "/api/skills/:id/access",
+    handle: async (c) => {
+      const body = await readJson<Record<string, unknown>>(c.req, c.res);
+      if (!body) return;
+      const id = c.params.id!;
+      return relayCore(c.res, "PUT", `/v1/skills/${encodeURIComponent(id)}/access`, JSON.stringify(body));
+    },
+  },
+  {
+    method: "GET",
+    path: "/api/org/tree",
+    handle: async (c) => relayCore(c.res, "GET", "/v1/org/tree"),
+  },
+  {
+    method: "GET",
+    path: "/api/org/users",
+    handle: async (c) => {
+      const query = new URLSearchParams();
+      for (const key of ["q", "unitId", "cursor", "limit"]) {
+        const value = c.url.searchParams.get(key);
+        if (value !== null) query.set(key, value);
+      }
+      return relayCore(c.res, "GET", `/v1/org/users?${query.toString()}`);
+    },
+  },
+  {
+    method: "GET",
+    path: "/api/org/access-groups",
+    handle: async (c) => {
+      const query = new URLSearchParams();
+      const value = c.url.searchParams.get("q");
+      if (value !== null) query.set("q", value);
+      return relayCore(c.res, "GET", `/v1/org/access-groups?${query.toString()}`);
     },
   },
   {
@@ -5768,7 +5843,7 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
   }
 
   if (path === "/me" || path.startsWith("/api/")) {
-    const user = cookieUser(req);
+    const user = await currentBrowserUser(req);
     if (!user) return unauthorized(res, req);
     const found = findRoute(apiRoutes, method, path);
     if (!found) return json(res, 404, { error: "not found" });
@@ -5776,7 +5851,7 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
   }
 
   if (method === "GET" && path.startsWith("/deployments/")) {
-    const user = cookieUser(req);
+    const user = await currentBrowserUser(req);
     if (!user) return unauthorized(res, req);
     const rest = path.slice("/deployments/".length);
     const slash = rest.indexOf("/");

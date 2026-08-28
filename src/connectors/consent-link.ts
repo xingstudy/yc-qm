@@ -9,6 +9,7 @@ export interface ConsentLinkRecord {
   accountType: AccountType;
   redirectUri: string;
   returnTo?: string;
+  sessionVersion?: number;
   createdAt: number;
 }
 

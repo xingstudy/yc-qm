@@ -17,6 +17,7 @@ import { consentRequiredRecipient, recipientConsentSatisfied } from "./trigger-s
 import { isVisible, type VisibilityDirectory } from "../directory/visibility.ts";
 import { samePerson } from "../directory/person.ts";
 import type { CurrentScopeMembers } from "../resolution/scope-membership.ts";
+import type { OrganizationService } from "../organization/organization-service.ts";
 
 const MEMBERSHIP_SKIP_NOTE = "the acting person is no longer a member of this trigger's home scope — run skipped";
 const UNKNOWN_HOME_SKIP_NOTE =
@@ -26,6 +27,7 @@ export interface TriggerDeps {
   deliveries: DeliveryStore;
   idempotency: IdempotencyStore;
   identity: IdentityService;
+  organization?: Pick<OrganizationService, "checkRuntimeActive">;
   run: (req: TurnRequest) => Promise<TurnResult>;
   currentScopeMembers?: CurrentScopeMembers;
   directory?: VisibilityDirectory & {
@@ -182,6 +184,12 @@ export async function runTrigger(deps: TriggerDeps, spec: TriggerSpec): Promise<
     }
     if (isScopeShared && currentMembers && !currentMembers.some((member) => samePerson(member.id, spec.owner))) {
       return { authzFailed: true, ran: false, note: "scopeShared owner is no longer a current scope member" };
+    }
+  }
+  if (!actorId.startsWith("system:") && deps.organization) {
+    const organizationUser = await deps.organization.checkRuntimeActive(actorId);
+    if (organizationUser?.status !== "active") {
+      return { authzFailed: true, ran: false, note: "actor is no longer an active organization user" };
     }
   }
 

@@ -2,6 +2,7 @@ import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { createPostgresAuditLog } from "../src/admin/postgres-audit-log.ts";
 import type { AuditEvent } from "../src/audit/audit-log.ts";
+import { withPgTransaction } from "../src/persistence/pg-pool.ts";
 import { scopeId } from "../src/types.ts";
 
 const URL = process.env.DATABASE_URL;
@@ -85,4 +86,53 @@ test("pg audit log: recordOnce is durable and idempotent across instances", { sk
   const events = await first.events();
   assert.equal(events.length, 1);
   assert.equal(events[0]?.action, "layer-updated");
+});
+
+test("recordInTransaction commits with the surrounding transaction and dedupes by idempotency key", { skip }, async () => {
+  await reset(true);
+  const log = createPostgresAuditLog(URL!);
+  await withPgTransaction(await log.pool(), async (client) => {
+    await log.recordInTransaction(client, {
+      at: 1,
+      principalId: "U-a",
+      action: "org.unit.create",
+      resource: "unit:root",
+      scopeLabel: "org:acme",
+      idempotencyKey: "tx-a-1",
+      orgId: "acme",
+      actorKind: "user",
+      result: "ok",
+    });
+    await log.recordInTransaction(client, {
+      at: 2,
+      principalId: "U-a",
+      action: "org.unit.create",
+      resource: "unit:root",
+      scopeLabel: "org:acme",
+      idempotencyKey: "tx-a-1",
+      orgId: "acme",
+      actorKind: "user",
+      result: "ok",
+    });
+  });
+  const events = await log.events();
+  assert.equal(events.filter((e) => e.action === "org.unit.create").length, 1);
+});
+
+test("recordInTransaction rolls back when the surrounding transaction aborts", { skip }, async () => {
+  await reset(true);
+  const log = createPostgresAuditLog(URL!);
+  await assert.rejects(
+    withPgTransaction(await log.pool(), async (client) => {
+      await log.recordInTransaction(client, {
+        at: 2,
+        principalId: "U-a",
+        action: "org.unit.move",
+        resource: "unit:x",
+        scopeLabel: "org:acme",
+      });
+      throw new Error("abort");
+    }),
+  );
+  assert.equal((await log.events()).filter((e) => e.action === "org.unit.move").length, 0);
 });

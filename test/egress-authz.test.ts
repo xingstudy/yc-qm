@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { request, type Server } from "node:http";
 import {
   buildEgressAuthzServer,
+  createCoreActorSessionAuthorizer,
   createEgressAuditFromEnv,
   createRelayAuditSink,
   tokenFromRequest,
@@ -46,11 +47,12 @@ test("egress PostgreSQL fallback configures CA trust before creating its durable
 
 function egressToken(
   egress: EgressPolicy | undefined,
-  over: { aud?: string; exp?: number; secret?: string } = {},
+  over: { actorId?: string; aud?: string; exp?: number; secret?: string; sessionVersion?: number } = {},
 ): Promise<string> {
   return mintCapabilityToken(
     {
-      actorId: "U_actor",
+      actorId: over.actorId ?? "U_actor",
+      sessionVersion: over.sessionVersion ?? 7,
       scopeId: scopeId("personal", "U_actor"),
       aud: over.aud ?? EGRESS_PROXY_AUD,
       exp: over.exp ?? Date.now() + 60_000,
@@ -107,6 +109,7 @@ function boot(deps: Partial<EgressAuthzDeps> = {}) {
   const server = buildEgressAuthzServer({
     capabilitySecret: CAPABILITY_SECRET,
     audit: sink,
+    authorizeActor: async () => true,
     lookup: async () => ["93.184.216.34"],
     ...deps,
   });
@@ -187,6 +190,63 @@ test("valid token with a denylist => 403 + audited as denied", async () => {
   } finally {
     await close(server);
   }
+});
+
+test("a stale or inactive human actor is denied before DNS resolution", async () => {
+  let lookups = 0;
+  const { server, records } = boot({
+    authorizeActor: async () => false,
+    lookup: async () => {
+      lookups += 1;
+      return ["93.184.216.34"];
+    },
+  });
+  const port = await listen(server);
+  try {
+    assert.equal(await check(port, "example.com:443", await egressToken({ allowedHosts: [] })), 403);
+    assert.equal(lookups, 0);
+    assert.equal(records.at(-1)?.principalId, "U_actor");
+  } finally {
+    await close(server);
+  }
+});
+
+test("the Core actor checker source-signs an exact session-version lookup and fails closed", async () => {
+  const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+  let active = true;
+  const fakeFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), headers: init?.headers as Record<string, string> });
+    return active
+      ? Response.json({ principalId: "U_actor", sessionVersion: 7 })
+      : Response.json({ error: "not_found" }, { status: 404 });
+  }) as typeof fetch;
+  const authorize = createCoreActorSessionAuthorizer("http://core.example/core/", SOURCE_SECRET, fakeFetch);
+  const claims = {
+    actorId: "U_actor",
+    sessionVersion: 7,
+    scopeId: scopeId("personal", "U_actor"),
+    exp: Date.now() + 60_000,
+  };
+  assert.equal(await authorize(claims), true);
+  assert.equal(calls[0]!.url, "http://core.example/core/v1/internal/auth/users/U_actor/session-version");
+  assert.equal(
+    verifySignature(
+      SOURCE_SECRET,
+      {
+        signature: calls[0]!.headers["x-signature"]!,
+        timestamp: Number(calls[0]!.headers["x-timestamp"]),
+        body: "GET\n/core/v1/internal/auth/users/U_actor/session-version\n",
+      },
+      Date.now(),
+      5 * 60_000,
+    ).ok,
+    true,
+  );
+  assert.equal(await authorize({ ...claims, sessionVersion: 6 }), false);
+  active = false;
+  assert.equal(await authorize(claims), false);
+  assert.equal(await authorize({ ...claims, sessionVersion: undefined }), false);
+  assert.equal(await authorize({ ...claims, actorId: "system:worker", sessionVersion: undefined }), true);
 });
 
 test("allowlist present => non-matching host is 403 not_allowlisted, matching host 200", async () => {

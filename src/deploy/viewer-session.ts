@@ -1,14 +1,24 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-export function portalSessionSub(cookieHeader: string | undefined, secret: string, now = Date.now()): string | null {
+export interface DeploymentViewerSession {
+  sub: string;
+  org: string;
+  sv: number;
+}
+
+export function portalSessionClaims(
+  cookieHeader: string | undefined,
+  secret: string,
+  now = Date.now(),
+): DeploymentViewerSession | null {
   for (const token of readCookies(cookieHeader, "portal_session")) {
-    const sub = verifySessionToken(token, secret, now);
-    if (sub) return sub;
+    const claims = verifySessionToken(token, secret, now);
+    if (claims) return claims;
   }
   return null;
 }
 
-function verifySessionToken(token: string, secret: string, now: number): string | null {
+function verifySessionToken(token: string, secret: string, now: number): DeploymentViewerSession | null {
   const key = createHmac("sha256", secret).update("portal.session.v1").digest();
   const dot = token.indexOf(".");
   if (dot <= 0 || dot === token.length - 1) return null;
@@ -26,8 +36,10 @@ function verifySessionToken(token: string, secret: string, now: number): string 
   }
   if (claims.k !== "session") return null;
   if (typeof claims.sub !== "string" || !claims.sub) return null;
+  if (typeof claims.org !== "string" || !claims.org) return null;
+  if (!Number.isInteger(claims.sv) || (claims.sv as number) < 0) return null;
   if (typeof claims.exp !== "number" || now >= claims.exp * 1000) return null;
-  return claims.sub;
+  return { sub: claims.sub, org: claims.org, sv: claims.sv as number };
 }
 
 function readCookies(header: string | undefined, name: string): string[] {

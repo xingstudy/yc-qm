@@ -27,7 +27,10 @@ function sign(method: string, pathWithQuery: string, body = ""): Record<string, 
   };
 }
 
-function start(fetchImpl: FetchLike): { base: string; built: BuiltApp; close: () => Promise<void> } {
+function start(
+  fetchImpl: FetchLike,
+  opts: { organization?: boolean } = {},
+): { base: string; built: BuiltApp; close: () => Promise<void> } {
   const built = buildApp(
     testConfig({
       dataDir: mkdtempSync(join(tmpdir(), "oauth-routes-")),
@@ -40,11 +43,54 @@ function start(fetchImpl: FetchLike): { base: string; built: BuiltApp; close: ()
     auditLog: built.auditLog,
     oauthEnv,
     oauthFetch: fetchImpl,
+    ...(opts.organization ? { organization: built.organization } : {}),
   });
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
   return { base, built, close: () => new Promise<void>((r) => server.close(() => r())) };
 }
+
+test("OAuth callback rejects a state minted before suspend and reactivate", async () => {
+  let exchanged = false;
+  const srv = start(
+    async () => {
+      exchanged = true;
+      throw new Error("stale state must be rejected before exchange");
+    },
+    { organization: true },
+  );
+  try {
+    await srv.built.organization.invite({
+      principalId: "U-stale-oauth",
+      email: null,
+      displayName: "Stale OAuth",
+      actor: "test",
+    });
+    const active = await srv.built.organization.setStatus({
+      principalId: "U-stale-oauth",
+      status: "active",
+      actor: "test",
+    });
+    assert.ok(active);
+    const redirectUri = `${srv.base}/v1/connectors/oauth/google/callback`;
+    const startPath = `/v1/connectors/oauth/google/start?principalId=U-stale-oauth&redirectUri=${encodeURIComponent(redirectUri)}`;
+    const started = await fetch(`${srv.base}${startPath}`, { headers: sign("GET", startPath) });
+    assert.equal(started.status, 200);
+    const authorizeUrl = new URL(((await started.json()) as { authorizeUrl: string }).authorizeUrl);
+    const state = authorizeUrl.searchParams.get("state");
+    assert.ok(state);
+    await srv.built.organization.setStatus({ principalId: "U-stale-oauth", status: "suspended", actor: "test" });
+    await srv.built.organization.setStatus({ principalId: "U-stale-oauth", status: "active", actor: "test" });
+    const callback = await fetch(
+      `${srv.base}/v1/connectors/oauth/google/callback?code=stale&state=${encodeURIComponent(state)}`,
+    );
+    assert.equal(callback.status, 400);
+    assert.equal(exchanged, false);
+    assert.equal(await srv.built.connectorTokens.connectorAccessToken("gmail.googleapis.com", "U-stale-oauth"), null);
+  } finally {
+    await srv.close();
+  }
+});
 
 test("OAuth start, unsigned callback, status, and revoke are principal-bound", async () => {
   let exchanged = false;

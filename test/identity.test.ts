@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createIdentityService, type DeactivationRecord } from "../src/identity/identity-service.ts";
+import {
+  createIdentityService,
+  type DeactivationRecord,
+  type IdentityStatusRecord,
+} from "../src/identity/identity-service.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 
 const id = createIdentityService();
@@ -91,6 +95,39 @@ test("a running instance refreshes deactivations written by another instance", a
   assert.equal(reader.classify("U-leaver").type, "internal");
   await reader.refresh();
   assert.equal(reader.classify("U-leaver").type, "guest");
+});
+
+test("versioned organization status projection is monotonic across instances and survives rehydration", async () => {
+  const backing = createMemoryMap<DeactivationRecord>();
+  const statuses = createMemoryMap<IdentityStatusRecord>();
+  const newer = createIdentityService(backing, statuses);
+  const stale = createIdentityService(backing, statuses);
+  await newer.reactivate("U-race", 4);
+  await stale.deactivate("U-race", "manual", 3);
+  await stale.deactivate("U-race");
+  const rehydrated = createIdentityService(backing, statuses);
+  await rehydrated.hydrate();
+  assert.equal(rehydrated.classify("U-race").type, "internal");
+  await stale.deactivate("U-race", "manual", 5);
+  await newer.reactivate("U-race", 4);
+  await newer.reactivate("U-race");
+  const final = createIdentityService(backing, statuses);
+  await final.hydrate();
+  assert.equal(final.classify("U-race").type, "guest");
+});
+
+test("versioned active status remains absent from the legacy deactivation map", async () => {
+  const backing = createMemoryMap<DeactivationRecord>();
+  const statuses = createMemoryMap<IdentityStatusRecord>();
+  const first = createIdentityService(backing, statuses);
+  const second = createIdentityService(backing, statuses);
+  await first.deactivate("U-blue-green", "manual", 2);
+  assert.notEqual(await backing.get("U-blue-green"), null);
+  await second.reactivate("U-blue-green", 3);
+  assert.equal(await backing.get("U-blue-green"), null);
+  const rehydrated = createIdentityService(backing, statuses);
+  await rehydrated.hydrate();
+  assert.equal(rehydrated.classify("U-blue-green").type, "internal");
 });
 
 test("a directory sync deactivates dropped members and self-heals when they reappear", async () => {

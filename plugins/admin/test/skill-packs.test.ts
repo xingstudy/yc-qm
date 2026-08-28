@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
+import { readFileSync } from "node:fs";
 
 const calls: { method: string; url: string; actor: string | null; signed: boolean; body: string }[] = [];
 const core = createServer((req: IncomingMessage, res) => {
@@ -15,6 +16,10 @@ const core = createServer((req: IncomingMessage, res) => {
       signed: Boolean(req.headers["x-timestamp"] && req.headers["x-signature"]),
       body,
     });
+    if (req.url === "/v1/admin/whoami") {
+      res.writeHead(200, { "content-type": "application/json" });
+      return void res.end(JSON.stringify({ isAdmin: true }));
+    }
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true }));
   });
@@ -110,6 +115,35 @@ test("DELETE /api/skills/:id forwards as DELETE (per-skill un-index)", async () 
   const c = calls.at(-1)!;
   assert.equal(c.method, "DELETE");
   assert.equal(c.url, "/v1/admin/skills/k1?scope=org:acme");
+});
+
+test("Skill Access reads and writes forward to the unified core API", async () => {
+  const read = await fetch(`${base}/api/skills/k1/access`, { headers: { cookie: ADMIN } });
+  assert.equal(read.status, 200);
+  assert.equal(calls.at(-1)!.url, "/v1/skills/k1/access");
+  const write = await fetch(`${base}/api/skills/k1/access`, {
+    method: "PUT",
+    headers: { cookie: ADMIN, "content-type": "application/json" },
+    body: JSON.stringify({ mode: "restricted", subjects: [], expectedRevision: 1 }),
+  });
+  assert.equal(write.status, 200);
+  const call = calls.at(-1)!;
+  assert.equal(call.method, "PUT");
+  assert.equal(call.url, "/v1/skills/k1/access");
+  assert.deepEqual(JSON.parse(call.body), { mode: "restricted", subjects: [], expectedRevision: 1 });
+});
+
+test("Admin Skills detail contains a CAS-backed Skill Access card", () => {
+  const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  assert.match(html, /function skillAccessCard\(/);
+  assert.match(html, /expectedRevision: access\.revision/);
+  assert.match(html, /Changes are recorded in Audit/);
+  assert.match(html, /access\.updatedBy/);
+  assert.match(html, /access\.effectiveSummary/);
+  assert.match(html, /people\.setAttribute\("role", "status"\)/);
+  assert.match(html, /people\.setAttribute\("aria-live", "polite"\)/);
+  assert.match(html, /error \? "alert" : "status"/);
+  assert.match(html, /adminTr\(kindLabel \|\| candidate\.kind\)/);
 });
 
 test("skill-pack writes require a signed-in cookie", async () => {

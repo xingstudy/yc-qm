@@ -90,6 +90,7 @@ export async function checkSlackCredentials(
 
 export async function stagingApiHeaders(
   principalId: string,
+  sessionVersion: number,
   sourceSecret: string,
   portalIdentitySecret: string,
   method: string,
@@ -98,7 +99,10 @@ export async function stagingApiHeaders(
   base: Record<string, string> = {},
   nowMs = Date.now(),
 ): Promise<Record<string, string>> {
-  const portalIdentity = await mintSignedPayload({ p: principalId, exp: nowMs + 60_000 }, portalIdentitySecret);
+  const portalIdentity = await mintSignedPayload(
+    { p: principalId, sv: sessionVersion, exp: nowMs + 60_000 },
+    portalIdentitySecret,
+  );
   return signedRequestHeaders(
     sourceSecret,
     method,
@@ -114,6 +118,24 @@ export async function stagingApiHeaders(
 
 type LiveSessionConfig = Pick<Config, "adminGrants" | "orgId" | "portalIdentitySecret" | "signingSecret">;
 
+async function activeSessionVersion(
+  root: string,
+  principalId: string,
+  sourceSecret: string,
+  fetchImpl: FetchLike,
+): Promise<number> {
+  const path = `/v1/internal/auth/users/${encodeURIComponent(principalId)}/session-version`;
+  const headers = await signedRequestHeaders(sourceSecret, "GET", path, "", {}, Math.floor(Date.now() / 1000));
+  const response = await fetchImpl(`${root}${path}`, { headers });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`live session version returned ${response.status}: ${text.slice(0, 500)}`);
+  const sessionVersion = (JSON.parse(text) as { sessionVersion?: unknown }).sessionVersion;
+  if (!Number.isInteger(sessionVersion) || (sessionVersion as number) < 0) {
+    throw new Error("live session version response is invalid");
+  }
+  return sessionVersion as number;
+}
+
 export async function checkLiveSession(
   config: LiveSessionConfig,
   baseUrl: string,
@@ -125,10 +147,12 @@ export async function checkLiveSession(
   if (!portalIdentitySecret) throw new Error("live session smoke requires PORTAL_IDENTITY_SECRET");
   const principalId = firstAdminPrincipal(config.adminGrants);
   const root = baseUrl.replace(/\/+$/, "");
+  const sessionVersion = await activeSessionVersion(root, principalId, sourceSecret, fetchImpl);
   const request = async (method: "GET" | "POST", path: string, body?: unknown, admin = false): Promise<unknown> => {
     const raw = body === undefined ? "" : JSON.stringify(body);
     const headers = await stagingApiHeaders(
       principalId,
+      sessionVersion,
       sourceSecret,
       portalIdentitySecret,
       method,
@@ -232,9 +256,11 @@ async function checkApi(
   portalIdentitySecret: string,
   port: string,
 ): Promise<void> {
+  const root = `http://127.0.0.1:${port}`;
+  const sessionVersion = await activeSessionVersion(root, principalId, sourceSecret, fetch);
   const path = `/v1/admin/sessions?scope=${encodeURIComponent(`org:${orgId}`)}&limit=5&_smoke=${randomUUID()}`;
-  const response = await fetch(`http://127.0.0.1:${port}${path}`, {
-    headers: await stagingApiHeaders(principalId, sourceSecret, portalIdentitySecret, "GET", path, "", {
+  const response = await fetch(`${root}${path}`, {
+    headers: await stagingApiHeaders(principalId, sessionVersion, sourceSecret, portalIdentitySecret, "GET", path, "", {
       "x-admin-actor": `${principalId}@${orgId}`,
     }),
   });

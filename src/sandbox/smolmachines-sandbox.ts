@@ -417,9 +417,9 @@ export function createSmolmachinesSandbox(workspace: WorkspaceStore, opts: Smolm
           mintToken: (grant) =>
             mintCapabilityToken(
               {
-                actorId: "smolmachines-sandbox",
+                actorId: "system:smolmachines-sandbox",
                 aud: BLOB_TRANSFER_AUD,
-                scopeId: "personal:smolmachines-sandbox",
+                scopeId: "personal:system:smolmachines-sandbox",
                 blob: grant,
                 exp: Date.now() + BLOB_TRANSFER_TTL_MS,
               },

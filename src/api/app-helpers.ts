@@ -454,7 +454,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     const { kind } = parseScopeId(skill.scopeId);
     if (kind !== "channel" && kind !== "group") return skill;
     await deps.skills.review(skill.id, "system:skill-authoring", skill.manifest.requiredCapabilities);
-    const published = await deps.skills.publish(skill.id);
+    const published = await deps.skills.publish(skill.id, editorId);
     deps.auditLog.record({
       at: Date.now(),
       principalId: editorId,

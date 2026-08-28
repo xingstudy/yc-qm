@@ -5,6 +5,10 @@ import type { AddressInfo } from "node:net";
 import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 
 const core = createServer((req: IncomingMessage, res) => {
+  if (req.method === "GET" && (req.url ?? "").startsWith("/v1/internal/auth/session")) {
+    res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(JSON.stringify({ principalId: "alice", sessionVersion: 1 }));
+  }
   if ((req.url ?? "").startsWith("/d/")) {
     res.writeHead(200, {
       "content-type": "text/html; charset=utf-8",

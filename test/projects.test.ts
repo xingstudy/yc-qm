@@ -34,12 +34,12 @@ test("ProjectStore atomically maintains a managed-group roster", async () => {
   await Promise.all([projects.addMember(project.id, "owner", "alice"), projects.addMember(project.id, "owner", "bob")]);
   assert.deepEqual(new Set((await projects.get(project.id))!.memberIds), new Set(["owner", "alice", "bob"]));
   assert.notEqual(await projects.version(projectGroupRef(project.id)), initialVersion);
-  assert.equal((await projects.addMember(project.id, "alice", "mallory")).status, "ok");
+  assert.equal((await projects.addMember(project.id, "alice", "mallory")).status, "forbidden");
   assert.equal((await projects.addMember(project.id, "outsider", "eve")).status, "forbidden");
   assert.equal((await projects.removeMember(project.id, "bob", "mallory")).status, "forbidden");
   assert.equal((await projects.removeMember(project.id, "owner", "owner")).status, "invalid_member");
   assert.equal(await projects.membership(projectGroupRef(project.id), "alice"), true);
-  assert.deepEqual(await projects.members(projectGroupRef(project.id)), ["owner", "alice", "bob", "mallory"]);
+  assert.deepEqual(await projects.members(projectGroupRef(project.id)), ["owner", "alice", "bob"]);
   assert.equal(await projects.name(projectGroupRef(project.id)), "Launch Cohort");
 });
 
@@ -65,7 +65,7 @@ test("ProjectStore rename is owner-only and cleans the name", async () => {
   assert.ok(same.status === "ok" && !same.changed);
 });
 
-test("ProjectStore slack-channel link is member-managed and not a roster change", async () => {
+test("ProjectStore slack-channel link is owner-managed and not a roster change", async () => {
   let at = 500;
   const projects = createProjectStore(undefined, { id: () => "sl", now: () => at++ });
   const project = await projects.create({ name: "Linked", ownerId: "owner" });
@@ -79,12 +79,16 @@ test("ProjectStore slack-channel link is member-managed and not a roster change"
   );
   assert.equal(await projects.slackChannel(groupRef), undefined);
 
-  const linked = await projects.setSlackChannel(project.id, "member", { channelId: "C1", channelName: "eng" });
+  assert.equal(
+    (await projects.setSlackChannel(project.id, "member", { channelId: "C1", channelName: "eng" })).status,
+    "forbidden",
+  );
+  const linked = await projects.setSlackChannel(project.id, "owner", { channelId: "C1", channelName: "eng" });
   assert.ok(linked.status === "ok" && linked.changed);
   const link = await projects.slackChannel(groupRef);
   assert.equal(link?.channelId, "C1");
   assert.equal(link?.channelName, "eng");
-  assert.equal(link?.linkedBy, "member");
+  assert.equal(link?.linkedBy, "owner");
   assert.equal((await projects.get(project.id))?.slackChannel?.channelId, "C1");
 
   const same = await projects.setSlackChannel(project.id, "owner", { channelId: "C1", channelName: "eng" });
@@ -251,6 +255,10 @@ test("Project routes use ordinary group sessions with the durable roster as auth
     { principalId: "outsider", displayName: "Outsider", type: "internal" },
     { principalId: "roster-helper", displayName: "Roster Helper", type: "internal" },
   ]);
+  for (const principalId of ["owner", "member", "outsider", "roster-helper"]) {
+    await built.organization.invite({ principalId, email: null, displayName: principalId, actor: "test" });
+    await built.organization.setStatus({ principalId, status: "active", actor: "test" });
+  }
 
   const create = await fetch(`${base}/v1/projects`, {
     method: "POST",
@@ -289,7 +297,8 @@ test("Project routes use ordinary group sessions with the durable roster as auth
       text,
     });
 
-  assert.equal((await turn("owner", "web:owner:first", "secret-before-join")).status, "ok");
+  const firstTurn = await turn("owner", "web:owner:first", "secret-before-join");
+  assert.equal(firstTurn.status, "ok", JSON.stringify(firstTurn));
   assert.equal((await built.runs.list())[0]?.request.scopeVersion, await built.projects.version(groupRef));
   const [first] = (await built.sessions.listAll()).filter((session) => session.scopeId === scope);
   assert.ok(first);
@@ -319,7 +328,13 @@ test("Project routes use ordinary group sessions with the durable roster as auth
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ principalId: "member", memberId: "roster-helper" }),
   });
-  assert.equal(memberAdded.status, 200);
+  assert.equal(memberAdded.status, 403);
+  const ownerAdded = await fetch(`${base}/v1/projects/${project.id}/members`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ principalId: "owner", memberId: "roster-helper" }),
+  });
+  assert.equal(ownerAdded.status, 200);
   const memberRemoved = await fetch(`${base}/v1/projects/${project.id}/members/roster-helper`, {
     method: "DELETE",
     headers: { "content-type": "application/json" },
@@ -538,22 +553,26 @@ test("Project routes use ordinary group sessions with the durable roster as auth
   assert.ok(removableApprovalId);
 
   await built.identity.deactivate("member");
+  await built.organization.setStatus({ principalId: "member", status: "suspended", actor: "test" });
   assert.deepEqual(await built.app.listProjects("member"), []);
   assert.equal(await built.app.belongsToScope("member", scope), false);
   assert.equal((await turn("member", "web:owner:first")).status, "refused");
   assert.equal((await background()).status, "refused");
   assert.equal((await turn("owner", "web:owner:first", "inactive-gap-secret")).status, "ok");
   await built.identity.reactivate("member");
+  await built.organization.setStatus({ principalId: "member", status: "active", actor: "test" });
   assert.equal((await turn("owner", "web:owner:first", "after-reactivation")).status, "ok");
   const reactivatedRequest = (await built.sessions.listLlmRequests(first.id)).at(-1)!;
   assert.doesNotMatch(JSON.stringify(reactivatedRequest.promptEnvelope), /inactive-gap-secret/);
   assert.match(JSON.stringify(reactivatedRequest.promptEnvelope), /after-reactivation/);
   await built.identity.deactivate("owner");
+  await built.organization.setStatus({ principalId: "owner", status: "suspended", actor: "test" });
   assert.deepEqual(await built.app.listProjects("member"), []);
   assert.equal((await turn("member", "web:owner:first")).status, "refused");
   assert.equal((await built.app.addProjectMember(project.id, "owner", "outsider")).status, "forbidden");
   assert.equal((await built.app.addProjectMember(project.id, "member", "outsider")).status, "forbidden");
   await built.identity.reactivate("owner");
+  await built.organization.setStatus({ principalId: "owner", status: "active", actor: "test" });
 
   const addParticipant = built.sessions.addParticipant.bind(built.sessions);
   let failReconcile = true;

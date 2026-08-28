@@ -131,6 +131,102 @@ test("a non-admin's capability token gets 403 from admin routes (gate routes, th
   }
 });
 
+test("an unattended administrator capability cannot elevate into Skill Access", async () => {
+  const s = start();
+  try {
+    for (const principalId of ["admin-alice", "skill-owner"]) {
+      await s.built.organization.invite({
+        principalId,
+        email: null,
+        displayName: principalId,
+        actor: "setup",
+      });
+      await s.built.organization.setStatus({ principalId, status: "active", actor: "setup" });
+    }
+    const skill = await s.built.skills.create({
+      scopeId: scopeId("personal", "skill-owner"),
+      createdBy: "skill-owner",
+      manifest: { name: "admin-boundary", description: "Boundary", requiredCapabilities: [], body: "Boundary" },
+    });
+    await s.built.skills.review(skill.id, "skill-owner", []);
+    await s.built.skills.publish(skill.id, "skill-owner");
+    const unattended = await capFor("admin-alice", { live: false });
+    assert.equal(
+      (await fetch(`${s.base}/v1/skills/${skill.id}/access`, { headers: { "x-agent-capability": unattended } })).status,
+      404,
+    );
+    assert.equal(
+      (
+        await fetch(`${s.base}/v1/skills/${skill.id}/access`, {
+          method: "PUT",
+          headers: { "x-agent-capability": unattended, "content-type": "application/json" },
+          body: JSON.stringify({ mode: "organization", subjects: [], expectedRevision: 1 }),
+        })
+      ).status,
+      404,
+    );
+    assert.equal(
+      (await fetch(`${s.base}/v1/skills/${skill.id}`, { headers: { "x-agent-capability": unattended } })).status,
+      404,
+    );
+    assert.equal(
+      (
+        await fetch(`${s.base}/v1/skills/${skill.id}`, {
+          method: "PUT",
+          headers: { "x-agent-capability": unattended, "content-type": "application/json" },
+          body: JSON.stringify({ description: "Taken over" }),
+        })
+      ).status,
+      404,
+    );
+    assert.equal((await s.built.skills.get(skill.id))?.manifest.description, "Boundary");
+    assert.equal(
+      (
+        await fetch(`${s.base}/v1/skills/${skill.id}`, {
+          method: "DELETE",
+          headers: { "x-agent-capability": unattended, "content-type": "application/json" },
+          body: "{}",
+        })
+      ).status,
+      403,
+    );
+    assert.equal((await s.built.skills.get(skill.id))?.status, "published");
+    await s.built.skills.archive(skill.id, "skill-owner");
+    assert.equal(
+      (
+        await fetch(`${s.base}/v1/skills/${skill.id}/restore`, {
+          method: "POST",
+          headers: { "x-agent-capability": unattended, "content-type": "application/json" },
+          body: "{}",
+        })
+      ).status,
+      404,
+    );
+    assert.equal((await s.built.skills.get(skill.id))?.status, "archived");
+    const ownerUnattended = await capFor("skill-owner", { live: false });
+    assert.equal(
+      (
+        await fetch(`${s.base}/v1/skills/${skill.id}/restore`, {
+          method: "POST",
+          headers: { "x-agent-capability": ownerUnattended, "content-type": "application/json" },
+          body: "{}",
+        })
+      ).status,
+      200,
+    );
+    assert.equal((await s.built.skills.get(skill.id))?.status, "published");
+    const live = await capFor("admin-alice");
+    const updated = await fetch(`${s.base}/v1/skills/${skill.id}/access`, {
+      method: "PUT",
+      headers: { "x-agent-capability": live, "content-type": "application/json" },
+      body: JSON.stringify({ mode: "organization", subjects: [], expectedRevision: 1 }),
+    });
+    assert.equal(updated.status, 200);
+  } finally {
+    await s.close();
+  }
+});
+
 test("x-admin-actor cannot escalate a capability token — the header is the portal's source-authed door", async () => {
   const s = start();
   try {

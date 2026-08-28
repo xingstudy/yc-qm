@@ -8,7 +8,7 @@ import { supportsProcessSessions } from "../sandbox/sandbox.ts";
 import { processIsGone } from "../sandbox/process-poll.ts";
 import { cronRef, deployRef, encodeRef, fileRef, skillRef } from "../acl/resource-ref.ts";
 import { samePerson } from "../directory/person.ts";
-import { AdminError } from "../admin/admin-service.ts";
+import { AdminError, adminStatusFromGrants } from "../admin/admin-service.ts";
 import { type ArtifactHome } from "./artifact-share.ts";
 import { randomUUID } from "node:crypto";
 import { MAX_ATTACHMENT_BYTES, mimeFromName, safeAttachmentName } from "../core/attachments.ts";
@@ -35,6 +35,7 @@ export function createSessionMethods(
   | "readSessionBackgroundOutput"
   | "listContexts"
   | "listProjects"
+  | "projectMemberCandidates"
   | "createProject"
   | "addProjectMember"
   | "removeProjectMember"
@@ -79,6 +80,14 @@ export function createSessionMethods(
     principalManagesArtifactHome,
     artifactAuthor,
   } = h;
+  async function directoryActor(
+    principalId: string,
+    allowAdminElevation = false,
+  ): Promise<{ principalId: string; isAdmin: boolean }> {
+    const resolved = deps.admin?.resolveActor(`${principalId}@${orgIdOf()}`)?.id ?? principalId;
+    const grants = (await deps.admin?.listGrants()) ?? [];
+    return { principalId, isAdmin: allowAdminElevation && adminStatusFromGrants(grants, resolved).isAdmin };
+  }
   return {
     async getSession(sessionId, window) {
       const session = await deps.sessions.get(sessionId);
@@ -302,6 +311,29 @@ export function createSessionMethods(
       return projectsForViewer(principalId);
     },
 
+    async projectMemberCandidates(id, principalId, query, allowAdminElevation) {
+      if (!deps.projects || !deps.organization) return null;
+      const project = await deps.projects.get(id);
+      if (!project || project.orgId !== orgIdOf() || !samePerson(project.ownerId, principalId)) {
+        return null;
+      }
+      const page = await deps.organization.directory.searchUsers(
+        await directoryActor(principalId, allowAdminElevation),
+        {
+          query,
+          excludePrincipalIds: project.memberIds,
+          after: null,
+          limit: 50,
+        },
+      );
+      if (!page) return null;
+      return page.users.map((user) => ({
+        principalId: user.principalId,
+        displayName: user.displayName,
+        email: user.email,
+      }));
+    },
+
     async createProject(principalId, name) {
       const principal = deps.identity.classify(principalId);
       if (!deps.projects || !deps.identity.isInternal(principal) || !name.trim()) return null;
@@ -316,15 +348,17 @@ export function createSessionMethods(
       return projectView(project);
     },
 
-    async addProjectMember(id, principalId, memberId) {
+    async addProjectMember(id, principalId, memberId, allowAdminElevation) {
       if (!deps.projects) return { status: "not_found" };
       if (!deps.identity.isInternal(deps.identity.classify(principalId))) return { status: "forbidden" };
       const existing = await deps.projects.get(id);
       if (!existing || existing.orgId !== orgIdOf()) return { status: "not_found" };
-      const directoryMember = await deps.directory.get(memberId);
-      const principal = deps.identity.classify(memberId);
-      if (!directoryMember || directoryMember.type !== "internal" || !deps.identity.isInternal(principal))
-        return { status: "invalid_member" };
+      if (!deps.organization) return { status: "invalid_member" };
+      const member = await deps.organization.directory.visibleUser(
+        await directoryActor(principalId, allowAdminElevation),
+        memberId,
+      );
+      if (!member) return { status: "invalid_member" };
       const result = await deps.projects.addMember(id, principalId, memberId, async ({ project, changed }) => {
         if (changed)
           deps.auditLog.record({
@@ -445,11 +479,17 @@ export function createSessionMethods(
 
     async listScopeResources(principalId, scope) {
       if (!(await principalCanAccessCurrentScope(principalId, scope))) return null;
-      const [page, allCrons, allDeployments, allSkills] = await Promise.all([
+      const [page, allCrons, allDeployments, skillResolutions] = await Promise.all([
         filesForViewer(principalId, undefined, scope),
         deps.crons.list(),
         deps.deploy.listDeployments(),
-        deps.skills.list(),
+        deps.skillAccess
+          ? deps.skillAccess.visibleForUser(principalId, [
+              scope,
+              scopeId("personal", principalId),
+              scopeId("org", orgIdOf()),
+            ])
+          : deps.skills.visibleFor([scope]),
       ]);
       const files = [...page.owned, ...page.shared].sort((a, b) => b.createdAt - a.createdAt);
       const deployments = (
@@ -470,7 +510,8 @@ export function createSessionMethods(
             }),
         )
       ).filter((d): d is ScopeDeployment => d != null);
-      const skills = allSkills
+      const skills = skillResolutions
+        .flatMap((resolution) => (resolution.skill ? [resolution.skill, ...resolution.shadowed] : resolution.shadowed))
         .filter((s) => s.scopeId === scope)
         .map((s) => ({ id: s.id, name: s.manifest.name, description: s.manifest.description, status: s.status }));
       return {
@@ -672,7 +713,7 @@ export function createSessionMethods(
       if (!deps.admin) throw new Error("org promotion requires an admin service");
       const status = await deps.admin.adminStatusOf({ id: actorId, type: "internal" });
       if (!status.isAdmin) throw new AdminError(403, "only an org admin can promote a skill org-wide");
-      const promoted = await deps.skills.promote(id, targetScopeId);
+      const promoted = await deps.skills.promote(id, targetScopeId, actorId);
       deps.auditLog.record({
         at: Date.now(),
         principalId: actorId,
@@ -724,7 +765,10 @@ export function createSessionMethods(
       if (type !== "skill") {
         throw new Error(`moving a ${type}'s home isn't supported — share it instead (add a grant)`);
       }
-      await deps.skills.move(id, toScope);
+      const status = deps.admin
+        ? await deps.admin.adminStatusOf({ id: movedBy, type: "internal" }).catch(() => ({ isAdmin: false }))
+        : { isAdmin: false };
+      await deps.skills.move(id, toScope, { principalId: movedBy, isAdmin: status.isAdmin });
       deps.auditLog.record({
         at: Date.now(),
         principalId: movedBy,

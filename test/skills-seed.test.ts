@@ -137,6 +137,26 @@ test("installSeedSkills re-seeds a changed manifest over its own prior install, 
   const guarded = await installSeedSkills(skills, { dir: userDir, scopeId: org });
   assert.deepEqual(guarded, { installed: [], updated: [], skipped: ["mine"] });
   assert.equal((await skills.get(mine.id))!.manifest.description, "user authored");
+
+  const archivedOwned = await skills.create({
+    scopeId: org,
+    manifest: { name: "collision", description: "old seed", requiredCapabilities: [], body: "# Old" },
+    createdBy: "system:skills-seed",
+  });
+  await skills.archive(archivedOwned.id);
+  const activeForeign = await skills.create({
+    scopeId: org,
+    manifest: { name: "collision", description: "user copy", requiredCapabilities: [], body: "# User" },
+    createdBy: "user:carol",
+  });
+  await skills.review(activeForeign.id, "reviewer:r1", []);
+  await skills.publish(activeForeign.id);
+  const collisionDir = mkdtempSync(join(tmpdir(), "seed-collision-"));
+  writeSeedSkill(collisionDir, "collision", "new seed", "# New");
+  const collision = await installSeedSkills(skills, { dir: collisionDir, scopeId: org });
+  assert.deepEqual(collision, { installed: [], updated: [], skipped: ["collision"] });
+  assert.equal((await skills.get(archivedOwned.id))?.status, "archived");
+  assert.equal((await skills.get(activeForeign.id))?.status, "published");
 });
 
 test("concurrent upserts of the same scope+name serialize into one record (no duplicate creates)", async () => {
@@ -161,6 +181,8 @@ test("a fresh app advertises and materializes only admin-enabled connector skill
     dataDir: mkdtempSync(join(tmpdir(), "seeded-skills-")),
   });
   const built = buildApp(config);
+  await built.organization.invite({ principalId: "U1", email: null, displayName: "U1", actor: "setup" });
+  await built.organization.setStatus({ principalId: "U1", status: "active", actor: "setup" });
   await built.config.setConnectorClient(scopeId("org", "default-org"), "google", {
     clientId: "google-client",
     clientSecret: "google-secret",

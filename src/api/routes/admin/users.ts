@@ -282,9 +282,18 @@ export async function startImpersonation(ctx: ApiCtx): Promise<void> {
   const target = String((body as { target?: string } | undefined)?.target ?? "").trim();
   if (!target) return sendJson(res, 400, { error: "bad_request", message: "target principal required" });
   if (target === actor.id) return sendJson(res, 400, { error: "bad_request", message: "cannot impersonate yourself" });
+  const organizationUser = deps.organization ? await deps.organization.checkActive(target) : null;
+  if (deps.organization && (!organizationUser || organizationUser.status !== "active")) {
+    return sendJson(res, 404, { error: "not_found", message: "target principal not found" });
+  }
   const member = await app.directoryMember(target);
   audit(deps, { principalId: actor.id, action: "impersonate.start", resource: target, scopeLabel: org });
-  return sendJson(res, 200, { ok: true, target, displayName: member?.displayName ?? target });
+  return sendJson(res, 200, {
+    ok: true,
+    target,
+    displayName: member?.displayName ?? target,
+    ...(organizationUser ? { sessionVersion: organizationUser.sessionVersion } : {}),
+  });
 }
 
 export async function stopImpersonation(ctx: ApiCtx): Promise<void> {

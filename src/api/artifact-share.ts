@@ -53,9 +53,10 @@ export async function resolveShareTarget(
   return { kind: "invalid", message: hints.targetRequired };
 }
 
-export function splitToScope(toScope: string): { scope: string } | { recipient: string } {
+export function splitToScope(toScope: string, type?: ArtifactType): { scope: string } | { recipient: string } {
   const t = toScope.trim();
-  return t === "org" || parseScopeId(t).kind !== null ? { scope: t } : { recipient: t };
+  const skillAccessScope = type === "skill" && /^(org-unit|access-group):[^:]+$/.test(t);
+  return t === "org" || parseScopeId(t).kind !== null || skillAccessScope ? { scope: t } : { recipient: t };
 }
 
 export interface ArtifactHome {
@@ -72,12 +73,13 @@ export interface ShareArtifactRequest {
   recipient?: string;
   permission?: Permission;
   move?: boolean;
+  unshare?: boolean;
 }
 
 export type ShareArtifactResult =
   | {
       ok: true;
-      verb: "share" | "move" | "promote";
+      verb: "share" | "unshare" | "move" | "promote";
       type: ArtifactType;
       id: string;
       target: { scope: ScopeId; label: string };
@@ -85,7 +87,14 @@ export type ShareArtifactResult =
     }
   | {
       ok: false;
-      code: "bad_request" | "not_found" | "forbidden" | "recipient_not_found" | "ambiguous_recipient" | "share_failed";
+      code:
+        | "bad_request"
+        | "not_found"
+        | "forbidden"
+        | "recipient_not_found"
+        | "ambiguous_recipient"
+        | "skill_access_required"
+        | "share_failed";
       message: string;
       candidates?: Array<{ id: string; label: string }>;
     };

@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import type { ClientConfig, Pool, PoolClient } from "pg";
 import { parse, toClientConfig, type ConnectionOptions } from "pg-connection-string";
-import { swallowAs } from "../util/errors.ts";
-import { errMessage } from "../util/errors.ts";
+import { sleep } from "../util/async.ts";
+import { errMessage, swallowAs } from "../util/errors.ts";
 
 export type { Pool, PoolClient };
 
@@ -48,8 +48,19 @@ export function concurrentIndexName(stmt: string): string | undefined {
 
 async function applyDdl(pool: Pool, statements: string[]): Promise<void> {
   const ddl = await pool.connect();
+  const deadline = Date.now() + 5 * 60_000;
+  let locked = false;
+  let discard = false;
   try {
-    await ddl.query("SELECT pg_advisory_lock(hashtext('agent-platform:schema-init'))");
+    for (;;) {
+      const lock = await ddl.query("SELECT pg_try_advisory_lock(hashtext('agent-platform:schema-init')) AS acquired");
+      if (lock.rows[0]?.acquired === true) {
+        locked = true;
+        break;
+      }
+      if (Date.now() >= deadline) throw new Error("timeout acquiring schema initialization lock");
+      await sleep(25);
+    }
     for (const stmt of statements) {
       const indexName = concurrentIndexName(stmt);
       if (indexName) {
@@ -62,10 +73,14 @@ async function applyDdl(pool: Pool, statements: string[]): Promise<void> {
       await ddl.query(stmt);
     }
   } finally {
-    await ddl
-      .query("SELECT pg_advisory_unlock(hashtext('agent-platform:schema-init'))")
-      .catch(swallowAs("pg-pool: schema-init unlock", undefined));
-    ddl.release();
+    if (locked) {
+      try {
+        await ddl.query("SELECT pg_advisory_unlock(hashtext('agent-platform:schema-init'))");
+      } catch {
+        discard = true;
+      }
+    }
+    ddl.release(discard);
   }
 }
 

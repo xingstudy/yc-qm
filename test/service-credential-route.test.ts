@@ -26,7 +26,12 @@ const SECRET = "svc-cred-route-secret".repeat(3);
 const ADMIN = { "content-type": "application/json", "x-admin-actor": "admin-alice@default-org" };
 
 function start(wrapAcl?: (acl: AclStore) => AclStore): { base: string; built: BuiltApp; close: () => Promise<void> } {
-  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "svc-cred-route-")) }));
+  const built = buildApp(
+    testConfig({
+      dataDir: mkdtempSync(join(tmpdir(), "svc-cred-route-")),
+      orgBootstrapUsers: ["admin-alice", "alice@default-org", "alice", "bob", "left", "right"],
+    }),
+  );
   const acl = wrapAcl?.(built.acl) ?? built.acl;
   const server = createInsecureTestServer(built.app, {
     config: built.config,
@@ -35,6 +40,7 @@ function start(wrapAcl?: (acl: AclStore) => AclStore): { base: string; built: Bu
     credentialUsage: built.credentialUsage,
     admin: built.admin,
     auditLog: built.auditLog,
+    organization: built.organization,
   });
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
@@ -210,7 +216,7 @@ test("env-delivery credential: envKey validated, host refused, duplicates refuse
   }
 });
 
-test("env-delivery accepts person/team grantees — grants now gate env injection like broker calls", async () => {
+test("env-delivery accepts organization user grants that gate injection like broker calls", async () => {
   const srv = start();
   try {
     const narrowed = await putCred(srv.base, {
@@ -232,6 +238,72 @@ test("env-delivery accepts person/team grantees — grants now gate env injectio
       grantees: ["org:default-org"],
     });
     assert.equal(orgWide.status, 200, "the org grant is fine too");
+    const config = await getCfg(srv.base);
+    assert.deepEqual(config.serviceCredentials.find((credential) => credential.slug === "browse-steel")?.grantees, [
+      "personal:alice@default-org",
+    ]);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("service credentials use active organization users, units, and access groups as grantees", async () => {
+  const srv = start();
+  try {
+    const department = await srv.built.organization.createUnit({
+      parentId: "root",
+      name: "Engineering",
+      kind: "department",
+      actor: "admin-alice",
+    });
+    const team = await srv.built.organization.createUnit({
+      parentId: department.id,
+      name: "Platform",
+      kind: "team",
+      actor: "admin-alice",
+    });
+    assert.equal(
+      (
+        await srv.built.organization.addUnitMember({
+          unitId: team.id,
+          principalId: "alice",
+          role: "member",
+          actor: "admin-alice",
+        })
+      ).ok,
+      true,
+    );
+    const group = await srv.built.organization.createGroup({ name: "Operators", actor: "admin-alice" });
+    assert.equal(
+      (
+        await srv.built.organization.addGroupMember({
+          groupId: group.id,
+          principalId: "bob",
+          role: "member",
+          actor: "admin-alice",
+        })
+      ).ok,
+      true,
+    );
+
+    const response = await putCred(srv.base, {
+      slug: "org-scoped",
+      name: "Organization scoped",
+      secret: "s",
+      host: "org.example",
+      grantees: [`org-unit:${department.id}`, `access-group:${group.id}`, "personal:alice"],
+    });
+    assert.equal(response.status, 200);
+    const config = (await (await fetch(`${srv.base}/v1/admin/scopes/org:default-org`, { headers: ADMIN })).json()) as {
+      organizationAccessSubjects: {
+        users: Array<{ principalId: string }>;
+        units: Array<{ id: string }>;
+        groups: Array<{ id: string }>;
+      };
+    };
+    assert.ok(config.organizationAccessSubjects.users.some((user) => user.principalId === "alice"));
+    assert.ok(config.organizationAccessSubjects.units.some((unit) => unit.id === department.id));
+    assert.ok(config.organizationAccessSubjects.groups.some((candidate) => candidate.id === group.id));
   } finally {
     await srv.close();
   }
@@ -720,7 +792,7 @@ test("re-sharing reconciles the ACL allow-list (org-wide → specific people →
   }
 });
 
-test("a non-org/personal/team grantee is rejected", async () => {
+test("a grantee outside the organization subject model is rejected", async () => {
   const srv = start();
   try {
     await putCred(srv.base, { slug: "k", name: "K", secret: "s", host: "h.example" });
@@ -744,6 +816,16 @@ test("a non-org/personal/team grantee is rejected", async () => {
     });
     assert.equal(disguised.status, 400);
     assert.match(await disguised.text(), /personal:channel:C1/);
+
+    const missing = await putCred(srv.base, {
+      slug: "k",
+      name: "K",
+      host: "h.example",
+      grantees: ["personal:missing"],
+      expectedUpdatedAt: version,
+    });
+    assert.equal(missing.status, 400);
+    assert.match(await missing.text(), /active organization user/);
   } finally {
     await srv.close();
   }
@@ -969,12 +1051,13 @@ const dm = (text: string): TurnRequest => ({
   text,
 });
 
-function buildWithCapture() {
+async function buildWithCapture() {
   const built = buildApp(
     testConfig({
       dataDir: mkdtempSync(join(tmpdir(), "svc-cred-stamp-")),
       signingSecret: SECRET,
       apiBaseUrl: "http://core.internal",
+      orgBootstrapUsers: ["U1", "U2"],
     }),
   );
   let captured: Record<string, string> | undefined;
@@ -987,7 +1070,7 @@ function buildWithCapture() {
 }
 
 test("orchestrator stamps AGENT_CREDENTIAL_TOKEN with an org-wide credential's slug", async () => {
-  const { built, env } = buildWithCapture();
+  const { built, env } = await buildWithCapture();
   await built.serviceCreds.setServiceCredential("org:default-org", {
     slug: "x-firehose",
     name: "X",
@@ -1033,7 +1116,7 @@ test("orchestrator stamps AGENT_CREDENTIAL_TOKEN with an org-wide credential's s
 });
 
 test("orchestrator does NOT stamp a credential granted only to someone else", async () => {
-  const { built, env } = buildWithCapture();
+  const { built, env } = await buildWithCapture();
   await built.serviceCreds.setServiceCredential("org:default-org", {
     slug: "x-firehose",
     name: "X",
@@ -1054,7 +1137,7 @@ test("orchestrator does NOT stamp a credential granted only to someone else", as
 });
 
 test("orchestrator stamps nothing when the org has no service credentials (zero-cost common path)", async () => {
-  const { built, env } = buildWithCapture();
+  const { built, env } = await buildWithCapture();
   const res = await built.app.turn(dm("!run echo hi"));
   assert.equal(res.status, "ok", res.reason);
   assert.equal(env()?.AGENT_CREDENTIAL_TOKEN, undefined);
@@ -1062,7 +1145,7 @@ test("orchestrator stamps nothing when the org has no service credentials (zero-
 });
 
 test("the system prompt advertises an entitled credential (host/methods/paths) so the agent can use the broker", async () => {
-  const { built } = buildWithCapture();
+  const { built } = await buildWithCapture();
   await built.serviceCreds.setServiceCredential("org:default-org", {
     slug: "x-firehose",
     name: "X firehose",
@@ -1087,7 +1170,7 @@ test("the system prompt advertises an entitled credential (host/methods/paths) s
 });
 
 test("the system prompt does NOT advertise a credential the session isn't entitled to", async () => {
-  const { built } = buildWithCapture();
+  const { built } = await buildWithCapture();
   await built.serviceCreds.setServiceCredential("org:default-org", {
     slug: "x-firehose",
     name: "X firehose",

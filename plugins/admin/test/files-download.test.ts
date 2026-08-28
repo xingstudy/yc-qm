@@ -12,6 +12,11 @@ const core = createServer((req: IncomingMessage, res) => {
     actor: (req.headers["x-admin-actor"] as string) ?? null,
     signed: Boolean(req.headers["x-timestamp"] && req.headers["x-signature"]),
   });
+  if (req.method === "GET" && req.url === "/v1/admin/whoami") {
+    const manager = req.headers["x-admin-actor"] === "U-manager@acme";
+    res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(JSON.stringify(manager ? { isAdmin: false, isManager: true } : { isAdmin: true }));
+  }
   if (req.method === "GET" && (req.url ?? "").includes("reset-mid-stream")) {
     res.writeHead(200, { "content-type": "application/octet-stream", "content-length": "1000000" });
     res.write("partial");
@@ -54,6 +59,7 @@ test.after(() => {
 });
 
 const ADMIN = "admin=U-admin";
+const MANAGER = "admin=U-manager";
 
 test("GET /api/files/download streams the core attachment with actor + signature", async () => {
   const r = await fetch(`${base}/api/files/download?id=art-abc123`, { headers: { cookie: ADMIN } });
@@ -106,6 +112,23 @@ test("POST /api/files/upload stages the body, then registers it with the admin a
   assert.equal(reg.url, "/v1/admin/files/upload?scope=personal%3AU1");
   assert.equal(reg.actor, "U-admin@acme");
   assert.equal(reg.signed, true);
+});
+
+test("organization managers cannot stage uploads or reach non-organization admin APIs", async () => {
+  const body = Buffer.from("blocked upload");
+  const sha = createHash("sha256").update(body).digest("hex");
+  const beforeBlobs = calls.filter((call) => call.url.startsWith("/v1/blobs")).length;
+  const upload = await fetch(`${base}/api/files/upload?scope=personal%3AU-manager`, {
+    method: "POST",
+    headers: { cookie: MANAGER, "x-content-sha256": sha },
+    body,
+  });
+  assert.equal(upload.status, 403);
+  assert.equal(calls.filter((call) => call.url.startsWith("/v1/blobs")).length, beforeBlobs);
+  const beforeFiles = calls.filter((call) => call.url === "/v1/admin/files").length;
+  const list = await fetch(`${base}/api/files`, { headers: { cookie: MANAGER } });
+  assert.equal(list.status, 403);
+  assert.equal(calls.filter((call) => call.url === "/v1/admin/files").length, beforeFiles);
 });
 
 test("a core reset mid-download does not crash the plugin", async () => {

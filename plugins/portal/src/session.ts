@@ -71,6 +71,7 @@ export interface SessionClaims {
   name?: string;
   auth?: number;
   anon?: boolean;
+  sv?: number;
   iat: number;
   exp: number;
 }
@@ -80,6 +81,7 @@ export interface ImpersonationClaims {
   actor: string;
   target: string;
   org: string;
+  sv?: number;
   iat: number;
   exp: number;
 }
@@ -113,6 +115,7 @@ export function openSession(
   )
     return null;
   if (expectedOrg !== undefined && p.org !== expectedOrg) return null;
+  if (p.sv !== undefined && (typeof p.sv !== "number" || !Number.isInteger(p.sv) || p.sv < 0)) return null;
   if (now >= p.exp * 1000) return null;
   const authenticatedAt = typeof p.auth === "number" ? p.auth : p.iat;
   if (maxAgeSeconds !== undefined && now >= (authenticatedAt + maxAgeSeconds) * 1000) return null;

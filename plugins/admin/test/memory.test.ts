@@ -15,6 +15,10 @@ const core = createServer((req: IncomingMessage, res) => {
       signed: Boolean(req.headers["x-timestamp"] && req.headers["x-signature"]),
       body,
     });
+    if (req.url === "/v1/admin/whoami") {
+      res.writeHead(200, { "content-type": "application/json" });
+      return void res.end(JSON.stringify({ isAdmin: true }));
+    }
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ scopeId: "org:acme", content: "# Memory\n" }));
   });

@@ -7,7 +7,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "../src/api/server.ts";
-import { buildApp } from "../src/wiring.ts";
+import { buildApp, type BuiltApp } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";
 import { mintCapabilityToken, BLOB_TRANSFER_AUD } from "../src/auth/capability-token.ts";
 import { CAPABILITY_HEADER } from "../src/api/contract.ts";
@@ -15,12 +15,16 @@ import { scopeId } from "../src/types.ts";
 
 const SECRET = "blob-auth-secret".repeat(3);
 
-function start(): { base: string; close: () => Promise<void> } {
+function start(opts: { organization?: boolean } = {}): { base: string; built: BuiltApp; close: () => Promise<void> } {
   const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "blobauth-")), signingSecret: SECRET }));
-  const server = createServer(built.app, { signingSecret: SECRET, blobTransfer: built.blobTransfer });
+  const server = createServer(built.app, {
+    signingSecret: SECRET,
+    blobTransfer: built.blobTransfer,
+    ...(opts.organization ? { identity: built.identity, organization: built.organization } : {}),
+  });
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
-  return { base, close: () => new Promise<void>((r) => server.close(() => r())) };
+  return { base, built, close: () => new Promise<void>((r) => server.close(() => r())) };
 }
 
 const tok = (blob: { dir: "read" | "write"; id?: string }) =>
@@ -93,6 +97,41 @@ test("no auth at all (with a signing secret set) is rejected", async () => {
     const id = await stageBlob(s.base);
     const res = await fetch(`${s.base}/v1/blobs/${id}`);
     assert.ok(res.status === 401 || res.status === 403, `expected 401/403, got ${res.status}`);
+  } finally {
+    await s.close();
+  }
+});
+
+test("a blob token minted before suspend and reactivate is rejected on the raw route", async () => {
+  const s = start({ organization: true });
+  try {
+    await s.built.organization.invite({
+      principalId: "U-blob",
+      email: null,
+      displayName: "Blob User",
+      actor: "test",
+    });
+    const active = await s.built.organization.setStatus({ principalId: "U-blob", status: "active", actor: "test" });
+    assert.ok(active);
+    const stale = await mintCapabilityToken(
+      {
+        actorId: "U-blob",
+        sessionVersion: active.sessionVersion,
+        scopeId: scopeId("personal", "U-blob"),
+        aud: BLOB_TRANSFER_AUD,
+        blob: { dir: "write" },
+        exp: Date.now() + 60_000,
+      },
+      SECRET,
+    );
+    await s.built.organization.setStatus({ principalId: "U-blob", status: "suspended", actor: "test" });
+    await s.built.organization.setStatus({ principalId: "U-blob", status: "active", actor: "test" });
+    const res = await fetch(`${s.base}/v1/blobs`, {
+      method: "POST",
+      headers: { [CAPABILITY_HEADER]: stale, "content-type": "application/octet-stream" },
+      body: Buffer.from("stale"),
+    });
+    assert.equal(res.status, 401);
   } finally {
     await s.close();
   }

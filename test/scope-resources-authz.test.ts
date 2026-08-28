@@ -85,16 +85,20 @@ async function setup(): Promise<{ app: App; deps: ReturnType<typeof makeDeps> }>
     createdBy: "U3",
     ownerScopeId: scopeId("channel", "C2"),
   });
-  await deps.skills.create({
+  const channelSkill = await deps.skills.create({
     scopeId: channelScope,
     manifest: { name: "triage", description: "label inbound mail", requiredCapabilities: [], body: "# Triage" },
     createdBy: "U2",
   });
-  await deps.skills.create({
+  await deps.skills.review(channelSkill.id, "U2", []);
+  await deps.skills.publish(channelSkill.id);
+  const otherSkill = await deps.skills.create({
     scopeId: scopeId("channel", "C2"),
     manifest: { name: "other", description: "elsewhere", requiredCapabilities: [], body: "# Other" },
     createdBy: "U3",
   });
+  await deps.skills.review(otherSkill.id, "U3", []);
+  await deps.skills.publish(otherSkill.id);
   deps.deployRows.push(
     {
       id: "d-c1",

@@ -6,12 +6,24 @@ import type { ResourceKind } from "./resource-ref.ts";
 
 const isFileGrant = (g: Grant) => parseRef(g.ref).kind === "file";
 
+export class SkillAccessRequiredError extends Error {}
+
+function requireNonSkillRef(ref: string): void {
+  if (parseRef(ref).kind === "skill") throw new SkillAccessRequiredError("skill_access_required");
+}
+
 function basename(p: string): string {
   const parts = p.split("/");
   return parts[parts.length - 1] || p;
 }
 
 type ScopeEntitlement = (p: Principal, scope: ScopeId, sessionScopeId: ScopeId, orgScopeId: ScopeId) => boolean;
+type AsyncScopeEntitlement = (
+  p: Principal,
+  scope: ScopeId,
+  sessionScopeId: ScopeId,
+  orgScopeId: ScopeId,
+) => boolean | Promise<boolean>;
 
 export type ScopeManagement = (principalId: string, scopeId: ScopeId, authoredBy?: string) => Promise<boolean>;
 
@@ -64,7 +76,7 @@ export interface AclStore {
     audience: readonly Principal[],
     sessionScopeId: ScopeId,
     orgScopeId: ScopeId,
-    entitled: ScopeEntitlement,
+    entitled: AsyncScopeEntitlement,
   ): Promise<Grant[]>;
   sharedOfKindForAudience(
     kind: Exclude<ResourceKind, "file">,
@@ -152,12 +164,14 @@ export function createAclStore(
   }
   return {
     async grant(g, authoredBy) {
+      requireNonSkillRef(g.ref);
       if (!(await canManage(g.ownerScopeId, g.grantedBy, authoredBy))) {
         throw new Error("only a manager of this scope may grant access (no transitive re-share)");
       }
       await persist.put(g);
     },
     async revoke(ownerScopeId, ref, granteeScopeId, revokedBy, authoredBy) {
+      requireNonSkillRef(ref);
       if (!(await canManage(ownerScopeId, revokedBy, authoredBy))) {
         throw new Error("only a manager of this scope may revoke access");
       }
@@ -167,6 +181,7 @@ export function createAclStore(
       for (const g of matches) await persist.remove(g);
     },
     async replaceGrantsIfCurrent(ownerScopeId, ref, expected, replacement, changedBy, authoredBy) {
+      requireNonSkillRef(ref);
       if (!(await canManage(ownerScopeId, changedBy, authoredBy))) {
         throw new Error("only a manager of this scope may replace access grants");
       }
@@ -202,12 +217,19 @@ export function createAclStore(
     async grantsOfKind(kind, audience, sessionScopeId, orgScopeId, entitled) {
       if (audience.length === 0) return [];
       const prefix = refPrefix(kind);
-      return (await persist.all()).filter(
-        (g) =>
-          g.ref.startsWith(prefix) &&
-          g.ownerScopeId === orgScopeId &&
-          audience.every((p) => entitled(p, g.granteeScopeId, sessionScopeId, orgScopeId)),
+      const candidates = (await persist.all()).filter(
+        (grant) => grant.ref.startsWith(prefix) && grant.ownerScopeId === orgScopeId,
       );
+      const included = await Promise.all(
+        candidates.map(async (grant) =>
+          (
+            await Promise.all(
+              audience.map((principal) => entitled(principal, grant.granteeScopeId, sessionScopeId, orgScopeId)),
+            )
+          ).every(Boolean),
+        ),
+      );
+      return candidates.filter((_, index) => included[index]);
     },
     async sharedOfKindForAudience(kind, audience, sessionScopeId, orgScopeId, entitled) {
       if (audience.length === 0) return [];

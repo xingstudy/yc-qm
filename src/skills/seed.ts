@@ -87,32 +87,51 @@ const upsertQueue = createKeyedQueue<string>();
 
 export function upsertSeedSkill(
   skills: SkillStore,
-  input: { scopeId: ScopeId; manifest: SkillManifest; createdBy: string; reviewer: string; pack?: Skill["pack"] },
+  input: {
+    scopeId: ScopeId;
+    manifest: SkillManifest;
+    createdBy: string;
+    reviewer: string;
+    pack?: Skill["pack"];
+    onMutation?: (skill: Skill) => void;
+  },
 ): Promise<UpsertOutcome> {
   return upsertQueue(`${input.scopeId}\0${input.manifest.name}`, () => upsertSeedSkillUnsafe(skills, input));
 }
 
 async function upsertSeedSkillUnsafe(
   skills: SkillStore,
-  input: { scopeId: ScopeId; manifest: SkillManifest; createdBy: string; reviewer: string; pack?: Skill["pack"] },
+  input: {
+    scopeId: ScopeId;
+    manifest: SkillManifest;
+    createdBy: string;
+    reviewer: string;
+    pack?: Skill["pack"];
+    onMutation?: (skill: Skill) => void;
+  },
 ): Promise<UpsertOutcome> {
-  const { scopeId, manifest, createdBy, reviewer, pack } = input;
+  const { scopeId, manifest, createdBy, reviewer, pack, onMutation } = input;
+  const track = async (operation: Promise<Skill>): Promise<Skill> => {
+    const skill = await operation;
+    onMutation?.(skill);
+    return skill;
+  };
   const all = await skills.list();
   const existing = all.find(
     (s) => s.scopeId === scopeId && s.manifest.name === manifest.name && s.createdBy === createdBy,
   );
-  if (!existing && foreignSkillCollision(all, scopeId, manifest.name, createdBy)) return "foreign";
+  if (foreignSkillCollision(all, scopeId, manifest.name, createdBy)) return "foreign";
   if (existing) {
     const changed = !sameManifest(existing.manifest, manifest);
     if (!changed && existing.status === "published") return "skipped";
-    if (changed) await skills.update(existing.id, manifest);
-    await skills.review(existing.id, reviewer, manifest.requiredCapabilities);
-    await skills.publish(existing.id);
+    if (changed) await track(skills.update(existing.id, manifest));
+    await track(skills.review(existing.id, reviewer, manifest.requiredCapabilities));
+    await track(skills.publish(existing.id));
     return "updated";
   }
-  const skill = await skills.create({ scopeId, manifest, createdBy, ...(pack ? { pack } : {}) });
-  await skills.review(skill.id, reviewer, manifest.requiredCapabilities);
-  await skills.publish(skill.id);
+  const skill = await track(skills.create({ scopeId, manifest, createdBy, ...(pack ? { pack } : {}) }));
+  await track(skills.review(skill.id, reviewer, manifest.requiredCapabilities));
+  await track(skills.publish(skill.id));
   return "installed";
 }
 

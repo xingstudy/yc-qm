@@ -122,6 +122,7 @@ test("a legacy published skill with an unsafe name is quarantined without blocki
   const org = scopeId("org", "default-org");
   await skillBacking.put("legacy", {
     id: "legacy",
+    orgId: "default-org",
     scopeId: org,
     manifest: { name: "My Skill", description: "legacy", requiredCapabilities: [], body: "legacy" },
     signature: "legacy",
@@ -460,6 +461,150 @@ test("a mid-seed layer that fails during skill mutation keeps the fallback live 
   assert.equal(store.live().source, "filesystem");
   assert.equal((await store.hydrate())?.contentHash, "appeared-partial");
   assert.equal(store.live().source, "durable", "the refresh retry applies once the transient skill-store error clears");
+});
+
+test("deployment rollback refuses to overwrite a concurrent Skill edit", async () => {
+  const backing = createMemoryMap<StoredDeploymentLayer>();
+  const baseSkills = createSkillStore({ signingSecret: "layer-test" });
+  const skills = {
+    ...baseSkills,
+    create: async (input: Parameters<typeof baseSkills.create>[0]) => {
+      if (input.manifest.name !== "b") return baseSkills.create(input);
+      const installed = (await baseSkills.list()).find((skill) => skill.manifest.name === "a")!;
+      await baseSkills.update(installed.id, { ...installed.manifest, body: "concurrent edit" });
+      throw new Error("second skill failed");
+    },
+  };
+  const store = createDeploymentLayerStore({
+    backing,
+    runtime: emptyDeploymentLayer(),
+    skills,
+    scopeId: scopeId("org", "default-org"),
+    retryDelaysMs: [],
+  });
+  await assert.rejects(
+    store.put(
+      {
+        contract: 1,
+        tools: [],
+        skills: [
+          { path: "skills/a/SKILL.md", content: "---\nname: a\ndescription: A.\n---\na\n" },
+          { path: "skills/b/SKILL.md", content: "---\nname: b\ndescription: B.\n---\nb\n" },
+        ],
+      },
+      "api",
+    ),
+    /deployment skill rollback also failed: deployment layer skill changed/,
+  );
+  const edited = (await baseSkills.list()).find((skill) => skill.manifest.name === "a")!;
+  assert.equal(edited.manifest.body, "concurrent edit");
+  assert.equal(edited.version, 2);
+});
+
+test("deployment rollback atomically refuses a same-version concurrent Skill mutation", async () => {
+  const backing = createMemoryMap<StoredDeploymentLayer>();
+  const baseSkills = createSkillStore({ signingSecret: "layer-test" });
+  const original = await baseSkills.create({
+    scopeId: scopeId("org", "default-org"),
+    manifest: { name: "a", description: "Original", requiredCapabilities: [], body: "old" },
+    createdBy: "system:deployment-layer",
+  });
+  await baseSkills.review(original.id, "system:deployment-layer-reviewer", []);
+  await baseSkills.publish(original.id);
+  let raced = false;
+  const skills = {
+    ...baseSkills,
+    create: async (input: Parameters<typeof baseSkills.create>[0]) => {
+      if (input.manifest.name === "b") throw new Error("second skill failed");
+      return baseSkills.create(input);
+    },
+    restore: async (...args: Parameters<typeof baseSkills.restore>) => {
+      if (!raced) {
+        raced = true;
+        await baseSkills.archive(args[0].id);
+      }
+      return baseSkills.restore(...args);
+    },
+  };
+  const store = createDeploymentLayerStore({
+    backing,
+    runtime: emptyDeploymentLayer(),
+    skills,
+    scopeId: scopeId("org", "default-org"),
+    retryDelaysMs: [],
+  });
+  await assert.rejects(
+    store.put(
+      {
+        contract: 1,
+        tools: [],
+        skills: [
+          { path: "skills/a/SKILL.md", content: "---\nname: a\ndescription: Updated.\n---\nnew\n" },
+          { path: "skills/b/SKILL.md", content: "---\nname: b\ndescription: B.\n---\nb\n" },
+        ],
+      },
+      "api",
+    ),
+    /deployment skill rollback also failed: skill changed while restoring/,
+  );
+  const concurrent = await baseSkills.get(original.id);
+  assert.equal(concurrent?.status, "archived");
+  assert.equal(concurrent?.manifest.body, "new\n");
+  assert.equal(concurrent?.version, 2);
+});
+
+test("deployment rollback retries each Skill idempotently after a partial restore", async () => {
+  const backing = createMemoryMap<StoredDeploymentLayer>();
+  const baseSkills = createSkillStore({ signingSecret: "layer-test" });
+  for (const name of ["a", "b"]) {
+    const seeded = await baseSkills.create({
+      scopeId: scopeId("org", "default-org"),
+      manifest: { name, description: `Original ${name}`, requiredCapabilities: [], body: `old ${name}` },
+      createdBy: "system:deployment-layer",
+    });
+    await baseSkills.review(seeded.id, "system:deployment-layer-reviewer", []);
+    await baseSkills.publish(seeded.id);
+  }
+  let restoreCalls = 0;
+  const skills = {
+    ...baseSkills,
+    create: async (input: Parameters<typeof baseSkills.create>[0]) => {
+      if (input.manifest.name === "c") throw new Error("third skill failed");
+      return baseSkills.create(input);
+    },
+    restore: async (...args: Parameters<typeof baseSkills.restore>) => {
+      restoreCalls += 1;
+      if (restoreCalls === 2) throw new Error("transient restore failure");
+      return baseSkills.restore(...args);
+    },
+  };
+  const store = createDeploymentLayerStore({
+    backing,
+    runtime: emptyDeploymentLayer(),
+    skills,
+    scopeId: scopeId("org", "default-org"),
+    retryDelaysMs: [0],
+  });
+  await assert.rejects(
+    store.put(
+      {
+        contract: 1,
+        tools: [],
+        skills: [
+          { path: "skills/a/SKILL.md", content: "---\nname: a\ndescription: Updated A.\n---\nnew a\n" },
+          { path: "skills/b/SKILL.md", content: "---\nname: b\ndescription: Updated B.\n---\nnew b\n" },
+          { path: "skills/c/SKILL.md", content: "---\nname: c\ndescription: C.\n---\nc\n" },
+        ],
+      },
+      "api",
+    ),
+    /third skill failed/,
+  );
+  assert.equal(restoreCalls, 3);
+  const restored = await baseSkills.list();
+  assert.equal(restored.find((candidate) => candidate.manifest.name === "a")?.manifest.body, "old a");
+  assert.equal(restored.find((candidate) => candidate.manifest.name === "b")?.manifest.body, "old b");
+  assert.ok(restored.every((candidate) => candidate.status === "published"));
 });
 
 test("misplaced tool files are rejected, not silently ignored", async () => {

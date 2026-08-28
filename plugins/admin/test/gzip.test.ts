@@ -7,6 +7,10 @@ import type { AddressInfo } from "node:net";
 const SCOPES_BODY = { scopes: [{ id: "org:acme", label: "Org", kind: "org" }] };
 
 const core = createServer((req: IncomingMessage, res) => {
+  if (req.url === "/v1/admin/whoami") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(JSON.stringify({ isAdmin: true }));
+  }
   if (req.method === "GET" && (req.url ?? "").startsWith("/v1/admin/scopes")) {
     res.writeHead(200, { "content-type": "application/json" });
     return void res.end(JSON.stringify(SCOPES_BODY));

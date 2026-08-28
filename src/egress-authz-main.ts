@@ -78,6 +78,7 @@ export type EgressAuditRecorder = Pick<EgressAuditSink, "record">;
 export interface EgressAuthzDeps {
   capabilitySecret?: string;
   audit: EgressAuditRecorder;
+  authorizeActor?: (claims: CapabilityClaims) => Promise<boolean>;
   tokenless?: "open" | "deny";
   now?: () => number;
   lookup?: (host: string) => Promise<string[]>;
@@ -92,6 +93,32 @@ async function claimsFor(token: string | null, deps: EgressAuthzDeps): Promise<C
   const claims =
     token && deps.capabilitySecret ? await verifyCapabilityToken(token, deps.capabilitySecret, deps.now?.()) : null;
   return claims && claims.aud === EGRESS_PROXY_AUD ? claims : null;
+}
+
+export function createCoreActorSessionAuthorizer(
+  coreApiUrl: string,
+  signingSecret: string,
+  fetchImpl: typeof fetch = fetch,
+): (claims: CapabilityClaims) => Promise<boolean> {
+  const baseUrl = coreApiUrl.replace(/\/$/, "");
+  return async (claims) => {
+    if (claims.actorId.startsWith("system:") || claims.botActor) return true;
+    if (!Number.isInteger(claims.sessionVersion)) return false;
+    const url = `${baseUrl}/v1/internal/auth/users/${encodeURIComponent(claims.actorId)}/session-version`;
+    const pathWithQuery = new URL(url).pathname;
+    try {
+      const response = await fetchImpl(url, {
+        method: "GET",
+        headers: signedRequestHeaders(signingSecret, "GET", pathWithQuery, ""),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) return false;
+      const body = (await response.json()) as { principalId?: unknown; sessionVersion?: unknown };
+      return body.principalId === claims.actorId && body.sessionVersion === claims.sessionVersion;
+    } catch {
+      return false;
+    }
+  };
 }
 
 async function decide(
@@ -139,8 +166,9 @@ export function buildEgressAuthzServer(deps: EgressAuthzDeps): Server {
     const token = tokenFromRequest(req);
     const claims = await claimsFor(token, deps);
     let policy: EgressPolicy | undefined = DENY_ALL;
-    if (claims) policy = claims.egress;
-    else if (!token && deps.tokenless === "open") policy = OPEN;
+    if (claims && (claims.actorId.startsWith("system:") || claims.botActor || (await deps.authorizeActor?.(claims)))) {
+      policy = claims.egress;
+    } else if (!token && deps.tokenless === "open") policy = OPEN;
     const d = await decide(host, policy, lookup);
     try {
       deps.audit.record({
@@ -247,13 +275,22 @@ function main(): void {
   const relaySecret = process.env.CORE_SIGNING_SECRET;
   if (!capabilitySecret) console.warn("[egress-authz] CAPABILITY_SECRET unset — signed traffic will be denied");
   if (coreApiUrl && !relaySecret)
-    console.warn("[egress-authz] CORE_API_URL set without CORE_SIGNING_SECRET — audit relay disabled");
+    console.warn("[egress-authz] CORE_API_URL set without CORE_SIGNING_SECRET — actor checks and audit relay disabled");
+  if (capabilitySecret && (!coreApiUrl || !relaySecret))
+    console.warn("[egress-authz] Core actor session checks unavailable — human signed traffic will be denied");
   const relay = coreApiUrl && relaySecret ? createRelayAuditSink(coreApiUrl, relaySecret) : null;
+  const authorizeActor =
+    coreApiUrl && relaySecret ? createCoreActorSessionAuthorizer(coreApiUrl, relaySecret) : undefined;
   relay?.start();
   const audit = createEgressAuditFromEnv(process.env, relay);
 
   const tokenless = process.env.EGRESS_TOKENLESS === "open" ? ("open" as const) : ("deny" as const);
-  const server = buildEgressAuthzServer({ ...(capabilitySecret ? { capabilitySecret } : {}), audit, tokenless });
+  const server = buildEgressAuthzServer({
+    ...(capabilitySecret ? { capabilitySecret } : {}),
+    ...(authorizeActor ? { authorizeActor } : {}),
+    audit,
+    tokenless,
+  });
   server.listen(port, "127.0.0.1", () => console.log(`[egress-authz] listening on 127.0.0.1:${port}`));
   for (const sig of ["SIGTERM", "SIGINT"] as const) {
     process.on(sig, () =>

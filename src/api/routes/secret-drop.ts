@@ -13,6 +13,7 @@ import { escapeHtml, sendJson } from "../http.ts";
 import type { ApiCtx, Route } from "./route.ts";
 import { audit, resolveCapabilityDestination } from "./shared.ts";
 import { swallow } from "../../util/errors.ts";
+import { currentCapabilityActor } from "../capability-actor.ts";
 
 const TRIGGERED = "secret-drop links can only be minted on a turn a person sent — this turn was fired by a trigger";
 
@@ -81,6 +82,7 @@ async function dropLinkClaims(
     (rec.audienceScopeId && claims.scopeId !== rec.audienceScopeId)
   )
     return null;
+  if (!(await currentCapabilityActor(ctx.deps, claims))) return null;
   return claims;
 }
 
@@ -182,6 +184,7 @@ async function mintDrop(ctx: ApiCtx): Promise<void> {
   const linkToken = await mintCapabilityToken(
     {
       actorId: capability.actorId,
+      ...(capability.sessionVersion !== undefined ? { sessionVersion: capability.sessionVersion } : {}),
       scopeId: capability.scopeId,
       ...(capability.botActor ? { botActor: true } : {}),
       ...(capability.liveActor ? { liveActor: true } : {}),

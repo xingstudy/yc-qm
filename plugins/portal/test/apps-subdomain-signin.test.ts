@@ -4,6 +4,11 @@ import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 
 const upstream = createServer((req: IncomingMessage, res) => {
+  if (req.url?.startsWith("/v1/internal/auth/users/viewer%40example.com/session-version")) {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ sessionVersion: 1 }));
+    return;
+  }
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ url: req.url, cookie: req.headers.cookie ?? null }));
 });

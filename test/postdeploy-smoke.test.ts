@@ -32,6 +32,7 @@ test("deployed API smoke proves the production portal-identity boundary", async 
   const now = Date.now();
   const headers = await stagingApiHeaders(
     "josh@example.com",
+    7,
     "source-secret",
     "portal-secret",
     "GET",
@@ -103,6 +104,9 @@ test("live session smoke proves a model turn, persistence, title, error log, and
       body: String(init?.body ?? ""),
       portalIdentity: new Headers(init?.headers).get(PORTAL_IDENTITY_HEADER),
     });
+    if (url.pathname.endsWith("/session-version")) {
+      return Response.json({ principalId: "josh@example.com", sessionVersion: 7 });
+    }
     if (url.pathname === "/v1/turns")
       return Response.json({ status: "ok", sessionId: "sess-1", reply: "QM deployment canary passed." });
     if (url.pathname === "/v1/admin/errors") return Response.json({ errors: [] });
@@ -115,24 +119,27 @@ test("live session smoke proves a model turn, persistence, title, error log, and
   assert.deepEqual(
     calls.map(({ method, path }) => [method, path]),
     [
+      ["GET", "/v1/internal/auth/users/josh%40example.com/session-version"],
       ["POST", "/v1/turns"],
       ["GET", "/v1/sessions/sess-1?viewer=josh%40example.com&tailTurns=1"],
       ["GET", "/v1/admin/errors?scope=personal%3Ajosh%40example.com&sessionId=sess-1"],
       ["POST", "/v1/sessions/sess-1"],
     ],
   );
-  assert.equal(JSON.parse(calls[0]!.body).readOnly, true);
-  assert.equal(JSON.parse(calls[0]!.body).skipMemory, true);
-  assert.deepEqual(JSON.parse(calls[3]!.body), { principalId: "josh@example.com", archived: true });
-  for (const call of calls) {
+  assert.equal(JSON.parse(calls[1]!.body).readOnly, true);
+  assert.equal(JSON.parse(calls[1]!.body).skipMemory, true);
+  assert.deepEqual(JSON.parse(calls[4]!.body), { principalId: "josh@example.com", archived: true });
+  for (const call of calls.slice(1)) {
     const identity = await verifyPortalIdentity(call.portalIdentity ?? "", "portal-secret", Date.now());
     assert.equal(identity?.p, "josh@example.com", `${call.method} ${call.path} carries the canary identity`);
+    assert.equal(identity?.sv, 7, `${call.method} ${call.path} carries the canary session version`);
   }
 
   let archivedFailedSession = false;
   await assert.rejects(
     checkLiveSession(config, "http://core.internal:8080", async (input, init) => {
       const path = new URL(String(input)).pathname;
+      if (path.endsWith("/session-version")) return Response.json({ sessionVersion: 7 });
       if (path === "/v1/turns")
         return Response.json({ status: "ok", sessionId: "sess-2", reply: "QM deployment canary passed." });
       if (path === "/v1/sessions/sess-2" && init?.method === "POST") archivedFailedSession = true;
@@ -145,6 +152,7 @@ test("live session smoke proves a model turn, persistence, title, error log, and
   await assert.rejects(
     checkLiveSession(config, "http://core.internal:8080", async (input) => {
       const path = new URL(String(input)).pathname;
+      if (path.endsWith("/session-version")) return Response.json({ sessionVersion: 7 });
       if (path === "/v1/turns") return Response.json({ status: "ok", sessionId: "sess-3", reply: "Looks good" });
       return Response.json({ session: { id: "sess-3", archived: true } });
     }),
@@ -156,6 +164,7 @@ test("live session smoke proves a model turn, persistence, title, error log, and
   await assert.rejects(
     checkLiveSession(config, "http://core.internal:8080", async (input, init) => {
       const url = new URL(String(input));
+      if (url.pathname.endsWith("/session-version")) return Response.json({ sessionVersion: 7 });
       if (url.pathname === "/v1/turns") {
         failedThreadRef = JSON.parse(String(init?.body)).conversation.threadRef as string;
         return new Response("model failed", { status: 500 });

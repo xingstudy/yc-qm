@@ -276,9 +276,15 @@ test("governance credential editor previews effective capability and uses an in-
   assert.match(html, /usageTruncated \? "at least "/);
   assert.match(html, /Recent users in the retained window/);
   assert.doesNotMatch(html, /serviceCredList\.find\(\(c\) => c\.slug === scEditing\)\?\.updatedAt/);
-  assert.match(html, /personal\|team\|org\|channel\|group/);
+  assert.match(html, /personal\|org-unit\|access-group/);
   assert.match(html, /unsupported legacy grant/);
-  assert.match(html, /matches multiple people/);
+  assert.match(html, /organizationAccessSubjects/);
+  assert.match(html, /\/api\/org-users\/search\?q=/);
+  assert.match(html, /id="sc-subject-add"/);
+  assert.match(html, /grantees: serviceCredentialGrantees\(\)/);
+  assert.match(html, /Injected only into entitled all-internal conversations/);
+  assert.doesNotMatch(html, /delivery === "env" \? \[scope\]/);
+  assert.doesNotMatch(html, /serviceCredDirectory|directoryMembers/);
   assert.match(html, /reviewGovernanceChange/);
   assert.doesNotMatch(html, /confirm\("Delete shared credential/);
 });

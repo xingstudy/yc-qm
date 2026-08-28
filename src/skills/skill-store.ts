@@ -1,4 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { ScopeId } from "../types.ts";
 import { parseScopeId } from "../types.ts";
 import { createMemoryMap, type DurableMap } from "../persistence/durable-map.ts";
@@ -48,6 +49,7 @@ function canonicalFiles(files: SkillFile[] | undefined): Array<[string, string, 
 
 export interface Skill {
   id: string;
+  orgId: string;
   scopeId: ScopeId;
   manifest: SkillManifest;
   signature: string;
@@ -67,32 +69,38 @@ export interface GrantedSkillRef {
   ownerScopeId: ScopeId;
 }
 
+export interface SkillMutationActor {
+  principalId: string;
+  isAdmin: boolean;
+}
+
 export interface SkillResolution {
   skill: Skill | null;
   shadowed: Skill[];
 }
 
 export interface SkillStoreOptions {
+  orgId?: string;
   signingSecret?: string;
   backing?: DurableMap<Skill>;
 }
 
 export interface SkillStore {
   create(input: { scopeId: ScopeId; manifest: SkillManifest; createdBy: string; pack?: Skill["pack"] }): Promise<Skill>;
-  update(id: string, manifest: SkillManifest): Promise<Skill>;
+  update(id: string, manifest: SkillManifest, actorId?: string): Promise<Skill>;
   get(id: string): Promise<Skill | null>;
   list(): Promise<Skill[]>;
   verify(skill: Skill): boolean;
   review(id: string, reviewer: string, grantCapabilities: string[]): Promise<Skill>;
-  publish(id: string): Promise<Skill>;
-  archive(id: string): Promise<Skill>;
-  restore(skill: Skill): Promise<void>;
-  delete(id: string): Promise<void>;
+  publish(id: string, actorId?: string): Promise<Skill>;
+  archive(id: string, actorId?: string): Promise<Skill>;
+  restore(skill: Skill, actorId?: string, expectedCurrent?: Skill): Promise<void>;
+  delete(id: string, actorId?: string, expectedCurrent?: Skill): Promise<void>;
   recordUse(id: string, at?: number): Promise<void>;
   resolve(name: string, orderedScopes: ScopeId[]): Promise<SkillResolution>;
   visibleFor(orderedScopes: ScopeId[], granted?: readonly GrantedSkillRef[]): Promise<SkillResolution[]>;
-  promote(id: string, targetScopeId: ScopeId): Promise<Skill>;
-  move(id: string, toScopeId: ScopeId): Promise<Skill>;
+  promote(id: string, targetScopeId: ScopeId, actorId?: string): Promise<Skill>;
+  move(id: string, toScopeId: ScopeId, actor?: string | SkillMutationActor): Promise<Skill>;
 }
 
 function scopeKind(scopeId: ScopeId): string {
@@ -118,6 +126,7 @@ function resolveFromIndex(index: Map<string, Skill>, name: string, orderedScopes
 
 export function createSkillStore(opts: SkillStoreOptions = {}): SkillStore {
   const skills = opts.backing ?? createMemoryMap<Skill>();
+  const orgId = opts.orgId ?? "default-org";
   const secret = opts.signingSecret ?? randomUUID();
 
   function sign(manifest: SkillManifest): string {
@@ -138,6 +147,7 @@ export function createSkillStore(opts: SkillStoreOptions = {}): SkillStore {
       const at = Date.now();
       const skill: Skill = {
         id: randomUUID(),
+        orgId,
         scopeId: input.scopeId,
         manifest: input.manifest,
         signature: sign(input.manifest),
@@ -210,13 +220,27 @@ export function createSkillStore(opts: SkillStoreOptions = {}): SkillStore {
       return s;
     },
 
-    async restore(skill) {
+    async restore(skill, _actorId, expectedCurrent) {
       assertSafeSkillName(skill.manifest.name);
+      if (expectedCurrent !== undefined) {
+        if (!skills.update) throw new Error("skill store does not support atomic restores");
+        const restored = await skills.update(skill.id, (current) => {
+          if (!isDeepStrictEqual(current, expectedCurrent)) throw new Error("skill changed while restoring");
+          return structuredClone(skill);
+        });
+        if (!restored) throw new Error("skill changed while restoring");
+        return;
+      }
       await skills.put(skill.id, structuredClone(skill));
     },
 
-    async delete(id) {
-      await skills.delete(id);
+    async delete(id, _actorId, expectedCurrent) {
+      if (expectedCurrent === undefined) {
+        await skills.delete(id);
+        return;
+      }
+      const deleted = await skills.deleteIf?.(id, (skill) => isDeepStrictEqual(skill, expectedCurrent));
+      if (!deleted) throw new Error("skill changed while deleting");
     },
 
     async recordUse(id, at) {
@@ -275,6 +299,7 @@ export function createSkillStore(opts: SkillStoreOptions = {}): SkillStore {
       const at = Date.now();
       const promoted: Skill = {
         id: existing?.id ?? randomUUID(),
+        orgId: s.orgId,
         scopeId: targetScopeId,
         manifest: s.manifest,
         signature: sign(s.manifest),
