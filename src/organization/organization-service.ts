@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { AuditEvent, AuditLog } from "../audit/audit-log.ts";
 import { personKey } from "../directory/person.ts";
 import type { IdentityService } from "../identity/identity-service.ts";
+import type {
+  EmailIdentityLoginResult,
+  ExternalIdentityLoginResult,
+} from "../directory-sources/identity-linking-service.ts";
+import type { ExternalIdentityAssertion } from "../directory-sources/types.ts";
 import { personalScope, type ScopeId } from "../types.ts";
 import {
   createDirectoryVisibilityResolver,
@@ -43,21 +48,34 @@ export interface LoginInput {
   email: string | null;
   emailVerified: boolean;
   displayName: string;
+  externalIdentity?: ExternalIdentityAssertion;
 }
 
-export type LoginResult =
+type LoginResult =
   | { status: "ok"; user: OrganizationUser }
-  | { status: "denied"; reason: "unknown" | "suspended" | "deprovisioned" | "not_invited" | "email_unverified" };
+  | {
+      status: "denied";
+      reason:
+        | "unknown"
+        | "suspended"
+        | "deprovisioned"
+        | "not_invited"
+        | "email_unverified"
+        | "source_disabled"
+        | "external_inactive"
+        | "identity_unmatched"
+        | "identity_conflict";
+    };
 
-export interface ActiveCheck {
+interface ActiveCheck {
   status: OrganizationUserStatus;
   sessionVersion: number;
 }
 
-export type MoveUnitResult =
+type MoveUnitResult =
   { ok: true } | { ok: false; reason: "root" | "self_or_descendant" | "missing_parent" | "archived" };
 
-export type MoveUnitPreviewResult =
+type MoveUnitPreviewResult =
   | {
       ok: true;
       impact: {
@@ -67,15 +85,14 @@ export type MoveUnitPreviewResult =
     }
   | { ok: false; reason: "root" | "self_or_descendant" | "missing_parent" | "archived" };
 
-export type ArchiveUnitResult = { ok: true } | { ok: false; reason: "root" | "conflict"; impact?: UnitImpact };
+type ArchiveUnitResult = { ok: true } | { ok: false; reason: "root" | "conflict"; impact?: UnitImpact };
 
-export type AddUnitMemberResult =
+type AddUnitMemberResult =
   | { ok: true }
   | { ok: false; reason: "missing_unit" | "archived" | "forbidden" }
   | { ok: false; reason: "missing_user"; invalidPrincipalIds: string[] };
 
-export type RemoveUnitMemberResult =
-  { ok: true } | { ok: false; reason: "missing_unit" | "forbidden" | "primary_unit" };
+type RemoveUnitMemberResult = { ok: true } | { ok: false; reason: "missing_unit" | "forbidden" | "primary_unit" };
 
 export interface OrganizationUserProfilePatch {
   displayName?: string;
@@ -85,17 +102,17 @@ export interface OrganizationUserProfilePatch {
   employeeNumber?: string | null;
 }
 
-export type UpdateUserProfileResult =
+type UpdateUserProfileResult =
   | { ok: true; user: OrganizationUser }
   | { ok: false; reason: "missing_user" | "duplicate_email" | "duplicate_employee_number" }
   | { ok: false; reason: "invalid_profile"; field: keyof OrganizationUserProfilePatch }
   | { ok: false; reason: "revision_conflict"; current: OrganizationUser };
 
-export type SetPrimaryUnitResult =
+type SetPrimaryUnitResult =
   | { ok: true; detail: OrganizationUserDetail }
   | { ok: false; reason: "missing_user" | "missing_unit" | "archived" | "root" | "deprovisioned" };
 
-export interface OrganizationUserStatusImpact {
+interface OrganizationUserStatusImpact {
   primaryUnitId: string | null;
   unitCount: number;
   unitManagerCount: number;
@@ -120,7 +137,7 @@ export interface OrganizationMemberMutation {
   status?: "active" | "suspended" | "deprovisioned";
 }
 
-export type ApplyOrganizationMemberMutationsResult =
+type ApplyOrganizationMemberMutationsResult =
   | { ok: true; users: OrganizationUser[]; authorizationRevision: number }
   | {
       ok: false;
@@ -142,15 +159,15 @@ export type ApplyOrganizationMemberMutationsResult =
       principalId?: string;
     };
 
-export type AddGroupMemberResult =
+type AddGroupMemberResult =
   | { ok: true }
   | { ok: false; reason: "missing_group" | "archived" | "forbidden" }
   | { ok: false; reason: "missing_user"; invalidPrincipalIds: string[] };
 
-export type RemoveGroupMemberResult = { ok: true } | { ok: false; reason: "missing_group" | "forbidden" };
-export type ArchiveGroupResult = { ok: true } | { ok: false; reason: "conflict" };
+type RemoveGroupMemberResult = { ok: true } | { ok: false; reason: "missing_group" | "forbidden" };
+type ArchiveGroupResult = { ok: true } | { ok: false; reason: "conflict" };
 
-export type DirectoryPolicyResult =
+type DirectoryPolicyResult =
   | { ok: true; policy: DirectoryViewPolicy; roots: DirectoryViewRoot[]; authzRevision: number }
   | { ok: false; reason: "missing_subject" | "missing_root" }
   | {
@@ -161,7 +178,7 @@ export type DirectoryPolicyResult =
       roots: DirectoryViewRoot[];
     };
 
-export type DeleteDirectoryPolicyResult =
+type DeleteDirectoryPolicyResult =
   | { ok: true; authzRevision: number }
   | {
       ok: false;
@@ -391,7 +408,21 @@ export function createOrganizationService(deps: {
   auditLog: AuditLog;
   identity: IdentityService;
   now?: () => number;
+  ready?: () => Promise<void>;
   resolveLegacyRuntimeUser?: (principalId: string) => Promise<boolean>;
+  externalIdentityLogin?: (input: {
+    issuer: string;
+    subject: string;
+    assertion: ExternalIdentityAssertion;
+  }) => Promise<ExternalIdentityLoginResult>;
+  verifiedEmailIdentityLogin?: (input: {
+    principalId: string;
+    issuer: string;
+    subject: string;
+    email: string;
+    displayName: string;
+    allowCreate: boolean;
+  }) => Promise<EmailIdentityLoginResult>;
 }): OrganizationService {
   const { store, orgId, admission, identity, auditLog } = deps;
   const now = deps.now ?? Date.now;
@@ -448,9 +479,22 @@ export function createOrganizationService(deps: {
       subject: input.subject,
       principalId,
       emailAtLink: input.email,
+      evidence: identityEvidence(input, null),
       createdAt: at,
       updatedAt: at,
     };
+  }
+
+  function identityEvidence(input: LoginInput, existing: Record<string, string> | null | undefined) {
+    const evidence = { ...existing };
+    delete evidence.emailVerified;
+    delete evidence.emailVerifiedEmail;
+    const email = input.email?.trim().toLowerCase() ?? "";
+    if (email && input.emailVerified) {
+      evidence.emailVerified = "true";
+      evidence.emailVerifiedEmail = email;
+    }
+    return Object.keys(evidence).length ? evidence : null;
   }
 
   function withLoginProfile(user: OrganizationUser, input: LoginInput): OrganizationUser {
@@ -491,6 +535,31 @@ export function createOrganizationService(deps: {
   }
 
   async function login(input: LoginInput): Promise<LoginResult> {
+    if (input.externalIdentity) {
+      if (!deps.externalIdentityLogin) return { status: "denied", reason: "identity_unmatched" };
+      const managed = await deps.externalIdentityLogin({
+        issuer: input.issuer,
+        subject: input.subject,
+        assertion: input.externalIdentity,
+      });
+      if (managed.status === "ok") cacheUser(managed.user);
+      return managed;
+    }
+    if (input.email && input.emailVerified && deps.verifiedEmailIdentityLogin) {
+      const linked = await deps.verifiedEmailIdentityLogin({
+        principalId: input.principalId,
+        issuer: input.issuer,
+        subject: input.subject,
+        email: input.email,
+        displayName: input.displayName,
+        allowCreate: autoJoinAdmits(input),
+      });
+      if (linked.status !== "not_applicable") {
+        if (linked.status === "ok") cacheUser(linked.user);
+        return linked;
+      }
+    }
+    if (input.issuer.startsWith("directory:")) return { status: "denied", reason: "identity_unmatched" };
     let reactivatePrincipal: string | null = null;
     const result = await store.transact(orgId, async (tx): Promise<LoginResult> => {
       const bound = await tx.getIdentity(orgId, input.issuer, input.subject);
@@ -505,6 +574,7 @@ export function createOrganizationService(deps: {
           await tx.putIdentity({
             ...bound,
             emailAtLink: input.email,
+            evidence: identityEvidence(input, bound.evidence),
             updatedAt: now(),
           });
           await tx.putUser(next);
@@ -517,6 +587,7 @@ export function createOrganizationService(deps: {
           await tx.putIdentity({
             ...bound,
             emailAtLink: input.email,
+            evidence: identityEvidence(input, bound.evidence),
             updatedAt: now(),
           });
           await tx.putUser(next);
@@ -1011,7 +1082,7 @@ export function createOrganizationService(deps: {
             normalizedProfiles.set(mutation.principalId, normalized.patch);
           }
         }
-        const finalUsers = allUsers.map((user) => ({ ...user, ...(normalizedProfiles.get(user.principalId) ?? {}) }));
+        const finalUsers = allUsers.map((user) => ({ ...user, ...normalizedProfiles.get(user.principalId) }));
         const emails = new Map<string, string>();
         const employeeNumbers = new Map<string, string>();
         for (const user of finalUsers) {
@@ -1371,7 +1442,7 @@ export function createOrganizationService(deps: {
         impact.activeChildUnits > 0 ||
         impact.activeMembers > 0 ||
         impact.directoryRoots > 0 ||
-        impact.skillGrants > 0
+        impact.accessGrants > 0
       ) {
         return { ok: false, reason: "conflict", impact };
       }
@@ -1395,6 +1466,7 @@ export function createOrganizationService(deps: {
     actor: string;
     asManager?: boolean;
   }): Promise<AddUnitMemberResult> {
+    await deps.ready?.();
     return store.transact(orgId, async (tx): Promise<AddUnitMemberResult> => {
       const unit = await tx.getUnit(orgId, input.unitId);
       if (!unit) return { ok: false, reason: "missing_unit" };
@@ -1564,6 +1636,7 @@ export function createOrganizationService(deps: {
     actor: string;
     asManager?: boolean;
   }): Promise<AddGroupMemberResult> {
+    await deps.ready?.();
     return store.transact(orgId, async (tx): Promise<AddGroupMemberResult> => {
       const group = await tx.getGroup(orgId, input.groupId);
       if (!group || (input.asManager && group.status !== "active")) return { ok: false, reason: "missing_group" };
@@ -1880,6 +1953,7 @@ export function createOrganizationService(deps: {
     accessSubjectIncludes,
     authzRevision: () => store.getAuthzRevision(orgId),
     async checkActive(principalId: string): Promise<ActiveCheck | null> {
+      await deps.ready?.();
       const user = await store.getUser(orgId, principalId);
       if (!user) return null;
       const active = { status: user.status, sessionVersion: user.sessionVersion };
@@ -1887,6 +1961,7 @@ export function createOrganizationService(deps: {
       return active;
     },
     async checkRuntimeActive(principalId: string): Promise<ActiveCheck | null> {
+      await deps.ready?.();
       const user = await store.getUser(orgId, principalId);
       if (user) {
         const active = { status: user.status, sessionVersion: user.sessionVersion };

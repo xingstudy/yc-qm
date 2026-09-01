@@ -11,7 +11,7 @@ before(async () => {
   if (!URL) return;
   const pg = (await import("pg")).default;
   const p = new pg.Pool({ connectionString: URL });
-  await p.query("DROP TABLE IF EXISTS turn_metrics CASCADE");
+  await p.query("DROP TABLE IF EXISTS turn_metrics, directory_metrics CASCADE");
   await p.end();
 });
 
@@ -105,6 +105,37 @@ test("pg metrics sink: survives a fresh sink over the same table (durability)", 
   const reopened = createPostgresMetricsSink(URL!);
   const rows = await reopened.list({ limit: 100 });
   assert.ok(rows.length >= 2, "samples written by a prior sink instance are still readable");
+});
+
+test("pg metrics sink: directory telemetry is durable and contains no personal labels", { skip }, async () => {
+  const sink = createPostgresMetricsSink(URL!);
+  sink.recordDirectory({
+    scopeLabel: scopeId("org", "acme"),
+    name: "login_result",
+    provider: "wecom",
+    sourceId: "source-1",
+    result: "denied",
+    reason: "identity_conflict",
+    value: 1,
+    durationMs: 12,
+  });
+  await settle(async () => (await sink.listDirectory({ limit: 100 })).length === 1);
+  const rows = await sink.listDirectory({ scopeId: "org:acme", limit: 100 });
+  assert.deepEqual(
+    rows.map(({ ts: _ts, ...row }) => row),
+    [
+      {
+        scopeLabel: "org:acme",
+        name: "login_result",
+        provider: "wecom",
+        sourceId: "source-1",
+        result: "denied",
+        reason: "identity_conflict",
+        value: 1,
+        durationMs: 12,
+      },
+    ],
+  );
 });
 
 test("pg metrics sink: back-fills optional columns onto a pre-existing minimal table", { skip }, async () => {

@@ -229,6 +229,21 @@ test("login: a lagging application clock never regresses persisted login timesta
   assert.equal(result.user.displayName, "Alice");
 });
 
+test("login: verified-email evidence is bound to the exact email and cleared by an unverified change", async () => {
+  const { service, store } = setup();
+  await store.putUser(orgUser());
+  await store.putIdentity(boundIdentity());
+  assert.equal((await service.login(loginInput())).status, "ok");
+  assert.deepEqual((await store.getIdentity(ORG, ISSUER, "sub-1"))?.evidence, {
+    emailVerified: "true",
+    emailVerifiedEmail: "alice@acme.com",
+  });
+  assert.equal((await service.login(loginInput({ email: "other@acme.com", emailVerified: false }))).status, "ok");
+  const changed = await store.getIdentity(ORG, ISSUER, "sub-1");
+  assert.equal(changed?.emailAtLink, "other@acme.com");
+  assert.equal(changed?.evidence, null);
+});
+
 test("login: invited user matched by email activates and binds the identity", async () => {
   const { service, store } = setup();
   await service.invite({
@@ -650,6 +665,22 @@ test("wiring: buildApp ensures the org root before seeding bootstrap users", asy
   assert.equal(root?.kind, "organization");
   assert.equal(root?.status, "active");
   assert.ok((await built.organizationStore.getAuthzRevision(config.orgId)) >= 1);
+});
+
+test("wiring: identity refresh and runtime status checks wait for bootstrap activation", async () => {
+  const built = buildApp(
+    testConfig({
+      dataDir: mkdtempSync(join(tmpdir(), "qm-org-bootstrap-")),
+      orgBootstrapUsers: ["ops@acme.com"],
+    }),
+  );
+  await built.identity.refresh();
+  assert.equal(built.identity.classify("ops@acme.com").type, "internal");
+  assert.deepEqual(await built.organization.checkRuntimeActive("ops@acme.com"), {
+    status: "active",
+    sessionVersion: 2,
+  });
+  assert.equal(await built.organization.checkRuntimeActive("never-provisioned"), null);
 });
 
 test("audit: login, denial, activation, auto-join, and status changes are recorded", async () => {

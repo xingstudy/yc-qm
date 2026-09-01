@@ -104,10 +104,11 @@ test("ProjectStore slack-channel link is owner-managed and not a roster change",
   assert.equal((await projects.slackChannel(groupRef))?.linkedBy, "owner");
 
   assert.equal((await projects.setSlackChannel(project.id, "outsider", null)).status, "forbidden");
-  const unlinked = await projects.setSlackChannel(project.id, "member", null);
+  assert.equal((await projects.setSlackChannel(project.id, "member", null)).status, "forbidden");
+  const unlinked = await projects.setSlackChannel(project.id, "owner", null);
   assert.ok(unlinked.status === "ok" && unlinked.changed);
   assert.equal(await projects.slackChannel(groupRef), undefined);
-  const noop = await projects.setSlackChannel(project.id, "member", null);
+  const noop = await projects.setSlackChannel(project.id, "owner", null);
   assert.ok(noop.status === "ok" && !noop.changed);
   assert.equal((await projects.setSlackChannel("missing", "owner", null)).status, "not_found");
 });
@@ -1035,10 +1036,16 @@ test("Project slack-channel routes gate on visibility and workspace use, and syn
     body: JSON.stringify({ principalId: "outsider" }),
   });
   assert.equal(outsiderUnlink.status, 403);
-  const unlink = await fetch(`${base}/v1/projects/${project.id}/slack-channel`, {
+  const memberUnlink = await fetch(`${base}/v1/projects/${project.id}/slack-channel`, {
     method: "DELETE",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ principalId: "member" }),
+  });
+  assert.equal(memberUnlink.status, 403);
+  const unlink = await fetch(`${base}/v1/projects/${project.id}/slack-channel`, {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ principalId: "owner" }),
   });
   assert.equal(unlink.status, 200);
   assert.equal(await built.projects.slackChannel(groupRef), undefined);

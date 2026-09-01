@@ -4971,6 +4971,279 @@
       const $ = (id) => document.getElementById(id);
       const ADMIN_LOCALE_KEY = "qm:locale";
       const ADMIN_ZH = {
+        "Identity sources": "身份源",
+        Provider: "平台",
+        "Corp Id": "企业 CorpID",
+        CorpId: "企业 CorpID",
+        "Agent Id": "应用 AgentID",
+        AgentId: "应用 AgentID",
+        "Redirect Uri": "登录回调地址",
+        RedirectUri: "登录回调地址",
+        Secret: "应用 Secret",
+        "Configured sources": "已配置身份源",
+        "Login enabled": "已启用登录",
+        "Sync enabled": "已启用同步",
+        "Add identity source": "添加身份源",
+        "Add WeCom source": "添加企业微信身份源",
+        "Company directory": "企业通讯录",
+        "Application secret": "应用 Secret",
+        "Application Secret": "应用 Secret",
+        "Directory Sync Secret": "通讯录同步 Secret",
+        "Secret is stored encrypted": "Secret 将加密保存",
+        "Optional; enables full directory sync": "可选；填写后启用全量通讯录同步",
+        "Callback URL": "回调地址",
+        "Sync interval (minutes)": "同步间隔（分钟）",
+        "Match policy": "匹配策略",
+        "Source mode": "身份源模式",
+        "Login and identity binding only": "仅登录与身份绑定",
+        "Managed organization directory": "托管组织目录",
+        "Enable scan-code login": "启用扫码登录",
+        "Enable scheduled sync": "启用定时同步",
+        "Verified corporate email, then manual review": "唯一且已验证的企业邮箱自动匹配，其余人工审核",
+        "Manual binding only": "仅允许人工绑定",
+        "Complete every required field.": "请填写全部必填项。",
+        "Identity source added.": "身份源已添加。",
+        "Could not add identity source.": "无法添加身份源。",
+        "Credentials are write-only. The connection is verified before the source becomes active.":
+          "凭据只写不可回读，连接验证通过后身份源才会启用。",
+        "Credentials are write-only. Creating a source does not create members or overwrite organization profiles, structure, or access.":
+          "凭据只写不可回读。创建身份源不会创建成员，也不会覆盖组织成员资料、组织架构或权限。",
+        "The application Secret enables login and member lookup. The optional directory synchronization Secret enables full synchronization. Credentials are write-only.":
+          "应用 Secret 用于登录和成员读取；可选的通讯录同步 Secret 用于启用全量同步。所有凭据均只写不可回读。",
+        "One source can power managed login, directory synchronization, or both.":
+          "同一个身份源可用于托管登录、通讯录同步，或同时用于两者。",
+        "No identity sources configured.": "尚未配置身份源。",
+        "Preview existing identity matches": "预览已有身份匹配",
+        "Existing identity migration preview": "已有身份迁移预览",
+        "This preview is read-only. Confirm candidates through the member binding workflow.":
+          "此预览不会写入数据，请在成员绑定工作台中确认候选关系。",
+        Category: "分类",
+        Count: "数量",
+        "Stable binding": "稳定绑定",
+        "Corporate email candidate": "企业邮箱候选",
+        "Suspected duplicate": "疑似重复账号",
+        "Could not build migration preview.": "无法生成身份迁移预览。",
+        "Test connection": "测试连接",
+        "Preview sync": "预览同步",
+        "Sync now": "立即同步",
+        "Reconcile corporate emails": "对账企业邮箱",
+        "Corporate email reconciliation completed.": "企业邮箱对账完成。",
+        "Enable automatic provisioning": "启用自动创建用户",
+        "Disable automatic provisioning": "停用自动创建用户",
+        "Automatic provisioning setting updated.": "自动创建用户设置已更新。",
+        "Fresh reconciliation required": "需要最新的企业邮箱对账",
+        "Preview managed directory": "预览托管组织目录",
+        "Managed directory preview": "托管组织目录预览",
+        "Only source-owned units, profiles, and department memberships are changed. Units referenced by managers, access policies, or ACLs are blocked from archival.":
+          "只会修改身份源拥有的组织节点、用户资料和部门关系；被部门负责人、访问策略或 ACL 引用的组织节点会阻止归档。",
+        "Units to create": "将创建的组织节点",
+        "Units to update": "将更新的组织节点",
+        "Units to archive": "将归档的组织节点",
+        "People to provision": "将创建的人员",
+        "People to update": "将更新的人员",
+        "People to suspend": "将暂停的人员",
+        "Memberships to add": "将新增的部门关系",
+        "Memberships to update": "将更新的部门关系",
+        "Memberships to remove": "将移除的部门关系",
+        "Preserved manual data": "保留的手工数据",
+        "Authorization impacts checked": "已检查的权限影响",
+        Conflicts: "冲突",
+        "Organization revision": "组织版本",
+        "Preview expires": "预览过期时间",
+        "Changed units and people": "变更的组织节点与人员",
+        "Download full preview": "下载完整预览",
+        "No effective changes.": "没有实际变更。",
+        Create: "创建",
+        Update: "更新",
+        Archive: "归档",
+        Provision: "创建人员",
+        Suspend: "暂停",
+        Membership: "部门关系",
+        Primary: "主部门",
+        Secondary: "兼任部门",
+        Preserved: "保留",
+        "Authorization impact": "权限影响",
+        profile_field: "资料字段",
+        manual_relation: "手工部门关系",
+        manual_unit: "手工组织节点",
+        "Same-name manual unit": "同名手工组织节点",
+        "Create separate source-owned unit": "创建独立的来源托管节点",
+        "Map existing manual unit": "映射到现有手工节点",
+        "Could not save managed unit decision.": "无法保存托管节点决策。",
+        "Commit managed directory changes": "提交托管组织目录变更",
+        "Managed organization directory updated.": "托管组织目录已更新。",
+        "Could not preview managed directory changes.": "无法预览托管组织目录变更。",
+        "Could not commit managed directory changes.": "无法提交托管组织目录变更。",
+        "Provisioning safety": "自动创建安全状态",
+        "Automatic creation is available only while reconciliation matches the current source and directory snapshot.":
+          "仅当企业邮箱对账与当前身份源及通讯录快照完全一致时，才允许自动创建用户。",
+        Mode: "模式",
+        Reconciliation: "企业邮箱对账",
+        Snapshot: "通讯录快照",
+        "Automatic provisioning": "自动创建用户",
+        "Fresh until": "有效期至",
+        Enabled: "已启用",
+        Disabled: "已停用",
+        identity_only: "仅登录与身份绑定",
+        managed_directory: "托管组织目录",
+        not_started: "未开始",
+        running: "进行中",
+        ready: "已就绪",
+        blocked: "已阻塞",
+        stale: "已过期",
+        "Connection verified.": "连接验证成功。",
+        "Sync preview queued.": "同步预览已进入队列。",
+        "Directory sync queued.": "通讯录同步已进入队列。",
+        "Member refresh queued.": "成员定向刷新已进入队列。",
+        Refresh: "刷新",
+        "Review identity binding": "审核身份绑定",
+        "Review identity rebind": "审核身份重新绑定",
+        "Verify the external evidence and destination account before confirming. The saved profile version is checked again by the server.":
+          "确认前请核对外部身份依据和目标账号；服务器会再次校验已保存的资料版本。",
+        "External subject": "外部主体标识",
+        "Verified corporate email": "已验证企业邮箱",
+        "Current binding": "当前绑定",
+        "Profile version": "资料版本",
+        "Search organization users": "搜索组织用户",
+        "Search users": "搜索用户",
+        "Organization user search results": "组织用户搜索结果",
+        "Destination account": "目标账号",
+        "Select a destination account.": "请选择目标账号。",
+        "Could not search organization users. Retry in a moment.": "无法搜索组织用户，请稍后重试。",
+        "Rebinding invalidates sessions for the previous and destination accounts.":
+          "重新绑定会使原账号和目标账号的现有会话失效。",
+        "Binding changes future managed-login routing for this external identity.":
+          "绑定会改变该外部身份后续托管登录的路由。",
+        "Confirm rebind": "确认重新绑定",
+        "Confirm binding": "确认绑定",
+        "The source or member changed. Close this review, reload, and verify the new evidence.":
+          "身份源或成员资料已变化，请关闭审核、重新加载并核对新依据。",
+        "Member update failed. Retry after checking the destination account.": "成员更新失败，请核对目标账号后重试。",
+        "This data changed in another session. Reload the source before retrying; your draft remains here.":
+          "数据已在其他会话中变化，请重新加载身份源后重试；当前草稿仍保留在页面中。",
+        "Directory management is temporarily unavailable. Check PostgreSQL and retry.":
+          "身份源管理暂时不可用，请检查 PostgreSQL 后重试。",
+        Retry: "重试",
+        "Preview required": "需要先完成同步预览",
+        "Preview confirmed": "同步预览已确认",
+        "Preview completed, but the source changed before confirmation. Run it again.":
+          "同步预览已完成，但身份源在确认前发生变化，请重新运行预览。",
+        "Preview is still running. Reload this source later to see the final result.":
+          "同步预览仍在运行，请稍后重新加载此身份源查看最终结果。",
+        "Could not refresh sync preview status.": "无法刷新同步预览状态。",
+        Draft: "待预览",
+        Login: "扫码登录",
+        Sync: "同步",
+        "Last test": "最近测试",
+        Pause: "暂停",
+        Activate: "启用",
+        Search: "搜索",
+        "Pause until Core restarts": "暂停至 Core 重启",
+        "Restore source": "恢复身份源",
+        "Restore this source with new credentials. Existing bindings keep the same source ID.":
+          "使用新凭据恢复此身份源；已有绑定会继续使用同一个来源 ID。",
+        "Identity source restored in paused state.": "身份源已恢复为暂停状态。",
+        "Source paused until Core restarts.": "身份源已暂停；Core 重启后将按环境变量重新载入。",
+        "Identity source deleted and sessions invalidated.": "身份源已删除，相关会话已失效。",
+        "Stored; leave blank to keep": "已保存；留空则保留",
+        "Required; enter a value": "必填；请输入",
+        Stored: "已保存",
+        Required: "必填",
+        "Deletion impact": "删除影响",
+        "Synchronized members": "已同步成员",
+        "Identity bindings": "身份绑定",
+        "Sessions to invalidate": "将失效的会话用户",
+        "Deleting pauses login first, invalidates affected sessions, removes credentials, and preserves auditable bindings for restoration.":
+          "删除会先暂停登录，使受影响用户的会话失效并清除凭据；绑定记录仍保留用于审计和恢复。",
+        "Provider tenant": "平台租户",
+        "External status": "外部状态",
+        "Match evidence": "匹配依据",
+        "Existing identities": "已有登录身份数",
+        "Stable source binding": "稳定的来源绑定",
+        "External member is inactive": "外部成员已停用",
+        "Binding target is missing": "绑定目标不存在",
+        "Ignored by an administrator": "管理员已忽略",
+        "Duplicate corporate email": "企业邮箱重复",
+        "Email and employee number disagree": "邮箱与员工编号指向不同用户",
+        "Target user is deprovisioned": "目标用户已注销",
+        "Target is already bound in this source": "目标用户已绑定此来源的其他成员",
+        "Unique verified corporate email": "唯一且已验证的企业邮箱",
+        "Unique employee number": "唯一员工编号",
+        "Unique mobile number": "唯一手机号",
+        "Corporate email": "企业邮箱",
+        Mobile: "手机号",
+        "Multiple weak candidates": "存在多个弱匹配候选",
+        "No matching organization user": "未找到匹配的组织用户",
+        "Source is missing": "身份源不存在",
+        "Observed during managed login": "托管登录时已读取成员资料",
+        "Source changed while synchronization was running": "同步期间身份源配置已变化，结果未提交",
+        "Provider returned an invalid pagination cursor": "平台返回了无效的分页游标",
+        "Provider repeated a pagination cursor": "平台重复返回分页游标",
+        "Synchronization failed. Check provider permissions and retry.": "同步失败，请检查平台权限后重试。",
+        "The source or member changed. Loading the latest evidence for review.":
+          "身份源或成员资料已变化，正在加载最新依据供重新审核。",
+        "Complete a successful sync preview before enabling synchronization.":
+          "启用同步前，请先完成一次成功的同步预览。",
+        "Restore the deleted source to preserve existing bindings.": "请恢复已删除的身份源以保留既有绑定。",
+        "Stored credentials are incomplete. Enter the missing credential fields.":
+          "已保存的凭据不完整，请补录缺失字段。",
+        "WeCom rejected the request. Check app permissions and credentials.":
+          "企业微信拒绝了请求，请检查应用权限和凭据。",
+        "Source status updated.": "身份源状态已更新。",
+        "Login setting updated.": "登录设置已更新。",
+        "Sync setting updated.": "同步设置已更新。",
+        "Disable login": "停用登录",
+        "Enable login": "启用登录",
+        "Disable sync": "停用同步",
+        "Enable sync": "启用同步",
+        "Delete source": "删除身份源",
+        "Disable environment source": "停用环境变量身份源",
+        "Admin managed": "管理员配置",
+        "Environment managed": "环境变量配置",
+        "Source settings": "身份源设置",
+        "Identity source name": "身份源名称",
+        "Replacement secret": "替换 Secret",
+        "Leave blank to keep the current secret": "留空则保留当前 Secret",
+        "Save settings": "保存设置",
+        "Identity source settings saved.": "身份源设置已保存。",
+        "Saving connection fields verifies the tenant before applying changes. Secrets are never read back.":
+          "保存连接配置前会重新验证企业租户；已保存的 Secret 永不回显。",
+        "Recent sync runs": "最近同步任务",
+        "Preview runs never modify the durable directory snapshot.": "预览任务不会修改持久化通讯录快照。",
+        "No sync runs yet.": "暂无同步任务。",
+        Started: "开始时间",
+        Kind: "类型",
+        Observed: "读取数量",
+        Changed: "变更数量",
+        Error: "错误",
+        "Directory members": "外部通讯录成员",
+        "Automatic binding only uses a unique verified corporate email. Suggestions require administrator review.":
+          "自动绑定仅使用唯一且已验证的企业邮箱，其他建议必须由管理员审核。",
+        "No synchronized members yet.": "尚未同步成员。",
+        "External member": "外部成员",
+        "Matched user": "已匹配用户",
+        "Principal ID to bind": "要绑定的用户主体 ID",
+        "Rebind this external identity? Existing sessions for the previous account will be invalidated.":
+          "确定改绑此外部身份吗？原账号的现有会话将立即失效。",
+        "Reason for ignoring this member": "忽略此成员的原因",
+        "Search external member or evidence": "搜索外部成员或匹配依据",
+        "All match states": "全部匹配状态",
+        Bound: "已绑定",
+        Suggested: "待确认",
+        Unmatched: "未匹配",
+        Conflict: "冲突",
+        Ignored: "已忽略",
+        Inactive: "已离职或停用",
+        "Member match updated.": "成员匹配已更新。",
+        "Could not load identity source.": "无法加载身份源。",
+        "Identity source action failed.": "身份源操作失败。",
+        "Member update failed.": "成员更新失败。",
+        Bind: "绑定",
+        Rebind: "改绑",
+        Unignore: "取消忽略",
+        Ignore: "忽略",
+        "Delete this identity source? Existing identity bindings remain auditable.":
+          "确定删除此身份源吗？已有身份绑定仍会保留以供审计。",
         "Access mode": "访问模式",
         "Access group": "访问组",
         "Organization members": "组织成员",
@@ -6747,6 +7020,7 @@
             "onboarding",
             "governance",
             "connectors",
+            "directory-sources",
             "org-members",
             "users",
             "org-units",
@@ -6770,6 +7044,7 @@
         onboarding: "Onboarding",
         governance: "Governance",
         connectors: "Connectors",
+        "directory-sources": "Identity sources",
         users: "Users",
         "org-members": "Organization members",
         "org-units": "Org tree",
@@ -6814,6 +7089,7 @@
         "org-directory",
         "keychain",
         "connectors",
+        "directory-sources",
         "judgments",
         "ackemoji",
       ]);
@@ -7125,6 +7401,7 @@
       const shortId = (id, len = 8) => String(id || "").slice(0, len) || "-";
       const titleCase = (s) =>
         String(s || "")
+          .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
           .replace(/[_-]/g, " ")
           .replace(/\b\w/g, (m) => m.toUpperCase());
       function labelRole(role) {
@@ -10413,6 +10690,7 @@
           retention: renderRetention,
           users: renderUsers,
           "org-members": renderOrgMembers,
+          "directory-sources": renderDirectorySources,
           "org-units": renderOrgUnits,
           "org-groups": renderOrgGroups,
           "org-directory": renderOrgDirectory,
@@ -10425,6 +10703,7 @@
         const q = "scope=" + encodeURIComponent(scope);
         const ep = ENDPOINT[view] || view;
         let path = ORG_WIDE.has(view) ? `/api/${ep}` : `/api/${ep}?${q}`;
+        if (view === "directory-sources") path = "/api/directory-sources?includeDeleted=true";
 
         if (view === "memory" && orgWideView() && urlToState().mem !== "edit") path = "/api/memory/scopes";
         if (view === "history") {
@@ -10457,8 +10736,17 @@
           p.textContent =
             r.status === 403
               ? adminTr("You don't administer this scope.")
-              : r.data?.message || `${adminTr("Failed to load")} (${r.status}).`;
+              : view === "directory-sources" && r.status === 503
+                ? adminTr("Directory management is temporarily unavailable. Check PostgreSQL and retry.")
+                : `${adminTr("Failed to load")} (${r.status}).`;
           root.appendChild(p);
+          if (view === "directory-sources") {
+            const retry = document.createElement("button");
+            retry.type = "button";
+            retry.textContent = adminTr("Retry");
+            retry.onclick = () => renderData();
+            root.appendChild(retry);
+          }
           return;
         }
         if (cacheable) dataCache.set(path, r.data);
@@ -13494,6 +13782,1268 @@
           );
         };
         drawLists();
+      }
+
+      function renderDirectorySources(root, initial) {
+        const state = {
+          sources: initial.sources || [],
+          providers: initial.providers || [],
+          selectedId: null,
+          detail: null,
+          members: [],
+          migration: null,
+          memberQuery: "",
+          memberState: "",
+          memberCursor: null,
+          memberNext: null,
+          memberCursorStack: [],
+        };
+        defaultShell({
+          stats: [
+            [state.sources.filter((source) => source.status !== "deleted").length, "Configured sources"],
+            [state.sources.filter((source) => source.loginEnabled).length, "Login enabled"],
+            [state.sources.filter((source) => source.syncEnabled).length, "Sync enabled"],
+          ],
+        });
+
+        const field = (labelText, control, cls = "") => {
+          const wrap = document.createElement("div");
+          wrap.className = "f" + (cls ? " " + cls : "");
+          const label = document.createElement("label");
+          label.textContent = adminTr(labelText);
+          if (!control.id) control.id = "directory-field-" + Math.random().toString(36).slice(2);
+          label.htmlFor = control.id;
+          wrap.append(label, control);
+          return wrap;
+        };
+        const textInput = (placeholder, type = "text") => {
+          const input = document.createElement("input");
+          input.type = type;
+          input.placeholder = adminTr(placeholder);
+          input.autocomplete = "off";
+          input.spellcheck = false;
+          return input;
+        };
+        const select = (items, selected) => {
+          const control = document.createElement("select");
+          items.forEach(([value, label]) => {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = adminTr(label);
+            option.selected = value === selected;
+            control.appendChild(option);
+          });
+          return control;
+        };
+        const requiredSecrets = (provider) => new Set(provider?.requiredSecretFields || provider?.secretFields || []);
+        const sourcePath = (source, suffix = "") => "/api/directory-sources/" + encodeURIComponent(source.id) + suffix;
+        const status = document.createElement("p");
+        status.className = "status";
+        status.id = "st-directory-sources";
+        status.setAttribute("aria-live", "polite");
+        status.tabIndex = -1;
+        const directoryFailure = (result, fallback) => {
+          const messages = {
+            directory_source_preview_required: "Complete a successful sync preview before enabling synchronization.",
+            directory_source_deleted_tenant_restore_required:
+              "Restore the deleted source to preserve existing bindings.",
+            directory_source_secret_unavailable:
+              "Stored credentials are incomplete. Enter the missing credential fields.",
+          };
+          if (result.status === 409) {
+            setStatus(
+              "st-directory-sources",
+              adminTr(
+                "This data changed in another session. Reload the source before retrying; your draft remains here.",
+              ),
+              "err",
+            );
+          } else if (result.status === 503) {
+            setStatus(
+              "st-directory-sources",
+              adminTr("Directory management is temporarily unavailable. Check PostgreSQL and retry."),
+              "err",
+            );
+          } else {
+            const code = result.data?.error || "";
+            const message =
+              messages[code] ||
+              (code.startsWith("wecom_")
+                ? "WeCom rejected the request. Check app permissions and credentials."
+                : fallback);
+            setStatus("st-directory-sources", adminTr(message), "err");
+          }
+          status.focus();
+        };
+        const workspace = document.createElement("div");
+        workspace.className = "list-root";
+
+        const name = textInput("Company directory");
+        const providerSelect = select(
+          state.providers.map((provider) => [provider.id, provider.displayName]),
+          state.providers[0]?.id || "",
+        );
+        const providerFields = document.createElement("div");
+        providerFields.style.display = "contents";
+        const modeSelect = select(
+          [
+            ["identity_only", "Login and identity binding only"],
+            ["managed_directory", "Managed organization directory"],
+          ],
+          "identity_only",
+        );
+        let publicInputs = [];
+        let secretInputs = [];
+        const drawProviderFields = () => {
+          providerFields.textContent = "";
+          const provider = state.providers.find((candidate) => candidate.id === providerSelect.value);
+          publicInputs = (provider?.publicFields || []).map((key) => {
+            const urlField = /(?:url|uri)$/i.test(key);
+            const input = textInput(
+              urlField ? "https://example.com/auth/directory/callback" : titleCase(key),
+              urlField ? "url" : "text",
+            );
+            providerFields.appendChild(field(titleCase(key), input, urlField ? "grow" : ""));
+            return [key, input];
+          });
+          const required = requiredSecrets(provider);
+          secretInputs = (provider?.secretFields || []).map((key) => {
+            const isRequired = required.has(key);
+            const input = textInput(
+              isRequired ? "Secret is stored encrypted" : "Optional; enables full directory sync",
+              "password",
+            );
+            input.required = isRequired;
+            providerFields.appendChild(
+              field(titleCase(key) + " · " + adminTr(isRequired ? "Required" : "Optional"), input),
+            );
+            return [key, input, isRequired];
+          });
+          name.placeholder = provider?.displayName ? provider.displayName + " directory" : adminTr("Company directory");
+          const managedOption = [...modeSelect.options].find((option) => option.value === "managed_directory");
+          if (managedOption) {
+            managedOption.disabled = !(
+              provider?.capabilities?.fullSync &&
+              provider?.capabilities?.organizationUnits &&
+              provider?.capabilities?.memberOrganizationUnits
+            );
+          }
+          if (managedOption?.disabled && modeSelect.value === "managed_directory") modeSelect.value = "identity_only";
+        };
+        providerSelect.onchange = drawProviderFields;
+        const schedule = textInput("360", "number");
+        schedule.min = "15";
+        schedule.max = "1440";
+        schedule.value = "360";
+        const matchPolicy = select(
+          [
+            ["verified_corporate_email", "Verified corporate email, then manual review"],
+            ["manual_only", "Manual binding only"],
+          ],
+          "verified_corporate_email",
+        );
+        const createForm = document.createElement("div");
+        createForm.className = "grant-form";
+        createForm.append(
+          field("Provider", providerSelect),
+          field("Name", name, "grow"),
+          providerFields,
+          field("Sync interval (minutes)", schedule),
+          field("Match policy", matchPolicy),
+          field("Source mode", modeSelect, "grow"),
+        );
+        drawProviderFields();
+        const createButton = document.createElement("button");
+        createButton.type = "button";
+        createButton.className = "primary";
+        createButton.textContent = adminTr("Add identity source");
+        createButton.onclick = async () => {
+          if (
+            !providerSelect.value ||
+            !name.value.trim() ||
+            publicInputs.some(([, input]) => !input.value.trim()) ||
+            secretInputs.some(([, input, required]) => required && !input.value.trim())
+          ) {
+            return setStatus("st-directory-sources", "Complete every required field.", "err");
+          }
+          createButton.disabled = true;
+          const result = await api("POST", "/api/directory-sources", {
+            provider: providerSelect.value,
+            name: name.value.trim(),
+            publicConfig: Object.fromEntries(publicInputs.map(([key, input]) => [key, input.value.trim()])),
+            secretConfig: Object.fromEntries(
+              secretInputs.filter(([, input]) => input.value).map(([key, input]) => [key, input.value]),
+            ),
+            scheduleMinutes: Number(schedule.value),
+            matchPolicy: matchPolicy.value,
+            mode: modeSelect.value,
+          });
+          secretInputs.forEach(([, input]) => (input.value = ""));
+          createButton.disabled = false;
+          if (!result.ok) {
+            return directoryFailure(result, "Could not add identity source.");
+          }
+          setStatus("st-directory-sources", "Identity source added.", "ok");
+          dataCache.delete("/api/directory-sources");
+          renderData();
+        };
+        createForm.appendChild(createButton);
+        const createCard = dataCard(
+          "Add identity source",
+          "The application Secret enables login and member lookup. The optional directory synchronization Secret enables full synchronization. Credentials are write-only.",
+          createForm,
+        );
+        createCard.querySelector(".body").appendChild(status);
+        root.appendChild(createCard);
+
+        const refreshDetail = async (source, message = "") => {
+          if (state.selectedId && state.selectedId !== source.id) {
+            state.memberQuery = "";
+            state.memberState = "";
+            state.memberCursor = null;
+            state.memberNext = null;
+            state.memberCursorStack = [];
+          }
+          const memberParams = new URLSearchParams({ limit: "50" });
+          if (state.memberQuery) memberParams.set("q", state.memberQuery);
+          if (state.memberState) memberParams.append("state", state.memberState);
+          if (state.memberCursor) memberParams.set("cursor", state.memberCursor);
+          const [detail, members] = await Promise.all([
+            api("GET", sourcePath(source)),
+            source.status === "deleted"
+              ? Promise.resolve({ ok: true, data: { members: [], cursor: null } })
+              : api("GET", sourcePath(source, "/members?" + memberParams.toString())),
+          ]);
+          if (!detail.ok || !members.ok) {
+            directoryFailure(!detail.ok ? detail : members, "Could not load identity source.");
+            return false;
+          }
+          state.selectedId = source.id;
+          state.detail = detail.data;
+          state.sources = state.sources.map((item) => (item.id === source.id ? detail.data.source : item));
+          state.members = members.data.members || [];
+          state.memberNext = members.data.cursor || null;
+          if (message) setStatus("st-directory-sources", message, "ok");
+          draw();
+          return true;
+        };
+        const runSourceAction = async (source, suffix, success) => {
+          const result = await api("POST", sourcePath(source, suffix), {});
+          if (!result.ok) {
+            return directoryFailure(result, "Identity source action failed.");
+          }
+          await refreshDetail(source, success);
+          const runId = result.data?.run?.id;
+          if (suffix !== "/sync-preview" || !runId) return;
+          for (let attempt = 0; attempt < 310; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            if (state.selectedId !== source.id) return;
+            const latest = await api("GET", sourcePath(source, "/runs/" + encodeURIComponent(runId)));
+            if (!latest.ok) {
+              if (latest.status >= 500) continue;
+              return directoryFailure(latest, "Could not refresh sync preview status.");
+            }
+            if (!["succeeded", "failed", "expired"].includes(latest.data.run?.status)) continue;
+            if (latest.data.run.status === "succeeded") {
+              if (!(await refreshDetail(source))) return;
+              const refreshed = state.detail?.source;
+              return setStatus(
+                "st-directory-sources",
+                adminTr(
+                  refreshed?.previewConfirmedRevision === refreshed?.revision
+                    ? "Preview confirmed"
+                    : "Preview completed, but the source changed before confirmation. Run it again.",
+                ),
+                refreshed?.previewConfirmedRevision === refreshed?.revision ? "ok" : "warn",
+              );
+            }
+            if (!(await refreshDetail(source))) return;
+            return setStatus("st-directory-sources", directoryReason(latest.data.run.errorCode), "err");
+          }
+          if (state.selectedId !== source.id) return;
+          if (!(await refreshDetail(source))) return;
+          setStatus(
+            "st-directory-sources",
+            adminTr("Preview is still running. Reload this source later to see the final result."),
+            "warn",
+          );
+        };
+        const patchSource = async (source, patch, success) => {
+          const result = await api("PATCH", sourcePath(source), { expectedRevision: source.revision, ...patch });
+          if (!result.ok) {
+            return directoryFailure(result, "Could not update identity source.");
+          }
+          state.sources = state.sources.map((item) => (item.id === source.id ? result.data.source : item));
+          await refreshDetail(result.data.source, success);
+        };
+        const bindingMemberAction = (source, member, action) => {
+          const base = sourcePath(source, "/members/" + encodeURIComponent(member.externalSubjectId));
+          const dialog = document.createElement("dialog");
+          dialog.className = "review-dialog";
+          const titleId = "directory-binding-title-" + Math.random().toString(36).slice(2);
+          dialog.setAttribute("aria-labelledby", titleId);
+          const head = document.createElement("div");
+          head.className = "review-dialog-head";
+          const title = document.createElement("h2");
+          title.id = titleId;
+          title.textContent = adminTr(action === "rebind" ? "Review identity rebind" : "Review identity binding");
+          const summary = document.createElement("p");
+          summary.textContent = adminTr(
+            "Verify the external evidence and destination account before confirming. The saved profile version is checked again by the server.",
+          );
+          head.append(title, summary);
+          const body = document.createElement("div");
+          body.className = "review-dialog-body";
+          const facts = document.createElement("dl");
+          facts.className = "review-dialog-facts";
+          const fact = (term, value) => {
+            const dt = document.createElement("dt");
+            dt.textContent = adminTr(term);
+            const dd = document.createElement("dd");
+            dd.textContent = value || "—";
+            facts.append(dt, dd);
+          };
+          const corporateEmail = (member.emails || []).find((email) => email.kind === "corporate")?.value;
+          fact("External member", member.displayName || member.externalSubjectId);
+          fact("Provider tenant", source.provider + " · " + source.externalTenantId);
+          fact("External subject", member.externalSubjectId);
+          fact("External status", member.status);
+          fact("Verified corporate email", corporateEmail);
+          fact("Employee number", member.employeeNumber);
+          fact("Mobile", member.mobile);
+          fact(
+            "Match evidence",
+            [
+              member.match?.reason || member.matchReason,
+              ...(member.match?.candidates || []).flatMap((candidate) => candidate.matchedFields || []),
+            ]
+              .filter(Boolean)
+              .map(directoryReason)
+              .join(" · "),
+          );
+          fact("Current binding", member.matchedPrincipalId || member.match?.principalId);
+          fact("Profile version", member.profileHash);
+          const search = textInput("Search organization users");
+          const searchButton = document.createElement("button");
+          searchButton.type = "button";
+          searchButton.textContent = adminTr("Search users");
+          const results = document.createElement("select");
+          results.size = 5;
+          results.setAttribute("aria-label", adminTr("Organization user search results"));
+          const users = new Map();
+          const addUser = (user) => {
+            if (!user?.principalId || users.has(user.principalId)) return;
+            users.set(user.principalId, user);
+            const option = document.createElement("option");
+            option.value = user.principalId;
+            option.textContent = [user.displayName || user.principalId, user.email, user.status]
+              .filter(Boolean)
+              .join(" · ");
+            results.appendChild(option);
+          };
+          (member.match?.candidates || []).forEach(addUser);
+          if (member.match?.principalId && !users.has(member.match.principalId)) {
+            addUser({ principalId: member.match.principalId, displayName: member.match.principalId });
+          }
+          if (results.options.length) results.selectedIndex = 0;
+          const target = document.createElement("p");
+          target.className = "review-dialog-warning";
+          const updateTarget = () => {
+            const user = users.get(results.value);
+            target.textContent = user
+              ? adminTr("Destination account") +
+                ": " +
+                [
+                  user.displayName || user.principalId,
+                  user.email,
+                  user.employeeNumber,
+                  user.status,
+                  adminTr("Existing identities") + ": " + String(user.identityCount ?? "—"),
+                  user.principalId,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
+              : adminTr("Select a destination account.");
+          };
+          results.onchange = updateTarget;
+          searchButton.onclick = async () => {
+            const query = search.value.trim();
+            if (query.length < 2) return;
+            searchButton.disabled = true;
+            const response = await api("GET", "/api/org-users/search?q=" + encodeURIComponent(query));
+            searchButton.disabled = false;
+            if (!response.ok) {
+              target.textContent = adminTr("Could not search organization users. Retry in a moment.");
+              return;
+            }
+            (response.data.users || []).forEach(addUser);
+            if (results.selectedIndex < 0 && results.options.length) results.selectedIndex = 0;
+            updateTarget();
+          };
+          search.onkeydown = (event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              searchButton.click();
+            }
+          };
+          updateTarget();
+          const warning = document.createElement("p");
+          warning.className = "review-dialog-warning";
+          warning.textContent = adminTr(
+            action === "rebind"
+              ? "Rebinding invalidates sessions for the previous and destination accounts."
+              : "Binding changes future managed-login routing for this external identity.",
+          );
+          const dialogStatus = document.createElement("p");
+          dialogStatus.className = "status";
+          dialogStatus.setAttribute("aria-live", "assertive");
+          body.append(
+            facts,
+            field("Search organization users", search),
+            searchButton,
+            results,
+            target,
+            warning,
+            dialogStatus,
+          );
+          const foot = document.createElement("div");
+          foot.className = "review-dialog-foot";
+          const cancel = document.createElement("button");
+          cancel.type = "button";
+          cancel.textContent = adminTr("Cancel");
+          cancel.onclick = () => dialog.close();
+          const confirmButton = document.createElement("button");
+          confirmButton.type = "button";
+          confirmButton.className = action === "rebind" ? "review-dialog-confirm danger" : "review-dialog-confirm";
+          confirmButton.textContent = adminTr(action === "rebind" ? "Confirm rebind" : "Confirm binding");
+          confirmButton.onclick = async () => {
+            const principalId = results.value;
+            if (!principalId) {
+              dialogStatus.textContent = adminTr("Select a destination account.");
+              return;
+            }
+            confirmButton.disabled = true;
+            const result = await api("POST", base + "/" + action, {
+              principalId,
+              expectedSourceRevision: source.revision,
+              expectedProfileHash: member.profileHash,
+            });
+            confirmButton.disabled = false;
+            if (!result.ok) {
+              if (result.status === 409) {
+                dialogStatus.textContent = adminTr(
+                  "The source or member changed. Loading the latest evidence for review.",
+                );
+                const [freshSource, freshMember] = await Promise.all([
+                  api("GET", sourcePath(source)),
+                  api("GET", base),
+                ]);
+                if (freshSource.ok && freshMember.ok) {
+                  dialog.close();
+                  bindingMemberAction(
+                    freshSource.data.source,
+                    { ...freshMember.data.member, match: freshMember.data.match },
+                    action,
+                  );
+                  return;
+                }
+              }
+              dialogStatus.textContent = adminTr("Member update failed. Retry after checking the destination account.");
+              return;
+            }
+            dialog.close();
+            await refreshDetail(source, "Member match updated.");
+          };
+          foot.append(cancel, confirmButton);
+          dialog.append(head, body, foot);
+          dialog.onclose = () => dialog.remove();
+          root.appendChild(dialog);
+          dialog.showModal();
+          search.focus();
+        };
+        const memberAction = async (source, member, action) => {
+          const base = sourcePath(source, "/members/" + encodeURIComponent(member.externalSubjectId));
+          if (action === "bind" || action === "rebind") return bindingMemberAction(source, member, action);
+          let method = "POST";
+          let suffix = "/" + action;
+          let body = {};
+          if (action === "unignore") {
+            method = "DELETE";
+            suffix = "/ignore";
+            body = undefined;
+          } else if (action === "refresh") {
+            suffix = "/refresh";
+          } else {
+            const reason = prompt(adminTr("Reason for ignoring this member"), "") || "";
+            body = { reason };
+          }
+          const result = await api(method, base + suffix, body);
+          if (!result.ok) {
+            return directoryFailure(result, "Member update failed.");
+          }
+          await refreshDetail(source, action === "refresh" ? "Member refresh queued." : "Member match updated.");
+        };
+        const sourceStatus = (source) => {
+          if (source.status === "deleted") return badge(adminTr("deleted"), "err");
+          if (source.status !== "active") return badge(adminTr(source.status), "warn");
+          if (source.lastTestStatus === "failed") return badge(adminTr("connection failed"), "err");
+          if (!source.loginEnabled && !source.syncEnabled && source.previewConfirmedRevision !== source.revision)
+            return badge(adminTr("Draft"), "warn");
+          return badge(adminTr("active"), "ok");
+        };
+        const matchBadge = (member) => {
+          const match = member.match || { state: member.matchState };
+          const kind =
+            match.state === "bound"
+              ? "ok"
+              : match.state === "conflict"
+                ? "err"
+                : match.state === "suggested"
+                  ? "warn"
+                  : "muted";
+          return badge(adminTr(match.state || "unmatched"), kind);
+        };
+        const directoryReason = (code) => {
+          const labels = {
+            stable_binding: "Stable source binding",
+            external_inactive: "External member is inactive",
+            binding_target_missing: "Binding target is missing",
+            administrator_ignored: "Ignored by an administrator",
+            duplicate_corporate_email: "Duplicate corporate email",
+            email_employee_disagree: "Email and employee number disagree",
+            target_deprovisioned: "Target user is deprovisioned",
+            target_already_bound_in_source: "Target is already bound in this source",
+            unique_corporate_email: "Unique verified corporate email",
+            unique_employee_number: "Unique employee number",
+            unique_mobile: "Unique mobile number",
+            corporate_email: "Corporate email",
+            employee_number: "Employee number",
+            mobile: "Mobile",
+            multiple_weak_candidates: "Multiple weak candidates",
+            no_candidate: "No matching organization user",
+            source_missing: "Source is missing",
+            login_observed: "Observed during managed login",
+            directory_sync_source_changed: "Source changed while synchronization was running",
+            wecom_user_list_id_invalid_cursor: "Provider returned an invalid pagination cursor",
+            wecom_user_list_id_repeated_cursor: "Provider repeated a pagination cursor",
+          };
+          if (!code) return "—";
+          return adminTr(
+            labels[code] ||
+              (String(code).startsWith("wecom_")
+                ? "Synchronization failed. Check provider permissions and retry."
+                : "Identity source action failed."),
+          );
+        };
+        const draw = () => {
+          workspace.textContent = "";
+          const sourceRows = actionTable(
+            ["Source", "Provider", "Status", "Login", "Sync", "Last test", ""],
+            state.sources,
+            (source) => [
+              nodeCell(stacked(source.name, source.externalTenantId), "mono"),
+              state.providers.find((provider) => provider.id === source.provider)?.displayName || source.provider,
+              nodeCell(sourceStatus(source)),
+              source.loginEnabled
+                ? nodeCell(badge(adminTr("enabled"), "ok"))
+                : nodeCell(badge(adminTr("disabled"), "muted")),
+              source.syncEnabled
+                ? nodeCell(stacked(adminTr("enabled"), source.scheduleMinutes + " min"))
+                : nodeCell(badge(adminTr("disabled"), "muted")),
+              source.lastTestAt ? timeCell(source.lastTestAt) : "—",
+              {
+                action: {
+                  label: state.selectedId === source.id ? "Selected" : "Manage",
+                  run: () => refreshDetail(source),
+                },
+              },
+            ],
+            "No identity sources configured.",
+          );
+          const sourceList = document.createElement("div");
+          sourceList.appendChild(sourceRows);
+          const migrationButton = document.createElement("button");
+          migrationButton.type = "button";
+          migrationButton.textContent = adminTr("Preview existing identity matches");
+          migrationButton.onclick = async () => {
+            migrationButton.disabled = true;
+            const result = await api("GET", "/api/directory-sources/migration-preview");
+            migrationButton.disabled = false;
+            if (!result.ok) {
+              return setApiStatus(
+                "st-directory-sources",
+                result.data?.message,
+                "Could not build migration preview.",
+                "err",
+              );
+            }
+            state.migration = result.data;
+            draw();
+          };
+          sourceList.appendChild(migrationButton);
+          workspace.appendChild(
+            dataCard(
+              "Identity sources",
+              "One source can power managed login, directory synchronization, or both.",
+              sourceList,
+            ),
+          );
+          if (state.migration) {
+            const counts = state.migration.counts || {};
+            workspace.appendChild(
+              dataCard(
+                "Existing identity migration preview",
+                "This preview is read-only. Confirm candidates through the member binding workflow.",
+                table(
+                  ["Category", "Count"],
+                  [
+                    [adminTr("Stable binding"), { text: String(counts.stable_binding || 0), cls: "num" }],
+                    [
+                      adminTr("Corporate email candidate"),
+                      { text: String(counts.unique_corporate_email_candidate || 0), cls: "num" },
+                    ],
+                    [
+                      adminTr("Suspected duplicate"),
+                      { text: String(counts.suspected_duplicate_account || 0), cls: "num" },
+                    ],
+                    [adminTr("Conflict"), { text: String(counts.conflict || 0), cls: "num" }],
+                    [adminTr("Unmatched"), { text: String(counts.unmatched || 0), cls: "num" }],
+                  ],
+                  "No synchronized members yet.",
+                ),
+              ),
+            );
+          }
+          if (!state.detail) return;
+          const source = state.detail.source;
+          if (source.status === "deleted") {
+            const provider = state.providers.find((candidate) => candidate.id === source.provider);
+            const required = requiredSecrets(provider);
+            const restoreForm = document.createElement("div");
+            restoreForm.className = "grant-form";
+            const restoreSecrets = (provider?.secretFields || []).map((key) => {
+              const isRequired = required.has(key);
+              const input = textInput(
+                isRequired ? "Required; enter a value" : "Optional; enables full directory sync",
+                "password",
+              );
+              input.required = isRequired;
+              restoreForm.appendChild(
+                field(titleCase(key) + " · " + adminTr(isRequired ? "Required" : "Optional"), input),
+              );
+              return [key, input, isRequired];
+            });
+            const restoreButton = document.createElement("button");
+            restoreButton.type = "button";
+            restoreButton.className = "primary";
+            restoreButton.textContent = adminTr("Restore source");
+            restoreButton.onclick = async () => {
+              if (restoreSecrets.some(([, input, required]) => required && !input.value)) {
+                return setStatus("st-directory-sources", adminTr("Complete every required field."), "err");
+              }
+              restoreButton.disabled = true;
+              const result = await api("POST", sourcePath(source, "/restore"), {
+                expectedRevision: source.revision,
+                secretConfig: Object.fromEntries(
+                  restoreSecrets.filter(([, input]) => input.value).map(([key, input]) => [key, input.value]),
+                ),
+              });
+              restoreButton.disabled = false;
+              restoreSecrets.forEach(([, input]) => (input.value = ""));
+              if (!result.ok) return directoryFailure(result, "Could not restore identity source.");
+              state.sources = state.sources.map((item) => (item.id === source.id ? result.data.source : item));
+              await refreshDetail(result.data.source, "Identity source restored in paused state.");
+            };
+            restoreForm.appendChild(restoreButton);
+            workspace.appendChild(
+              dataCard(
+                source.name,
+                "Restore this source with new credentials. Existing bindings keep the same source ID.",
+                restoreForm,
+                { titleI18n: false },
+              ),
+            );
+            return;
+          }
+          const controls = document.createElement("div");
+          controls.className = "grant-form";
+          const testButton = document.createElement("button");
+          testButton.type = "button";
+          testButton.textContent = adminTr("Test connection");
+          testButton.onclick = () => runSourceAction(source, "/test", "Connection verified.");
+          const previewButton = document.createElement("button");
+          previewButton.type = "button";
+          previewButton.textContent = adminTr("Preview sync");
+          previewButton.disabled = !source.capabilities?.fullSync;
+          previewButton.onclick = () => runSourceAction(source, "/sync-preview", "Sync preview queued.");
+          const syncButton = document.createElement("button");
+          syncButton.type = "button";
+          syncButton.className = "primary";
+          syncButton.textContent = adminTr("Sync now");
+          syncButton.disabled = !source.capabilities?.fullSync || !source.syncEnabled;
+          syncButton.onclick = () => runSourceAction(source, "/sync", "Directory sync queued.");
+          const statusButton = document.createElement("button");
+          statusButton.type = "button";
+          statusButton.textContent = adminTr(source.status === "active" ? "Pause" : "Activate");
+          statusButton.disabled = source.origin === "environment";
+          statusButton.onclick = () =>
+            patchSource(source, { status: source.status === "active" ? "paused" : "active" }, "Source status updated.");
+          const loginButton = document.createElement("button");
+          loginButton.type = "button";
+          loginButton.textContent = adminTr(source.loginEnabled ? "Disable login" : "Enable login");
+          loginButton.disabled =
+            source.origin === "environment" || (!source.capabilities?.login && !source.loginEnabled);
+          loginButton.onclick = () =>
+            patchSource(source, { loginEnabled: !source.loginEnabled }, "Login setting updated.");
+          const syncToggle = document.createElement("button");
+          syncToggle.type = "button";
+          syncToggle.textContent = adminTr(source.syncEnabled ? "Disable sync" : "Enable sync");
+          syncToggle.disabled =
+            source.origin === "environment" ||
+            (!source.capabilities?.fullSync && !source.syncEnabled) ||
+            (!source.syncEnabled && source.previewConfirmedRevision !== source.revision);
+          if (!source.syncEnabled && source.previewConfirmedRevision !== source.revision) {
+            syncToggle.title = adminTr("Preview required");
+          }
+          syncToggle.onclick = () => patchSource(source, { syncEnabled: !source.syncEnabled }, "Sync setting updated.");
+          const reconciliationReady =
+            source.reconciliationStatus === "ready" &&
+            source.reconciledSourceRevision === source.revision &&
+            source.reconciledMemberSnapshotRevision === source.memberSnapshotRevision &&
+            Number(source.reconciliationExpiresAt || 0) > Date.now();
+          const reconcileButton = document.createElement("button");
+          reconcileButton.type = "button";
+          reconcileButton.textContent = adminTr("Reconcile corporate emails");
+          reconcileButton.disabled =
+            source.matchPolicy !== "verified_corporate_email" ||
+            !source.capabilities?.corporateEmailSubjectLookup ||
+            !source.capabilities?.trustedCorporateEmail ||
+            !source.memberSnapshotRevision;
+          reconcileButton.onclick = () =>
+            runSourceAction(source, "/reconcile", "Corporate email reconciliation completed.");
+          const jitButton = document.createElement("button");
+          jitButton.type = "button";
+          jitButton.textContent = adminTr(
+            source.jitProvisioningEnabled ? "Disable automatic provisioning" : "Enable automatic provisioning",
+          );
+          jitButton.disabled =
+            source.origin === "environment" ||
+            source.matchPolicy !== "verified_corporate_email" ||
+            !source.capabilities?.corporateEmailSubjectLookup ||
+            !source.capabilities?.trustedCorporateEmail ||
+            (!source.jitProvisioningEnabled && !reconciliationReady);
+          jitButton.title = reconciliationReady ? "" : adminTr("Fresh reconciliation required");
+          jitButton.onclick = () =>
+            patchSource(
+              source,
+              { jitProvisioningEnabled: !source.jitProvisioningEnabled },
+              "Automatic provisioning setting updated.",
+            );
+          const managedPreviewButton = document.createElement("button");
+          managedPreviewButton.type = "button";
+          managedPreviewButton.textContent = adminTr("Preview managed directory");
+          managedPreviewButton.disabled = source.mode !== "managed_directory" || !source.memberSnapshotRevision;
+          managedPreviewButton.onclick = async () => {
+            managedPreviewButton.disabled = true;
+            const result = await api("POST", sourcePath(source, "/managed-preview"), {});
+            managedPreviewButton.disabled = false;
+            if (!result.ok) return directoryFailure(result, "Could not preview managed directory changes.");
+            const preview = result.data;
+            const dialog = document.createElement("dialog");
+            dialog.className = "review-dialog";
+            const title = document.createElement("h2");
+            title.textContent = adminTr("Managed directory preview");
+            const summary = document.createElement("p");
+            summary.textContent = adminTr(
+              "Only source-owned units, profiles, and department memberships are changed. Units referenced by managers, access policies, or ACLs are blocked from archival.",
+            );
+            const countAction = (items, action) => (items || []).filter((item) => item.action === action).length;
+            const facts = document.createElement("dl");
+            facts.className = "review-dialog-facts";
+            [
+              ["Units to create", countAction(preview.units, "create")],
+              ["Units to update", countAction(preview.units, "update")],
+              ["Units to archive", countAction(preview.units, "archive")],
+              ["People to provision", countAction(preview.members, "provision")],
+              ["People to update", countAction(preview.members, "update")],
+              ["People to suspend", countAction(preview.members, "suspend")],
+              ["Memberships to add", countAction(preview.relations, "add")],
+              ["Memberships to update", countAction(preview.relations, "update")],
+              ["Memberships to remove", countAction(preview.relations, "remove")],
+              ["Preserved manual data", preview.preserved?.length || 0],
+              ["Authorization impacts checked", preview.authorizationImpacts?.length || 0],
+              ["Conflicts", preview.conflicts?.length || 0],
+              ["Snapshot", preview.snapshotRevision || "—"],
+              ["Organization revision", preview.organizationRevision ?? "—"],
+              ["Preview expires", preview.expiresAt ? new Date(preview.expiresAt).toLocaleString() : "—"],
+            ].forEach(([label, value]) => {
+              const term = document.createElement("dt");
+              term.textContent = adminTr(label);
+              const detail = document.createElement("dd");
+              detail.textContent = String(value);
+              facts.append(term, detail);
+            });
+            const conflicts = document.createElement("p");
+            conflicts.className = "review-dialog-warning";
+            conflicts.textContent = (preview.conflicts || []).join(" · ");
+            conflicts.hidden = !preview.conflicts?.length;
+            const changes = [
+              ...(preview.units || [])
+                .filter((item) => item.action !== "unchanged")
+                .map(
+                  (item) =>
+                    `${adminTr(item.action.charAt(0).toUpperCase() + item.action.slice(1))} · ${item.name} · ${item.externalUnitId}`,
+                ),
+              ...(preview.members || [])
+                .filter((item) => item.action !== "unchanged")
+                .map(
+                  (item) =>
+                    `${adminTr(item.action.charAt(0).toUpperCase() + item.action.slice(1))} · ${item.snapshotMember?.displayName || item.externalSubjectId} · ${item.externalSubjectId}${item.principalId ? ` · ${item.principalId}` : ""}`,
+                ),
+              ...(preview.relations || [])
+                .filter((item) => item.action !== "unchanged")
+                .map(
+                  (item) =>
+                    `${adminTr("Membership")} · ${adminTr(item.action.charAt(0).toUpperCase() + item.action.slice(1))} · ${item.externalSubjectId} · ${item.unitId} · ${item.primary ? adminTr("Primary") : adminTr("Secondary")}`,
+                ),
+              ...(preview.preserved || []).map(
+                (item) => `${adminTr("Preserved")} · ${adminTr(item.kind)} · ${item.resourceId} · ${item.detail}`,
+              ),
+              ...(preview.authorizationImpacts || []).map(
+                (item) =>
+                  `${adminTr("Authorization impact")} · ${item.externalUnitId} · roots ${item.directoryRoots} · ACL ${item.accessGrants} · members ${item.activeMembers}`,
+              ),
+            ];
+            const changeDetails = document.createElement("details");
+            changeDetails.open = changes.length > 0 && changes.length <= 20;
+            const changeSummary = document.createElement("summary");
+            changeSummary.textContent = `${adminTr("Changed units and people")} (${changes.length})`;
+            const changeList = document.createElement("ol");
+            changes.slice(0, 200).forEach((value) => {
+              const row = document.createElement("li");
+              row.textContent = value;
+              changeList.append(row);
+            });
+            if (!changes.length) {
+              const empty = document.createElement("p");
+              empty.textContent = adminTr("No effective changes.");
+              changeDetails.append(changeSummary, empty);
+            } else {
+              changeDetails.append(changeSummary, changeList);
+            }
+            const download = document.createElement("button");
+            download.type = "button";
+            download.textContent = adminTr("Download full preview");
+            download.onclick = () => {
+              const url = URL.createObjectURL(
+                new Blob([JSON.stringify(preview, null, 2)], { type: "application/json" }),
+              );
+              const link = document.createElement("a");
+              link.href = url;
+              link.download = `managed-directory-preview-${preview.id}.json`;
+              link.click();
+              URL.revokeObjectURL(url);
+            };
+            const decisions = document.createElement("div");
+            decisions.className = "review-dialog-decisions";
+            (preview.units || [])
+              .filter(
+                (item) =>
+                  item.collisionUnitId &&
+                  (preview.conflicts || []).includes(`manual_unit_name_collision:${item.externalUnitId}`),
+              )
+              .forEach((item) => {
+                const row = document.createElement("div");
+                const label = document.createElement("p");
+                label.textContent = `${adminTr("Same-name manual unit")} · ${item.name} · ${item.collisionUnitId}`;
+                const decide = async (decision) => {
+                  const result = await api("POST", sourcePath(source, "/managed-unit-mapping"), {
+                    previewId: preview.id,
+                    externalUnitId: item.externalUnitId,
+                    decision,
+                  });
+                  if (!result.ok) return directoryFailure(result, "Could not save managed unit decision.");
+                  dialog.close();
+                  managedPreviewButton.click();
+                };
+                const create = document.createElement("button");
+                create.type = "button";
+                create.textContent = adminTr("Create separate source-owned unit");
+                create.onclick = () => decide("create");
+                const map = document.createElement("button");
+                map.type = "button";
+                map.textContent = adminTr("Map existing manual unit");
+                map.onclick = () => decide("map");
+                row.append(label, create, map);
+                decisions.append(row);
+              });
+            const cancel = document.createElement("button");
+            cancel.type = "button";
+            cancel.textContent = adminTr("Cancel");
+            cancel.onclick = () => dialog.close();
+            const commit = document.createElement("button");
+            commit.type = "button";
+            commit.className = "review-dialog-confirm primary";
+            commit.textContent = adminTr("Commit managed directory changes");
+            commit.disabled = preview.status !== "ready" || preview.conflicts?.length > 0;
+            commit.onclick = async () => {
+              commit.disabled = true;
+              const committed = await api("POST", sourcePath(source, "/managed-commit"), {
+                previewId: preview.id,
+              });
+              if (!committed.ok) {
+                commit.disabled = false;
+                return directoryFailure(committed, "Could not commit managed directory changes.");
+              }
+              dialog.close();
+              await refreshDetail(source, "Managed organization directory updated.");
+            };
+            dialog.append(title, summary, facts, changeDetails, decisions, download, conflicts, cancel, commit);
+            dialog.onclose = () => dialog.remove();
+            root.appendChild(dialog);
+            dialog.showModal();
+          };
+          const deleteButton = document.createElement("button");
+          deleteButton.type = "button";
+          deleteButton.className = "danger";
+          deleteButton.textContent = adminTr(
+            source.origin === "environment" ? "Pause until Core restarts" : "Delete source",
+          );
+          deleteButton.onclick = async () => {
+            if (source.origin === "environment") {
+              const result = await api("POST", sourcePath(source, "/pause"), { expectedRevision: source.revision });
+              if (!result.ok) return directoryFailure(result, "Could not pause identity source.");
+              state.sources = state.sources.map((item) => (item.id === source.id ? result.data.source : item));
+              return refreshDetail(result.data.source, "Source paused until Core restarts.");
+            }
+            const impact = await api("GET", sourcePath(source, "/impact"));
+            if (!impact.ok) return directoryFailure(impact, "Could not load deletion impact.");
+            const dialog = document.createElement("dialog");
+            dialog.className = "review-dialog";
+            const titleId = "directory-delete-title-" + Math.random().toString(36).slice(2);
+            dialog.setAttribute("aria-labelledby", titleId);
+            const title = document.createElement("h2");
+            title.id = titleId;
+            title.textContent = adminTr("Deletion impact");
+            const summary = document.createElement("p");
+            summary.textContent = adminTr(
+              "Deleting pauses login first, invalidates affected sessions, removes credentials, and preserves auditable bindings for restoration.",
+            );
+            const facts = document.createElement("dl");
+            facts.className = "review-dialog-facts";
+            [
+              ["Synchronized members", impact.data.members],
+              ["Identity bindings", impact.data.bindings],
+              ["Sessions to invalidate", impact.data.affectedUsers],
+            ].forEach(([label, value]) => {
+              const term = document.createElement("dt");
+              term.textContent = adminTr(label);
+              const detail = document.createElement("dd");
+              detail.textContent = String(value);
+              facts.append(term, detail);
+            });
+            const cancel = document.createElement("button");
+            cancel.type = "button";
+            cancel.textContent = adminTr("Cancel");
+            cancel.onclick = () => dialog.close();
+            const confirmDelete = document.createElement("button");
+            confirmDelete.type = "button";
+            confirmDelete.className = "review-dialog-confirm danger";
+            confirmDelete.textContent = adminTr("Delete source");
+            confirmDelete.onclick = async () => {
+              confirmDelete.disabled = true;
+              const result = await api(
+                "DELETE",
+                sourcePath(source) + "?expectedRevision=" + impact.data.sourceRevision,
+              );
+              confirmDelete.disabled = false;
+              if (!result.ok) return directoryFailure(result, "Could not delete identity source.");
+              dialog.close();
+              state.sources = state.sources.map((item) => (item.id === source.id ? result.data.source : item));
+              await refreshDetail(result.data.source, "Identity source deleted and sessions invalidated.");
+            };
+            dialog.append(title, summary, facts, cancel, confirmDelete);
+            dialog.onclose = () => dialog.remove();
+            root.appendChild(dialog);
+            dialog.showModal();
+          };
+          controls.append(
+            testButton,
+            previewButton,
+            syncButton,
+            statusButton,
+            loginButton,
+            syncToggle,
+            reconcileButton,
+            jitButton,
+            managedPreviewButton,
+            deleteButton,
+          );
+          workspace.appendChild(
+            dataCard(
+              source.name,
+              (source.origin === "environment" ? adminTr("Environment managed") : adminTr("Admin managed")) +
+                " · " +
+                source.externalTenantId +
+                " · " +
+                adminTr(
+                  source.mode === "managed_directory"
+                    ? "Managed organization directory"
+                    : "Login and identity binding only",
+                ),
+              controls,
+              { titleI18n: false, descI18n: false },
+            ),
+          );
+          workspace.appendChild(
+            dataCard(
+              "Provisioning safety",
+              "Automatic creation is available only while reconciliation matches the current source and directory snapshot.",
+              table(
+                ["Mode", "Reconciliation", "Snapshot", "Automatic provisioning", "Fresh until"],
+                [
+                  [
+                    source.mode,
+                    source.reconciliationStatus,
+                    source.memberSnapshotRevision || "—",
+                    source.jitProvisioningEnabled ? "Enabled" : "Disabled",
+                    source.reconciliationExpiresAt ? timeCell(source.reconciliationExpiresAt) : "—",
+                  ],
+                ],
+                "No provisioning state.",
+              ),
+            ),
+          );
+          const settings = document.createElement("div");
+          settings.className = "grant-form";
+          const settingsName = textInput("Identity source name");
+          settingsName.value = source.name;
+          const provider = state.providers.find((candidate) => candidate.id === source.provider);
+          const required = requiredSecrets(provider);
+          const publicInputs = (provider?.publicFields || Object.keys(source.publicConfig || {})).map((key) => {
+            const urlField = /(?:url|uri)$/i.test(key);
+            const input = textInput(urlField ? "https://example.com/callback" : key, urlField ? "url" : "text");
+            input.value = source.publicConfig?.[key] || "";
+            settings.appendChild(field(titleCase(key), input));
+            return [key, input];
+          });
+          const settingsSecretInputs = (provider?.secretFields || []).map((key) => {
+            const present = source.secretPresence?.[key] === true;
+            const isRequired = required.has(key);
+            const input = textInput(
+              present
+                ? "Stored; leave blank to keep"
+                : isRequired
+                  ? "Required; enter a value"
+                  : "Optional; enables full directory sync",
+              "password",
+            );
+            input.required = isRequired && !present;
+            settings.appendChild(
+              field(titleCase(key) + " · " + adminTr(present ? "Stored" : isRequired ? "Required" : "Optional"), input),
+            );
+            return [key, input, isRequired];
+          });
+          const settingsSchedule = textInput("360", "number");
+          settingsSchedule.min = "15";
+          settingsSchedule.max = "1440";
+          settingsSchedule.value = String(source.scheduleMinutes);
+          const settingsPolicy = select(
+            [
+              ["verified_corporate_email", "Verified corporate email, then manual review"],
+              ["manual_only", "Manual binding only"],
+            ],
+            source.matchPolicy,
+          );
+          const settingsMode = select(
+            [
+              ["identity_only", "Login and identity binding only"],
+              ["managed_directory", "Managed organization directory"],
+            ],
+            source.mode || "identity_only",
+          );
+          const managedModeOption = [...settingsMode.options].find((option) => option.value === "managed_directory");
+          if (managedModeOption) {
+            managedModeOption.disabled = !(
+              source.capabilities?.fullSync &&
+              source.capabilities?.organizationUnits &&
+              source.capabilities?.memberOrganizationUnits
+            );
+          }
+          const saveSettings = document.createElement("button");
+          saveSettings.type = "button";
+          saveSettings.className = "primary";
+          saveSettings.textContent = adminTr("Save settings");
+          saveSettings.onclick = async () => {
+            if (
+              settingsSecretInputs.some(
+                ([key, input, required]) => required && !source.secretPresence?.[key] && !input.value,
+              )
+            ) {
+              return setStatus("st-directory-sources", adminTr("Complete every required field."), "err");
+            }
+            const publicConfig = Object.fromEntries(publicInputs.map(([key, input]) => [key, input.value.trim()]));
+            const secretConfig = Object.fromEntries(
+              settingsSecretInputs.filter(([, input]) => input.value).map(([key, input]) => [key, input.value]),
+            );
+            const patch = {
+              name: settingsName.value.trim(),
+              publicConfig,
+              scheduleMinutes: Number(settingsSchedule.value),
+              matchPolicy: settingsPolicy.value,
+              mode: settingsMode.value,
+              ...(Object.keys(secretConfig).length ? { secretConfig } : {}),
+            };
+            saveSettings.disabled = true;
+            await patchSource(source, patch, "Identity source settings saved.");
+            settingsSecretInputs.forEach(([, input]) => (input.value = ""));
+            saveSettings.disabled = false;
+          };
+          settings.prepend(field("Name", settingsName, "grow"));
+          settings.append(
+            field("Sync interval (minutes)", settingsSchedule),
+            field("Match policy", settingsPolicy),
+            field("Source mode", settingsMode, "grow"),
+            saveSettings,
+          );
+          if (source.origin !== "environment") {
+            workspace.appendChild(
+              dataCard(
+                "Source settings",
+                "Saving connection fields verifies the tenant before applying changes. Secrets are never read back.",
+                settings,
+              ),
+            );
+          }
+          const runs = state.detail.runs || [];
+          workspace.appendChild(
+            dataCard(
+              "Recent sync runs",
+              "Preview runs never modify the durable directory snapshot.",
+              table(
+                ["Started", "Kind", "Status", "Observed", "Changed", "Inactive", "Error"],
+                runs.map((run) => [
+                  run.startedAt ? timeCell(run.startedAt) : run.createdAt ? timeCell(run.createdAt) : "—",
+                  run.kind,
+                  nodeCell(
+                    badge(
+                      adminTr(run.status),
+                      run.status === "succeeded" ? "ok" : run.status === "failed" ? "err" : "warn",
+                    ),
+                  ),
+                  { text: String(run.counts?.observed || 0), cls: "num" },
+                  { text: String(run.counts?.changed || 0), cls: "num" },
+                  { text: String(run.counts?.inactive || 0), cls: "num" },
+                  directoryReason(run.errorCode || run.errorMessage),
+                ]),
+                "No sync runs yet.",
+              ),
+            ),
+          );
+          const memberWorkbench = document.createElement("div");
+          const memberFilters = document.createElement("div");
+          memberFilters.className = "grant-form";
+          const memberSearch = textInput("Search external member or evidence");
+          memberSearch.value = state.memberQuery;
+          const memberState = select(
+            [
+              ["", "All match states"],
+              ["bound", "Bound"],
+              ["suggested", "Suggested"],
+              ["unmatched", "Unmatched"],
+              ["conflict", "Conflict"],
+              ["ignored", "Ignored"],
+              ["inactive", "Inactive"],
+            ],
+            state.memberState,
+          );
+          const applyMemberFilters = document.createElement("button");
+          applyMemberFilters.type = "button";
+          applyMemberFilters.textContent = adminTr("Apply filters");
+          applyMemberFilters.onclick = () => {
+            state.memberQuery = memberSearch.value.trim();
+            state.memberState = memberState.value;
+            state.memberCursor = null;
+            state.memberNext = null;
+            state.memberCursorStack = [];
+            refreshDetail(source);
+          };
+          memberFilters.append(field("Search", memberSearch, "grow"), field("State", memberState), applyMemberFilters);
+          memberWorkbench.appendChild(memberFilters);
+          memberWorkbench.appendChild(
+            actionTable(
+              ["External member", "Email", "State", "Matched user", "Reason", "", "", ""],
+              state.members,
+              (member) => {
+                const match = member.match || {};
+                const email = (member.emails || []).find((item) => item.kind === "corporate") || member.emails?.[0];
+                const action = match.state === "bound" ? "rebind" : match.state === "ignored" ? "unignore" : "bind";
+                return [
+                  nodeCell(stacked(member.displayName || member.externalSubjectId, member.externalSubjectId), "mono"),
+                  email
+                    ? nodeCell(stacked(email.value, email.verified ? adminTr("verified") : adminTr("unverified")))
+                    : "—",
+                  nodeCell(matchBadge(member)),
+                  match.principalId || member.matchedPrincipalId || "—",
+                  directoryReason(match.reason || member.matchReason),
+                  {
+                    action: {
+                      label: action === "rebind" ? "Rebind" : action === "unignore" ? "Unignore" : "Bind",
+                      run: () => memberAction(source, member, action),
+                    },
+                  },
+                  match.state !== "bound" && match.state !== "ignored"
+                    ? {
+                        action: {
+                          label: "Ignore",
+                          run: () => memberAction(source, member, "ignore"),
+                        },
+                      }
+                    : { text: "" },
+                  source.capabilities?.targetedLookup
+                    ? {
+                        action: {
+                          label: "Refresh",
+                          run: () => memberAction(source, member, "refresh"),
+                        },
+                      }
+                    : { text: "" },
+                ];
+              },
+              "No synchronized members yet.",
+            ),
+          );
+          const memberPages = document.createElement("div");
+          memberPages.className = "grant-form";
+          const previousMembers = document.createElement("button");
+          previousMembers.type = "button";
+          previousMembers.textContent = adminTr("Previous");
+          previousMembers.disabled = state.memberCursorStack.length === 0;
+          previousMembers.onclick = () => {
+            state.memberCursor = state.memberCursorStack.pop() ?? null;
+            refreshDetail(source);
+          };
+          const nextMembers = document.createElement("button");
+          nextMembers.type = "button";
+          nextMembers.textContent = adminTr("Next");
+          nextMembers.disabled = !state.memberNext;
+          nextMembers.onclick = () => {
+            state.memberCursorStack.push(state.memberCursor);
+            state.memberCursor = state.memberNext;
+            refreshDetail(source);
+          };
+          memberPages.append(previousMembers, nextMembers);
+          memberWorkbench.appendChild(memberPages);
+          workspace.appendChild(
+            dataCard(
+              "Directory members",
+              "Automatic binding only uses a unique verified corporate email. Suggestions require administrator review.",
+              memberWorkbench,
+            ),
+          );
+        };
+        root.appendChild(workspace);
+        draw();
       }
 
       function renderOrgMembers(root, initial) {

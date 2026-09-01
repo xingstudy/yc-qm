@@ -12,6 +12,14 @@ import type { Orchestrator, OrchestratorInput } from "../src/core/orchestrator.t
 import type { Principal, TurnResult } from "../src/types.ts";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+const waitFor = async (condition: () => boolean, timeoutMs = 2_000): Promise<boolean> => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) return true;
+    await sleep(10);
+  }
+  return condition();
+};
 const actor: Principal = { id: "internal:U1", type: "internal" };
 const turn: OrchestratorInput = {
   actor,
@@ -21,7 +29,7 @@ const turn: OrchestratorInput = {
 };
 const ok: TurnResult = { status: "ok", reply: "done" };
 
-test("a superseded worker stops claiming; in-flight turns finish; claiming resumes when the newer build dies", async () => {
+test("a superseded worker stops claiming; in-flight turns finish; claiming resumes when the newer build dies", async (t) => {
   const { runs } = createMemoryRunStore();
   const sessions = createMemorySessionStore();
   let superseded = false;
@@ -47,6 +55,11 @@ test("a superseded worker stops claiming; in-flight turns finish; claiming resum
     canClaim: () => drain.canClaim(),
   });
   worker.start();
+  t.after(async () => {
+    release?.();
+    await worker.stop();
+    drain.stop();
+  });
 
   await runs.enqueue({ sessionId: "s1", request: turn, maxAttempts: 3 });
   await sleep(50);
@@ -65,11 +78,9 @@ test("a superseded worker stops claiming; in-flight turns finish; claiming resum
   await sleep(80);
   assert.equal(worker.busy(), true, "claiming resumed once the newer build disappeared");
   release!();
-  await worker.stop();
-  drain.stop();
 });
 
-test("task protection tracks busyness: asserted while a turn runs, released once idle", async () => {
+test("task protection tracks busyness: asserted while a turn runs, released once idle", async (t) => {
   const puts: Array<{ ProtectionEnabled: boolean; ExpiresInMinutes?: number }> = [];
   const server = createServer((req, res) => {
     let body = "";
@@ -91,7 +102,11 @@ test("task protection tracks busyness: asserted while a turn runs, released once
     sweepMs: 10,
   });
   drain.start();
-  await sleep(60);
+  t.after(async () => {
+    drain.stop();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+  await waitFor(() => puts.some((p) => p.ProtectionEnabled === true));
   assert.ok(
     puts.some((p) => p.ProtectionEnabled === true),
     "protection asserted while busy",
@@ -100,17 +115,14 @@ test("task protection tracks busyness: asserted while a turn runs, released once
   assert.ok((puts.at(-1)?.ExpiresInMinutes ?? 0) > 0);
 
   busy = false;
-  await sleep(60);
+  await waitFor(() => puts.at(-1)?.ProtectionEnabled === false);
   assert.equal(puts.at(-1)?.ProtectionEnabled, false, "released once idle");
   const releases = puts.filter((p) => p.ProtectionEnabled === false).length;
   await sleep(40);
   assert.equal(puts.filter((p) => p.ProtectionEnabled === false).length, releases, "released once, not every sweep");
-
-  drain.stop();
-  server.close();
 });
 
-test("noteBusy asserts protection at the idle→busy edge without waiting for a sweep", async () => {
+test("noteBusy asserts protection at the idle→busy edge without waiting for a sweep", async (t) => {
   const puts: Array<{ ProtectionEnabled: boolean }> = [];
   const server = createServer((req, res) => {
     let body = "";
@@ -129,19 +141,22 @@ test("noteBusy asserts protection at the idle→busy edge without waiting for a 
     busy: () => true,
     sweepMs: 60_000,
   });
+  t.after(async () => {
+    drain.stop();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
   drain.noteBusy();
-  await sleep(50);
+  await waitFor(() => puts[0]?.ProtectionEnabled === true);
   assert.deepEqual(puts.length && puts[0]?.ProtectionEnabled, true, "protection asserted immediately on claim");
   drain.noteBusy();
   await sleep(30);
   assert.equal(puts.length, 1, "already-on is a no-op");
   drain.stop();
-  await sleep(30);
+  await waitFor(() => puts.at(-1)?.ProtectionEnabled === false);
   assert.equal(puts.at(-1)?.ProtectionEnabled, false, "stop releases protection best-effort");
-  server.close();
 });
 
-test("a failing protection endpoint degrades silently and canClaim stays governed by supersession only", async () => {
+test("a failing protection endpoint degrades silently and canClaim stays governed by supersession only", async (t) => {
   const protection = createEcsTaskProtection("http://127.0.0.1:1");
   const drain = createDrainController({
     registry: { beat: async () => false },
@@ -150,7 +165,7 @@ test("a failing protection endpoint degrades silently and canClaim stays governe
     sweepMs: 10,
   });
   drain.start();
+  t.after(() => drain.stop());
   await sleep(50);
   assert.equal(drain.canClaim(), true);
-  drain.stop();
 });

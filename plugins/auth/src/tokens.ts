@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { jwtVerify, SignJWT, type JWTPayload } from "jose";
+import { CompactEncrypt, compactDecrypt, jwtVerify, SignJWT, type JWTPayload } from "jose";
 import { ID_TOKEN_ALG, type SigningKey } from "./keys.ts";
+import type { ExternalIdentityAssertion } from "../../chassis/src/directory-source-client.ts";
 
 export type TokenPurpose = "request" | "link" | "code" | "access";
 
@@ -11,6 +12,7 @@ export interface AuthRequest {
   nonce: string;
   codeChallenge: string;
   scope: string;
+  directorySourceId?: string;
 }
 
 export interface LinkClaims extends AuthRequest {
@@ -22,6 +24,7 @@ export interface AuthIdentity {
   email?: string;
   emailVerified: boolean;
   name?: string;
+  externalIdentity?: ExternalIdentityAssertion;
 }
 
 export interface CodeClaims extends AuthIdentity {
@@ -121,6 +124,16 @@ export class TokenSigner {
     return payload ? readRequest(payload) : null;
   }
 
+  async openRequestEnvelope(
+    token: string,
+    nowMs?: number,
+  ): Promise<{ claims: AuthRequest; jti: string; expiresAtMs: number } | null> {
+    const payload = await this.open("request", token, nowMs);
+    const request = payload ? readRequest(payload) : null;
+    if (!payload || !request) return null;
+    return { claims: request, jti: String(payload.jti), expiresAtMs: Number(payload.exp) * 1000 };
+  }
+
   async sealLink(claims: LinkClaims, ttlS: number, nowMs?: number): Promise<SealedToken> {
     return this.seal("link", { ...requestClaims(claims), em: claims.email }, ttlS, nowMs);
   }
@@ -137,9 +150,16 @@ export class TokenSigner {
   }
 
   async sealCode(claims: CodeClaims, ttlS: number, nowMs?: number): Promise<SealedToken> {
-    return this.seal(
-      "code",
-      {
+    const jti = randomBytes(18).toString("base64url");
+    const issuedAt = Math.floor((nowMs ?? Date.now()) / 1000);
+    const expiresAt = issuedAt + ttlS;
+    const payload = new TextEncoder().encode(
+      JSON.stringify({
+        iss: this.issuer,
+        aud: audienceFor("code"),
+        iat: issuedAt,
+        exp: expiresAt,
+        jti,
         cid: claims.clientId,
         ru: claims.redirectUri,
         no: claims.nonce,
@@ -148,23 +168,48 @@ export class TokenSigner {
         ev: claims.emailVerified,
         ...(claims.email ? { em: claims.email } : {}),
         ...(claims.name ? { nm: claims.name } : {}),
-      },
-      ttlS,
-      nowMs,
+        ...(claims.externalIdentity ? { xi: claims.externalIdentity } : {}),
+      }),
     );
+    const token = await new CompactEncrypt(payload)
+      .setProtectedHeader({ alg: "dir", enc: "A256GCM", typ: "JWT" })
+      .encrypt(this.keyFor("code"));
+    return { token, jti, expiresAtMs: expiresAt * 1000 };
   }
 
   async openCode(
     token: string,
     nowMs?: number,
   ): Promise<{ claims: CodeClaims; jti: string; expiresAtMs: number } | null> {
-    const payload = await this.open("code", token, nowMs);
-    if (!payload) return null;
-    const { cid, ru, no, cc, pr, em, ev, nm } = payload as Record<string, unknown>;
+    let payload: Record<string, unknown>;
+    try {
+      const opened = await compactDecrypt(token, this.keyFor("code"));
+      if (opened.protectedHeader.alg !== "dir" || opened.protectedHeader.enc !== "A256GCM") return null;
+      const parsed = JSON.parse(new TextDecoder().decode(opened.plaintext)) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      payload = parsed as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+    const current = Math.floor((nowMs ?? Date.now()) / 1000);
+    if (
+      payload.iss !== this.issuer ||
+      payload.aud !== audienceFor("code") ||
+      typeof payload.iat !== "number" ||
+      typeof payload.exp !== "number" ||
+      typeof payload.jti !== "string" ||
+      payload.iat > current + 5 ||
+      payload.exp < current - 5
+    ) {
+      return null;
+    }
+    const { cid, ru, no, cc, pr, em, ev, nm, xi } = payload as Record<string, unknown>;
     if ([cid, ru, no, cc, pr].some((value) => typeof value !== "string" || !value)) return null;
     if (em !== undefined && (typeof em !== "string" || !em)) return null;
     if (typeof ev !== "boolean") return null;
     if (nm !== undefined && (typeof nm !== "string" || !nm)) return null;
+    const externalIdentity = readExternalIdentity(xi);
+    if (xi !== undefined && !externalIdentity) return null;
     return {
       claims: {
         clientId: cid as string,
@@ -175,9 +220,10 @@ export class TokenSigner {
         emailVerified: ev,
         ...(em ? { email: em as string } : {}),
         ...(nm ? { name: nm as string } : {}),
+        ...(externalIdentity ? { externalIdentity } : {}),
       },
-      jti: String(payload.jti),
-      expiresAtMs: Number(payload.exp) * 1000,
+      jti: payload.jti,
+      expiresAtMs: payload.exp * 1000,
     };
   }
 
@@ -190,6 +236,7 @@ export class TokenSigner {
         ev: claims.emailVerified,
         ...(claims.email ? { em: claims.email } : {}),
         ...(claims.name ? { nm: claims.name } : {}),
+        ...(claims.externalIdentity ? { xi: claims.externalIdentity } : {}),
       },
       ttlS,
       nowMs,
@@ -205,12 +252,15 @@ export class TokenSigner {
     if (!principal) return null;
     const email = typeof payload.em === "string" && payload.em ? payload.em : undefined;
     const name = typeof payload.nm === "string" && payload.nm ? payload.nm : undefined;
+    const externalIdentity = readExternalIdentity(payload.xi);
+    if (payload.xi !== undefined && !externalIdentity) return null;
     return {
       sub: payload.sub,
       principal,
-      emailVerified: payload.ev === true || Boolean(email),
+      emailVerified: payload.ev === true,
       ...(email ? { email } : {}),
       ...(name ? { name } : {}),
+      ...(externalIdentity ? { externalIdentity } : {}),
     };
   }
 }
@@ -223,12 +273,14 @@ function requestClaims(request: AuthRequest): Record<string, unknown> {
     no: request.nonce,
     cc: request.codeChallenge,
     sc: request.scope,
+    ...(request.directorySourceId ? { ds: request.directorySourceId } : {}),
   };
 }
 
 function readRequest(payload: JWTPayload): AuthRequest | null {
-  const { cid, ru, st, no, cc, sc } = payload as Record<string, unknown>;
+  const { cid, ru, st, no, cc, sc, ds } = payload as Record<string, unknown>;
   if ([cid, ru, st, no, cc, sc].some((value) => typeof value !== "string" || !value)) return null;
+  if (ds !== undefined && (typeof ds !== "string" || !ds)) return null;
   return {
     clientId: cid as string,
     redirectUri: ru as string,
@@ -236,6 +288,38 @@ function readRequest(payload: JWTPayload): AuthRequest | null {
     nonce: no as string,
     codeChallenge: cc as string,
     scope: sc as string,
+    ...(typeof ds === "string" ? { directorySourceId: ds } : {}),
+  };
+}
+
+function readExternalIdentity(value: unknown): ExternalIdentityAssertion | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (
+    !["sourceId", "provider", "externalTenantId", "externalSubjectId", "displayName"].every(
+      (key) => typeof record[key] === "string" && Boolean(record[key]),
+    ) ||
+    !["active", "suspended", "inactive"].includes(String(record.status)) ||
+    typeof record.proof !== "string" ||
+    !record.proof
+  ) {
+    return null;
+  }
+  const optional = (key: string): string | null =>
+    typeof record[key] === "string" && record[key] ? String(record[key]) : null;
+  return {
+    sourceId: String(record.sourceId),
+    provider: String(record.provider),
+    externalTenantId: String(record.externalTenantId),
+    externalSubjectId: String(record.externalSubjectId),
+    displayName: String(record.displayName),
+    corporateEmail: optional("corporateEmail"),
+    corporateEmailVerified: record.corporateEmailVerified === true,
+    personalEmail: optional("personalEmail"),
+    employeeNumber: optional("employeeNumber"),
+    mobile: optional("mobile"),
+    status: record.status as ExternalIdentityAssertion["status"],
+    proof: record.proof,
   };
 }
 
@@ -249,6 +333,7 @@ export async function mintIdToken(
     email?: string;
     emailVerified: boolean;
     name?: string;
+    externalIdentity?: ExternalIdentityAssertion;
     nonce: string;
     ttlS: number;
     nowMs?: number;
@@ -262,6 +347,7 @@ export async function mintIdToken(
     qm_principal_verified: true,
     ...(args.email ? { email: args.email, email_verified: args.emailVerified } : {}),
     ...(args.name ? { name: args.name } : {}),
+    ...(args.externalIdentity ? { qm_external_identity: args.externalIdentity } : {}),
   })
     .setProtectedHeader({ alg: ID_TOKEN_ALG, kid: key.kid, typ: "JWT" })
     .setIssuer(args.issuer)

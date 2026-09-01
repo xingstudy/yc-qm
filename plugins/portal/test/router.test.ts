@@ -4,6 +4,7 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { exportJWK, SignJWT } from "jose";
+import { verifyPortalLoginProof } from "../../chassis/src/portal-login-proof.ts";
 
 let whoamiProbes = 0;
 let lastConsentClicker: string | null = null;
@@ -243,6 +244,7 @@ const PUBLIC = "http://portal.test";
 process.env.PORTAL_PUBLIC_URL = PUBLIC;
 process.env.PORTAL_SESSION_SECRET = "router-test-portal-secret";
 process.env.CORE_SIGNING_SECRET = "router-test-core-secret";
+process.env.PORTAL_IDENTITY_SECRET = "router-test-portal-identity-secret";
 process.env.WEB_UI_UPSTREAM = upstreamUrl;
 process.env.ADMIN_UPSTREAM = upstreamUrl;
 process.env.CORE_API_URL = upstreamUrl;
@@ -593,7 +595,12 @@ test("the browser that confirms the emailed link can complete login without the 
   assert.equal(tokenExchanges, exchangesBefore + 1);
   assert.equal(loginTransactions.get(brokerState)?.status, "succeeded");
   assert.equal(loginTransactions.get(brokerState)?.payload, null);
-  assert.deepEqual(lastUserLoginBody, {
+  const { portalProof, ...loginClaims } = lastUserLoginBody ?? {};
+  assert.equal(typeof portalProof, "string");
+  assert.ok(
+    verifyPortalLoginProof(portalProof as string, loginClaims, "router-test-portal-identity-secret", Date.now()),
+  );
+  assert.deepEqual(loginClaims, {
     principalId: "user@example.com",
     issuer: OIDC_ISSUER,
     subject: "router-user",

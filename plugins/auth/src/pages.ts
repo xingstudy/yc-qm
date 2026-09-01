@@ -146,12 +146,18 @@ export function emailFormPage(o: {
   brandName: string;
   action: string;
   requestToken: string;
-  wecomLoginUrl?: string;
+  directoryLoginOptions?: readonly { label: string; url: string }[];
   email?: string;
   problem?: string;
 }): string {
-  const wecomLogin = o.wecomLoginUrl
-    ? `<div class="divider"><span>or</span></div><a class="btn secondary" href="${escapeHtml(o.wecomLoginUrl)}">Sign in with WeCom</a>`
+  const directoryOptions = o.directoryLoginOptions ?? [];
+  const directoryLogin = directoryOptions.length
+    ? `<div class="divider"><span>or</span></div>${directoryOptions
+        .map(
+          (option) =>
+            `<a class="btn secondary" href="${escapeHtml(option.url)}">Sign in with ${escapeHtml(option.label)}</a>`,
+        )
+        .join("")}`
     : "";
   return page({
     title: "Sign in",
@@ -165,7 +171,7 @@ export function emailFormPage(o: {
         <input id="email" name="email" type="email" autocomplete="email" inputmode="email" required autofocus
           spellcheck="false" maxlength="254" placeholder="you@example.com" value="${escapeHtml(o.email ?? "")}">
         <button class="btn" type="submit">Email me a sign-in link</button>
-      </form>${wecomLogin}`,
+      </form>${directoryLogin}`,
     help: "Only addresses your administrator has allowed can sign in.",
   });
 }

@@ -100,6 +100,7 @@ const SYSTEM: Rule[] = [
   pat("POST", "/v1/blobs"),
   pat("POST", "/v1/egress-audit"),
   pat("POST", "/v1/auth/broker/claim"),
+  pat("POST", "/v1/auth/directory-sources/:sourceId/resolve-code"),
   pat("POST", "/v1/auth/portal-login/create"),
   pat("POST", "/v1/auth/portal-login/claim"),
   pat("POST", "/v1/auth/portal-login/complete"),

@@ -201,8 +201,10 @@ test("a Git token minted before suspension stays revoked after the principal is 
     status: "active",
     sessionVersion: 1,
   };
+  const checkActive = async (principalId: string) => (principalId === "U1" ? organizationState : null);
   const organization = {
-    checkActive: async (principalId: string) => (principalId === "U1" ? organizationState : null),
+    checkActive,
+    checkRuntimeActive: checkActive,
   };
   const f = fixture({ organization });
   try {
@@ -224,9 +226,11 @@ test("a Git token minted before suspension stays revoked after the principal is 
 });
 
 test("a verified bot can mint and use deployment Git access when organization membership is enabled", async () => {
+  const checkActive = async (principalId: string) =>
+    principalId === "U1" ? { status: "active" as const, sessionVersion: 1 } : null;
   const organization = {
-    checkActive: async (principalId: string) =>
-      principalId === "U1" ? { status: "active" as const, sessionVersion: 1 } : null,
+    checkActive,
+    checkRuntimeActive: checkActive,
   };
   const f = fixture({ organization });
   try {

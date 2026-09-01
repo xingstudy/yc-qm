@@ -1,15 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createAclStore } from "../src/acl/acl-store.ts";
-import { encodeRef, skillRef, parseRef } from "../src/acl/resource-ref.ts";
-import { principalEntitledToScope } from "../src/resolution/context-filter.ts";
 import { createSkillStore, type SkillManifest, type SkillStore } from "../src/skills/skill-store.ts";
-import { scopeId, type Principal, type ScopeId } from "../src/types.ts";
+import { scopeId, type ScopeId } from "../src/types.ts";
 
 const ORG = scopeId("org", "default-org");
 const JOSH = scopeId("personal", "josh");
 const ERIC = scopeId("personal", "eric");
-const P = (id: string, teamIds: string[] = []): Principal => ({ id, type: "internal", teamIds });
 
 const manifest = (name: string): SkillManifest => ({
   name,
@@ -23,50 +19,6 @@ async function publishedSkill(store: SkillStore, scope: ScopeId, name: string) {
   await store.review(s.id, "reviewer", []);
   return store.publish(s.id);
 }
-
-test("person-to-person skill grant reaches the grantee's audience", async () => {
-  const acl = createAclStore();
-  await acl.grant({
-    ownerScopeId: JOSH,
-    ref: encodeRef(skillRef("s1")),
-    granteeScopeId: ERIC,
-    permission: "read",
-    grantedBy: "josh",
-  });
-
-  const inEricsDm = await acl.sharedOfKindForAudience("skill", [P("eric")], ERIC, ORG, principalEntitledToScope);
-  assert.deepEqual(
-    inEricsDm.map((g) => parseRef(g.ref).id),
-    ["s1"],
-  );
-
-  const together = await acl.sharedOfKindForAudience(
-    "skill",
-    [P("eric"), P("josh")],
-    scopeId("channel", "C"),
-    ORG,
-    principalEntitledToScope,
-  );
-  assert.equal(together.length, 1);
-
-  const mixed = await acl.sharedOfKindForAudience(
-    "skill",
-    [P("eric"), P("mallory")],
-    scopeId("channel", "C"),
-    ORG,
-    principalEntitledToScope,
-  );
-  assert.deepEqual(mixed, []);
-
-  const other = await acl.sharedOfKindForAudience(
-    "skill",
-    [P("alice")],
-    scopeId("personal", "alice"),
-    ORG,
-    principalEntitledToScope,
-  );
-  assert.deepEqual(other, []);
-});
 
 test("visibleFor includes granted skills, shadowed by scope-owned skills of the same name", async () => {
   const store = createSkillStore({ signingSecret: "grant-test" });

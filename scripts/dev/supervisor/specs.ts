@@ -21,6 +21,17 @@ export interface SpecInputs {
 export function buildChildSpecs(i: SpecInputs): ChildSpec[] {
   const watchArgs = i.watch ? ["--watch"] : [];
   const base = { ...i.baseEnv, ...i.sandboxEnv };
+  const pluginBase = Object.fromEntries(
+    Object.entries(base).filter(
+      ([name]) =>
+        ![
+          "AUTH_WECOM_CORP_ID",
+          "AUTH_WECOM_AGENT_ID",
+          "AUTH_WECOM_SECRET",
+          "AUTH_WECOM_DIRECTORY_SYNC_SECRET",
+        ].includes(name),
+    ),
+  );
   const orgId = i.baseEnv.DEV_INSTANCE_ORG_ID || "acme";
   const orgBootstrapUsers = [
     ...new Set(
@@ -66,7 +77,7 @@ export function buildChildSpecs(i: SpecInputs): ChildSpec[] {
       cwd: join(i.worktree, "plugins/web-ui"),
       argv: ["node", "--env-file-if-exists=.env", "server/index.ts"],
       env: {
-        ...base,
+        ...pluginBase,
         ...signing,
         PORT: String(i.ports.web),
         CORE_API_URL: `http://localhost:${i.ports.core}`,
@@ -84,9 +95,9 @@ export function buildChildSpecs(i: SpecInputs): ChildSpec[] {
     {
       name: "admin",
       cwd: join(i.worktree, "plugins/admin"),
-      argv: ["node", `--env-file-if-exists=${join(i.worktree, ".env")}`, ...watchArgs, "src/index.ts"],
+      argv: ["node", ...watchArgs, "src/index.ts"],
       env: {
-        ...base,
+        ...pluginBase,
         ...signing,
         PORT: String(i.ports.admin),
         CORE_API_URL: `http://localhost:${i.ports.core}`,
@@ -103,7 +114,7 @@ export function buildChildSpecs(i: SpecInputs): ChildSpec[] {
       cwd: join(i.worktree, "plugins/portal"),
       argv: ["node", ...watchArgs, "src/index.ts"],
       env: {
-        ...base,
+        ...pluginBase,
         ...signing,
         PORT: String(i.ports.portal),
         PORTAL_PUBLIC_URL: `http://localhost:${i.ports.portal}`,

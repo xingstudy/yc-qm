@@ -7,7 +7,7 @@ export async function currentCapabilityActor(deps: ServerDeps, claims: Capabilit
     if (deps.identity.classify(claims.actorId).type !== "internal") return false;
   }
   if (!deps.organization || claims.actorId.startsWith("system:") || claims.botActor) return true;
-  const user = await deps.organization.checkActive(claims.actorId);
+  const user = await deps.organization.checkRuntimeActive(claims.actorId);
   return (
     user?.status === "active" &&
     Number.isInteger(claims.sessionVersion) &&

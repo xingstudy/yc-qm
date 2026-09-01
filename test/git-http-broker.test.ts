@@ -189,7 +189,7 @@ test("git HTTP broker rejects a stale organization session before contacting ups
   const deps: ServerDeps = {
     control: {} as ServerDeps["control"],
     organization: {
-      checkActive: async () => ({ status: "active", sessionVersion: 5 }),
+      checkRuntimeActive: async () => ({ status: "active", sessionVersion: 5 }),
     } as unknown as ServerDeps["organization"],
     serviceCreds: {
       getServiceCredentialSecret: async () => {

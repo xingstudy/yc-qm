@@ -109,8 +109,17 @@ export interface ActiveCheck {
 
 export interface OrganizationService {
   login(input: LoginInput): Promise<LoginResult>;
-  invite(input: { principalId: string; email: string | null; displayName: string; actor: string }): Promise<OrganizationUser>;
-  setStatus(input: { principalId: string; status: OrganizationUserStatus; actor: string }): Promise<OrganizationUser | null>;
+  invite(input: {
+    principalId: string;
+    email: string | null;
+    displayName: string;
+    actor: string;
+  }): Promise<OrganizationUser>;
+  setStatus(input: {
+    principalId: string;
+    status: OrganizationUserStatus;
+    actor: string;
+  }): Promise<OrganizationUser | null>;
   checkActive(principalId: string): Promise<ActiveCheck | null>;
   refresh(): Promise<void>;
   hydrate(): Promise<void>;
@@ -137,10 +146,12 @@ Behavior contract for `login` (decision tree, evaluated in order; every transiti
 ### Task 1: Organization store types + memory implementation
 
 **Files:**
+
 - Create: `src/organization/organization-store.ts`
 - Test: `test/organization-store.test.ts`
 
 **Interfaces:**
+
 - Produces: the `OrganizationStore` contract above + `createMemoryOrganizationStore(): OrganizationStore`.
 
 - [ ] **Step 1: Write the failing test**
@@ -181,7 +192,15 @@ test("memory organization store: put/get/findByEmail/list round-trip", async () 
 test("memory organization store: identities are keyed by issuer+subject", async () => {
   const s = createMemoryOrganizationStore();
   assert.equal(await s.getIdentity("default-org", "https://idp", "sub-1"), null);
-  await s.putIdentity({ orgId: "default-org", issuer: "https://idp", subject: "sub-1", principalId: "alice@acme.com", emailAtLink: "alice@acme.com", createdAt: 1, updatedAt: 1 });
+  await s.putIdentity({
+    orgId: "default-org",
+    issuer: "https://idp",
+    subject: "sub-1",
+    principalId: "alice@acme.com",
+    emailAtLink: "alice@acme.com",
+    createdAt: 1,
+    updatedAt: 1,
+  });
   assert.equal((await s.getIdentity("default-org", "https://idp", "sub-1"))?.principalId, "alice@acme.com");
   assert.equal(await s.getIdentity("default-org", "https://other", "sub-1"), null);
 });
@@ -213,10 +232,12 @@ git commit -m "feat: add organization user store types and memory implementation
 ### Task 2: Postgres organization store
 
 **Files:**
+
 - Create: `src/organization/postgres-organization-store.ts`
 - Test: `test/postgres-organization-store.test.ts`
 
 **Interfaces:**
+
 - Consumes: `OrganizationStore` contract (Task 1), `createPgPool` from `src/persistence/pg-pool.ts`.
 - Produces: `createPostgresOrganizationStore(connectionString: string): OrganizationStore`.
 
@@ -271,10 +292,12 @@ plus a `DO $$ ... $$` block adding the composite FK `auth_identities(org_id, pri
 ### Task 3: Organization service
 
 **Files:**
+
 - Create: `src/organization/organization-service.ts`
 - Test: `test/organization-service.test.ts`
 
 **Interfaces:**
+
 - Consumes: `OrganizationStore` (Task 1), `AuditLog` from `src/audit/audit-log.ts`, `IdentityService` from `src/identity/identity-service.ts`.
 - Produces: the `OrganizationService` contract + `createOrganizationService` signature above.
 
@@ -305,12 +328,14 @@ plus a `DO $$ ... $$` block adding the composite FK `auth_identities(org_id, pri
 ### Task 4: Config + wiring
 
 **Files:**
+
 - Modify: `src/config.ts` (near `orgId` exposure, ~line 688-737)
 - Modify: `src/wiring.ts` (identity at ~418, admin grants at ~872-878 as pattern)
 - Modify: `src/api/deps.ts` (`ServerDeps`, near `identity?: IdentityService` line 123)
 - Test: extend `test/organization-service.test.ts` or add wiring smoke test in `test/organization-routes.test.ts` (Task 5 covers via `buildApp`).
 
 **Interfaces:**
+
 - Produces: `Config.orgAdmission: OrgAdmission`, `Config.orgAutoJoinDomains: string[]`, `Config.orgBootstrapUsers: string[]`; `ServerDeps.organization?: OrganizationService`; wiring result exposes `organization`.
 
 - [ ] **Step 1: Config**
@@ -336,7 +361,12 @@ const organization = createOrganizationService({
 void organization.hydrate();
 for (const principalId of config.orgBootstrapUsers) {
   void organization
-    .invite({ principalId, email: principalId.includes("@") ? principalId : null, displayName: principalId, actor: "system:bootstrap" })
+    .invite({
+      principalId,
+      email: principalId.includes("@") ? principalId : null,
+      displayName: principalId,
+      actor: "system:bootstrap",
+    })
     .then((u) => organization.setStatus({ principalId: u.principalId, status: "active", actor: "system:bootstrap" }));
 }
 ```
@@ -352,12 +382,14 @@ for (const principalId of config.orgBootstrapUsers) {
 ### Task 5: Internal login route
 
 **Files:**
+
 - Create: `src/api/routes/organization.ts`
 - Modify: `src/api/routes/index.ts` (spread `organizationRoutes` into `apiRoutes`)
 - Modify: `src/api/user-scoped-routes.ts` (add `POST /v1/internal/auth/users/login` to `SYSTEM` — required, otherwise the gate demands a portal actor for this unclassified write)
 - Test: `test/organization-routes.test.ts`
 
 **Interfaces:**
+
 - Consumes: `OrganizationService` (Task 3) via `ctx.deps.organization`.
 - Produces: `POST /v1/internal/auth/users/login`, auth `"source"`. Request: `{ principalId, issuer, subject, email?, emailVerified?, displayName? }`. Response 200: `{ status: "ok", user: { principalId, status, sessionVersion, displayName } }` or `{ status: "denied", reason }`. 400 on missing/invalid fields; 503 when `deps.organization` absent.
 
@@ -383,10 +415,12 @@ for (const principalId of config.orgBootstrapUsers) {
 ### Task 6: Admin user management routes
 
 **Files:**
+
 - Modify: `src/api/routes/organization.ts`
 - Test: `test/organization-routes.test.ts`
 
 **Interfaces:**
+
 - Produces:
   - `POST /v1/admin/org/users` — body `{ principalId, email?, displayName? }` → 200 `{ user }`; 401/403 non-admin; 400 invalid.
   - `PATCH /v1/admin/org/users/:principalId` — body `{ status }` → 200 `{ user }`; 404 unknown user; 400 invalid status.
@@ -409,6 +443,7 @@ for (const principalId of config.orgBootstrapUsers) {
 ### Task 7: Session-version claim plumbing
 
 **Files:**
+
 - Modify: `plugins/chassis/src/portal-identity.ts` (claims type + mint)
 - Modify: `src/auth/portal-identity.ts` (`PortalIdentity` type; verification passes claims through — confirm no field whitelist drops `sv`)
 - Modify: `plugins/portal/src/session.ts` (`SessionClaims` gains `sv?: number`)
@@ -428,10 +463,12 @@ Note: plugins import chassis by relative path; core has its own copy in `src/aut
 ### Task 8: Portal login upsert + session `sv`
 
 **Files:**
+
 - Modify: `plugins/portal/src/index.ts` (`authCallback`, ~lines 1210-1291)
 - Modify: `plugins/portal/src/proxy.ts` if not done in Task 7 (call sites that build `SurfaceTarget` pass the session's `sv`)
 
 **Interfaces:**
+
 - Consumes: Task 5 endpoint; chassis `signedHeaders`/`withSourceAuthNonce` pattern (`plugins/chassis/src/core-client.ts`); `coreGet/corePost`-style helpers at portal `index.ts:614-618, 676-689`.
 
 - [ ] **Step 1: Implement** (portal has no core mock in unit tests here — keep the change surgical and covered by the Task 9 integration test):
@@ -465,10 +502,12 @@ Failure mode requirement: if core is unreachable or denies, no session cookie is
 ### Task 9: Gate fail-closed for portal actors
 
 **Files:**
+
 - Modify: `src/api/server.ts` (portal-identity branch of `gate()`, ~lines 250-287)
 - Test: `test/organization-gate.test.ts`
 
 **Interfaces:**
+
 - Consumes: `deps.organization` (Task 4), `PortalIdentity.sv` (Task 7).
 
 - [ ] **Step 1: Write failing tests** (`buildApp(testConfig(...))` + `createServer(built.app, { signingSecret, capabilitySecret, portalIdentitySecret, requireSignedPortalIdentity: true, production: false })`; mint portal identities directly with `mintPortalIdentity`-equivalent core helper):

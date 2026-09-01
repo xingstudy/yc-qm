@@ -69,6 +69,48 @@ test("a complete generated production configuration passes the central preflight
   assert.deepEqual(productionPreflightProblems(validEnv(), 989), []);
 });
 
+test("the central preflight validates optional WeCom directory configuration as one Core-owned unit", () => {
+  const partial = validEnv();
+  partial.AUTH_WECOM_CORP_ID = "wwcorp";
+  assert.match(productionPreflightProblems(partial, 989).join(" | "), /must be set together/);
+
+  const orphanDirectorySecret = validEnv();
+  orphanDirectorySecret.AUTH_WECOM_DIRECTORY_SYNC_SECRET = "wecom-directory-sync-secret";
+  assert.match(
+    productionPreflightProblems(orphanDirectorySecret, 989).join(" | "),
+    /requires the complete WeCom application configuration/,
+  );
+
+  const complete = validEnv();
+  complete.AUTH_WECOM_CORP_ID = "wwcorp";
+  complete.AUTH_WECOM_AGENT_ID = "1000002";
+  complete.AUTH_WECOM_SECRET = "wecom-production-secret";
+  complete.AUTH_WECOM_DIRECTORY_SYNC_SECRET = "wecom-directory-sync-secret";
+  complete.AUTH_WECOM_REDIRECT_URI = "https://qm.example.test/idp/directory/callback";
+  complete.AUTH_WECOM_SYNC_ENABLED = "1";
+  complete.AUTH_WECOM_SYNC_MINUTES = "360";
+  complete.AUTH_WECOM_MATCH_POLICY = "verified_corporate_email";
+  assert.deepEqual(productionPreflightProblems(complete, 989), []);
+
+  complete.AUTH_WECOM_SYNC_MINUTES = "5";
+  complete.AUTH_WECOM_REDIRECT_URI = "https://qm.example.test/unrouted-callback";
+  complete.AUTH_WECOM_NAME = "x".repeat(121);
+  const invalid = productionPreflightProblems(complete, 989).join(" | ");
+  assert.match(invalid, /whole number between 15 and 1440/);
+  assert.match(invalid, /broker directory callback/);
+  assert.match(invalid, /AUTH_WECOM_NAME must be at most 120 characters/);
+
+  const missingDirectorySecret = validEnv();
+  missingDirectorySecret.AUTH_WECOM_CORP_ID = "wwcorp";
+  missingDirectorySecret.AUTH_WECOM_AGENT_ID = "1000002";
+  missingDirectorySecret.AUTH_WECOM_SECRET = "wecom-production-secret";
+  missingDirectorySecret.AUTH_WECOM_SYNC_ENABLED = "1";
+  assert.match(
+    productionPreflightProblems(missingDirectorySecret, 989).join(" | "),
+    /AUTH_WECOM_DIRECTORY_SYNC_SECRET is required/,
+  );
+});
+
 test("the checked-in production example fails closed without echoing secret values", () => {
   const env = validEnv();
   const secret = "qm-example-secret-do-not-deploy";

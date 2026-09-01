@@ -72,18 +72,11 @@ export interface AclStore {
   ): Promise<GrantedHandle[]>;
   grantsFor(ownerScopeId: ScopeId, ref: string): Promise<Grant[]>;
   grantsOfKind(
-    kind: Exclude<ResourceKind, "file">,
+    kind: Exclude<ResourceKind, "file" | "skill">,
     audience: readonly Principal[],
     sessionScopeId: ScopeId,
     orgScopeId: ScopeId,
     entitled: AsyncScopeEntitlement,
-  ): Promise<Grant[]>;
-  sharedOfKindForAudience(
-    kind: Exclude<ResourceKind, "file">,
-    audience: readonly Principal[],
-    sessionScopeId: ScopeId,
-    orgScopeId: ScopeId,
-    entitled: ScopeEntitlement,
   ): Promise<Grant[]>;
   list(): Promise<readonly Grant[]>;
 }
@@ -230,19 +223,6 @@ export function createAclStore(
         ),
       );
       return candidates.filter((_, index) => included[index]);
-    },
-    async sharedOfKindForAudience(kind, audience, sessionScopeId, orgScopeId, entitled) {
-      if (audience.length === 0) return [];
-      const prefix = refPrefix(kind);
-      const reaches = (p: Principal, g: Grant) =>
-        entitled(p, g.granteeScopeId, sessionScopeId, orgScopeId) ||
-        entitled(p, g.ownerScopeId, sessionScopeId, orgScopeId);
-      return (await persist.all()).filter(
-        (g) =>
-          g.ref.startsWith(prefix) &&
-          audience.some((p) => entitled(p, g.granteeScopeId, sessionScopeId, orgScopeId)) &&
-          audience.every((p) => reaches(p, g)),
-      );
     },
     list: () => persist.all(),
   };

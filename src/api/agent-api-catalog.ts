@@ -70,8 +70,35 @@ const FAMILIES: AgentApiFamily[] = [
   },
   {
     match: (m, p) =>
+      m === "GET" &&
+      (p === "/v1/me" ||
+        p === "/v1/org/tree" ||
+        /^\/v1\/org\/units\/[^/]+$/.test(p) ||
+        p === "/v1/org/users" ||
+        p === "/v1/org/access-groups" ||
+        /^\/v1\/org\/access-groups\/[^/]+\/members$/.test(p)),
+    routes: [
+      { method: "GET", path: "/v1/me", summary: "read the asking person's organization profile" },
+      { method: "GET", path: "/v1/org/tree", summary: "list the organization units visible to the asking person" },
+      { method: "GET", path: "/v1/org/units/:id", summary: "read one visible organization unit and its members" },
+      { method: "GET", path: "/v1/org/users", summary: "search organization members visible to the asking person" },
+      {
+        method: "GET",
+        path: "/v1/org/access-groups",
+        summary: "list access groups visible to the asking person",
+      },
+      {
+        method: "GET",
+        path: "/v1/org/access-groups/:id/members",
+        summary: "list the visible members of an access group",
+      },
+    ],
+  },
+  {
+    match: (m, p) =>
       (p === "/v1/projects" && (m === "GET" || m === "POST")) ||
       (/^\/v1\/projects\/[^/]+$/.test(p) && m === "PATCH") ||
+      (/^\/v1\/projects\/[^/]+\/member-candidates$/.test(p) && m === "GET") ||
       (/^\/v1\/projects\/[^/]+\/members$/.test(p) && m === "POST") ||
       (/^\/v1\/projects\/[^/]+\/members\/[^/]+$/.test(p) && m === "DELETE") ||
       (/^\/v1\/projects\/[^/]+\/slack-channel$/.test(p) && (m === "PUT" || m === "DELETE")),
@@ -88,6 +115,11 @@ const FAMILIES: AgentApiFamily[] = [
         method: "PATCH",
         path: "/v1/projects/:id",
         summary: "rename a project the asking person owns — body {name}",
+      },
+      {
+        method: "GET",
+        path: "/v1/projects/:id/member-candidates",
+        summary: "search internal directory members the asking person can add — query {q}",
       },
       {
         method: "POST",

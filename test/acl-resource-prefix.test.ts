@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createAclStore } from "../src/acl/acl-store.ts";
-import { cronRef, deployRef, encodeRef, parseRef, serviceCredRef, skillRef } from "../src/acl/resource-ref.ts";
+import { cronRef, deployRef, encodeRef, parseRef, serviceCredRef } from "../src/acl/resource-ref.ts";
 import { principalEntitledToScope } from "../src/resolution/context-filter.ts";
 import { scopeId, type Principal } from "../src/types.ts";
 
@@ -161,7 +161,7 @@ test("the prefix filters: a deployment grant is never returned for the service-c
   assert.deepEqual(slugs(got), ["x"]);
 });
 
-test("file handles exclude non-file grants — a skill/cron/deploy grant never becomes a bogus shared/ file", async () => {
+test("file handles exclude non-file grants — a cron/deploy grant never becomes a bogus shared/ file", async () => {
   const acl = createAclStore();
   const grantee = scopeId("channel", "C");
   await acl.grant({
@@ -171,7 +171,7 @@ test("file handles exclude non-file grants — a skill/cron/deploy grant never b
     permission: "read",
     grantedBy: "admin",
   });
-  for (const r of [skillRef("s1"), cronRef("c1"), deployRef("d1"), serviceCredRef("x")]) {
+  for (const r of [cronRef("c1"), deployRef("d1"), serviceCredRef("x")]) {
     await acl.grant({
       ownerScopeId: ORG,
       ref: encodeRef(r),
@@ -190,19 +190,12 @@ test("file handles exclude non-file grants — a skill/cron/deploy grant never b
   assert.deepEqual(
     audienceHandles.map((h) => h.ownerPath),
     ["artifacts/F1/doc.md"],
-    "audience handles exclude skill/cron/deploy/service-cred grants",
+    "audience handles exclude cron/deploy/service-cred grants",
   );
 });
 
-test("grantsOfKind selects by kind across all artifact families (one store, four kinds)", async () => {
+test("grantsOfKind selects by kind across the ACL-managed artifact families", async () => {
   const acl = createAclStore();
-  await acl.grant({
-    ownerScopeId: ORG,
-    ref: encodeRef(skillRef("s1")),
-    granteeScopeId: ORG,
-    permission: "read",
-    grantedBy: "admin",
-  });
   await acl.grant({
     ownerScopeId: ORG,
     ref: encodeRef(deployRef("d1")),
@@ -224,7 +217,7 @@ test("grantsOfKind selects by kind across all artifact families (one store, four
     permission: "read",
     grantedBy: "admin",
   });
-  const kinds = ["skill", "deploy", "cron", "service-cred"] as const;
+  const kinds = ["deploy", "cron", "service-cred"] as const;
   for (const kind of kinds) {
     const got = await acl.grantsOfKind(kind, [P("U1")], scopeId("personal", "U1"), ORG, principalEntitledToScope);
     assert.deepEqual(

@@ -351,7 +351,7 @@ test("authority follows the person: a creation-channel member manages the app fr
       headers: { "content-type": "application/json", "x-agent-capability": await capFor("U3") },
       body: "{}",
     });
-    assert.equal(denied.status, 403);
+    assert.equal(denied.status, 404);
     await assert.rejects(
       f.deploy.shareDeployment(d.id, scopeId("org", "default-org"), "read", { createdBy: "U3" }),
       /only the owner/,

@@ -189,7 +189,7 @@ export type ProjectView = Project & {
   members: Array<{ principalId: string; displayName: string; viaChannel?: boolean }>;
 };
 
-export interface ProjectMemberCandidate {
+interface ProjectMemberCandidate {
   principalId: string;
   displayName: string;
   email: string | null;

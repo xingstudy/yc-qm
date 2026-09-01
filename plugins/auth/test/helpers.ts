@@ -6,6 +6,7 @@ import type { Mailer, OutgoingEmail } from "../src/email.ts";
 import { loadSigningKey } from "../src/keys.ts";
 import { TokenSigner } from "../src/tokens.ts";
 import { createAuthHandler } from "../src/server.ts";
+import type { DirectorySourceClient } from "../../chassis/src/directory-source-client.ts";
 
 export const CLIENT_ID = "qm-portal";
 export const CLIENT_SECRET = "0123456789abcdef0123456789abcdef";
@@ -95,7 +96,7 @@ export async function startHarness(
     env?: Record<string, string | undefined>;
     claims?: ClaimStore & { calls: string[][] };
     brandName?: () => string;
-    fetchImpl?: typeof fetch;
+    directorySources?: DirectorySourceClient;
   } = {},
 ): Promise<Harness> {
   const cfg = readConfig(testEnv(options.env));
@@ -110,7 +111,7 @@ export async function startHarness(
     claims,
     mailer,
     ...(options.brandName ? { brandName: options.brandName } : {}),
-    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    ...(options.directorySources ? { directorySources: options.directorySources } : {}),
     now: () => now.ms,
     onBackgroundTask: (task) => pending.push(task),
   });

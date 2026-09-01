@@ -10,6 +10,7 @@ import { mailerFor } from "./email.ts";
 import { loadSigningKey } from "./keys.ts";
 import { TokenSigner } from "./tokens.ts";
 import { createAuthHandler } from "./server.ts";
+import { createDirectorySourceClient } from "../../chassis/src/directory-source-client.ts";
 
 const PORT = portFromEnv(8099);
 const IS_PROD = process.env.NODE_ENV === "production";
@@ -40,6 +41,11 @@ export async function startServer(): Promise<void> {
     signingKey,
     signer: new TokenSigner(CFG.tokenSecret, CFG.issuer),
     claims: coreClaimStore(CFG.coreApiUrl, CFG.coreSigningSecret, "auth"),
+    directorySources: createDirectorySourceClient({
+      coreApiUrl: CFG.coreApiUrl,
+      signingSecret: CFG.coreSigningSecret,
+      label: "auth",
+    }),
     mailer: mailerFor(CFG),
     brandName: () => {
       void branding.forRender();

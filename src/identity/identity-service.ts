@@ -43,6 +43,7 @@ export interface IdentityService extends IdentityProvider {
 export function createIdentityService(
   backing?: DurableMap<DeactivationRecord>,
   statusBacking?: DurableMap<IdentityStatusRecord>,
+  ready?: () => Promise<void>,
 ): IdentityService {
   const store = backing ?? createMemoryMap<DeactivationRecord>();
   const statusStore = statusBacking ?? createMemoryMap<IdentityStatusRecord>();
@@ -222,6 +223,7 @@ export function createIdentityService(
       return hydrateP;
     },
     async refresh(): Promise<void> {
+      await ready?.();
       const now = Date.now();
       if (refreshP) return refreshP;
       if (now - refreshedAt < REFRESH_TTL_MS) return;

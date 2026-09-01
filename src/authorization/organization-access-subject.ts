@@ -1,6 +1,6 @@
 import type { ScopeId } from "../types.ts";
 
-export type OrganizationAccessSubjectKind = "user" | "org_unit" | "access_group";
+type OrganizationAccessSubjectKind = "user" | "org_unit" | "access_group";
 
 export interface OrganizationAccessSubject {
   kind: OrganizationAccessSubjectKind;

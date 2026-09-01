@@ -122,12 +122,12 @@ test("manage endpoints (rename/display-name/archive): agent capability is owner-
     name: "owned",
   });
 
-  assert.equal((await callManage(renameDeployment, app, cap("U2"), d.id, { name: "hijack" })).status, 403);
+  assert.equal((await callManage(renameDeployment, app, cap("U2"), d.id, { name: "hijack" })).status, 404);
   assert.equal(
     (await callManage(setDeploymentDisplayName, app, cap("U2"), d.id, { displayName: "Hijack" })).status,
-    403,
+    404,
   );
-  assert.equal((await callManage(archiveDeployment, app, cap("U2"), d.id, {})).status, 403);
+  assert.equal((await callManage(archiveDeployment, app, cap("U2"), d.id, {})).status, 404);
 
   assert.equal(
     (await callManage(setDeploymentDisplayName, app, cap("U1"), d.id, { displayName: "Owned" })).status,
@@ -200,7 +200,7 @@ test("restore endpoint is manage-gated and reactivates the archived current vers
   });
   await app.archiveDeployment(d.id);
 
-  assert.equal((await callManage(restoreDeployment, app, cap("U2"), d.id, {})).status, 403);
+  assert.equal((await callManage(restoreDeployment, app, cap("U2"), d.id, {})).status, 404);
   const restored = await callManage(restoreDeployment, app, cap("U1"), d.id, {});
   assert.equal(restored.status, 200);
   assert.equal(restored.body.deployment.status, "running");

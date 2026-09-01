@@ -130,6 +130,30 @@ test("skill access creates home policy and resolves home audience", async () => 
   assert.deepEqual(await resolver.visibleForUser("bob", [scopeId("personal", "bob")]), []);
 });
 
+test("skill access resolves eligible legacy users without overriding organization status", async () => {
+  const { store, repository, skill } = await fixture();
+  await repository.setAccess(
+    skill.id,
+    { principalId: "alice", isAdmin: true },
+    { mode: "organization", subjects: [], expectedRevision: 1 },
+  );
+  let sessionVersion = 4;
+  const resolver = createSkillAccessResolver({
+    orgId: ORG,
+    store,
+    skills: repository,
+    canReadHome: async () => false,
+    resolveAudienceMember: async (principalId) => (principalId === "legacy" ? { principalId, sessionVersion } : null),
+  });
+  const snapshot = await resolver.snapshot({ audienceIds: ["legacy"], orderedScopes: [] });
+  assert.equal(snapshot.resolutions[0]?.skill?.id, skill.id);
+  await resolver.assertCurrent(snapshot);
+  sessionVersion += 1;
+  await assert.rejects(resolver.assertCurrent(snapshot), /skill authorization snapshot expired/);
+  await store.putUser({ ...user("legacy"), status: "suspended", sessionVersion });
+  assert.deepEqual(await resolver.visibleForUser("legacy", []), []);
+});
+
 test("restricted grants union subjects for one user and intersect the full audience", async () => {
   const { repository, resolver, skill } = await fixture();
   await repository.setAccess(

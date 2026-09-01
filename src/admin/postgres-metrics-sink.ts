@@ -1,5 +1,5 @@
 import { createPostgresEventSink, type EventColumn } from "./scoped-event-sink.ts";
-import type { MetricsSink, TurnMetricSample } from "./metrics-sink.ts";
+import type { DirectoryMetricSample, MetricsSink, TurnMetricSample } from "./metrics-sink.ts";
 import { errMessage } from "../util/errors.ts";
 
 const COLUMNS: readonly EventColumn<keyof TurnMetricSample & string>[] = [
@@ -49,6 +49,18 @@ const EXTRA_SCHEMA_STATEMENTS = [
   "CREATE INDEX IF NOT EXISTS turn_metrics_by_run ON turn_metrics(run_id)",
 ];
 
+const DIRECTORY_COLUMNS: readonly EventColumn<keyof DirectoryMetricSample & string>[] = [
+  ["ts", "ts", "BIGINT", "number", true],
+  ["scope_label", "scopeLabel", "TEXT", "string", true],
+  ["name", "name", "TEXT", "string", true],
+  ["provider", "provider", "TEXT", "string", true],
+  ["source_id", "sourceId", "TEXT", "string", true],
+  ["result", "result", "TEXT", "string", true],
+  ["reason", "reason", "TEXT", "string"],
+  ["value", "value", "BIGINT", "number"],
+  ["duration_ms", "durationMs", "BIGINT", "number"],
+];
+
 export function createPostgresMetricsSink(connectionString: string): MetricsSink {
   const sink = createPostgresEventSink<TurnMetricSample>({
     connectionString,
@@ -59,9 +71,22 @@ export function createPostgresMetricsSink(connectionString: string): MetricsSink
     equalityFilters: { scopeId: "scope_label", sessionId: "session_id" },
     persistErrorMessage: "[metrics] failed to persist turn metric:",
   });
+  const directory = createPostgresEventSink<DirectoryMetricSample>({
+    connectionString,
+    table: "directory_metrics",
+    columns: DIRECTORY_COLUMNS,
+    extraSchemaStatements: [
+      "CREATE INDEX IF NOT EXISTS directory_metrics_by_scope_ts ON directory_metrics(scope_label, ts DESC)",
+      "CREATE INDEX IF NOT EXISTS directory_metrics_by_source_ts ON directory_metrics(source_id, ts DESC)",
+    ],
+    defaultLimit: 5000,
+    equalityFilters: { scopeId: "scope_label" },
+    persistErrorMessage: "[metrics] failed to persist directory metric:",
+  });
 
   return {
     record: sink.record,
+    recordDirectory: directory.record,
     async updateByRunId(runId, patch) {
       const sets: string[] = [];
       const params: unknown[] = [];
@@ -80,5 +105,6 @@ export function createPostgresMetricsSink(connectionString: string): MetricsSink
         .catch((err) => console.error("[metrics] failed to patch turn metric:", errMessage(err)));
     },
     list: (opts = {}) => sink.list(opts),
+    listDirectory: (opts = {}) => directory.list(opts),
   };
 }
