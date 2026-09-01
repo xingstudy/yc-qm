@@ -24,6 +24,10 @@ import {
 } from "./model/pi-models.ts";
 import { databaseUrlFromEnv } from "./util/postgres-url.ts";
 import type { OrgAdmission } from "./organization/organization-service.ts";
+import {
+  directoryEnvironmentSourcesFromEnv,
+  type EnvironmentDirectorySource,
+} from "./directory-sources/directory-source-service.ts";
 
 export interface Config {
   production: boolean;
@@ -34,6 +38,7 @@ export interface Config {
   orgAdmission: OrgAdmission;
   orgAutoJoinDomains: string[];
   orgBootstrapUsers: string[];
+  directoryEnvironmentSources?: EnvironmentDirectorySource[];
   sessionStore: "memory" | "postgres";
   databaseUrl?: string;
   databaseCaCert?: string;
@@ -738,6 +743,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  const authIssuer = (env.AUTH_ISSUER ?? publicUrl ?? "http://localhost:8099").replace(/\/$/, "");
   return {
     production: env.NODE_ENV === "production",
     allowUnauthenticatedCore: boolEnvStrict("ALLOW_UNAUTHENTICATED_CORE", env.ALLOW_UNAUTHENTICATED_CORE) ?? false,
@@ -747,6 +753,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     orgAdmission,
     orgAutoJoinDomains,
     orgBootstrapUsers,
+    directoryEnvironmentSources: directoryEnvironmentSourcesFromEnv(env, `${authIssuer}/directory/callback`),
     sessionStore: env.SESSION_STORE === "postgres" ? "postgres" : "memory",
     ...(databaseUrl ? { databaseUrl } : {}),
     ...(env.DATABASE_CA_CERT ? { databaseCaCert: env.DATABASE_CA_CERT } : {}),

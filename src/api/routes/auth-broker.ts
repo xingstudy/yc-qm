@@ -132,9 +132,44 @@ async function completePortalLogin(ctx: ApiCtx): Promise<void> {
   return sendJson(ctx.res, 200, await store.complete(state, claimId, outcome));
 }
 
+async function directoryLoginOptions(ctx: ApiCtx): Promise<void> {
+  if (!ctx.deps.directorySources) return sendJson(ctx.res, 200, { options: [] });
+  const state = ctx.url.searchParams.get("state") ?? "";
+  if (!state || state.length > 8_192) return sendJson(ctx.res, 400, { error: "bad_request" });
+  try {
+    return sendJson(ctx.res, 200, { options: await ctx.deps.directorySources.loginOptions(state) });
+  } catch {
+    return sendJson(ctx.res, 503, { error: "directory_sources_unavailable" });
+  }
+}
+
+async function resolveDirectoryLoginCode(ctx: ApiCtx): Promise<void> {
+  if (!ctx.deps.directorySources) return sendJson(ctx.res, 404, { error: "not_configured" });
+  const body = isObj(ctx.body) ? ctx.body : {};
+  const code = typeof body.code === "string" ? body.code.trim() : "";
+  const sourceId = ctx.params.sourceId ?? "";
+  if (!sourceId || !code || code.length > 2_048) {
+    return sendJson(ctx.res, 400, { error: "bad_request" });
+  }
+  try {
+    return sendJson(ctx.res, 200, {
+      identity: await ctx.deps.directorySources.resolveLoginCode(sourceId, code),
+    });
+  } catch {
+    return sendJson(ctx.res, 403, { error: "directory_identity_rejected" });
+  }
+}
+
 export const authBrokerRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/auth/broker/claim", auth: "source", handle: claimBrokerNonce },
   { method: "POST", path: "/v1/auth/portal-login/create", auth: "source", handle: createPortalLogin },
   { method: "POST", path: "/v1/auth/portal-login/claim", auth: "source", handle: claimPortalLogin },
   { method: "POST", path: "/v1/auth/portal-login/complete", auth: "source", handle: completePortalLogin },
+  { method: "GET", path: "/v1/auth/directory-sources/login-options", auth: "source", handle: directoryLoginOptions },
+  {
+    method: "POST",
+    path: "/v1/auth/directory-sources/:sourceId/resolve-code",
+    auth: "source",
+    handle: resolveDirectoryLoginCode,
+  },
 ];

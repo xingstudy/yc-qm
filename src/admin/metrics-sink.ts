@@ -38,6 +38,18 @@ export interface TurnMetricSample {
   uncachedInput?: number;
 }
 
+export interface DirectoryMetricSample {
+  ts: number;
+  scopeLabel: ScopeId;
+  name: "sync_result" | "login_result" | "duplicate_creation_blocked" | "email_resolution";
+  provider: string;
+  sourceId: string;
+  result: string;
+  reason?: string;
+  value?: number;
+  durationMs?: number;
+}
+
 export function cacheHitRatio(s: { cacheRead?: number; cacheWrite?: number; uncachedInput?: number }): number | null {
   const read = s.cacheRead;
   const write = s.cacheWrite;
@@ -68,8 +80,10 @@ interface TurnMetricPatch {
 
 export interface MetricsSink {
   record(s: Omit<TurnMetricSample, "ts">): void;
+  recordDirectory(s: Omit<DirectoryMetricSample, "ts">): void;
   updateByRunId(runId: string, patch: TurnMetricPatch): Promise<void>;
   list(opts?: { scopeId?: string; sessionId?: string; since?: number; limit?: number }): Promise<TurnMetricSample[]>;
+  listDirectory(opts?: { scopeId?: string; since?: number; limit?: number }): Promise<DirectoryMetricSample[]>;
 }
 
 export function createMetricsSink(): MetricsSink {
@@ -78,8 +92,14 @@ export function createMetricsSink(): MetricsSink {
     defaultLimit: 5000,
     equalityFields: ["sessionId"],
   });
+  const directory = createTimestampedEventSink<DirectoryMetricSample>({
+    max: 10000,
+    defaultLimit: 5000,
+    equalityFields: [],
+  });
   return {
     record: sink.record,
+    recordDirectory: directory.record,
     updateByRunId: (runId, patch) => {
       for (let i = sink.all().length - 1; i >= 0; i--) {
         const row = sink.all()[i]!;
@@ -91,5 +111,6 @@ export function createMetricsSink(): MetricsSink {
       return Promise.resolve();
     },
     list: (opts = {}) => sink.list(opts),
+    listDirectory: (opts = {}) => directory.list(opts),
   };
 }

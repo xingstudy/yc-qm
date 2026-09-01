@@ -18,6 +18,34 @@ import {
 } from "./organization/member-batch-service.ts";
 import type { OrganizationMemberJobStore } from "./organization/member-job-store.ts";
 import { createPostgresOrganizationMemberJobStore } from "./organization/postgres-member-job-store.ts";
+import {
+  createMemoryDirectorySourceStore,
+  type DirectorySourceStore,
+} from "./directory-sources/directory-source-store.ts";
+import { createPostgresDirectorySourceStore } from "./directory-sources/postgres-directory-source-store.ts";
+import {
+  createDirectorySourceService,
+  type DirectorySourceService,
+} from "./directory-sources/directory-source-service.ts";
+import { createDirectoryProviderRegistry } from "./directory-sources/provider-registry.ts";
+import { createWeComDirectoryProvider } from "./directory-sources/providers/wecom.ts";
+import { createDirectorySyncEngine, type DirectorySyncEngine } from "./directory-sources/directory-sync-engine.ts";
+import {
+  createDirectoryEmailResolutionService,
+  type DirectoryEmailResolutionService,
+} from "./directory-sources/email-resolution-service.ts";
+import {
+  createIdentityLinkingService,
+  type IdentityLinkingService,
+} from "./directory-sources/identity-linking-service.ts";
+import {
+  createDirectoryIdentityMigrationService,
+  type DirectoryIdentityMigrationService,
+} from "./directory-sources/identity-migration.ts";
+import {
+  createManagedDirectoryService,
+  type ManagedDirectoryService,
+} from "./directory-sources/managed-directory-service.ts";
 import { validateAdminStatusTargets } from "./organization/admin-liveness.ts";
 import {
   createMemoryConfigStore,
@@ -375,6 +403,13 @@ export interface BuiltApp {
   identity: IdentityService;
   organization: OrganizationService;
   organizationStore: OrganizationStore;
+  directorySources: DirectorySourceService;
+  directorySourceStore: DirectorySourceStore;
+  directorySync: DirectorySyncEngine;
+  identityLinking: IdentityLinkingService;
+  directoryIdentityMigration: DirectoryIdentityMigrationService;
+  directoryEmailResolutions: DirectoryEmailResolutionService;
+  managedDirectory: ManagedDirectoryService;
   organizationMemberBatch?: OrganizationMemberBatchService;
   organizationMemberJobs?: OrganizationMemberJobStore;
   keychain?: Keychain;
@@ -538,12 +573,81 @@ export function buildApp(
   const layerSkillsDir = config.deploymentLayerDir ? resolve(deploymentLayer.dir, "skills") : undefined;
   const brokeredTools = deploymentLayer.brokeredTools;
   const orgScope = scopeId("org", config.orgId);
+  const metrics = config.databaseUrl ? createPostgresMetricsSink(config.databaseUrl) : createMetricsSink();
   const postgresAuditLog = config.databaseUrl ? createPostgresAuditLog(config.databaseUrl) : null;
   const auditLog: AuditLog = postgresAuditLog ?? createAuditLog();
   const directory = config.databaseUrl ? createPostgresDirectoryStore(config.databaseUrl) : createDirectoryStore();
   const organizationStore = postgresAuditLog
     ? createPostgresOrganizationStore(config.databaseUrl!, { auditLog: postgresAuditLog, exclusiveOrgId: config.orgId })
     : createMemoryOrganizationStore({ auditLog, skillBacking });
+  const directorySourceStore = config.databaseUrl
+    ? createPostgresDirectorySourceStore(config.databaseUrl, {
+        exclusiveOrgId: config.orgId,
+        auditLog: postgresAuditLog!,
+      })
+    : createMemoryDirectorySourceStore();
+  const directoryProviders = createDirectoryProviderRegistry([createWeComDirectoryProvider()]);
+  const directoryKeyMaterial = config.connectorSecretKey ?? randomBytes(32);
+  const directorySources = createDirectorySourceService({
+    orgId: config.orgId,
+    store: directorySourceStore,
+    providers: directoryProviders,
+    keyMaterial: directoryKeyMaterial,
+    auditLog,
+    environmentSources: config.directoryEnvironmentSources ?? [],
+  });
+  const identityLinkingRef: { current: ReturnType<typeof createIdentityLinkingService> | null } = { current: null };
+  const directoryEmailResolutions = createDirectoryEmailResolutionService({
+    orgId: config.orgId,
+    store: directorySourceStore,
+    sources: directorySources,
+    providers: directoryProviders,
+    organizationStore,
+    allowedEmailDomains: config.orgAutoJoinDomains,
+    hashKeyMaterial: directoryKeyMaterial,
+    bindResolvedIdentity: (input) => {
+      if (!identityLinkingRef.current) throw new Error("directory_identity_linking_not_ready");
+      return identityLinkingRef.current.bind({
+        ...input,
+        actor: "system:directory-reconciliation",
+        matchedBy: "automatic",
+      });
+    },
+    onMetric: (sample) => metrics.recordDirectory({ ...sample, scopeLabel: orgScope }),
+  });
+  const identityLinking = createIdentityLinkingService({
+    orgId: config.orgId,
+    organizationStore,
+    directoryStore: directorySourceStore,
+    sources: directorySources,
+    identity,
+    emailResolutions: directoryEmailResolutions,
+    onMetric: (sample) => metrics.recordDirectory({ ...sample, scopeLabel: orgScope }),
+  });
+  identityLinkingRef.current = identityLinking;
+  const directoryIdentityMigration = createDirectoryIdentityMigrationService({
+    orgId: config.orgId,
+    organizationStore,
+    directoryStore: directorySourceStore,
+    sources: directorySources,
+  });
+  const managedDirectory = createManagedDirectoryService({
+    orgId: config.orgId,
+    store: directorySourceStore,
+    sources: directorySources,
+    organizationStore,
+    identityLinking,
+    identity,
+  });
+  const directorySync = createDirectorySyncEngine({
+    orgId: config.orgId,
+    store: directorySourceStore,
+    sources: directorySources,
+    providers: directoryProviders,
+    leaderLease,
+    reconcileStaleSource: (sourceId) => directoryEmailResolutions.reconcile(sourceId),
+    onMetric: (sample) => metrics.recordDirectory({ ...sample, scopeLabel: orgScope }),
+  });
   const organization = createOrganizationService({
     store: organizationStore,
     orgId: config.orgId,
@@ -551,6 +655,8 @@ export function buildApp(
     autoJoinDomains: config.orgAutoJoinDomains,
     auditLog,
     identity,
+    externalIdentityLogin: identityLinking.login,
+    verifiedEmailIdentityLogin: identityLinking.loginEmail,
     resolveLegacyRuntimeUser: async (principalId) => {
       await identity.refresh();
       const [member, eligible] = await Promise.all([
@@ -957,7 +1063,6 @@ export function buildApp(
   const portalLoginTransactions = config.databaseUrl
     ? createPostgresPortalLoginTransactionStore(config.databaseUrl)
     : createMemoryPortalLoginTransactionStore();
-  const metrics = config.databaseUrl ? createPostgresMetricsSink(config.databaseUrl) : createMetricsSink();
   const credentialUsage = config.databaseUrl
     ? createPostgresCredentialUsageSink(config.databaseUrl)
     : createCredentialUsageSink();
@@ -1582,6 +1687,9 @@ export function buildApp(
   const runtime: Runtime = {
     start() {
       customProviderRefresh.start();
+      directorySync.start();
+      identityLinking.start();
+      managedDirectory.start();
       if (!config.backgroundWorkEnabled) return;
       for (const w of workers) w.start();
       reaper.start();
@@ -1601,6 +1709,9 @@ export function buildApp(
     },
     async stop() {
       customProviderRefresh.stop();
+      directorySync.stop();
+      identityLinking.stop();
+      managedDirectory.stop();
       reaper.stop();
       processReaper?.stop();
       monitorPoller?.stop();
@@ -1624,6 +1735,7 @@ export function buildApp(
       await harness.turns.close?.();
       await tasks.close?.();
       await organizationMemberJobs?.close?.();
+      await directorySourceStore.close();
     },
   };
 
@@ -1669,6 +1781,13 @@ export function buildApp(
     identity,
     organization,
     organizationStore,
+    directorySources,
+    directorySourceStore,
+    directorySync,
+    identityLinking,
+    directoryIdentityMigration,
+    directoryEmailResolutions,
+    managedDirectory,
     ...(organizationMemberBatch ? { organizationMemberBatch } : {}),
     ...(organizationMemberJobs ? { organizationMemberJobs } : {}),
     workspace,
@@ -1762,6 +1881,14 @@ export function serverDeps(
     scheduler: built.scheduler,
     identity: built.identity,
     organization: built.organization,
+    organizationOrgId: config.orgId,
+    directorySources: built.directorySources,
+    directorySourceStore: built.directorySourceStore,
+    directorySync: built.directorySync,
+    identityLinking: built.identityLinking,
+    directoryIdentityMigration: built.directoryIdentityMigration,
+    directoryEmailResolutions: built.directoryEmailResolutions,
+    managedDirectory: built.managedDirectory,
     ...(built.organizationMemberBatch ? { organizationMemberBatch: built.organizationMemberBatch } : {}),
     ...(built.keychain ? { keychain: built.keychain } : {}),
     serviceCreds: built.serviceCreds,

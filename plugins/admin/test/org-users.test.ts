@@ -65,7 +65,7 @@ test.after(() => {
 });
 
 const adminFetch = (path: string, init: RequestInit = {}) =>
-  fetch(base + path, { ...init, headers: { "x-portal-identity": ADMIN, ...(init.headers ?? {}) } });
+  fetch(base + path, { ...init, headers: { "x-portal-identity": ADMIN, ...init.headers } });
 
 test("organization member list, detail, profile, status, and primary-unit paths forward exactly", async () => {
   for (const [method, path, expected] of [
@@ -131,7 +131,8 @@ test("CSV import rejects bodies above 5 MiB before proxying to Core", async () =
     body: "x".repeat(5 * 1024 * 1024 + 1),
   });
   assert.equal(response.status, 413);
-  assert.equal((await response.json()).error, "payload_too_large");
+  const body = (await response.json()) as { error?: string };
+  assert.equal(body.error, "payload_too_large");
   assert.equal(calls.length, before + 1, "only whoami is called before the oversized body is rejected");
   assert.equal(calls.at(-1)?.url, "/v1/admin/whoami");
 });
@@ -148,6 +149,63 @@ test("a manager can search candidates but cannot access member master data or ba
         body: "{}",
       })
     ).status,
+    403,
+  );
+});
+
+test("identity source proxy exposes only the exact administrator routes", async () => {
+  for (const [method, path, expected] of [
+    ["GET", "/api/directory-sources", "/v1/admin/org/directory-sources"],
+    ["GET", "/api/directory-sources?includeDeleted=true", "/v1/admin/org/directory-sources?includeDeleted=true"],
+    ["GET", "/api/directory-sources/catalog", "/v1/admin/org/directory-sources/catalog"],
+    [
+      "GET",
+      "/api/directory-sources/migration-preview?sourceId=source-1",
+      "/v1/admin/org/directory-sources/migration-preview?sourceId=source-1",
+    ],
+    [
+      "GET",
+      "/api/directory-sources/source-1/members?limit=50",
+      "/v1/admin/org/directory-sources/source-1/members?limit=50",
+    ],
+    ["POST", "/api/directory-sources/source-1/sync-preview", "/v1/admin/org/directory-sources/source-1/sync-preview"],
+    ["GET", "/api/directory-sources/source-1/impact", "/v1/admin/org/directory-sources/source-1/impact"],
+    ["POST", "/api/directory-sources/source-1/pause", "/v1/admin/org/directory-sources/source-1/pause"],
+    ["POST", "/api/directory-sources/source-1/restore", "/v1/admin/org/directory-sources/source-1/restore"],
+    [
+      "POST",
+      "/api/directory-sources/source-1/managed-unit-mapping",
+      "/v1/admin/org/directory-sources/source-1/managed-unit-mapping",
+    ],
+    [
+      "DELETE",
+      "/api/directory-sources/source-1?expectedRevision=1",
+      "/v1/admin/org/directory-sources/source-1?expectedRevision=1",
+    ],
+    [
+      "POST",
+      "/api/directory-sources/source-1/members/external-1/rebind",
+      "/v1/admin/org/directory-sources/source-1/members/external-1/rebind",
+    ],
+  ] as const) {
+    const response = await adminFetch(path, {
+      method,
+      ...(method === "GET" ? {} : { headers: { "content-type": "application/json" }, body: "{}" }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(calls.at(-1)?.method, method);
+    assert.equal(calls.at(-1)?.url, expected);
+  }
+  const before = calls.length;
+  assert.equal(
+    (await adminFetch("/api/directory-sources/source-1/arbitrary-write", { method: "POST", body: "{}" })).status,
+    404,
+  );
+  assert.equal((await adminFetch("/api/directory-sources/source-1%2Fescape")).status, 404);
+  assert.equal(calls.length, before + 2);
+  assert.equal(calls.at(-1)?.url, "/v1/admin/whoami");
+  assert.equal(
+    (await fetch(base + "/api/directory-sources", { headers: { "x-portal-identity": MANAGER } })).status,
     403,
   );
 });
@@ -180,5 +238,26 @@ test("the organization members SPA is syntactically valid and includes phase-one
   assert.match(html, /"Organization units": "组织节点"/);
   assert.match(html, /adminTr\("Current status:"\)/);
   assert.match(html, /"Identity and audit": "身份与审计"/);
+  assert.match(html, /function renderDirectorySources\(root, initial\)/);
+  assert.match(html, /Preview existing identity matches/);
+  assert.match(html, /sync-preview/);
+  assert.match(html, /provider\?\.secretFields/);
+  assert.match(html, /provider\?\.requiredSecretFields/);
+  assert.match(html, /Application Secret/);
+  assert.match(html, /Directory Sync Secret/);
+  assert.match(html, /managed-unit-mapping/);
+  assert.match(html, /preview\.relations/);
+  assert.match(html, /preview\.preserved/);
+  assert.match(html, /preview\.authorizationImpacts/);
+  assert.match(html, /Create separate source-owned unit/);
+  assert.match(html, /Map existing manual unit/);
+  assert.match(html, /secretConfig/);
+  assert.doesNotMatch(html, /loginEnabled: loginEnabled\.input\.checked/);
+  assert.match(html, /attempt < 310/);
+  assert.equal((html.match(/if \(!\(await refreshDetail\(source\)\)\) return;/g) || []).length, 3);
+  assert.match(html, /directory-delete-title-/);
+  assert.match(html, /\.map\(directoryReason\)/);
+  assert.match(html, /Rebind this external identity/);
+  assert.match(html, /"Identity sources": "身份源"/);
   assert.match(html, /\["Row", "Member", "Changes", "Status", "Errors", "Warnings"\]/);
 });

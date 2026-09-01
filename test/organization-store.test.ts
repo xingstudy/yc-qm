@@ -9,6 +9,9 @@ import {
   type OrgUnitMember,
 } from "../src/organization/organization-store.ts";
 import { createAuditLog, type AuditEvent } from "../src/audit/audit-log.ts";
+import type { Skill } from "../src/skills/skill-store.ts";
+import type { ScopeId } from "../src/types.ts";
+import { createMemoryMap } from "../src/persistence/durable-map.ts";
 
 const user = (over: Partial<OrganizationUser> = {}): OrganizationUser => ({
   orgId: "default-org",
@@ -26,6 +29,27 @@ const user = (over: Partial<OrganizationUser> = {}): OrganizationUser => ({
   lastLoginAt: null,
   createdBy: "system:bootstrap",
   updatedBy: "system:bootstrap",
+  ...over,
+});
+
+const skill = (over: Partial<Skill> = {}): Skill => ({
+  id: "skill-access",
+  orgId: "default-org",
+  scopeId: "personal:owner",
+  manifest: {
+    name: "access-fixture",
+    description: "Access fixture",
+    requiredCapabilities: [],
+    body: "Run",
+  },
+  signature: "fixture-signature",
+  status: "published",
+  createdBy: "owner",
+  version: 1,
+  grantedCapabilities: [],
+  approvals: ["owner"],
+  createdAt: 1,
+  updatedAt: 1,
   ...over,
 });
 
@@ -229,8 +253,8 @@ test("memory organization store: listManagedSubtreeUnitIds gives a manager their
   assert.deepEqual(await s.listManagedSubtreeUnitIds("default-org", "alice@acme.com"), []);
 });
 
-test("memory organization store: unitImpact counts active child units and members whose user exists and is not deprovisioned (missing user rows do not count)", async () => {
-  const s = createMemoryOrganizationStore();
+test("memory organization store: unitImpact counts children, members, and every access reference", async () => {
+  const s = createMemoryOrganizationStore({ skillBacking: createMemoryMap<Skill>() });
   await s.ensureOrgRoot({ orgId: "default-org", name: "Acme", actor: "system:bootstrap", now: 1 });
   await s.putUnit(unit({ id: "unit-a" }));
   await s.putUnit(unit({ id: "unit-a1", parentId: "unit-a" }));
@@ -243,11 +267,59 @@ test("memory organization store: unitImpact counts active child units and member
   await s.putUnitMember(unitMember({ unitId: "unit-a", principalId: "gone@acme.com" }));
   await s.putUnitMember(unitMember({ unitId: "unit-a", principalId: "missing@acme.com" }));
   await s.putUnitMember(unitMember({ unitId: "unit-a1", principalId: "active@acme.com" }));
+  await s.transact("default-org", async (tx) => {
+    const owned = skill({ id: "skill-owned", scopeId: "org-unit:unit-a" as ScopeId });
+    const granted = skill({ id: "skill-granted" });
+    await tx.putSkill(owned);
+    await tx.putSkillAccessPolicy({
+      orgId: "default-org",
+      skillId: owned.id,
+      ownerScopeId: owned.scopeId,
+      mode: "restricted",
+      revision: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      updatedBy: "owner",
+    });
+    await tx.replaceSkillAccessGrants("default-org", owned.id, [
+      {
+        orgId: "default-org",
+        ownerScopeId: owned.scopeId,
+        path: `skill:${owned.id}`,
+        granteeScopeId: "personal:reader",
+        permission: "read",
+        grantedBy: "owner",
+        grantedAt: 1,
+      },
+    ]);
+    await tx.putSkill(granted);
+    await tx.putSkillAccessPolicy({
+      orgId: "default-org",
+      skillId: granted.id,
+      ownerScopeId: granted.scopeId,
+      mode: "restricted",
+      revision: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      updatedBy: "owner",
+    });
+    await tx.replaceSkillAccessGrants("default-org", granted.id, [
+      {
+        orgId: "default-org",
+        ownerScopeId: granted.scopeId,
+        path: `skill:${granted.id}`,
+        granteeScopeId: "org-unit:unit-a" as ScopeId,
+        permission: "read",
+        grantedBy: "owner",
+        grantedAt: 1,
+      },
+    ]);
+  });
   const impact = await s.unitImpact("default-org", "unit-a");
   assert.equal(impact.activeChildUnits, 1);
   assert.equal(impact.activeMembers, 2);
   assert.equal(impact.directoryRoots, 0);
-  assert.equal(impact.skillGrants, 0);
+  assert.equal(impact.accessGrants, 3);
 });
 
 test("memory organization store: transact flushes buffered audits after success and none when fn throws", async () => {

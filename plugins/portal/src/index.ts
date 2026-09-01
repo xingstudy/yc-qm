@@ -26,6 +26,7 @@ import {
   buildAuthorizeUrl,
   exchangeCode,
   fetchUserinfo,
+  resolveExternalIdentity,
   resolvePrincipal,
   verifyIdToken,
   type OidcConfig,
@@ -44,6 +45,7 @@ import { signedHeaders, withSourceAuthNonce } from "../../chassis/src/core-clien
 import { coreClaimStore, withinRateLimit } from "../../chassis/src/claims.ts";
 import { corePortalLoginTransactions } from "../../chassis/src/portal-login-transactions.ts";
 import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
+import { mintPortalLoginProof } from "../../chassis/src/portal-login-proof.ts";
 import { errMessage } from "../../chassis/src/errors.ts";
 import { json, escapeHtml, serveEmojiFavicon } from "../../chassis/src/http.ts";
 import { isExampleDomain, isExampleEmail, isProductionPlaceholder } from "../../chassis/src/production-placeholders.ts";
@@ -156,6 +158,8 @@ const BROKER_PUBLIC_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
   { method: "POST", path: "/verify" },
   { method: "GET", path: "/wecom/login" },
   { method: "GET", path: "/wecom/callback" },
+  { method: "GET", path: "/directory/login" },
+  { method: "GET", path: "/directory/callback" },
 ];
 
 export function brokerRouteFor(method: string, pathname: string): string | null {
@@ -1326,9 +1330,14 @@ async function authLogin(req: IncomingMessage, res: ServerResponse, url: URL): P
 }
 
 const LOGIN_DENIAL_MESSAGES: Record<string, string> = {
-  suspended: "account suspended",
-  deprovisioned: "account deactivated",
-  not_invited: "account not invited",
+  suspended: "account suspended / 账号已暂停",
+  deprovisioned: "account deactivated / 账号已停用",
+  not_invited: "account not invited / 账号尚未受邀",
+  source_disabled: "enterprise identity source is disabled / 企业身份源未启用",
+  external_inactive: "enterprise account is inactive / 企业账号未激活",
+  identity_unmatched: "enterprise account is not linked yet; contact an administrator / 企业账号尚未关联，请联系管理员",
+  identity_conflict:
+    "enterprise account has conflicting matches; contact an administrator / 企业账号存在匹配冲突，请联系管理员",
 };
 
 async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -1369,6 +1378,7 @@ async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL)
   let email: string;
   let emailVerified: boolean;
   let issuer = OIDC.issuer;
+  let externalIdentity: ReturnType<typeof resolveExternalIdentity>;
   try {
     const { accessToken, idToken } = await exchangeCode(OIDC, { code, codeVerifier: tmp.pkceVerifier });
     const claims = await verifyIdToken(OIDC, idToken, tmp.nonce);
@@ -1381,6 +1391,7 @@ async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL)
     if (!infoSub) throw new Error("userinfo missing sub");
     if (typeof claims.sub === "string" && claims.sub !== infoSub) throw new Error("subject mismatch");
     sub = resolvePrincipal(PRINCIPAL_RULE, { sub: infoSub, claims, userinfo: info });
+    externalIdentity = resolveExternalIdentity({ claims, userinfo: info });
     const rawName = info.name ?? claims.name;
     if (typeof rawName === "string") name = rawName.trim().slice(0, 200);
     email = typeof info.email === "string" ? info.email.trim().toLowerCase() : "";
@@ -1391,13 +1402,22 @@ async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL)
     return fail(errMessage(e, "sign-in failed"));
   }
 
-  const loginBody = JSON.stringify({
+  const loginClaims = {
     principalId: sub,
     issuer,
     subject: infoSub,
     email: email || undefined,
     emailVerified,
     displayName: name || undefined,
+    ...(externalIdentity ? { externalIdentity } : {}),
+  };
+  if (!PORTAL_IDENTITY_SECRET) {
+    await portalLoginTransactions.complete(stateParam, claimId, "failed");
+    return fail("sign-in service temporarily unavailable", 503);
+  }
+  const loginBody = JSON.stringify({
+    ...loginClaims,
+    portalProof: mintPortalLoginProof(loginClaims, PORTAL_IDENTITY_SECRET, Date.now()),
   });
   const loginPath = withSourceAuthNonce("/v1/internal/auth/users/login", CORE_SIGNING_SECRET);
   let loginRes: Response;

@@ -158,6 +158,7 @@ test("the production Compose stack is image-only and exposes only the edge", () 
   assert.doesNotMatch(serviceBlock(compose, "core"), /WEB_UI_IM_CREDENTIALS_KEY/);
   for (const service of ["preflight", "core"]) {
     const block = serviceBlock(compose, service);
+    assert.match(block, /AUTH_WECOM_DIRECTORY_SYNC_SECRET: \$\{AUTH_WECOM_DIRECTORY_SYNC_SECRET:-\}/);
     assert.match(block, /DATABASE_URL: \$\{DATABASE_URL:-\}/);
     assert.match(block, /DATABASE_CA_CERT: \$\{DATABASE_CA_CERT:-\}/);
     assert.match(block, /DATABASE_CA_CERT_FILE: \$\{DATABASE_CA_CERT_FILE:\+\/run\/qm\/database-ca\.crt\}/);
@@ -165,6 +166,10 @@ test("the production Compose stack is image-only and exposes only the edge", () 
     assert.match(block, /target: \/run\/qm\/database-ca\.crt/);
     assert.match(block, /create_host_path: false/);
   }
+  assert.match(
+    serviceBlock(developmentCompose, "core"),
+    /AUTH_WECOM_DIRECTORY_SYNC_SECRET: \$\{AUTH_WECOM_DIRECTORY_SYNC_SECRET:-\}/,
+  );
   assert.match(compose, /^\s*edge:\s*$/m);
   assert.match(compose, /edge:[\s\S]*?ports:/);
   assert.match(serviceBlock(compose, "edge"), /QM_BIND_ADDRESS:-127\.0\.0\.1[^\n]*QM_HTTP_PORT:-8088/);

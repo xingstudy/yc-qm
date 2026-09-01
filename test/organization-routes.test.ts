@@ -15,6 +15,7 @@ import type { Config } from "../src/config.ts";
 import type { RateLimiter } from "../src/ratelimit/rate-limiter.ts";
 import { testConfig } from "./support/test-config.ts";
 import { scopeId } from "../src/types.ts";
+import { mintPortalLoginProof } from "../plugins/chassis/src/portal-login-proof.ts";
 
 const SECRET = "test-signing-secret".repeat(3);
 const PATH = "/v1/internal/auth/users/login";
@@ -26,14 +27,32 @@ const UNITS_PATH = "/v1/admin/org/units";
 const GROUPS_PATH = "/v1/admin/org/access-groups";
 const DIRECTORY_POLICY_PATH = "/v1/admin/org/directory-visibility";
 
+function replayDedupe() {
+  const claimed = new Set<string>();
+  return {
+    durable: true,
+    async claim(key: string) {
+      if (claimed.has(key)) return false;
+      claimed.add(key);
+      return true;
+    },
+  };
+}
+
 function start(overrides: Partial<Config> = {}): { built: BuiltApp; base: string; close: () => Promise<void> } {
   const built = buildApp(
     testConfig({
       dataDir: mkdtempSync(join(tmpdir(), "org-login-")),
+      portalIdentitySecret: PID,
       ...overrides,
     }),
   );
-  const server = createServer(built.app, { signingSecret: SECRET, organization: built.organization });
+  const server = createServer(built.app, {
+    signingSecret: SECRET,
+    portalIdentitySecret: PID,
+    organization: built.organization,
+    replayDedupe: replayDedupe(),
+  });
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
   return { built, base, close: () => new Promise<void>((r) => server.close(() => r())) };
@@ -63,6 +82,7 @@ async function startAdmin(
     organization: built.organization,
     auditLog: built.auditLog,
     advisoryLock: built.advisoryLock,
+    replayDedupe: replayDedupe(),
     ...deps,
   });
   server.listen(0);
@@ -95,7 +115,8 @@ function sign(method: string, pathWithQuery: string, body: string): Record<strin
   };
 }
 
-function login(base: string, body: Record<string, unknown>): Promise<Response> {
+function login(base: string, input: Record<string, unknown>): Promise<Response> {
+  const body = { ...input, portalProof: mintPortalLoginProof(input, PID, Date.now()) };
   const raw = JSON.stringify(body);
   return fetch(`${base}${PATH}`, { method: "POST", headers: sign("POST", PATH, raw), body: raw });
 }
@@ -119,6 +140,34 @@ test("unsigned login request is rejected 401", async () => {
       body: JSON.stringify(loginBody()),
     });
     assert.equal(res.status, 401);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("shared source authentication cannot forge Portal or directory login identity", async () => {
+  const srv = start();
+  try {
+    const unproved = loginBody({ issuer: "directory:source-1", subject: "tenant-1:member-1" });
+    const unprovedRaw = JSON.stringify(unproved);
+    const rejected = await fetch(`${srv.base}${PATH}`, {
+      method: "POST",
+      headers: sign("POST", PATH, unprovedRaw),
+      body: unprovedRaw,
+    });
+    assert.equal(rejected.status, 403);
+    assert.deepEqual(await rejected.json(), { error: "portal_login_rejected" });
+
+    const directoryClaims = loginBody({ issuer: "directory:source-1", subject: "tenant-1:member-1" });
+    const proved = { ...directoryClaims, portalProof: mintPortalLoginProof(directoryClaims, PID, Date.now()) };
+    const provedRaw = JSON.stringify(proved);
+    const missingAssertion = await fetch(`${srv.base}${PATH}`, {
+      method: "POST",
+      headers: sign("POST", PATH, provedRaw),
+      body: provedRaw,
+    });
+    assert.equal(missingAssertion.status, 403);
+    assert.deepEqual(await missingAssertion.json(), { error: "external_identity_required" });
   } finally {
     await srv.close();
   }
@@ -150,6 +199,59 @@ test("unverified email is denied email_unverified", async () => {
     const res = await login(srv.base, loginBody({ subject: "sub-unverified", emailVerified: false }));
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { status: "denied", reason: "email_unverified" });
+  } finally {
+    await srv.close();
+  }
+});
+
+test("managed external login fails closed before domain auto-join and cannot create a user", async () => {
+  const srv = start({ orgAdmission: "domain_auto_join", orgAutoJoinDomains: ["example.com"] });
+  try {
+    const res = await login(
+      srv.base,
+      loginBody({
+        principalId: "untrusted-managed-principal",
+        externalIdentity: {
+          sourceId: "missing-source",
+          provider: "wecom",
+          externalTenantId: "tenant-1",
+          externalSubjectId: "member-1",
+          displayName: "Managed User",
+          corporateEmail: "managed@example.com",
+          personalEmail: null,
+          employeeNumber: null,
+          mobile: null,
+          status: "active",
+          proof: "untrusted-proof",
+        },
+      }),
+    );
+    assert.equal(res.status, 403);
+    assert.deepEqual(await res.json(), { error: "external_identity_rejected" });
+    assert.equal(await srv.built.organization.getUser("untrusted-managed-principal"), null);
+    assert.equal(await srv.built.organization.getUser("managed@example.com"), null);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("managed external login rejects malformed assertions before invoking identity linking", async () => {
+  const srv = start();
+  try {
+    const res = await login(
+      srv.base,
+      loginBody({
+        externalIdentity: {
+          sourceId: "source-1",
+          provider: "wecom",
+          externalTenantId: "tenant-1",
+          externalSubjectId: "member-1",
+          displayName: "Managed User",
+          status: "unknown",
+        },
+      }),
+    );
+    assert.equal(res.status, 400);
   } finally {
     await srv.close();
   }

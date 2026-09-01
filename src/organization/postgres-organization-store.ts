@@ -59,7 +59,7 @@ function rowToUser(r: Record<string, unknown>): OrganizationUser {
 }
 
 function rowToIdentity(r: Record<string, unknown>): AuthIdentity {
-  return {
+  const identity: AuthIdentity = {
     orgId: r.org_id as string,
     issuer: r.issuer as string,
     subject: r.subject as string,
@@ -67,6 +67,16 @@ function rowToIdentity(r: Record<string, unknown>): AuthIdentity {
     emailAtLink: (r.email_at_link as string | null) ?? null,
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
+  };
+  if (r.source_id == null) return identity;
+  return {
+    ...identity,
+    sourceId: r.source_id as string,
+    provider: (r.provider as string | null) ?? null,
+    externalTenantId: (r.external_tenant_id as string | null) ?? null,
+    externalSubjectId: (r.external_subject_id as string | null) ?? null,
+    matchedBy: (r.matched_by as string | null) ?? null,
+    evidence: (r.evidence_json as Record<string, string> | null) ?? null,
   };
 }
 
@@ -173,7 +183,8 @@ function rowToSkillAccessGrant(r: Record<string, unknown>): SkillAccessGrant {
 const USER_COLUMNS =
   "org_id, principal_id, email, display_name, job_title, mobile, employee_number, status, session_version, profile_revision, created_at, updated_at, last_login_at, created_by, updated_by";
 
-const IDENTITY_COLUMNS = "org_id, issuer, subject, principal_id, email_at_link, created_at, updated_at";
+const IDENTITY_COLUMNS =
+  "org_id, issuer, subject, principal_id, email_at_link, source_id, provider, external_tenant_id, external_subject_id, matched_by, evidence_json, created_at, updated_at";
 
 const UNIT_COLUMNS =
   "org_id, id, parent_id, name, kind, status, sort_order, created_at, updated_at, created_by, updated_by";
@@ -274,7 +285,20 @@ const SCHEMA_SQL = [
     updated_at BIGINT NOT NULL,
     PRIMARY KEY (org_id, issuer, subject)
   )`,
+  `ALTER TABLE auth_identities ADD COLUMN IF NOT EXISTS source_id TEXT`,
+  `ALTER TABLE auth_identities ADD COLUMN IF NOT EXISTS provider TEXT`,
+  `ALTER TABLE auth_identities ADD COLUMN IF NOT EXISTS external_tenant_id TEXT`,
+  `ALTER TABLE auth_identities ADD COLUMN IF NOT EXISTS external_subject_id TEXT`,
+  `ALTER TABLE auth_identities ADD COLUMN IF NOT EXISTS matched_by TEXT`,
+  `ALTER TABLE auth_identities ADD COLUMN IF NOT EXISTS evidence_json JSONB`,
   `CREATE INDEX IF NOT EXISTS auth_identities_principal ON auth_identities(org_id, principal_id)`,
+  `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS auth_identities_source_subject
+   ON auth_identities(org_id, source_id, external_subject_id) WHERE source_id IS NOT NULL`,
+  `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS auth_identities_source_principal
+   ON auth_identities(org_id, source_id, principal_id) WHERE source_id IS NOT NULL`,
+  `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS auth_identities_external_subject
+   ON auth_identities(org_id, provider, external_tenant_id, external_subject_id)
+   WHERE provider IS NOT NULL AND external_tenant_id IS NOT NULL AND external_subject_id IS NOT NULL`,
   `DO $$ BEGIN
      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'auth_identities_user_fk') THEN
        ALTER TABLE auth_identities ADD CONSTRAINT auth_identities_user_fk
@@ -823,7 +847,12 @@ const SCHEMA_SQL = [
    $do$`,
   `CREATE OR REPLACE FUNCTION auth_identity_immutable_guard() RETURNS trigger LANGUAGE plpgsql AS $fn$
    BEGIN
-     IF NEW.principal_id IS DISTINCT FROM OLD.principal_id OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+     IF NEW.created_at IS DISTINCT FROM OLD.created_at
+        OR (OLD.source_id IS NULL AND NEW.principal_id IS DISTINCT FROM OLD.principal_id)
+        OR NEW.source_id IS DISTINCT FROM OLD.source_id
+        OR NEW.provider IS DISTINCT FROM OLD.provider
+        OR NEW.external_tenant_id IS DISTINCT FROM OLD.external_tenant_id
+        OR NEW.external_subject_id IS DISTINCT FROM OLD.external_subject_id THEN
        RAISE EXCEPTION 'organization identity binding is immutable for %', OLD.subject USING ERRCODE = '23514';
      END IF;
      RETURN NEW;
@@ -888,8 +917,12 @@ const SCHEMA_SQL = [
        ) OR EXISTS (
          SELECT 1 FROM acl_grants grant_row
           WHERE grant_row.org_id = NEW.org_id
-            AND grant_row.path LIKE 'skill:%'
-            AND grant_row.grantee_scope_id = 'org-unit:' || NEW.id
+            AND (grant_row.owner_scope_id = 'org-unit:' || NEW.id
+              OR grant_row.grantee_scope_id = 'org-unit:' || NEW.id)
+       ) OR EXISTS (
+         SELECT 1 FROM skill_access_policies policy
+          WHERE policy.org_id = NEW.org_id
+            AND policy.owner_scope_id = 'org-unit:' || NEW.id
        ) THEN
          RAISE EXCEPTION 'organization unit % has authorization references', NEW.id USING ERRCODE = '23514';
        END IF;
@@ -915,7 +948,12 @@ const SCHEMA_SQL = [
          SELECT 1 FROM acl_grants grant_row
           WHERE grant_row.org_id = NEW.org_id
             AND grant_row.path LIKE 'skill:%'
-            AND grant_row.grantee_scope_id = 'access-group:' || NEW.id
+            AND (grant_row.owner_scope_id = 'access-group:' || NEW.id
+              OR grant_row.grantee_scope_id = 'access-group:' || NEW.id)
+       ) OR EXISTS (
+         SELECT 1 FROM skill_access_policies policy
+          WHERE policy.org_id = NEW.org_id
+            AND policy.owner_scope_id = 'access-group:' || NEW.id
        )
      ) THEN
        RAISE EXCEPTION 'access group % has authorization references', NEW.id USING ERRCODE = '23514';
@@ -1386,14 +1424,34 @@ async function insertUserOn(exec: Exec, u: OrganizationUser): Promise<boolean> {
 async function putIdentityOn(exec: Exec, i: AuthIdentity): Promise<void> {
   await exec(
     `INSERT INTO auth_identities (${IDENTITY_COLUMNS})
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
      ON CONFLICT (org_id, issuer, subject)
      DO UPDATE SET
        principal_id = EXCLUDED.principal_id,
        email_at_link = EXCLUDED.email_at_link,
+       source_id = EXCLUDED.source_id,
+       provider = EXCLUDED.provider,
+       external_tenant_id = EXCLUDED.external_tenant_id,
+       external_subject_id = EXCLUDED.external_subject_id,
+       matched_by = EXCLUDED.matched_by,
+       evidence_json = EXCLUDED.evidence_json,
        created_at = EXCLUDED.created_at,
        updated_at = EXCLUDED.updated_at`,
-    [i.orgId, i.issuer, i.subject, i.principalId, i.emailAtLink, i.createdAt, i.updatedAt],
+    [
+      i.orgId,
+      i.issuer,
+      i.subject,
+      i.principalId,
+      i.emailAtLink,
+      i.sourceId ?? null,
+      i.provider ?? null,
+      i.externalTenantId ?? null,
+      i.externalSubjectId ?? null,
+      i.matchedBy ?? null,
+      i.evidence ? JSON.stringify(i.evidence) : null,
+      i.createdAt,
+      i.updatedAt,
+    ],
   );
 }
 
@@ -1824,6 +1882,13 @@ async function getIdentityOn(exec: Exec, orgId: string, issuer: string, subject:
   return res.rows[0] ? rowToIdentity(res.rows[0]) : null;
 }
 
+async function listIdentitiesOn(exec: Exec, orgId: string): Promise<AuthIdentity[]> {
+  const res = await exec(`SELECT ${IDENTITY_COLUMNS} FROM auth_identities WHERE org_id = $1 ORDER BY issuer, subject`, [
+    orgId,
+  ]);
+  return res.rows.map(rowToIdentity);
+}
+
 async function listIdentitiesForUserOn(exec: Exec, orgId: string, principalId: string): Promise<AuthIdentity[]> {
   const res = await exec(
     `SELECT ${IDENTITY_COLUMNS}
@@ -1990,17 +2055,20 @@ async function unitImpactOn(exec: Exec, orgId: string, unitId: string): Promise<
        ((SELECT count(*) FROM directory_view_roots root WHERE root.org_id = $1 AND root.unit_id = $2)
          + (SELECT count(*) FROM directory_view_policies policy
              WHERE policy.org_id = $1 AND policy.subject_kind = 'org_unit' AND policy.subject_id = $2)) AS directory_roots,
-       (SELECT count(*) FROM acl_grants grant_row
-         WHERE grant_row.org_id = $1
-           AND grant_row.path LIKE 'skill:%'
-           AND grant_row.grantee_scope_id = 'org-unit:' || $2) AS skill_grants`,
+       ((SELECT count(*) FROM acl_grants grant_row
+          WHERE grant_row.org_id = $1
+            AND (grant_row.owner_scope_id = 'org-unit:' || $2
+              OR grant_row.grantee_scope_id = 'org-unit:' || $2))
+        + (SELECT count(*) FROM skill_access_policies policy
+          WHERE policy.org_id = $1
+            AND policy.owner_scope_id = 'org-unit:' || $2)) AS access_grants`,
     [orgId, unitId],
   );
   return {
     activeChildUnits: Number(res.rows[0]!.active_child_units),
     activeMembers: Number(res.rows[0]!.active_members),
     directoryRoots: Number(res.rows[0]!.directory_roots),
-    skillGrants: Number(res.rows[0]!.skill_grants),
+    accessGrants: Number(res.rows[0]!.access_grants),
   };
 }
 
@@ -2316,6 +2384,9 @@ export function createPostgresOrganizationStore(
     async getIdentity(orgId, issuer, subject) {
       return getIdentityOn(pg.query, orgId, issuer, subject);
     },
+    async listIdentities(orgId) {
+      return listIdentitiesOn(pg.query, orgId);
+    },
     async listIdentitiesForUser(orgId, principalId) {
       return listIdentitiesForUserOn(pg.query, orgId, principalId);
     },
@@ -2520,6 +2591,10 @@ export function createPostgresOrganizationStore(
           getIdentity: (scopeOrgId, issuer, subject) => {
             assertOrg(scopeOrgId);
             return getIdentityOn(exec, scopeOrgId, issuer, subject);
+          },
+          listIdentities: (scopeOrgId) => {
+            assertOrg(scopeOrgId);
+            return listIdentitiesOn(exec, scopeOrgId);
           },
           listIdentitiesForUser: (scopeOrgId, principalId) => {
             assertOrg(scopeOrgId);

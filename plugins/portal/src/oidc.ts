@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createRemoteJWKSet, customFetch, jwtVerify, type JWTPayload } from "jose";
+import type { ExternalIdentityAssertion } from "../../chassis/src/directory-source-client.ts";
 
 type FetchLike = typeof fetch;
 
@@ -157,6 +158,52 @@ export function resolvePrincipal(
       throw new Error("account is outside the permitted domain");
   }
   return email;
+}
+
+function readExternalIdentity(value: unknown): ExternalIdentityAssertion | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (
+    !["sourceId", "provider", "externalTenantId", "externalSubjectId", "displayName"].every(
+      (key) => typeof record[key] === "string" && Boolean(record[key]),
+    ) ||
+    !["active", "suspended", "inactive"].includes(String(record.status)) ||
+    typeof record.proof !== "string" ||
+    !record.proof
+  ) {
+    return null;
+  }
+  const optional = (key: string): string | null =>
+    typeof record[key] === "string" && record[key] ? String(record[key]) : null;
+  return {
+    sourceId: String(record.sourceId),
+    provider: String(record.provider),
+    externalTenantId: String(record.externalTenantId),
+    externalSubjectId: String(record.externalSubjectId),
+    displayName: String(record.displayName),
+    corporateEmail: optional("corporateEmail"),
+    corporateEmailVerified: record.corporateEmailVerified === true,
+    personalEmail: optional("personalEmail"),
+    employeeNumber: optional("employeeNumber"),
+    mobile: optional("mobile"),
+    status: record.status as ExternalIdentityAssertion["status"],
+    proof: record.proof,
+  };
+}
+
+export function resolveExternalIdentity(args: {
+  claims: Record<string, unknown>;
+  userinfo: Record<string, unknown>;
+}): ExternalIdentityAssertion | null {
+  const fromClaims = readExternalIdentity(args.claims.qm_external_identity);
+  const fromUserinfo = readExternalIdentity(args.userinfo.qm_external_identity);
+  if (args.claims.qm_external_identity !== undefined && !fromClaims) throw new Error("invalid external identity claim");
+  if (args.userinfo.qm_external_identity !== undefined && !fromUserinfo)
+    throw new Error("invalid external identity userinfo");
+  if (fromClaims && fromUserinfo && JSON.stringify(fromClaims) !== JSON.stringify(fromUserinfo)) {
+    throw new Error("external identity mismatch");
+  }
+  return fromUserinfo ?? fromClaims;
 }
 
 async function readJson(r: Response, what: string): Promise<Record<string, unknown>> {

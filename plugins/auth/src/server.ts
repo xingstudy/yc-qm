@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { readBody, PayloadTooLargeError, serveEmojiFavicon } from "../../chassis/src/http.ts";
 import { errMessage } from "../../chassis/src/errors.ts";
 import type { AuthConfig } from "./config.ts";
-import { validEmail, weComLoginConfigured } from "./config.ts";
+import { validEmail } from "./config.ts";
 import { claimOnce, withinRateLimit, type ClaimStore } from "../../chassis/src/claims.ts";
 import {
   mintIdToken,
@@ -16,13 +16,11 @@ import {
 import { ID_TOKEN_ALG, type SigningKey } from "./keys.ts";
 import { renderSignInEmail, type Mailer } from "./email.ts";
 import { confirmSignInPage, emailFormPage, linkSentPage, problemPage, CONFIRM_PAGE_CSP, PAGE_CSP } from "./pages.ts";
+import type { DirectorySourceClient } from "../../chassis/src/directory-source-client.ts";
 
 const MAX_FORM_BYTES = 8 * 1024;
 const ID_TOKEN_TTL_S = 300;
 const MAX_INFLIGHT_SENDS = 32;
-const WECOM_QRCONNECT_URL = "https://open.work.weixin.qq.com/wwopen/sso/qrConnect";
-const WECOM_API_BASE_URL = "https://qyapi.weixin.qq.com";
-const WECOM_API_TIMEOUT_MS = 8_000;
 
 export interface AuthDeps {
   cfg: AuthConfig;
@@ -31,7 +29,7 @@ export interface AuthDeps {
   claims: ClaimStore;
   mailer: Mailer;
   brandName?: () => string;
-  fetchImpl?: typeof fetch;
+  directorySources?: DirectorySourceClient;
   now?: () => number;
   onBackgroundTask?: (task: Promise<void>) => void;
 }
@@ -45,60 +43,8 @@ function normalizeEmail(raw: string): string {
   return raw.trim().toLowerCase();
 }
 
-function nonBlankString(value: unknown): string {
-  return typeof value === "string" && value.trim() ? value : "";
-}
-
 function emailIdentity(email: string): AuthIdentity {
   return { principal: email, email, emailVerified: true };
-}
-
-async function weComJson(fetchImpl: typeof fetch, url: URL, label: string): Promise<Record<string, unknown>> {
-  const r = await fetchImpl(url, {
-    headers: { accept: "application/json" },
-    signal: AbortSignal.timeout(WECOM_API_TIMEOUT_MS),
-  });
-  if (!r.ok) throw new Error(`${label} failed (${r.status})`);
-  const parsed = (await r.json().catch(() => null)) as unknown;
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error(`${label} returned JSON`);
-  const data = parsed as Record<string, unknown>;
-  const errcode = typeof data.errcode === "number" ? data.errcode : 0;
-  if (errcode !== 0) {
-    const errmsg = typeof data.errmsg === "string" ? data.errmsg : "";
-    throw new Error(`${label} failed (${errcode}${errmsg ? `: ${errmsg}` : ""})`);
-  }
-  return data;
-}
-
-async function weComIdentityByCode(cfg: AuthConfig, code: string, fetchImpl: typeof fetch): Promise<AuthIdentity> {
-  const tokenUrl = new URL(`${WECOM_API_BASE_URL}/cgi-bin/gettoken`);
-  tokenUrl.searchParams.set("corpid", cfg.wecomLogin.corpId);
-  tokenUrl.searchParams.set("corpsecret", cfg.wecomLogin.secret);
-  const tokenData = await weComJson(fetchImpl, tokenUrl, "WeCom token exchange");
-  const accessToken = typeof tokenData.access_token === "string" ? tokenData.access_token : "";
-  if (!accessToken) throw new Error("WeCom token exchange returned no access token");
-
-  const identityUrl = new URL(`${WECOM_API_BASE_URL}/cgi-bin/auth/getuserinfo`);
-  identityUrl.searchParams.set("access_token", accessToken);
-  identityUrl.searchParams.set("code", code);
-  const identityData = await weComJson(fetchImpl, identityUrl, "WeCom identity lookup");
-  const userId = nonBlankString(identityData.UserId) || nonBlankString(identityData.userid);
-  if (!userId) throw new Error("WeCom identity lookup returned no user id");
-
-  const userUrl = new URL(`${WECOM_API_BASE_URL}/cgi-bin/user/get`);
-  userUrl.searchParams.set("access_token", accessToken);
-  userUrl.searchParams.set("userid", userId);
-  const userData = await weComJson(fetchImpl, userUrl, "WeCom user lookup");
-  const rawEmail = nonBlankString(userData.email) || nonBlankString(userData.biz_mail);
-  const email = normalizeEmail(rawEmail);
-  const rawName = nonBlankString(userData.name) || nonBlankString(userData.alias) || userId;
-  const name = rawName.trim().slice(0, 200);
-  if (validEmail(email)) return { principal: email, email, emailVerified: true, ...(name ? { name } : {}) };
-  return {
-    principal: `wecom:${cfg.wecomLogin.corpId}:${userId}`,
-    emailVerified: false,
-    ...(name ? { name } : {}),
-  };
 }
 
 function clientIpOf(req: IncomingMessage): string {
@@ -172,12 +118,10 @@ function readAuthorizeRequest(
 export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const { cfg, signer, claims, mailer, signingKey } = deps;
   const brandName = deps.brandName ?? ((): string => cfg.brandName);
-  const fetchImpl = deps.fetchImpl ?? fetch;
   const now = deps.now ?? Date.now;
   const notify = deps.onBackgroundTask ?? ((task: Promise<void>) => void task.catch(() => undefined));
   const formAction = `${cfg.publicPath}/authorize`;
-  const weComLoginAction = `${cfg.publicPath}/wecom/login`;
-  const weComEnabled = weComLoginConfigured(cfg);
+  const directoryLoginAction = `${cfg.publicPath}/directory/login`;
   const linkTtlMinutes = Math.max(1, Math.round(cfg.linkTtlS / 60));
   let inFlightSends = 0;
   const background = (task: () => Promise<void>): void => {
@@ -216,16 +160,17 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
       }),
     );
 
-  const weComLoginUrl = (requestToken: string): string | undefined =>
-    weComEnabled ? `${weComLoginAction}?request=${encodeURIComponent(requestToken)}` : undefined;
-
-  const weComAuthorizeUrl = (state: string): string => {
-    const u = new URL(WECOM_QRCONNECT_URL);
-    u.searchParams.set("appid", cfg.wecomLogin.corpId);
-    u.searchParams.set("agentid", cfg.wecomLogin.agentId);
-    u.searchParams.set("redirect_uri", cfg.wecomLogin.redirectUri);
-    u.searchParams.set("state", state);
-    return u.toString();
+  const directoryButtons = async (requestToken: string) => {
+    if (!deps.directorySources) return [];
+    try {
+      const options = await deps.directorySources.loginOptions("catalog");
+      return options.map((option) => ({
+        label: option.displayName,
+        url: `${directoryLoginAction}?request=${encodeURIComponent(requestToken)}&source=${encodeURIComponent(option.sourceId)}`,
+      }));
+    } catch {
+      return [];
+    }
   };
 
   async function authorizeForm(res: ServerResponse, params: URLSearchParams): Promise<void> {
@@ -239,6 +184,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
         parsed.problem,
       );
     const sealed = await signer.sealRequest(parsed.request, cfg.requestTtlS, now());
+    const directoryLoginOptions = await directoryButtons(sealed.token);
     return sendHtml(
       res,
       200,
@@ -246,7 +192,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
         brandName: brandName(),
         action: formAction,
         requestToken: sealed.token,
-        wecomLoginUrl: weComLoginUrl(sealed.token),
+        directoryLoginOptions,
       }),
     );
   }
@@ -308,7 +254,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
           brandName: brandName(),
           action: formAction,
           requestToken: sealed.token,
-          wecomLoginUrl: weComLoginUrl(sealed.token),
+          directoryLoginOptions: await directoryButtons(sealed.token),
           problem: "That doesn't look like an email address.",
         }),
       );
@@ -372,12 +318,17 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
     res.end();
   }
 
-  async function weComLogin(res: ServerResponse, params: URLSearchParams): Promise<void> {
-    if (!weComEnabled)
-      return problem(res, 404, "WeCom sign-in isn't available", "Ask your administrator to configure WeCom sign-in.");
+  async function directoryLogin(req: IncomingMessage, res: ServerResponse, params: URLSearchParams): Promise<void> {
+    if (!deps.directorySources)
+      return problem(
+        res,
+        404,
+        "Enterprise sign-in isn't available",
+        "Ask your administrator to configure an identity source.",
+      );
     const state = params.get("request") ?? "";
-    const request = await signer.openRequest(state, now());
-    if (!request) {
+    const opened = await signer.openRequestEnvelope(state, now());
+    if (!opened) {
       return problem(
         res,
         400,
@@ -385,29 +336,124 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
         "Sign-in pages are only valid for a short while. Start again from the page you were trying to reach.",
       );
     }
-    res.writeHead(302, noStore({ location: weComAuthorizeUrl(state) }));
+    const sourceId = params.get("source") ?? "";
+    if (!sourceId || sourceId.length > 200) {
+      return problem(res, 400, "This sign-in source isn't valid", "Start again from the sign-in page.");
+    }
+    if (!(await claimOnce(claims, `directory-request:${opened.jti}`, opened.expiresAtMs))) {
+      return problem(res, 400, "This enterprise sign-in no longer works", "Start again from the sign-in page.");
+    }
+    const at = now();
+    const ipAllowed = await withinRateLimit(claims, {
+      secret: cfg.tokenSecret,
+      kind: "directory-login-ip",
+      value: clientIpOf(req),
+      limit: 10,
+      windowS: 60,
+      nowMs: at,
+    });
+    if (!ipAllowed) {
+      return problem(res, 429, "Too many enterprise sign-in attempts", "Wait a minute and start again.");
+    }
+    const sourceAllowed = await withinRateLimit(claims, {
+      secret: cfg.tokenSecret,
+      kind: "directory-login-source",
+      value: sourceId,
+      limit: 60,
+      windowS: 60,
+      nowMs: at,
+    });
+    if (!sourceAllowed) {
+      return problem(res, 429, "Too many enterprise sign-in attempts", "Wait a minute and start again.");
+    }
+    const request = opened.claims;
+    const selected = await signer.sealRequest({ ...request, directorySourceId: sourceId }, cfg.requestTtlS, now());
+    let option;
+    try {
+      option = (await deps.directorySources.loginOptions(selected.token)).find(
+        (candidate) => candidate.sourceId === sourceId,
+      );
+    } catch (error) {
+      return problem(
+        res,
+        502,
+        "Enterprise sign-in failed",
+        "We couldn't load this identity source.",
+        errMessage(error),
+      );
+    }
+    if (!option) return problem(res, 404, "This sign-in source isn't available", "Ask your administrator to check it.");
+    res.writeHead(302, noStore({ location: option.authorizeUrl }));
     res.end();
   }
 
-  async function weComCallback(res: ServerResponse, params: URLSearchParams): Promise<void> {
-    if (!weComEnabled)
-      return problem(res, 404, "WeCom sign-in isn't available", "Ask your administrator to configure WeCom sign-in.");
+  async function directoryCallback(req: IncomingMessage, res: ServerResponse, params: URLSearchParams): Promise<void> {
+    if (!deps.directorySources)
+      return problem(
+        res,
+        404,
+        "Enterprise sign-in isn't available",
+        "Ask your administrator to configure an identity source.",
+      );
     const state = params.get("state") ?? "";
-    const request = await signer.openRequest(state, now());
-    if (!request) {
-      return problem(res, 400, "This WeCom sign-in expired", "Start again from the page you were trying to reach.");
+    const openedState = await signer.openRequestEnvelope(state, now());
+    if (!openedState) {
+      return problem(
+        res,
+        400,
+        "This enterprise sign-in expired",
+        "Start again from the page you were trying to reach.",
+      );
     }
-    const weComCode = params.get("code") ?? "";
-    if (!weComCode)
-      return problem(res, 400, "WeCom sign-in was cancelled", "Start again when you're ready to sign in.");
+    const request = openedState.claims;
+    const directoryCode = params.get("code") ?? "";
+    if (!directoryCode)
+      return problem(res, 400, "Enterprise sign-in was cancelled", "Start again when you're ready to sign in.");
+    if (!request.directorySourceId) return problem(res, 400, "This sign-in source is missing", "Start again.");
+    if (!(await claimOnce(claims, `directory-state:${openedState.jti}`, openedState.expiresAtMs))) {
+      return problem(res, 400, "This enterprise sign-in no longer works", "Start again from the sign-in page.");
+    }
+    const at = now();
+    const ipAllowed = await withinRateLimit(claims, {
+      secret: cfg.tokenSecret,
+      kind: "directory-callback-ip",
+      value: clientIpOf(req),
+      limit: 20,
+      windowS: 60,
+      nowMs: at,
+    });
+    if (!ipAllowed) {
+      return problem(res, 429, "Too many enterprise sign-in attempts", "Wait a minute and start again.");
+    }
+    const sourceAllowed = await withinRateLimit(claims, {
+      secret: cfg.tokenSecret,
+      kind: "directory-callback-source",
+      value: request.directorySourceId,
+      limit: 60,
+      windowS: 60,
+      nowMs: at,
+    });
+    if (!sourceAllowed) {
+      return problem(res, 429, "Too many enterprise sign-in attempts", "Wait a minute and start again.");
+    }
     let identity: AuthIdentity;
     try {
-      identity = await weComIdentityByCode(cfg, weComCode, fetchImpl);
+      const externalIdentity = await deps.directorySources.resolveCode(request.directorySourceId, directoryCode);
+      identity = {
+        principal: `directory:${externalIdentity.sourceId}:${externalIdentity.externalTenantId}:${externalIdentity.externalSubjectId}`,
+        ...(externalIdentity.corporateEmail ? { email: externalIdentity.corporateEmail } : {}),
+        emailVerified: externalIdentity.corporateEmailVerified === true,
+        ...(externalIdentity.displayName ? { name: externalIdentity.displayName } : {}),
+        externalIdentity,
+      };
     } catch (e) {
-      return problem(res, 502, "WeCom sign-in failed", "We couldn't verify your WeCom account.", errMessage(e));
-    }
-    if (identity.email && !emailAllowed(cfg, identity.email)) {
-      return problem(res, 403, "This address can't sign in", "Your administrator has not allowed this email address.");
+      return problem(
+        res,
+        502,
+        "Enterprise sign-in failed",
+        "We couldn't verify your enterprise account.",
+        errMessage(e),
+      );
     }
     const code = await signer.sealCode(
       {
@@ -458,7 +504,8 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
       return sendJson(res, 400, { error: "invalid_grant" });
     if (!pkceMatches(form.get("code_verifier") ?? "", granted.codeChallenge))
       return sendJson(res, 400, { error: "invalid_grant" });
-    if (granted.email && !emailAllowed(cfg, granted.email)) return sendJson(res, 400, { error: "invalid_grant" });
+    if (!granted.externalIdentity && granted.email && !emailAllowed(cfg, granted.email))
+      return sendJson(res, 400, { error: "invalid_grant" });
 
     const nowMs = now();
     const sub = subjectFor(cfg.issuer, granted.principal);
@@ -470,6 +517,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
       ...(granted.email ? { email: granted.email } : {}),
       emailVerified: granted.emailVerified,
       ...(granted.name ? { name: granted.name } : {}),
+      ...(granted.externalIdentity ? { externalIdentity: granted.externalIdentity } : {}),
       nonce: granted.nonce,
       ttlS: ID_TOKEN_TTL_S,
       nowMs,
@@ -481,6 +529,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
         ...(granted.email ? { email: granted.email } : {}),
         emailVerified: granted.emailVerified,
         ...(granted.name ? { name: granted.name } : {}),
+        ...(granted.externalIdentity ? { externalIdentity: granted.externalIdentity } : {}),
       },
       cfg.accessTtlS,
       nowMs,
@@ -514,6 +563,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
       qm_principal_verified: true,
       ...(opened.email ? { email: opened.email, email_verified: opened.emailVerified } : {}),
       ...(opened.name ? { name: opened.name } : {}),
+      ...(opened.externalIdentity ? { qm_external_identity: opened.externalIdentity } : {}),
     });
   }
 
@@ -542,6 +592,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
         "name",
         "qm_principal",
         "qm_principal_verified",
+        "qm_external_identity",
       ],
       token_endpoint_auth_methods_supported: ["client_secret_basic"],
       code_challenge_methods_supported: ["S256"],
@@ -566,8 +617,10 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
     if (method === "POST" && path === "/authorize") return authorizeSubmit(req, res);
     if (method === "GET" && path === "/verify") return confirmVerify(res);
     if (method === "POST" && path === "/verify") return verify(req, res);
-    if (method === "GET" && path === "/wecom/login") return weComLogin(res, url.searchParams);
-    if (method === "GET" && path === "/wecom/callback") return weComCallback(res, url.searchParams);
+    if (method === "GET" && (path === "/directory/login" || path === "/wecom/login"))
+      return directoryLogin(req, res, url.searchParams);
+    if (method === "GET" && (path === "/directory/callback" || path === "/wecom/callback"))
+      return directoryCallback(req, res, url.searchParams);
     if (method === "POST" && path === "/token") return token(req, res);
     if ((method === "GET" || method === "POST") && path === "/userinfo") return userinfo(req, res);
     return sendJson(res, 404, { error: "not_found" });

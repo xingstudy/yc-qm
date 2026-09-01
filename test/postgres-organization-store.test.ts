@@ -14,6 +14,7 @@ import type {
 } from "../src/organization/organization-store.ts";
 import type { AuditEvent } from "../src/audit/audit-log.ts";
 import type { Skill } from "../src/skills/skill-store.ts";
+import type { ScopeId } from "../src/types.ts";
 
 const URL = process.env.DATABASE_URL;
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the Postgres organization-store tests";
@@ -252,6 +253,65 @@ test("pg organization store: user creator fields and identity bindings are immut
   );
 });
 
+test("pg organization store: directory identities rebind narrowly and remain unique per source", { skip }, async () => {
+  const store = createPostgresOrganizationStore(URL!);
+  await store.putUser(user());
+  await store.putUser(user({ principalId: "U2", email: "two@example.com" }));
+  const directoryIdentity = (over: Partial<AuthIdentity> = {}): AuthIdentity =>
+    identity({
+      issuer: "directory:source-a",
+      subject: "tenant-1:member-1",
+      sourceId: "source-a",
+      provider: "wecom",
+      externalTenantId: "tenant-1",
+      externalSubjectId: "member-1",
+      matchedBy: "manual",
+      evidence: { corporateEmail: "verified" },
+      ...over,
+    });
+  await store.putIdentity(directoryIdentity());
+  await store.putIdentity(directoryIdentity({ principalId: "U2", updatedAt: 200 }));
+  assert.equal((await store.getIdentity("org1", "directory:source-a", "tenant-1:member-1"))?.principalId, "U2");
+  await assert.rejects(
+    () =>
+      store.putIdentity(
+        directoryIdentity({
+          issuer: "directory:source-a-alias",
+          subject: "tenant-1:member-1-alias",
+          externalSubjectId: "member-1",
+          principalId: "U1",
+        }),
+      ),
+    (error: unknown) => (error as { code?: string }).code === "23505",
+  );
+  await assert.rejects(
+    () =>
+      store.putIdentity(
+        directoryIdentity({
+          subject: "tenant-1:member-2",
+          externalSubjectId: "member-2",
+          principalId: "U2",
+        }),
+      ),
+    (error: unknown) => (error as { code?: string }).code === "23505",
+  );
+  await assert.rejects(
+    () => store.putIdentity(directoryIdentity({ principalId: "U2", externalTenantId: "tenant-2", updatedAt: 300 })),
+    (error: unknown) => (error as { code?: string }).code === "23514",
+  );
+  await store.putIdentity(
+    directoryIdentity({
+      issuer: "directory:source-b",
+      subject: "tenant-2:member-9",
+      sourceId: "source-b",
+      externalTenantId: "tenant-2",
+      externalSubjectId: "member-9",
+      principalId: "U2",
+    }),
+  );
+  assert.equal((await store.listIdentitiesForUser("org1", "U2")).length, 2);
+});
+
 test(
   "pg organization store: duplicate email rejected within an org, allowed across orgs; null emails exempt",
   { skip },
@@ -317,7 +377,7 @@ test("pg organization store: Skill Access policy and grants are durable and guar
     },
     signature: "fixture-signature",
     status: "published",
-    createdBy: "owner",
+    createdBy: "U-active",
     version: 1,
     grantedCapabilities: [],
     approvals: ["owner"],
@@ -1220,50 +1280,113 @@ test(
   },
 );
 
-test(
-  "pg org tree: unitImpact counts active child units and members whose user exists and is not deprovisioned",
-  { skip },
-  async () => {
-    const org = "org-impact";
-    const store = createPostgresOrganizationStore(URL!);
-    await store.ensureOrgRoot({ orgId: org, name: "Acme", actor: "admin", now: 1 });
-    await store.putUnit(unit({ orgId: org, id: "unit-a" }));
-    await store.putUnit(unit({ orgId: org, id: "unit-a1", parentId: "unit-a" }));
-    await store.putUnit(unit({ orgId: org, id: "unit-a2", parentId: "unit-a", status: "archived" }));
-    await store.putUser(user({ orgId: org, principalId: "U-active", email: "active@example.com", status: "active" }));
-    await store.putUser(user({ orgId: org, principalId: "U-susp", email: "susp@example.com" }));
-    await store.putUser(user({ orgId: org, principalId: "U-gone", email: "gone@example.com" }));
-    await store.putUnitMember(unitMember({ orgId: org, unitId: "unit-a", principalId: "U-active" }));
-    await store.putUnitMember(unitMember({ orgId: org, unitId: "unit-a", principalId: "U-susp" }));
-    await store.putUnitMember(unitMember({ orgId: org, unitId: "unit-a", principalId: "U-gone" }));
-    await store.putUnitMember(unitMember({ orgId: org, unitId: "unit-a1", principalId: "U-active" }));
-    await store.putUser(
-      user({
+test("pg org tree: unitImpact counts children, members, and every access reference", { skip }, async () => {
+  const org = "org-impact";
+  const store = createPostgresOrganizationStore(URL!);
+  await store.ensureOrgRoot({ orgId: org, name: "Acme", actor: "admin", now: 1 });
+  await store.putUnit(unit({ orgId: org, id: "unit-a" }));
+  await store.putUnit(unit({ orgId: org, id: "unit-a1", parentId: "unit-a" }));
+  await store.putUnit(unit({ orgId: org, id: "unit-a2", parentId: "unit-a", status: "archived" }));
+  await store.putUser(user({ orgId: org, principalId: "U-active", email: "active@example.com", status: "active" }));
+  await store.putUser(user({ orgId: org, principalId: "U-susp", email: "susp@example.com" }));
+  await store.putUser(user({ orgId: org, principalId: "U-gone", email: "gone@example.com" }));
+  await store.putUnitMember(unitMember({ orgId: org, unitId: "unit-a", principalId: "U-active" }));
+  await store.putUnitMember(unitMember({ orgId: org, unitId: "unit-a", principalId: "U-susp" }));
+  await store.putUnitMember(unitMember({ orgId: org, unitId: "unit-a", principalId: "U-gone" }));
+  await store.putUnitMember(unitMember({ orgId: org, unitId: "unit-a1", principalId: "U-active" }));
+  await store.putUser(
+    user({
+      orgId: org,
+      principalId: "U-susp",
+      email: "susp@example.com",
+      status: "suspended",
+      sessionVersion: 2,
+      updatedAt: 200,
+    }),
+  );
+  await store.putUser(
+    user({
+      orgId: org,
+      principalId: "U-gone",
+      email: "gone@example.com",
+      status: "deprovisioned",
+      sessionVersion: 2,
+      updatedAt: 200,
+    }),
+  );
+  await store.transact(org, async (tx) => {
+    const fixture = (id: string, scopeId: ScopeId): Skill => ({
+      id,
+      orgId: org,
+      scopeId,
+      manifest: {
+        name: id,
+        description: "Access fixture",
+        requiredCapabilities: [],
+        body: "Run",
+      },
+      signature: "fixture-signature",
+      status: "published",
+      createdBy: "owner",
+      version: 1,
+      grantedCapabilities: [],
+      approvals: ["owner"],
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const owned = fixture("skill-owned", "org-unit:unit-a");
+    const granted = fixture("skill-granted", "personal:U-active");
+    await tx.putSkill(owned);
+    await tx.putSkillAccessPolicy({
+      orgId: org,
+      skillId: owned.id,
+      ownerScopeId: owned.scopeId,
+      mode: "restricted",
+      revision: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      updatedBy: "U-active",
+    });
+    await tx.replaceSkillAccessGrants(org, owned.id, [
+      {
         orgId: org,
-        principalId: "U-susp",
-        email: "susp@example.com",
-        status: "suspended",
-        sessionVersion: 2,
-        updatedAt: 200,
-      }),
-    );
-    await store.putUser(
-      user({
+        ownerScopeId: owned.scopeId,
+        path: `skill:${owned.id}`,
+        granteeScopeId: "personal:U-active",
+        permission: "read",
+        grantedBy: "U-active",
+        grantedAt: 1,
+      },
+    ]);
+    await tx.putSkill(granted);
+    await tx.putSkillAccessPolicy({
+      orgId: org,
+      skillId: granted.id,
+      ownerScopeId: granted.scopeId,
+      mode: "restricted",
+      revision: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      updatedBy: "U-active",
+    });
+    await tx.replaceSkillAccessGrants(org, granted.id, [
+      {
         orgId: org,
-        principalId: "U-gone",
-        email: "gone@example.com",
-        status: "deprovisioned",
-        sessionVersion: 2,
-        updatedAt: 200,
-      }),
-    );
-    const impact = await store.unitImpact(org, "unit-a");
-    assert.equal(impact.activeChildUnits, 1);
-    assert.equal(impact.activeMembers, 2, "member rows require a user row (FK) and count unless deprovisioned");
-    assert.equal(impact.directoryRoots, 0);
-    assert.equal(impact.skillGrants, 0);
-  },
-);
+        ownerScopeId: granted.scopeId,
+        path: `skill:${granted.id}`,
+        granteeScopeId: "org-unit:unit-a",
+        permission: "read",
+        grantedBy: "U-active",
+        grantedAt: 1,
+      },
+    ]);
+  });
+  const impact = await store.unitImpact(org, "unit-a");
+  assert.equal(impact.activeChildUnits, 1);
+  assert.equal(impact.activeMembers, 2, "member rows require a user row (FK) and count unless deprovisioned");
+  assert.equal(impact.directoryRoots, 0);
+  assert.equal(impact.accessGrants, 3);
+});
 
 test(
   "pg org tree: transact commits audits through the audit log; failure rolls back unit, revision, and audit",

@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { AuditEvent, AuditLog } from "../audit/audit-log.ts";
 import { personKey } from "../directory/person.ts";
 import type { IdentityService } from "../identity/identity-service.ts";
+import type {
+  EmailIdentityLoginResult,
+  ExternalIdentityLoginResult,
+} from "../directory-sources/identity-linking-service.ts";
+import type { ExternalIdentityAssertion } from "../directory-sources/types.ts";
 import { personalScope, type ScopeId } from "../types.ts";
 import {
   createDirectoryVisibilityResolver,
@@ -43,11 +48,24 @@ export interface LoginInput {
   email: string | null;
   emailVerified: boolean;
   displayName: string;
+  externalIdentity?: ExternalIdentityAssertion;
 }
 
 export type LoginResult =
   | { status: "ok"; user: OrganizationUser }
-  | { status: "denied"; reason: "unknown" | "suspended" | "deprovisioned" | "not_invited" | "email_unverified" };
+  | {
+      status: "denied";
+      reason:
+        | "unknown"
+        | "suspended"
+        | "deprovisioned"
+        | "not_invited"
+        | "email_unverified"
+        | "source_disabled"
+        | "external_inactive"
+        | "identity_unmatched"
+        | "identity_conflict";
+    };
 
 export interface ActiveCheck {
   status: OrganizationUserStatus;
@@ -392,6 +410,19 @@ export function createOrganizationService(deps: {
   identity: IdentityService;
   now?: () => number;
   resolveLegacyRuntimeUser?: (principalId: string) => Promise<boolean>;
+  externalIdentityLogin?: (input: {
+    issuer: string;
+    subject: string;
+    assertion: ExternalIdentityAssertion;
+  }) => Promise<ExternalIdentityLoginResult>;
+  verifiedEmailIdentityLogin?: (input: {
+    principalId: string;
+    issuer: string;
+    subject: string;
+    email: string;
+    displayName: string;
+    allowCreate: boolean;
+  }) => Promise<EmailIdentityLoginResult>;
 }): OrganizationService {
   const { store, orgId, admission, identity, auditLog } = deps;
   const now = deps.now ?? Date.now;
@@ -448,9 +479,22 @@ export function createOrganizationService(deps: {
       subject: input.subject,
       principalId,
       emailAtLink: input.email,
+      evidence: identityEvidence(input, null),
       createdAt: at,
       updatedAt: at,
     };
+  }
+
+  function identityEvidence(input: LoginInput, existing: Record<string, string> | null | undefined) {
+    const evidence = { ...existing };
+    delete evidence.emailVerified;
+    delete evidence.emailVerifiedEmail;
+    const email = input.email?.trim().toLowerCase() ?? "";
+    if (email && input.emailVerified) {
+      evidence.emailVerified = "true";
+      evidence.emailVerifiedEmail = email;
+    }
+    return Object.keys(evidence).length ? evidence : null;
   }
 
   function withLoginProfile(user: OrganizationUser, input: LoginInput): OrganizationUser {
@@ -491,6 +535,31 @@ export function createOrganizationService(deps: {
   }
 
   async function login(input: LoginInput): Promise<LoginResult> {
+    if (input.externalIdentity) {
+      if (!deps.externalIdentityLogin) return { status: "denied", reason: "identity_unmatched" };
+      const managed = await deps.externalIdentityLogin({
+        issuer: input.issuer,
+        subject: input.subject,
+        assertion: input.externalIdentity,
+      });
+      if (managed.status === "ok") cacheUser(managed.user);
+      return managed;
+    }
+    if (input.email && input.emailVerified && deps.verifiedEmailIdentityLogin) {
+      const linked = await deps.verifiedEmailIdentityLogin({
+        principalId: input.principalId,
+        issuer: input.issuer,
+        subject: input.subject,
+        email: input.email,
+        displayName: input.displayName,
+        allowCreate: autoJoinAdmits(input),
+      });
+      if (linked.status !== "not_applicable") {
+        if (linked.status === "ok") cacheUser(linked.user);
+        return linked;
+      }
+    }
+    if (input.issuer.startsWith("directory:")) return { status: "denied", reason: "identity_unmatched" };
     let reactivatePrincipal: string | null = null;
     const result = await store.transact(orgId, async (tx): Promise<LoginResult> => {
       const bound = await tx.getIdentity(orgId, input.issuer, input.subject);
@@ -505,6 +574,7 @@ export function createOrganizationService(deps: {
           await tx.putIdentity({
             ...bound,
             emailAtLink: input.email,
+            evidence: identityEvidence(input, bound.evidence),
             updatedAt: now(),
           });
           await tx.putUser(next);
@@ -517,6 +587,7 @@ export function createOrganizationService(deps: {
           await tx.putIdentity({
             ...bound,
             emailAtLink: input.email,
+            evidence: identityEvidence(input, bound.evidence),
             updatedAt: now(),
           });
           await tx.putUser(next);
@@ -1371,7 +1442,7 @@ export function createOrganizationService(deps: {
         impact.activeChildUnits > 0 ||
         impact.activeMembers > 0 ||
         impact.directoryRoots > 0 ||
-        impact.skillGrants > 0
+        impact.accessGrants > 0
       ) {
         return { ok: false, reason: "conflict", impact };
       }

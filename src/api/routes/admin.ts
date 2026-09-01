@@ -35,6 +35,7 @@ import { deleteSlackInstallation, getSlackInstallation, putSlackInstallation } f
 import { deleteModelProvider, getModelProviders, putModelProvider } from "./admin/model-providers.ts";
 import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./admin/custom-providers.ts";
 import { deleteMcpServer, getMcpServers, putMcpServer } from "./admin/mcp-servers.ts";
+import { directorySourceAdminRoutes } from "./admin/directory-sources.ts";
 
 const timed =
   (handle: (ctx: ApiCtx) => void | Promise<void>) =>
@@ -54,6 +55,7 @@ const timed =
   };
 
 const routes: ReadonlyArray<Route<ApiCtx>> = [
+  ...directorySourceAdminRoutes,
   { method: "GET", path: "/v1/admin/slack-installation", auth: "either", handle: getSlackInstallation },
   { method: "PUT", path: "/v1/admin/slack-installation", auth: "either", handle: putSlackInstallation },
   { method: "DELETE", path: "/v1/admin/slack-installation", auth: "either", handle: deleteSlackInstallation },

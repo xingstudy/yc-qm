@@ -12,6 +12,7 @@ import { orgId as configOrgId } from "../../config.ts";
 import type { OrganizationService } from "../../organization/organization-service.ts";
 import type { OrganizationMemberBatchAction } from "../../organization/member-batch-service.ts";
 import { createOrganizationMemberCsvHeader, createOrganizationMemberCsvRow } from "../../organization/member-csv.ts";
+import { verifyPortalLoginProof } from "../../../plugins/chassis/src/portal-login-proof.ts";
 import {
   OrganizationMemberJobConflictError,
   type OrganizationMemberJobDetail,
@@ -529,12 +530,82 @@ async function loginUser(ctx: ApiCtx): Promise<void> {
   }
   const email = trimmedString(body.email);
   const displayName = typeof body.displayName === "string" ? body.displayName.trim() : "";
-  const result = await organization.login({
+  let externalIdentity;
+  let verifiedExternal: { jti: string; expiresAtMs: number } | null = null;
+  if (body.externalIdentity !== undefined) {
+    if (!isObj(body.externalIdentity)) return sendJson(ctx.res, 400, { error: "bad_request" });
+    const external = body.externalIdentity;
+    const sourceId = trimmedString(external.sourceId);
+    const provider = trimmedString(external.provider);
+    const externalTenantId = trimmedString(external.externalTenantId);
+    const externalSubjectId = trimmedString(external.externalSubjectId);
+    const externalDisplayName = trimmedString(external.displayName) ?? "";
+    const proof = trimmedString(external.proof);
+    const status = external.status;
+    if (
+      !sourceId ||
+      !provider ||
+      !externalTenantId ||
+      !externalSubjectId ||
+      !proof ||
+      (external.corporateEmailVerified !== undefined && typeof external.corporateEmailVerified !== "boolean") ||
+      !["active", "suspended", "inactive"].includes(String(status))
+    ) {
+      return sendJson(ctx.res, 400, { error: "bad_request", message: "invalid externalIdentity" });
+    }
+    const optional = (value: unknown): string | null => trimmedString(value);
+    externalIdentity = {
+      sourceId,
+      provider,
+      externalTenantId,
+      externalSubjectId,
+      displayName: externalDisplayName,
+      corporateEmail: optional(external.corporateEmail),
+      corporateEmailVerified: external.corporateEmailVerified === true,
+      personalEmail: optional(external.personalEmail),
+      employeeNumber: optional(external.employeeNumber),
+      mobile: optional(external.mobile),
+      status: status as "active" | "suspended" | "inactive",
+      proof,
+    };
+    verifiedExternal = ctx.deps.directorySources?.verifyLoginAssertion(externalIdentity) ?? null;
+    if (!verifiedExternal) {
+      return sendJson(ctx.res, 403, { error: "external_identity_rejected" });
+    }
+  }
+  const proofClaims = {
     principalId,
     issuer,
     subject,
-    email: email ? email.toLowerCase() : null,
+    ...(email ? { email } : {}),
     emailVerified: emailVerified === true,
+    ...(displayName ? { displayName } : {}),
+    ...(externalIdentity ? { externalIdentity } : {}),
+  };
+  const portalProof = trimmedString(body.portalProof);
+  const verifiedPortal =
+    portalProof && ctx.deps.portalIdentitySecret
+      ? verifyPortalLoginProof(portalProof, proofClaims, ctx.deps.portalIdentitySecret, Date.now())
+      : null;
+  if (!verifiedPortal) return sendJson(ctx.res, 403, { error: "portal_login_rejected" });
+  if (!ctx.deps.replayDedupe?.durable) {
+    return sendJson(ctx.res, 503, { error: "portal_login_replay_store_unavailable" });
+  }
+  if (!(await ctx.deps.replayDedupe.claim(`portal-login:${verifiedPortal.jti}`, verifiedPortal.expiresAtMs))) {
+    return sendJson(ctx.res, 403, { error: "portal_login_replayed" });
+  }
+  if (!externalIdentity && issuer.startsWith("directory:")) {
+    return sendJson(ctx.res, 403, { error: "external_identity_required" });
+  }
+  if (
+    verifiedExternal &&
+    !(await ctx.deps.replayDedupe.claim(`directory-assertion:${verifiedExternal.jti}`, verifiedExternal.expiresAtMs))
+  ) {
+    return sendJson(ctx.res, 403, { error: "external_identity_replayed" });
+  }
+  const result = await organization.login({
+    ...proofClaims,
+    email: email?.toLowerCase() ?? null,
     displayName,
   });
   if (result.status === "denied") return sendJson(ctx.res, 200, result);
@@ -704,6 +775,11 @@ async function getOrganizationMember(ctx: ApiCtx): Promise<void> {
       issuer: identity.issuer,
       subject: identity.subject,
       emailAtLink: identity.emailAtLink,
+      sourceId: identity.sourceId ?? null,
+      provider: identity.provider ?? null,
+      externalTenantId: identity.externalTenantId ?? null,
+      externalSubjectId: identity.externalSubjectId ?? null,
+      matchedBy: identity.matchedBy ?? null,
       createdAt: identity.createdAt,
       updatedAt: identity.updatedAt,
     })),

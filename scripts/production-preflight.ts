@@ -175,6 +175,59 @@ export function productionPreflightProblems(
     }
   }
 
+  const wecomValues = [
+    env.AUTH_WECOM_CORP_ID?.trim() ?? "",
+    env.AUTH_WECOM_AGENT_ID?.trim() ?? "",
+    env.AUTH_WECOM_SECRET?.trim() ?? "",
+  ];
+  const configuredWeComValues = wecomValues.filter(Boolean).length;
+  const directorySyncSecret = env.AUTH_WECOM_DIRECTORY_SYNC_SECRET?.trim() ?? "";
+  if (configuredWeComValues > 0 && configuredWeComValues < wecomValues.length) {
+    problems.push("AUTH_WECOM_CORP_ID, AUTH_WECOM_AGENT_ID, and AUTH_WECOM_SECRET must be set together");
+  }
+  if (directorySyncSecret && configuredWeComValues !== wecomValues.length) {
+    problems.push("AUTH_WECOM_DIRECTORY_SYNC_SECRET requires the complete WeCom application configuration");
+  }
+  if (configuredWeComValues === wecomValues.length) {
+    if (env.AUTH_WECOM_SECRET && isProductionPlaceholder(env.AUTH_WECOM_SECRET)) {
+      problems.push("AUTH_WECOM_SECRET must be replaced with a deployment value");
+    }
+    if (directorySyncSecret && isProductionPlaceholder(directorySyncSecret)) {
+      problems.push("AUTH_WECOM_DIRECTORY_SYNC_SECRET must be replaced with a deployment value");
+    }
+    if (env.AUTH_WECOM_SYNC_ENABLED === "1" && !directorySyncSecret) {
+      problems.push("AUTH_WECOM_DIRECTORY_SYNC_SECRET is required when AUTH_WECOM_SYNC_ENABLED is 1");
+    }
+    if (!/^[0-9]+$/.test(wecomValues[1]!)) problems.push("AUTH_WECOM_AGENT_ID must be numeric");
+    const callback = env.AUTH_WECOM_REDIRECT_URI?.trim();
+    const callbackUrl = callback ? absoluteUrl("AUTH_WECOM_REDIRECT_URI", true) : undefined;
+    if (issuer && callbackUrl) {
+      const allowed = [
+        `${issuer.href.replace(/\/$/, "")}/directory/callback`,
+        `${issuer.href.replace(/\/$/, "")}/wecom/callback`,
+      ];
+      if (!allowed.includes(callbackUrl.href.replace(/\/$/, ""))) {
+        problems.push("AUTH_WECOM_REDIRECT_URI must be the broker directory callback");
+      }
+    }
+    const syncMinutes = Number(env.AUTH_WECOM_SYNC_MINUTES ?? 360);
+    if (!Number.isInteger(syncMinutes) || syncMinutes < 15 || syncMinutes > 1440) {
+      problems.push("AUTH_WECOM_SYNC_MINUTES must be a whole number between 15 and 1440");
+    }
+    const sourceName = env.AUTH_WECOM_NAME?.trim();
+    if (sourceName && sourceName.length > 120) problems.push("AUTH_WECOM_NAME must be at most 120 characters");
+    if (
+      env.AUTH_WECOM_MATCH_POLICY &&
+      env.AUTH_WECOM_MATCH_POLICY !== "verified_corporate_email" &&
+      env.AUTH_WECOM_MATCH_POLICY !== "manual_only"
+    ) {
+      problems.push("AUTH_WECOM_MATCH_POLICY must be verified_corporate_email or manual_only");
+    }
+    for (const name of ["AUTH_WECOM_LOGIN_ENABLED", "AUTH_WECOM_SYNC_ENABLED"]) {
+      if (env[name] !== undefined && env[name] !== "0" && env[name] !== "1") problems.push(`${name} must be 0 or 1`);
+    }
+  }
+
   if (required("OIDC_TOKEN_ENDPOINT") !== "http://qm-auth.internal:8080/token") {
     problems.push("OIDC_TOKEN_ENDPOINT must be http://qm-auth.internal:8080/token");
   }

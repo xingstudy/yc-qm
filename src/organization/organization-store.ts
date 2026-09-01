@@ -38,6 +38,12 @@ export interface AuthIdentity {
   subject: string;
   principalId: string;
   emailAtLink: string | null;
+  sourceId?: string | null;
+  provider?: string | null;
+  externalTenantId?: string | null;
+  externalSubjectId?: string | null;
+  matchedBy?: string | null;
+  evidence?: Record<string, string> | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -183,7 +189,7 @@ export interface UnitImpact {
   activeChildUnits: number;
   activeMembers: number;
   directoryRoots: number;
-  skillGrants: number;
+  accessGrants: number;
 }
 
 export interface SubtreeImpact {
@@ -199,6 +205,7 @@ export interface OrganizationTx {
   insertUser(user: OrganizationUser): Promise<boolean>;
   putUser(user: OrganizationUser): Promise<void>;
   getIdentity(orgId: string, issuer: string, subject: string): Promise<AuthIdentity | null>;
+  listIdentities(orgId: string): Promise<AuthIdentity[]>;
   listIdentitiesForUser(orgId: string, principalId: string): Promise<AuthIdentity[]>;
   putIdentity(identity: AuthIdentity): Promise<void>;
   getUnit(orgId: string, id: string): Promise<OrgUnit | null>;
@@ -261,6 +268,7 @@ export interface OrganizationStore {
   searchUsers(orgId: string, query: string, limit: number): Promise<OrganizationUser[]>;
   putUser(user: OrganizationUser): Promise<void>;
   getIdentity(orgId: string, issuer: string, subject: string): Promise<AuthIdentity | null>;
+  listIdentities(orgId: string): Promise<AuthIdentity[]>;
   listIdentitiesForUser(orgId: string, principalId: string): Promise<AuthIdentity[]>;
   putIdentity(identity: AuthIdentity): Promise<void>;
   getUnit(orgId: string, id: string): Promise<OrgUnit | null>;
@@ -314,6 +322,20 @@ export interface OrganizationStore {
 
 const userKey = (orgId: string, principalId: string): string => `${orgId}\n${personKey(principalId)}`;
 const identityKey = (orgId: string, issuer: string, subject: string): string => `${orgId}\n${issuer}\n${subject}`;
+
+function assertIdentityReplacement(existing: AuthIdentity | undefined, next: AuthIdentity): void {
+  if (!existing) return;
+  if (existing.createdAt !== next.createdAt) throw new Error("organization identity creator fields are immutable");
+  if (!existing.sourceId && existing.principalId !== next.principalId) {
+    throw new Error("organization identity binding is immutable");
+  }
+  for (const key of ["sourceId", "provider", "externalTenantId", "externalSubjectId"] as const) {
+    if ((existing[key] ?? null) !== (next[key] ?? null)) {
+      throw new Error("directory identity source fields are immutable");
+    }
+  }
+}
+
 const unitKey = (orgId: string, id: string): string => `${orgId}\n${id}`;
 const groupKey = (orgId: string, id: string): string => `${orgId}\n${id}`;
 const unitMemberKey = (orgId: string, unitId: string, principalId: string): string =>
@@ -596,6 +618,11 @@ export function createMemoryOrganizationStore(
       const found = identities.get(identityKey(orgId, issuer, subject));
       return found ? { ...found } : null;
     },
+    async listIdentities(orgId) {
+      return [...identities.values()]
+        .filter((identity) => identity.orgId === orgId)
+        .map((identity) => ({ ...identity, evidence: identity.evidence ? { ...identity.evidence } : null }));
+    },
     async listIdentitiesForUser(orgId, principalId) {
       return [...identities.values()]
         .filter((identity) => identity.orgId === orgId && identity.principalId === principalId)
@@ -604,7 +631,21 @@ export function createMemoryOrganizationStore(
     },
     async putIdentity(identity) {
       await enqueue(identity.orgId, async () => {
-        identities.set(identityKey(identity.orgId, identity.issuer, identity.subject), { ...identity });
+        const key = identityKey(identity.orgId, identity.issuer, identity.subject);
+        assertIdentityReplacement(identities.get(key), identity);
+        if (identity.sourceId) {
+          for (const existing of identities.values()) {
+            if (existing.orgId !== identity.orgId || existing.sourceId !== identity.sourceId) continue;
+            const sameKey = existing.issuer === identity.issuer && existing.subject === identity.subject;
+            if (!sameKey && existing.externalSubjectId === identity.externalSubjectId) {
+              throw new Error("directory identity subject is already bound");
+            }
+            if (!sameKey && existing.principalId === identity.principalId) {
+              throw new Error("directory identity principal is already bound in this source");
+            }
+          }
+        }
+        identities.set(key, { ...identity });
       });
     },
     async getUnit(orgId, id) {
@@ -703,15 +744,18 @@ export function createMemoryOrganizationStore(
         if (policy.orgId === orgId && policy.subjectKind === "org_unit" && policy.subjectId === unitId)
           rootReferences += 1;
       }
-      const skillGrantReferences = [...skillGrants.values()].filter(
-        (grant) =>
-          grant.orgId === orgId && grant.path.startsWith("skill:") && grant.granteeScopeId === `org-unit:${unitId}`,
-      ).length;
+      const unitScope = `org-unit:${unitId}`;
+      const skillGrantReferences =
+        [...skillGrants.values()].filter(
+          (grant) => grant.orgId === orgId && (grant.ownerScopeId === unitScope || grant.granteeScopeId === unitScope),
+        ).length +
+        [...skillPolicies.values()].filter((policy) => policy.orgId === orgId && policy.ownerScopeId === unitScope)
+          .length;
       return {
         activeChildUnits,
         activeMembers,
         directoryRoots: rootReferences,
-        skillGrants: skillGrantReferences,
+        accessGrants: skillGrantReferences,
       };
     },
     async subtreeImpact(orgId, unitId) {
@@ -1002,6 +1046,13 @@ export function createMemoryOrganizationStore(
             const found = draftIdentities.get(identityKey(orgId, issuer, subject));
             return found ? { ...found } : null;
           },
+          async listIdentities(scopeOrgId) {
+            assertOrg(scopeOrgId);
+            return [...draftIdentities.values()].map((identity) => ({
+              ...identity,
+              evidence: identity.evidence ? { ...identity.evidence } : null,
+            }));
+          },
           async listIdentitiesForUser(scopeOrgId, principalId) {
             assertOrg(scopeOrgId);
             return [...draftIdentities.values()]
@@ -1013,7 +1064,21 @@ export function createMemoryOrganizationStore(
           },
           putIdentity: async (identity) => {
             assertOrg(identity.orgId);
-            draftIdentities.set(identityKey(orgId, identity.issuer, identity.subject), { ...identity });
+            const key = identityKey(orgId, identity.issuer, identity.subject);
+            assertIdentityReplacement(draftIdentities.get(key), identity);
+            if (identity.sourceId) {
+              for (const existing of draftIdentities.values()) {
+                if (existing.sourceId !== identity.sourceId) continue;
+                const sameKey = existing.issuer === identity.issuer && existing.subject === identity.subject;
+                if (!sameKey && existing.externalSubjectId === identity.externalSubjectId) {
+                  throw new Error("directory identity subject is already bound");
+                }
+                if (!sameKey && existing.principalId === identity.principalId) {
+                  throw new Error("directory identity principal is already bound in this source");
+                }
+              }
+            }
+            draftIdentities.set(key, { ...identity });
           },
           async getUnit(scopeOrgId, id) {
             assertOrg(scopeOrgId);
@@ -1071,14 +1136,16 @@ export function createMemoryOrganizationStore(
               [...draftDirectoryPolicies.values()].filter(
                 (policy) => policy.subjectKind === "org_unit" && policy.subjectId === unitId,
               ).length;
-            const skillGrantReferences = [...draftSkillGrants.values()].filter(
-              (grant) => grant.path.startsWith("skill:") && grant.granteeScopeId === `org-unit:${unitId}`,
-            ).length;
+            const unitScope = `org-unit:${unitId}`;
+            const skillGrantReferences =
+              [...draftSkillGrants.values()].filter(
+                (grant) => grant.ownerScopeId === unitScope || grant.granteeScopeId === unitScope,
+              ).length + [...draftSkillPolicies.values()].filter((policy) => policy.ownerScopeId === unitScope).length;
             return {
               activeChildUnits,
               activeMembers,
               directoryRoots: rootReferences,
-              skillGrants: skillGrantReferences,
+              accessGrants: skillGrantReferences,
             };
           },
           async subtreeImpact(scopeOrgId, unitId) {

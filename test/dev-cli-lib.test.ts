@@ -352,7 +352,13 @@ test("supervised children share the selected dev org", () => {
   const inputs: SpecInputs = {
     worktree: "/tmp/worktree",
     ports: slotPorts("pool1"),
-    baseEnv: { DEV_INSTANCE_ORG_ID: "beta" },
+    baseEnv: {
+      DEV_INSTANCE_ORG_ID: "beta",
+      AUTH_WECOM_CORP_ID: "wwcorp",
+      AUTH_WECOM_AGENT_ID: "1000002",
+      AUTH_WECOM_SECRET: "provider-secret",
+      AUTH_WECOM_DIRECTORY_SYNC_SECRET: "directory-secret",
+    },
     watch: false,
     webUiBasePath: "/",
     slack: { botToken: "xoxb-test", appToken: "xapp-test" },
@@ -369,6 +375,14 @@ test("supervised children share the selected dev org", () => {
   const core = specs.find((spec) => spec.name === "core")!;
   assert.equal(core.env.ORG_ID, "beta");
   assert.equal(core.env.ORG_BOOTSTRAP_USERS, "U1");
+  assert.equal(core.env.AUTH_WECOM_SECRET, "provider-secret");
+  assert.equal(core.env.AUTH_WECOM_DIRECTORY_SYNC_SECRET, "directory-secret");
+  for (const spec of specs.filter((spec) => spec.name !== "core")) {
+    assert.equal(spec.env.AUTH_WECOM_CORP_ID, undefined);
+    assert.equal(spec.env.AUTH_WECOM_AGENT_ID, undefined);
+    assert.equal(spec.env.AUTH_WECOM_SECRET, undefined);
+    assert.equal(spec.env.AUTH_WECOM_DIRECTORY_SYNC_SECRET, undefined);
+  }
   for (const spec of specs) assert.equal(spec.env.CORE_ORG_ID, "beta");
   inputs.baseEnv = { ORG_BOOTSTRAP_USERS: "U0, U1" };
   const defaultCore = buildChildSpecs(inputs).find((spec) => spec.name === "core")!;

@@ -331,6 +331,63 @@ function managerRouteAllowed(pathname: string): boolean {
   );
 }
 
+function directorySourceCorePath(method: string, pathname: string, search: string): string | null {
+  const base = "/api/directory-sources";
+  if (pathname === `${base}/catalog` && method === "GET") return `/v1/admin/org/directory-sources/catalog${search}`;
+  if (pathname === `${base}/migration-preview` && method === "GET") {
+    return `/v1/admin/org/directory-sources/migration-preview${search}`;
+  }
+  if (pathname === base && (method === "GET" || method === "POST")) return `/v1/admin/org/directory-sources${search}`;
+  const parts = pathname.slice(`${base}/`.length).split("/");
+  if (!pathname.startsWith(`${base}/`) || parts.some((part) => !part)) return null;
+  let segments: string[];
+  try {
+    segments = parts.map((part) => decodeURIComponent(part));
+  } catch {
+    return null;
+  }
+  if (segments.some((part) => !part || part.includes("/") || part.includes("\\"))) return null;
+  const segment = (index: number): string => encodeURIComponent(segments[index] ?? "");
+  if (parts.length === 1 && ["GET", "PATCH", "DELETE"].includes(method)) {
+    return `/v1/admin/org/directory-sources/${segment(0)}${search}`;
+  }
+  if (
+    parts.length === 2 &&
+    method === "POST" &&
+    [
+      "test",
+      "sync-preview",
+      "sync",
+      "pause",
+      "restore",
+      "reconcile",
+      "managed-preview",
+      "managed-unit-mapping",
+      "managed-commit",
+    ].includes(parts[1]!)
+  ) {
+    return `/v1/admin/org/directory-sources/${segment(0)}/${parts[1]}${search}`;
+  }
+  if (parts.length === 2 && method === "GET" && ["runs", "members", "impact"].includes(parts[1]!)) {
+    return `/v1/admin/org/directory-sources/${segment(0)}/${parts[1]}${search}`;
+  }
+  if (parts.length === 3 && method === "GET" && parts[1] === "runs") {
+    return `/v1/admin/org/directory-sources/${segment(0)}/runs/${segment(2)}${search}`;
+  }
+  if (parts.length === 3 && method === "GET" && parts[1] === "members") {
+    return `/v1/admin/org/directory-sources/${segment(0)}/members/${segment(2)}${search}`;
+  }
+  if (
+    parts.length === 4 &&
+    parts[1] === "members" &&
+    ((method === "POST" && ["bind", "rebind", "ignore", "refresh"].includes(parts[3]!)) ||
+      (method === "DELETE" && parts[3] === "ignore"))
+  ) {
+    return `/v1/admin/org/directory-sources/${segment(0)}/members/${segment(2)}/${parts[3]}${search}`;
+  }
+  return null;
+}
+
 const READS = [
   "metrics",
   "egress",
@@ -497,6 +554,16 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   const rest = pathname.startsWith("/api/") ? pathname.slice("/api/".length) : "";
   const first = rest.split("/")[0] ?? "";
+
+  if (pathname === "/api/directory-sources" || pathname.startsWith("/api/directory-sources/")) {
+    if (!principal) return json(res, 401, { error: "signed_out" });
+    const corePath = directorySourceCorePath(method, pathname, url.search);
+    if (!corePath) return json(res, 404, { error: "not_found" });
+    if (method === "GET" || method === "DELETE") {
+      return forward(req, res, principal, method as "GET" | "DELETE", corePath);
+    }
+    return forward(req, res, principal, method as "POST" | "PATCH", corePath, await readBody(req));
+  }
 
   const orgUserProfile = /^\/api\/org-users\/([^/]+)$/.exec(pathname);
   const orgUserStatus = /^\/api\/org-users\/([^/]+)\/status$/.exec(pathname);

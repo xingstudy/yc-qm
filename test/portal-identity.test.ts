@@ -1,17 +1,24 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mintPortalIdentity, verifyPortalIdentity } from "../plugins/chassis/src/portal-identity.ts";
+import { resolveExternalIdentity } from "../plugins/portal/src/oidc.ts";
 
 const SECRET = "portal-identity-test-secret";
 const now = 1_000_000;
 
 test("mint → verify roundtrip returns the claims", () => {
   const token = mintPortalIdentity(
-    { p: "alice@default-org", n: "Alice", imp: "admin@default-org", exp: now + 60_000 },
+    { p: "alice@default-org", n: "Alice", imp: "admin@default-org", isv: 3, exp: now + 60_000 },
     SECRET,
   );
   const claims = verifyPortalIdentity(token, SECRET, now);
-  assert.deepEqual(claims, { p: "alice@default-org", n: "Alice", imp: "admin@default-org", exp: now + 60_000 });
+  assert.deepEqual(claims, {
+    p: "alice@default-org",
+    n: "Alice",
+    imp: "admin@default-org",
+    isv: 3,
+    exp: now + 60_000,
+  });
 });
 
 test("a tampered payload fails verification", () => {
@@ -39,4 +46,49 @@ test("malformed tokens and missing claims are rejected", () => {
   assert.equal(verifyPortalIdentity(".sig", SECRET, now), null);
   const token = mintPortalIdentity({ exp: now + 60_000 } as never, SECRET);
   assert.equal(verifyPortalIdentity(token, SECRET, now), null);
+});
+
+const externalIdentity = {
+  sourceId: "source-1",
+  provider: "wecom",
+  externalTenantId: "tenant-1",
+  externalSubjectId: "member-1",
+  displayName: "Alice External",
+  corporateEmail: "alice@example.com",
+  corporateEmailVerified: true,
+  personalEmail: null,
+  employeeNumber: "E-1",
+  mobile: null,
+  status: "active",
+  proof: "test-proof",
+};
+
+test("external directory identity is accepted only when signed claims and userinfo agree", () => {
+  assert.deepEqual(
+    resolveExternalIdentity({
+      claims: { qm_external_identity: externalIdentity },
+      userinfo: { qm_external_identity: { ...externalIdentity } },
+    }),
+    externalIdentity,
+  );
+  assert.equal(resolveExternalIdentity({ claims: {}, userinfo: {} }), null);
+});
+
+test("external directory identity rejects malformed or mismatched projections", () => {
+  assert.throws(
+    () =>
+      resolveExternalIdentity({
+        claims: { qm_external_identity: externalIdentity },
+        userinfo: { qm_external_identity: { ...externalIdentity, externalSubjectId: "member-2" } },
+      }),
+    /external identity mismatch/,
+  );
+  assert.throws(
+    () =>
+      resolveExternalIdentity({
+        claims: { qm_external_identity: { ...externalIdentity, status: "unknown" } },
+        userinfo: {},
+      }),
+    /invalid external identity claim/,
+  );
 });

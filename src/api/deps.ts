@@ -54,6 +54,13 @@ import type { UiStateStore } from "../surfaces/ui-state.ts";
 import type { RateLimiter } from "../ratelimit/rate-limiter.ts";
 import type { AdvisoryLock } from "../persistence/advisory-lock.ts";
 import type { SlackInstallationStore, SlackSocketAppIdReader } from "../surfaces/slack-installation.ts";
+import type { DirectorySourceService } from "../directory-sources/directory-source-service.ts";
+import type { DirectorySourceStore } from "../directory-sources/directory-source-store.ts";
+import type { DirectorySyncEngine } from "../directory-sources/directory-sync-engine.ts";
+import type { IdentityLinkingService } from "../directory-sources/identity-linking-service.ts";
+import type { DirectoryIdentityMigrationService } from "../directory-sources/identity-migration.ts";
+import type { DirectoryEmailResolutionService } from "../directory-sources/email-resolution-service.ts";
+import type { ManagedDirectoryService } from "../directory-sources/managed-directory-service.ts";
 
 export interface ServerDeps {
   production?: boolean;
@@ -132,6 +139,14 @@ export interface ServerDeps {
   scheduler?: Scheduler;
   identity?: IdentityService;
   organization?: OrganizationService;
+  organizationOrgId?: string;
+  directorySources?: DirectorySourceService;
+  directorySourceStore?: DirectorySourceStore;
+  directorySync?: DirectorySyncEngine;
+  identityLinking?: IdentityLinkingService;
+  directoryIdentityMigration?: DirectoryIdentityMigrationService;
+  directoryEmailResolutions?: DirectoryEmailResolutionService;
+  managedDirectory?: ManagedDirectoryService;
   organizationMemberBatch?: OrganizationMemberBatchService;
   keychain?: Keychain;
   serviceCreds?: ServiceCredentialStore;
