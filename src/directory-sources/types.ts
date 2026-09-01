@@ -1,19 +1,17 @@
-export const DIRECTORY_SOURCE_PROVIDERS = ["wecom"] as const;
-
-export type DirectorySourceProviderId = (typeof DIRECTORY_SOURCE_PROVIDERS)[number] | (string & {});
-export type DirectorySourceStatus = "active" | "paused" | "deleted";
-export type DirectorySourceOrigin = "admin" | "environment";
+export type DirectorySourceProviderId = "wecom" | (string & {});
+type DirectorySourceStatus = "active" | "paused" | "deleted";
+type DirectorySourceOrigin = "admin" | "environment";
 export type DirectorySourceMode = "identity_only" | "managed_directory";
 export type DirectoryMatchPolicy = "verified_corporate_email" | "manual_only";
 export type DirectoryMemberStatus = "active" | "suspended" | "inactive";
 export type DirectoryMatchState = "bound" | "suggested" | "unmatched" | "conflict" | "ignored" | "inactive";
 export type DirectorySyncKind = "preview" | "scheduled" | "manual" | "targeted";
-export type DirectorySyncStatus = "queued" | "running" | "succeeded" | "failed" | "expired";
-export type DirectoryEmailKind = "corporate" | "personal";
-export type DirectoryReconciliationStatus = "not_started" | "running" | "ready" | "blocked" | "stale";
+type DirectorySyncStatus = "queued" | "running" | "succeeded" | "failed" | "expired";
+type DirectoryEmailKind = "corporate" | "personal";
+type DirectoryReconciliationStatus = "not_started" | "running" | "ready" | "blocked" | "stale";
 export type DirectoryEmailResolutionStatus =
   "resolved" | "not_found" | "conflict" | "unauthorized" | "rate_limited" | "temporary_error";
-export type DirectoryUnitStatus = "active" | "inactive";
+type DirectoryUnitStatus = "active" | "inactive";
 
 export interface DirectoryProviderCapabilities {
   login: boolean;
@@ -67,11 +65,6 @@ export interface DirectorySource {
 export interface StoredDirectorySource extends Omit<DirectorySource, "secretPresence"> {
   secretEnc: string | null;
   environmentConfigFingerprint: string | null;
-}
-
-export interface DirectorySourceSecret {
-  source: DirectorySource;
-  secretConfig: Record<string, string>;
 }
 
 export interface DirectoryEmail {
@@ -153,7 +146,7 @@ export interface DirectoryManagedUserOwnership {
   updatedAt: number;
 }
 
-export type ManagedDirectoryPlanAction = "create" | "update" | "archive" | "provision" | "suspend" | "unchanged";
+type ManagedDirectoryPlanAction = "create" | "update" | "archive" | "provision" | "suspend" | "unchanged";
 
 export interface ManagedDirectoryUnitPlan {
   externalUnitId: string;
@@ -353,10 +346,6 @@ export function isDirectoryMatchPolicy(value: unknown): value is DirectoryMatchP
 
 export function isDirectorySourceMode(value: unknown): value is DirectorySourceMode {
   return value === "identity_only" || value === "managed_directory";
-}
-
-export function isDirectorySourceStatus(value: unknown): value is DirectorySourceStatus {
-  return value === "active" || value === "paused" || value === "deleted";
 }
 
 export function normalizeDirectoryEmail(value: string): string {

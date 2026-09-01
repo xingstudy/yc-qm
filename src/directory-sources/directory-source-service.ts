@@ -21,7 +21,6 @@ import type {
   DirectoryMatchPolicy,
   DirectorySource,
   DirectorySourceMode,
-  DirectorySourceOrigin,
   ExternalIdentityAssertion,
   StoredDirectorySource,
 } from "./types.ts";
@@ -40,7 +39,7 @@ export interface EnvironmentDirectorySource {
   matchPolicy?: DirectoryMatchPolicy;
 }
 
-export interface DirectorySourceInput {
+interface DirectorySourceInput {
   provider: string;
   name: string;
   publicConfig: Record<string, string>;
@@ -53,7 +52,7 @@ export interface DirectorySourceInput {
   matchPolicy?: DirectoryMatchPolicy;
 }
 
-export interface DirectorySourcePatch {
+interface DirectorySourcePatch {
   expectedRevision: number;
   name?: string;
   publicConfig?: Record<string, string>;
@@ -1170,8 +1169,4 @@ export function directoryEnvironmentSourcesFromEnv(
       matchPolicy: env.AUTH_WECOM_MATCH_POLICY === "manual_only" ? "manual_only" : "verified_corporate_email",
     },
   ];
-}
-
-export function directorySourceOriginLabel(origin: DirectorySourceOrigin): string {
-  return origin === "environment" ? "environment" : "admin";
 }

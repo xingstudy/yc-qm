@@ -1,7 +1,7 @@
 import { signedHeaders, withSourceAuthNonce } from "./core-client.ts";
 import { errMessage } from "./errors.ts";
 
-export interface DirectoryLoginOption {
+interface DirectoryLoginOption {
   sourceId: string;
   provider: string;
   displayName: string;

@@ -3,10 +3,10 @@ import type { DirectorySourceService } from "./directory-source-service.ts";
 import type { DirectorySourceStore } from "./directory-source-store.ts";
 import { matchDirectoryMember } from "./identity-match.ts";
 
-export type DirectoryMigrationCategory =
+type DirectoryMigrationCategory =
   "stable_binding" | "unique_corporate_email_candidate" | "suspected_duplicate_account" | "conflict" | "unmatched";
 
-export interface DirectoryMigrationPreviewRow {
+interface DirectoryMigrationPreviewRow {
   sourceId: string;
   externalSubjectId: string;
   displayName: string;
@@ -16,7 +16,7 @@ export interface DirectoryMigrationPreviewRow {
   candidateCount: number;
 }
 
-export interface DirectoryMigrationPreview {
+interface DirectoryMigrationPreview {
   generatedAt: number;
   rows: DirectoryMigrationPreviewRow[];
   counts: Record<DirectoryMigrationCategory, number>;

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
-import { buildApp, type BuiltApp } from "../src/wiring.ts";
+import { buildApp, type BuiltApp } from "./support/test-app.ts";
 import { createServer } from "../src/api/server.ts";
 import {
   createKeychain,

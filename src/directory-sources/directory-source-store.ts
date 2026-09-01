@@ -752,4 +752,4 @@ export function validateUnits(
   }
 }
 
-export { combinedSnapshotRevision, snapshotResult, snapshotRevision, unitSnapshotResult };
+export { combinedSnapshotRevision, snapshotResult, unitSnapshotResult };

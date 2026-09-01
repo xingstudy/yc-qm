@@ -6,7 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
-import { buildApp, type BuiltApp } from "../src/wiring.ts";
+import { buildApp, type BuiltApp } from "./support/test-app.ts";
 import { createInsecureTestServer, createServer } from "../src/api/server.ts";
 import { PROVIDERS, sealOAuthState } from "../src/connectors/oauth.ts";
 import { envKey } from "../src/credentials/connector-token.ts";

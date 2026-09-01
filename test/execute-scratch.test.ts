@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildApp } from "../src/wiring.ts";
+import { buildApp } from "./support/test-app.ts";
 import type { Config } from "../src/config.ts";
 import { createPiTools, type ToolContextRef } from "../src/harness/pi-tools.ts";
 import { createToolContext, type ToolContext, type ToolContextDeps } from "../src/tools/primitives.ts";

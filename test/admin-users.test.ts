@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { createInsecureTestServer } from "../src/api/server.ts";
-import { buildApp } from "../src/wiring.ts";
+import { buildApp } from "./support/test-app.ts";
 import { computeUsers } from "../src/admin/users.ts";
 import { adminImBindingsByPrincipal, parseAdminImBindings } from "../src/admin/im-bindings.ts";
 import type { TurnRequest } from "../src/types.ts";

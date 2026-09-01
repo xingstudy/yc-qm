@@ -5,7 +5,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
-import { buildApp } from "../src/wiring.ts";
+import { buildApp } from "./support/test-app.ts";
+import { buildApp as buildCoreApp } from "../src/wiring.ts";
 import { createInsecureTestServer } from "../src/api/server.ts";
 import { createMemoryConfigStore, type PersistedScopedFlag } from "../src/resolution/config-store.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
@@ -89,14 +90,17 @@ test("the toggle never lets an external actor interact", async () => {
   assert.match(res.reason ?? "", /internal-only/);
 });
 
-test("a bot assertion can enter the turn pipeline", async () => {
-  const built = freshApp();
-  const res = await built.app.turn({
+test("only a trusted bot assertion can enter the turn pipeline", async () => {
+  const built = buildCoreApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "esp-bot-")) }));
+  const turn: TurnRequest = {
     surface: "slack",
     actor: { externalId: "B1", isBot: true },
     conversation: { kind: "dm", threadRef: "dm:B1:t1" },
     text: "hello",
-  });
+  };
+  const refused = await built.app.turn(turn);
+  assert.equal(refused.status, "refused");
+  const res = await built.app.turn({ ...turn, botActor: true });
   assert.equal(res.status, "ok");
   assert.equal((await built.runs.list()).length, 1);
 });

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { createInsecureTestServer } from "../src/api/server.ts";
-import { buildApp, type BuiltApp } from "../src/wiring.ts";
+import { buildApp, type BuiltApp } from "./support/test-app.ts";
 import { ENTRY_STRING_BUDGET, TRANSCRIPT_BYTE_BUDGET, windowedTranscript } from "../src/sessions/session-store.ts";
 import type { SessionEntry } from "../src/types.ts";
 import { scopeId } from "../src/types.ts";

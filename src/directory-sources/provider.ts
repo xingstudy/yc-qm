@@ -17,7 +17,7 @@ export interface DirectoryConnectionResult {
   capabilities: DirectoryProviderCapabilities;
 }
 
-export type DirectoryCorporateEmailLookupResult =
+type DirectoryCorporateEmailLookupResult =
   | { status: "resolved"; externalSubjectId: string }
   | { status: Exclude<DirectoryEmailResolutionStatus, "resolved" | "conflict">; errorCode?: string };
 
