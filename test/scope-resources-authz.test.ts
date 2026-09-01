@@ -92,6 +92,11 @@ async function setup(): Promise<{ app: App; deps: ReturnType<typeof makeDeps> }>
   });
   await deps.skills.review(channelSkill.id, "U2", []);
   await deps.skills.publish(channelSkill.id);
+  await deps.skills.create({
+    scopeId: channelScope,
+    manifest: { name: "draft", description: "not published", requiredCapabilities: [], body: "# Draft" },
+    createdBy: "U2",
+  });
   const otherSkill = await deps.skills.create({
     scopeId: scopeId("channel", "C2"),
     manifest: { name: "other", description: "elsewhere", requiredCapabilities: [], body: "# Other" },

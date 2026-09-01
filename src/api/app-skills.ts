@@ -10,9 +10,6 @@ import { persistedSkillRecordPaths, SKILL_MATERIALIZATION_LOCK } from "../skills
 import { triggerBlocksSharedSkill } from "./artifact-share.ts";
 
 import type { App, AppDeps } from "./app-types.ts";
-import { parseRef } from "../acl/resource-ref.ts";
-import { principalEntitledToScope } from "../resolution/context-filter.ts";
-import type { Principal } from "../types.ts";
 import type { AppHelpers } from "./app-helpers.ts";
 
 function requireRegistry(deps: AppDeps): { packs: SkillPackStore; fetcher: SkillPackFetcher } {
@@ -258,20 +255,7 @@ export function createSkillMethods(
       const teams = (actor.teamIds ?? []).map((t) => scopeId("team", t));
       const ordered = [...new Set([scopeId("personal", principalId), ...shared, ...teams, scopeId("org", orgIdOf())])];
       if (deps.skillAccess) return deps.skillAccess.visibleForUser(principalId, ordered);
-      const entitled = (p: Principal, label: ScopeId, sess: ScopeId, org: ScopeId) =>
-        principalEntitledToScope(p, label, sess, org) || accessibleScopes.has(label);
-      const granted = (
-        await deps.acl
-          .sharedOfKindForAudience(
-            "skill",
-            [actor],
-            scopeId("personal", principalId),
-            scopeId("org", orgIdOf()),
-            entitled,
-          )
-          .catch(() => [])
-      ).map((g) => ({ id: parseRef(g.ref).id, ownerScopeId: g.ownerScopeId }));
-      return deps.skills.visibleFor(ordered, granted);
+      return deps.skills.visibleFor(ordered);
     },
     async getSkillAccess(skillId, actor) {
       if (!deps.skillAccessRepository) return null;

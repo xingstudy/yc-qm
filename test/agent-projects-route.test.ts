@@ -21,6 +21,7 @@ describe("agent projects self-API", async () => {
     mintCapabilityToken(
       {
         actorId,
+        sessionVersion: 0,
         scopeId: scopeId("personal", actorId),
         aud: CONTROL_PLANE_AUD,
         exp: Date.now() + CAPABILITY_TTL_MS,
@@ -47,7 +48,11 @@ describe("agent projects self-API", async () => {
     ]);
     mineId = (await built.app.createProject("U1", "Mine"))!.id;
     theirsId = (await built.app.createProject("U2", "Theirs"))!.id;
-    server = createServer(built.app, { signingSecret: SECRET });
+    server = createServer(built.app, {
+      signingSecret: SECRET,
+      identity: built.identity,
+      organization: built.organization,
+    });
     await new Promise<void>((resolve) => server.listen(0, resolve));
     base = `http://localhost:${(server.address() as AddressInfo).port}`;
   });
@@ -60,6 +65,7 @@ describe("agent projects self-API", async () => {
     assert.equal((await request("GET", "/v1/projects")).status, 401);
     assert.equal((await request("POST", "/v1/projects", { name: "New" })).status, 401);
     assert.equal((await request("PATCH", `/v1/projects/${mineId}`, { name: "Renamed" })).status, 401);
+    assert.equal((await request("GET", `/v1/projects/${mineId}/member-candidates?q=Three`)).status, 401);
     assert.equal((await request("POST", `/v1/projects/${mineId}/members`, { memberId: "U3" })).status, 401);
     assert.equal((await request("DELETE", `/v1/projects/${mineId}/members/U3`, {})).status, 401);
   });
@@ -97,6 +103,23 @@ describe("agent projects self-API", async () => {
         (member) => member.principalId === "U3",
       ),
     );
+  });
+
+  it("admits directory-backed legacy capabilities and rejects unknown principals", async () => {
+    const token = await capFor("U1");
+    const created = await request("POST", "/v1/projects", { name: "Legacy Project" }, token);
+    assert.equal(created.status, 201);
+    const project = ((await created.json()) as { project: { id: string } }).project;
+    const candidates = await request("GET", `/v1/projects/${project.id}/member-candidates?q=Three`, undefined, token);
+    assert.equal(candidates.status, 200);
+    assert.deepEqual(
+      ((await candidates.json()) as { matches: Array<{ principalId: string }> }).matches.map(
+        (member) => member.principalId,
+      ),
+      ["U3"],
+    );
+    assert.equal((await request("POST", `/v1/projects/${project.id}/members`, { memberId: "U3" }, token)).status, 200);
+    assert.equal((await request("GET", "/v1/projects", undefined, await capFor("unknown"))).status, 401);
   });
 
   it("returns 404 for another principal's project", async () => {

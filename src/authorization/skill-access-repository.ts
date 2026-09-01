@@ -20,10 +20,7 @@ import {
   organizationAccessSubjectFromScope,
   organizationAccessSubjectScope,
   type OrganizationAccessSubject,
-  type OrganizationAccessSubjectKind,
 } from "./organization-access-subject.ts";
-
-export type SkillAccessSubjectKind = OrganizationAccessSubjectKind;
 
 export const MAX_SKILL_ACCESS_SUBJECTS = 100;
 

@@ -10,14 +10,14 @@ export interface SkillAuthorizationAudienceMember {
   sessionVersion: number;
 }
 
-export interface AuthorizedSkill {
+interface AuthorizedSkill {
   id: string;
   version: number;
   policyRevision: number;
   contentHash: string;
 }
 
-export interface SkillAuthorizationSnapshot {
+interface SkillAuthorizationSnapshot {
   id: string;
   orgId: string;
   organizationAuthzRevision: number;
@@ -99,9 +99,18 @@ export function createSkillAccessResolver(input: {
   store: OrganizationStore;
   skills: SkillStore;
   canReadHome(principalId: string, scopeId: ScopeId): Promise<boolean>;
+  resolveAudienceMember?(principalId: string): Promise<SkillAuthorizationAudienceMember | null>;
   onInvalid?(skillId: string, reason: string): void;
 }): SkillAccessResolver {
-  const { orgId, store, skills, canReadHome, onInvalid } = input;
+  const { orgId, store, skills, canReadHome, resolveAudienceMember, onInvalid } = input;
+
+  const activeAudienceMember = async (principalId: string): Promise<SkillAuthorizationAudienceMember | null> => {
+    const user = await store.getUser(orgId, principalId);
+    if (user) {
+      return user.status === "active" ? { principalId: user.principalId, sessionVersion: user.sessionVersion } : null;
+    }
+    return (await resolveAudienceMember?.(principalId)) ?? null;
+  };
 
   const build = async (
     audienceIds: readonly string[],
@@ -111,10 +120,8 @@ export function createSkillAccessResolver(input: {
     if ((await store.getSkillAccessPolicyVersion(orgId)) !== 1) throw new Error("skill access is not enforced");
     const revision = await store.getAuthzRevision(orgId);
     const ids = [...new Set(audienceIds)];
-    const users = await Promise.all(ids.map((id) => store.getUser(orgId, id)));
-    const audience = users
-      .filter((user): user is NonNullable<typeof user> => user?.status === "active")
-      .map((user) => ({ principalId: user.principalId, sessionVersion: user.sessionVersion }))
+    const audience = (await Promise.all(ids.map(activeAudienceMember)))
+      .filter((member): member is SkillAuthorizationAudienceMember => member !== null)
       .sort((left, right) => left.principalId.localeCompare(right.principalId));
     let authorizedSkills: Skill[] = [];
     const policyBySkill = new Map<string, SkillAccessPolicy>();
@@ -223,8 +230,8 @@ export function createSkillAccessResolver(input: {
           throw new Error("skill authorization snapshot expired");
       }
       for (const member of snapshot.audience) {
-        const current = await store.getUser(orgId, member.principalId);
-        if (current?.status !== "active" || current.sessionVersion !== member.sessionVersion)
+        const current = await activeAudienceMember(member.principalId);
+        if (!current || current.sessionVersion !== member.sessionVersion)
           throw new Error("skill authorization snapshot expired");
       }
     },

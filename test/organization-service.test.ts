@@ -667,6 +667,22 @@ test("wiring: buildApp ensures the org root before seeding bootstrap users", asy
   assert.ok((await built.organizationStore.getAuthzRevision(config.orgId)) >= 1);
 });
 
+test("wiring: identity refresh and runtime status checks wait for bootstrap activation", async () => {
+  const built = buildApp(
+    testConfig({
+      dataDir: mkdtempSync(join(tmpdir(), "qm-org-bootstrap-")),
+      orgBootstrapUsers: ["ops@acme.com"],
+    }),
+  );
+  await built.identity.refresh();
+  assert.equal(built.identity.classify("ops@acme.com").type, "internal");
+  assert.deepEqual(await built.organization.checkRuntimeActive("ops@acme.com"), {
+    status: "active",
+    sessionVersion: 2,
+  });
+  assert.equal(await built.organization.checkRuntimeActive("never-provisioned"), null);
+});
+
 test("audit: login, denial, activation, auto-join, and status changes are recorded", async () => {
   const { service, auditLog } = setup();
   await service.invite({

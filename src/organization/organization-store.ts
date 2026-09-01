@@ -7,13 +7,6 @@ import { personKey } from "../directory/person.ts";
 
 export type OrganizationUserStatus = "invited" | "active" | "suspended" | "deprovisioned";
 
-export const ORGANIZATION_USER_STATUSES: ReadonlyArray<OrganizationUserStatus> = [
-  "invited",
-  "active",
-  "suspended",
-  "deprovisioned",
-];
-
 export interface OrganizationUser {
   orgId: string;
   principalId: string;
@@ -131,7 +124,7 @@ export interface DirectoryUserPage {
   next: DirectoryUserCursor | null;
 }
 
-export interface OrganizationUserCursor {
+interface OrganizationUserCursor {
   displayName: string;
   principalId: string;
 }

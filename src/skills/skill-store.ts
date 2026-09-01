@@ -64,12 +64,12 @@ export interface Skill {
   pack?: { packId: string; commit: string; upstreamName: string };
 }
 
-export interface GrantedSkillRef {
+interface GrantedSkillRef {
   id: string;
   ownerScopeId: ScopeId;
 }
 
-export interface SkillMutationActor {
+interface SkillMutationActor {
   principalId: string;
   isAdmin: boolean;
 }

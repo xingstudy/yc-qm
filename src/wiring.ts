@@ -511,11 +511,12 @@ export function buildApp(
       ...(config.openrouterApiKey ? { openrouter: config.openrouterApiKey } : {}),
     },
   });
+  let organizationReady = Promise.resolve();
   const identity = createIdentityService(
     artifactMap<DeactivationRecord>("deactivated_principals"),
     artifactMap<IdentityStatusRecord>("organization_identity_status"),
+    () => organizationReady,
   );
-  void identity.hydrate();
   const leaderLease: LeaderLease = pgArtifactMap
     ? createPostgresLeaderLease(pgArtifactMap.pool)
     : createNoopLeaderLease();
@@ -657,11 +658,12 @@ export function buildApp(
     identity,
     externalIdentityLogin: identityLinking.login,
     verifiedEmailIdentityLogin: identityLinking.loginEmail,
+    ready: () => organizationReady,
     resolveLegacyRuntimeUser: async (principalId) => {
       await identity.refresh();
       const [member, eligible] = await Promise.all([
         directory.get(principalId),
-        organizationStore.legacyRuntimeAccessEligible(principalId),
+        config.databaseUrl ? organizationStore.legacyRuntimeAccessEligible(principalId) : Promise.resolve(true),
       ]);
       return member?.type === "internal" && eligible && identity.isInternal(identity.classify(principalId));
     },
@@ -675,11 +677,9 @@ export function buildApp(
     actor: "system:bootstrap",
     now: Date.now(),
   });
-  const organizationReady = Promise.all([
-    organizationRootReady,
-    organization.hydrate(),
-    activateBootstrapUsers(organization, config.orgBootstrapUsers),
-  ]).then(() => undefined);
+  organizationReady = Promise.all([organizationRootReady, organization.hydrate(), identity.hydrate()])
+    .then(() => activateBootstrapUsers(organization, config.orgBootstrapUsers))
+    .then(() => undefined);
   const skills = createSkillAccessRepository({
     orgId: config.orgId,
     signingSecret: skillSigningSecret,
@@ -1116,7 +1116,7 @@ export function buildApp(
   });
   const admin = createAdminService(adminGrantStore, {
     advisoryLock,
-    isActivePrincipal: async (principalId) => (await organization.getUser(principalId))?.status === "active",
+    isActivePrincipal: async (principalId) => (await organization.checkRuntimeActive(principalId))?.status === "active",
   });
   const organizationMemberBatch = organizationMemberJobs
     ? createOrganizationMemberBatchService({
@@ -1156,6 +1156,10 @@ export function buildApp(
     store: organizationStore,
     skills,
     canReadHome: (principalId, targetScopeId) => canReadScope(principalId, targetScopeId),
+    resolveAudienceMember: async (principalId) => {
+      const active = await organization.checkRuntimeActive(principalId);
+      return active?.status === "active" ? { principalId, sessionVersion: active.sessionVersion } : null;
+    },
     onInvalid: (skillId, reason) =>
       errors.record({
         category: "authorization",

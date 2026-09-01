@@ -51,7 +51,7 @@ export interface LoginInput {
   externalIdentity?: ExternalIdentityAssertion;
 }
 
-export type LoginResult =
+type LoginResult =
   | { status: "ok"; user: OrganizationUser }
   | {
       status: "denied";
@@ -67,15 +67,15 @@ export type LoginResult =
         | "identity_conflict";
     };
 
-export interface ActiveCheck {
+interface ActiveCheck {
   status: OrganizationUserStatus;
   sessionVersion: number;
 }
 
-export type MoveUnitResult =
+type MoveUnitResult =
   { ok: true } | { ok: false; reason: "root" | "self_or_descendant" | "missing_parent" | "archived" };
 
-export type MoveUnitPreviewResult =
+type MoveUnitPreviewResult =
   | {
       ok: true;
       impact: {
@@ -85,15 +85,14 @@ export type MoveUnitPreviewResult =
     }
   | { ok: false; reason: "root" | "self_or_descendant" | "missing_parent" | "archived" };
 
-export type ArchiveUnitResult = { ok: true } | { ok: false; reason: "root" | "conflict"; impact?: UnitImpact };
+type ArchiveUnitResult = { ok: true } | { ok: false; reason: "root" | "conflict"; impact?: UnitImpact };
 
-export type AddUnitMemberResult =
+type AddUnitMemberResult =
   | { ok: true }
   | { ok: false; reason: "missing_unit" | "archived" | "forbidden" }
   | { ok: false; reason: "missing_user"; invalidPrincipalIds: string[] };
 
-export type RemoveUnitMemberResult =
-  { ok: true } | { ok: false; reason: "missing_unit" | "forbidden" | "primary_unit" };
+type RemoveUnitMemberResult = { ok: true } | { ok: false; reason: "missing_unit" | "forbidden" | "primary_unit" };
 
 export interface OrganizationUserProfilePatch {
   displayName?: string;
@@ -103,17 +102,17 @@ export interface OrganizationUserProfilePatch {
   employeeNumber?: string | null;
 }
 
-export type UpdateUserProfileResult =
+type UpdateUserProfileResult =
   | { ok: true; user: OrganizationUser }
   | { ok: false; reason: "missing_user" | "duplicate_email" | "duplicate_employee_number" }
   | { ok: false; reason: "invalid_profile"; field: keyof OrganizationUserProfilePatch }
   | { ok: false; reason: "revision_conflict"; current: OrganizationUser };
 
-export type SetPrimaryUnitResult =
+type SetPrimaryUnitResult =
   | { ok: true; detail: OrganizationUserDetail }
   | { ok: false; reason: "missing_user" | "missing_unit" | "archived" | "root" | "deprovisioned" };
 
-export interface OrganizationUserStatusImpact {
+interface OrganizationUserStatusImpact {
   primaryUnitId: string | null;
   unitCount: number;
   unitManagerCount: number;
@@ -138,7 +137,7 @@ export interface OrganizationMemberMutation {
   status?: "active" | "suspended" | "deprovisioned";
 }
 
-export type ApplyOrganizationMemberMutationsResult =
+type ApplyOrganizationMemberMutationsResult =
   | { ok: true; users: OrganizationUser[]; authorizationRevision: number }
   | {
       ok: false;
@@ -160,15 +159,15 @@ export type ApplyOrganizationMemberMutationsResult =
       principalId?: string;
     };
 
-export type AddGroupMemberResult =
+type AddGroupMemberResult =
   | { ok: true }
   | { ok: false; reason: "missing_group" | "archived" | "forbidden" }
   | { ok: false; reason: "missing_user"; invalidPrincipalIds: string[] };
 
-export type RemoveGroupMemberResult = { ok: true } | { ok: false; reason: "missing_group" | "forbidden" };
-export type ArchiveGroupResult = { ok: true } | { ok: false; reason: "conflict" };
+type RemoveGroupMemberResult = { ok: true } | { ok: false; reason: "missing_group" | "forbidden" };
+type ArchiveGroupResult = { ok: true } | { ok: false; reason: "conflict" };
 
-export type DirectoryPolicyResult =
+type DirectoryPolicyResult =
   | { ok: true; policy: DirectoryViewPolicy; roots: DirectoryViewRoot[]; authzRevision: number }
   | { ok: false; reason: "missing_subject" | "missing_root" }
   | {
@@ -179,7 +178,7 @@ export type DirectoryPolicyResult =
       roots: DirectoryViewRoot[];
     };
 
-export type DeleteDirectoryPolicyResult =
+type DeleteDirectoryPolicyResult =
   | { ok: true; authzRevision: number }
   | {
       ok: false;
@@ -409,6 +408,7 @@ export function createOrganizationService(deps: {
   auditLog: AuditLog;
   identity: IdentityService;
   now?: () => number;
+  ready?: () => Promise<void>;
   resolveLegacyRuntimeUser?: (principalId: string) => Promise<boolean>;
   externalIdentityLogin?: (input: {
     issuer: string;
@@ -1082,7 +1082,7 @@ export function createOrganizationService(deps: {
             normalizedProfiles.set(mutation.principalId, normalized.patch);
           }
         }
-        const finalUsers = allUsers.map((user) => ({ ...user, ...(normalizedProfiles.get(user.principalId) ?? {}) }));
+        const finalUsers = allUsers.map((user) => ({ ...user, ...normalizedProfiles.get(user.principalId) }));
         const emails = new Map<string, string>();
         const employeeNumbers = new Map<string, string>();
         for (const user of finalUsers) {
@@ -1466,6 +1466,7 @@ export function createOrganizationService(deps: {
     actor: string;
     asManager?: boolean;
   }): Promise<AddUnitMemberResult> {
+    await deps.ready?.();
     return store.transact(orgId, async (tx): Promise<AddUnitMemberResult> => {
       const unit = await tx.getUnit(orgId, input.unitId);
       if (!unit) return { ok: false, reason: "missing_unit" };
@@ -1635,6 +1636,7 @@ export function createOrganizationService(deps: {
     actor: string;
     asManager?: boolean;
   }): Promise<AddGroupMemberResult> {
+    await deps.ready?.();
     return store.transact(orgId, async (tx): Promise<AddGroupMemberResult> => {
       const group = await tx.getGroup(orgId, input.groupId);
       if (!group || (input.asManager && group.status !== "active")) return { ok: false, reason: "missing_group" };
@@ -1951,6 +1953,7 @@ export function createOrganizationService(deps: {
     accessSubjectIncludes,
     authzRevision: () => store.getAuthzRevision(orgId),
     async checkActive(principalId: string): Promise<ActiveCheck | null> {
+      await deps.ready?.();
       const user = await store.getUser(orgId, principalId);
       if (!user) return null;
       const active = { status: user.status, sessionVersion: user.sessionVersion };
@@ -1958,6 +1961,7 @@ export function createOrganizationService(deps: {
       return active;
     },
     async checkRuntimeActive(principalId: string): Promise<ActiveCheck | null> {
+      await deps.ready?.();
       const user = await store.getUser(orgId, principalId);
       if (user) {
         const active = { status: user.status, sessionVersion: user.sessionVersion };

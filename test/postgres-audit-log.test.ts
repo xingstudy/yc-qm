@@ -88,36 +88,40 @@ test("pg audit log: recordOnce is durable and idempotent across instances", { sk
   assert.equal(events[0]?.action, "layer-updated");
 });
 
-test("recordInTransaction commits with the surrounding transaction and dedupes by idempotency key", { skip }, async () => {
-  await reset(true);
-  const log = createPostgresAuditLog(URL!);
-  await withPgTransaction(await log.pool(), async (client) => {
-    await log.recordInTransaction(client, {
-      at: 1,
-      principalId: "U-a",
-      action: "org.unit.create",
-      resource: "unit:root",
-      scopeLabel: "org:acme",
-      idempotencyKey: "tx-a-1",
-      orgId: "acme",
-      actorKind: "user",
-      result: "ok",
+test(
+  "recordInTransaction commits with the surrounding transaction and dedupes by idempotency key",
+  { skip },
+  async () => {
+    await reset(true);
+    const log = createPostgresAuditLog(URL!);
+    await withPgTransaction(await log.pool(), async (client) => {
+      await log.recordInTransaction(client, {
+        at: 1,
+        principalId: "U-a",
+        action: "org.unit.create",
+        resource: "unit:root",
+        scopeLabel: "org:acme",
+        idempotencyKey: "tx-a-1",
+        orgId: "acme",
+        actorKind: "user",
+        result: "ok",
+      });
+      await log.recordInTransaction(client, {
+        at: 2,
+        principalId: "U-a",
+        action: "org.unit.create",
+        resource: "unit:root",
+        scopeLabel: "org:acme",
+        idempotencyKey: "tx-a-1",
+        orgId: "acme",
+        actorKind: "user",
+        result: "ok",
+      });
     });
-    await log.recordInTransaction(client, {
-      at: 2,
-      principalId: "U-a",
-      action: "org.unit.create",
-      resource: "unit:root",
-      scopeLabel: "org:acme",
-      idempotencyKey: "tx-a-1",
-      orgId: "acme",
-      actorKind: "user",
-      result: "ok",
-    });
-  });
-  const events = await log.events();
-  assert.equal(events.filter((e) => e.action === "org.unit.create").length, 1);
-});
+    const events = await log.events();
+    assert.equal(events.filter((e) => e.action === "org.unit.create").length, 1);
+  },
+);
 
 test("recordInTransaction rolls back when the surrounding transaction aborts", { skip }, async () => {
   await reset(true);

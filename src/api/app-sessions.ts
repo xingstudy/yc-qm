@@ -8,6 +8,7 @@ import { supportsProcessSessions } from "../sandbox/sandbox.ts";
 import { processIsGone } from "../sandbox/process-poll.ts";
 import { cronRef, deployRef, encodeRef, fileRef, skillRef } from "../acl/resource-ref.ts";
 import { samePerson } from "../directory/person.ts";
+import { normDirectoryQuery } from "../directory/directory-store.ts";
 import { AdminError, adminStatusFromGrants } from "../admin/admin-service.ts";
 import { type ArtifactHome } from "./artifact-share.ts";
 import { randomUUID } from "node:crypto";
@@ -87,6 +88,15 @@ export function createSessionMethods(
     const resolved = deps.admin?.resolveActor(`${principalId}@${orgIdOf()}`)?.id ?? principalId;
     const grants = (await deps.admin?.listGrants()) ?? [];
     return { principalId, isAdmin: allowAdminElevation && adminStatusFromGrants(grants, resolved).isAdmin };
+  }
+  async function usesLegacyProjectDirectory(principalId: string): Promise<boolean> {
+    if (!deps.organization || (await deps.organization.checkActive(principalId)) !== null) return false;
+    return (await deps.organization.checkRuntimeActive(principalId))?.status === "active";
+  }
+  async function legacyProjectMember(principalId: string) {
+    const member = await deps.directory.get(principalId);
+    if (!member || member.type !== "internal") return null;
+    return (await deps.organization?.checkRuntimeActive(principalId))?.status === "active" ? member : null;
   }
   return {
     async getSession(sessionId, window) {
@@ -317,6 +327,28 @@ export function createSessionMethods(
       if (!project || project.orgId !== orgIdOf() || !samePerson(project.ownerId, principalId)) {
         return null;
       }
+      if (await usesLegacyProjectDirectory(principalId)) {
+        const excluded = new Set(project.memberIds.map((memberId) => memberId.toLowerCase()));
+        const wanted = normDirectoryQuery(query);
+        const matches = (
+          await Promise.all(
+            (await deps.directory.list())
+              .filter(
+                (member) =>
+                  !excluded.has(member.principalId.toLowerCase()) &&
+                  [member.principalId, member.displayName].some((value) => normDirectoryQuery(value).includes(wanted)),
+              )
+              .map((member) => legacyProjectMember(member.principalId)),
+          )
+        )
+          .filter((member) => member !== null)
+          .slice(0, 50);
+        return matches.map((member) => ({
+          principalId: member.principalId,
+          displayName: member.displayName,
+          email: null,
+        }));
+      }
       const page = await deps.organization.directory.searchUsers(
         await directoryActor(principalId, allowAdminElevation),
         {
@@ -354,10 +386,12 @@ export function createSessionMethods(
       const existing = await deps.projects.get(id);
       if (!existing || existing.orgId !== orgIdOf()) return { status: "not_found" };
       if (!deps.organization) return { status: "invalid_member" };
-      const member = await deps.organization.directory.visibleUser(
-        await directoryActor(principalId, allowAdminElevation),
-        memberId,
-      );
+      const member = (await usesLegacyProjectDirectory(principalId))
+        ? await legacyProjectMember(memberId)
+        : await deps.organization.directory.visibleUser(
+            await directoryActor(principalId, allowAdminElevation),
+            memberId,
+          );
       if (!member) return { status: "invalid_member" };
       const result = await deps.projects.addMember(id, principalId, memberId, async ({ project, changed }) => {
         if (changed)
@@ -479,17 +513,19 @@ export function createSessionMethods(
 
     async listScopeResources(principalId, scope) {
       if (!(await principalCanAccessCurrentScope(principalId, scope))) return null;
-      const [page, allCrons, allDeployments, skillResolutions] = await Promise.all([
+      const [page, allCrons, allDeployments, visibleSkills] = await Promise.all([
         filesForViewer(principalId, undefined, scope),
         deps.crons.list(),
         deps.deploy.listDeployments(),
         deps.skillAccess
-          ? deps.skillAccess.visibleForUser(principalId, [
-              scope,
-              scopeId("personal", principalId),
-              scopeId("org", orgIdOf()),
-            ])
-          : deps.skills.visibleFor([scope]),
+          ? deps.skillAccess
+              .visibleForUser(principalId, [scope, scopeId("personal", principalId), scopeId("org", orgIdOf())])
+              .then((resolutions) =>
+                resolutions.flatMap((resolution) =>
+                  resolution.skill ? [resolution.skill, ...resolution.shadowed] : resolution.shadowed,
+                ),
+              )
+          : deps.skills.list().then((skills) => skills.filter((skill) => skill.status === "published")),
       ]);
       const files = [...page.owned, ...page.shared].sort((a, b) => b.createdAt - a.createdAt);
       const deployments = (
@@ -510,8 +546,7 @@ export function createSessionMethods(
             }),
         )
       ).filter((d): d is ScopeDeployment => d != null);
-      const skills = skillResolutions
-        .flatMap((resolution) => (resolution.skill ? [resolution.skill, ...resolution.shadowed] : resolution.shadowed))
+      const skills = visibleSkills
         .filter((s) => s.scopeId === scope)
         .map((s) => ({ id: s.id, name: s.manifest.name, description: s.manifest.description, status: s.status }));
       return {

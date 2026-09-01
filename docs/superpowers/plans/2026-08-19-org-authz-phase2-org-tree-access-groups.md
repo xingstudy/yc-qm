@@ -33,23 +33,45 @@ Everything below is the contract between tasks. Later tasks consume these exact 
 export type OrgUnitKind = "organization" | "department" | "team";
 export type OrgUnitStatus = "active" | "archived";
 export interface OrgUnit {
-  orgId: string; id: string; parentId: string | null; name: string;
-  kind: OrgUnitKind; status: OrgUnitStatus; sortOrder: number;
-  createdAt: number; updatedAt: number; createdBy: string; updatedBy: string;
+  orgId: string;
+  id: string;
+  parentId: string | null;
+  name: string;
+  kind: OrgUnitKind;
+  status: OrgUnitStatus;
+  sortOrder: number;
+  createdAt: number;
+  updatedAt: number;
+  createdBy: string;
+  updatedBy: string;
 }
 export type OrgMemberRole = "member" | "manager";
 export interface OrgUnitMember {
-  orgId: string; unitId: string; principalId: string; role: OrgMemberRole;
-  createdAt: number; createdBy: string;
+  orgId: string;
+  unitId: string;
+  principalId: string;
+  role: OrgMemberRole;
+  createdAt: number;
+  createdBy: string;
 }
 export type AccessGroupStatus = "active" | "archived";
 export interface AccessGroup {
-  orgId: string; id: string; name: string; status: AccessGroupStatus;
-  createdAt: number; updatedAt: number; createdBy: string; updatedBy: string;
+  orgId: string;
+  id: string;
+  name: string;
+  status: AccessGroupStatus;
+  createdAt: number;
+  updatedAt: number;
+  createdBy: string;
+  updatedBy: string;
 }
 export interface AccessGroupMember {
-  orgId: string; groupId: string; principalId: string; role: OrgMemberRole;
-  createdAt: number; createdBy: string;
+  orgId: string;
+  groupId: string;
+  principalId: string;
+  role: OrgMemberRole;
+  createdAt: number;
+  createdBy: string;
 }
 export interface UnitImpact {
   activeChildUnits: number;
@@ -137,8 +159,9 @@ All mutating methods run inside `store.transact`, bump the revision once per cal
 ```ts
 async function authorizeOrgMembershipWrite(
   ctx: ApiCtx,
-  target: { kind: "unit"; unitId: string; role: OrgMemberRole } | { kind: "group"; groupId: string; role: OrgMemberRole },
-): Promise<{ actorId: string } | null>
+  target:
+    { kind: "unit"; unitId: string; role: OrgMemberRole } | { kind: "group"; groupId: string; role: OrgMemberRole },
+): Promise<{ actorId: string } | null>;
 ```
 
 Logic: org admin (existing `authorizeAdmin`) → allow. Otherwise actor must pass `organization.checkActive`, `role` must be `"member"`, and: unit target → `unitId ∈ await service.listManagedSubtreeUnitIds(actorId)`; group target → actor has `manager` row in that group. Any failure → write the response (404 when the target unit/group is missing/archived/cross-org, 403 when it is visible but power is insufficient) and return null. Structural operations (create/update/move/archive units, create/update/archive groups, any `manager`-role grant) remain org-admin-only via the existing `requireOrganizationAdmin`.
@@ -173,11 +196,13 @@ Two new views in `plugins/admin/public/index.html`, registered in `SECTIONS` und
 ### Task 1: Transactional audit insert
 
 **Files:**
+
 - Modify: `src/audit/audit-log.ts`
 - Modify: `src/admin/postgres-audit-log.ts`
 - Test: `test/postgres-audit-log.test.ts` (extend existing if present — check first)
 
 **Interfaces:**
+
 - Consumes: existing `AuditLog` (`src/audit/audit-log.ts:14-19`), `createPgPool`/`withPgTransaction` (`src/persistence/pg-pool.ts`).
 - Produces: `AuditEvent` gains optional fields `{ orgId?: string; actorKind?: string; requestId?: string; beforeDigest?: string; afterDigest?: string; source?: string; result?: string }`. `PostgresAuditLog` (the concrete return type of `createPostgresAuditLog`) gains `recordInTransaction(client: PoolClient, event: AuditEvent): Promise<void>`. `createPostgresAuditLog` keeps its current signature.
 
@@ -189,9 +214,15 @@ test("recordInTransaction commits with the surrounding transaction and dedupes b
   const log = createPostgresAuditLog(process.env.DATABASE_URL);
   await withPgTransaction(await log.pool(), async (client) => {
     await log.recordInTransaction(client, {
-      at: 1, principalId: "U-a", action: "org.unit.create", resource: "unit:root",
-      scopeLabel: "org:acme", idempotencyKey: "tx-a-1",
-      orgId: "acme", actorKind: "user", result: "ok",
+      at: 1,
+      principalId: "U-a",
+      action: "org.unit.create",
+      resource: "unit:root",
+      scopeLabel: "org:acme",
+      idempotencyKey: "tx-a-1",
+      orgId: "acme",
+      actorKind: "user",
+      result: "ok",
     } as never);
   });
   const events = await log.events();
@@ -201,10 +232,18 @@ test("recordInTransaction commits with the surrounding transaction and dedupes b
 test("recordInTransaction rolls back when the surrounding transaction aborts", async (t) => {
   if (!process.env.DATABASE_URL) return t.skip();
   const log = createPostgresAuditLog(process.env.DATABASE_URL);
-  await assert.rejects(withPgTransaction(await log.pool(), async (client) => {
-    await log.recordInTransaction(client, { at: 2, principalId: "U-a", action: "org.unit.move", resource: "unit:x", scopeLabel: "org:acme" } as never);
-    throw new Error("abort");
-  }));
+  await assert.rejects(
+    withPgTransaction(await log.pool(), async (client) => {
+      await log.recordInTransaction(client, {
+        at: 2,
+        principalId: "U-a",
+        action: "org.unit.move",
+        resource: "unit:x",
+        scopeLabel: "org:acme",
+      } as never);
+      throw new Error("abort");
+    }),
+  );
   assert.equal((await log.events()).filter((e) => e.action === "org.unit.move").length, 0);
 });
 ```
@@ -224,10 +263,12 @@ Expose whatever minimal accessor the test needs (e.g. `pool()`) on the concrete 
 ### Task 2: Org tree store types and memory implementation
 
 **Files:**
+
 - Modify: `src/organization/organization-store.ts`
 - Test: `test/organization-store.test.ts` (extend)
 
 **Interfaces:**
+
 - Consumes: `AuditEvent`/`AuditLog` (Task 1), existing memory store.
 - Produces: all types and the full extended `OrganizationStore`/`OrganizationTx` contract in the Interfaces block; `createMemoryOrganizationStore` gains an optional `{ auditLog?: AuditLog }` constructor arg used by `transact` audit flushing.
 
@@ -254,10 +295,12 @@ Expose whatever minimal accessor the test needs (e.g. `pool()`) on the concrete 
 ### Task 3: Postgres org tree store
 
 **Files:**
+
 - Modify: `src/organization/postgres-organization-store.ts`
 - Test: `test/postgres-organization-store.test.ts` (extend; self-skip without DATABASE_URL)
 
 **Interfaces:**
+
 - Consumes: Task 1 `recordInTransaction`, Task 2 contract, `withPgTransaction`.
 - Produces: `createPostgresOrganizationStore(connectionString: string, opts?: { auditLog?: PostgresAuditLog }): OrganizationStore`. Tables `org_units`, `org_unit_closure`, `org_unit_members`, `access_groups`, `access_group_members`, `organization_authz_state` per design §6.3-6.5 and §6.10 (exact columns and FKs as written there; `organization_authz_state` also carries `skill_access_policy_version integer not null default 0` and `skill_access_enforced_at bigint` for Phase 4). Indexes per §6.3 plus `org_unit_members(org_id, principal_id)` and `access_group_members(org_id, principal_id)`. DDL statements are single-statement idempotent (match the existing `CREATE TABLE IF NOT EXISTS` / `DO $$ ... pg_constraint` style already in this file).
 
@@ -296,10 +339,12 @@ SELECT $1, up.ancestor_id, sub.descendant_id, up.depth + sub.depth + 1
 ### Task 4: Org tree service operations
 
 **Files:**
+
 - Modify: `src/organization/organization-service.ts`
 - Test: `test/organization-service.test.ts` (extend)
 
 **Interfaces:**
+
 - Consumes: Task 2 store contract.
 - Produces: `createUnit`, `updateUnit`, `moveUnit`, `archiveUnit` with the exact signatures and audit action names in the Interfaces block; `createOrganizationService` unchanged signature.
 
@@ -325,10 +370,12 @@ SELECT $1, up.ancestor_id, sub.descendant_id, up.depth + sub.depth + 1
 ### Task 5: Membership and access group service operations
 
 **Files:**
+
 - Modify: `src/organization/organization-service.ts`
 - Test: `test/organization-service.test.ts` (extend)
 
 **Interfaces:**
+
 - Consumes: Task 2 contract, Task 4 service.
 - Produces: `addUnitMember`, `removeUnitMember`, `createGroup`, `updateGroup`, `archiveGroup`, `addGroupMember`, `removeGroupMember`, `listManagedSubtreeUnitIds` with the exact signatures and audit action names in the Interfaces block.
 
@@ -354,10 +401,12 @@ SELECT $1, up.ancestor_id, sub.descendant_id, up.depth + sub.depth + 1
 ### Task 6: Bootstrap root and transactional user status changes
 
 **Files:**
+
 - Modify: `src/wiring.ts`, `src/organization/organization-service.ts`
 - Test: `test/organization-service.test.ts` (extend), plus a wiring-adjacent test if a natural home exists
 
 **Interfaces:**
+
 - Consumes: Tasks 2-5.
 - Produces: `activateBootstrapUsers` flow calls `store.ensureOrgRoot` before any user seeding; `OrganizationService.setStatus` and the login activation path write through `transact` with `bumpRevision` + transactional audit.
 
@@ -379,10 +428,12 @@ SELECT $1, up.ancestor_id, sub.descendant_id, up.depth + sub.depth + 1
 ### Task 7: Admin routes — org units and members
 
 **Files:**
+
 - Modify: `src/api/routes/organization.ts`
 - Test: `test/organization-routes.test.ts` (extend)
 
 **Interfaces:**
+
 - Consumes: Tasks 4-6, existing `requireOrganizationAdmin`, `authorizeOrgMembershipWrite` from the Interfaces block.
 - Produces: the unit and unit-member routes from the Interfaces block with the exact status/error mapping.
 
@@ -410,10 +461,12 @@ SELECT $1, up.ancestor_id, sub.descendant_id, up.depth + sub.depth + 1
 ### Task 8: Admin routes — access groups
 
 **Files:**
+
 - Modify: `src/api/routes/organization.ts`
 - Test: `test/organization-routes.test.ts` (extend)
 
 **Interfaces:**
+
 - Consumes: Task 5 service, Task 7 helper.
 - Produces: the access-group routes from the Interfaces block.
 
@@ -432,10 +485,12 @@ SELECT $1, up.ancestor_id, sub.descendant_id, up.depth + sub.depth + 1
 ### Task 9: Admin UI — org tree page
 
 **Files:**
+
 - Modify: `plugins/admin/public/index.html`, `plugins/admin/src/index.ts`
 - Test: `plugins/admin/test/org-units.test.ts` (new; mirror `plugins/admin/test/grants.test.ts` harness)
 
 **Interfaces:**
+
 - Consumes: Task 7 routes, the Admin UI conventions in the Interfaces block.
 - Produces: `org-units` view + proxy READS/WRITES entries.
 
@@ -454,10 +509,12 @@ SELECT $1, up.ancestor_id, sub.descendant_id, up.depth + sub.depth + 1
 ### Task 10: Admin UI — access groups page
 
 **Files:**
+
 - Modify: `plugins/admin/public/index.html`, `plugins/admin/src/index.ts`
 - Test: `plugins/admin/test/org-groups.test.ts` (new)
 
 **Interfaces:**
+
 - Consumes: Task 8 routes, Task 9 patterns.
 - Produces: `org-groups` view + proxy entries.
 
