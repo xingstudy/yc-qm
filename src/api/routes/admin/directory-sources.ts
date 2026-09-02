@@ -33,6 +33,8 @@ function sourceError(ctx: ApiCtx, error: unknown): void {
     directory_source_managed_directory_conflict: "Only one active source can manage the organization directory.",
     directory_source_jit_unsupported:
       "JIT provisioning requires verified corporate-email matching and trusted email-to-user lookup.",
+    directory_source_jit_snapshot_required:
+      "Complete a full directory synchronization before enabling automatic provisioning.",
     directory_source_jit_reconciliation_required:
       "Complete a fresh email reconciliation before enabling automatic provisioning.",
     directory_source_reconciliation_required:

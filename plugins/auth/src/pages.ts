@@ -44,12 +44,25 @@ const CONFIRM_SCRIPT = `(function () {
 
 const CONFIRM_SCRIPT_HASH = `sha256-${createHash("sha256").update(CONFIRM_SCRIPT, "utf8").digest("base64")}`;
 
+const HANDOFF_POLL_SECONDS = 4;
+
+const HANDOFF_SCRIPT = `(function () {
+  setTimeout(function () { location.replace(location.href); }, ${HANDOFF_POLL_SECONDS * 1000});
+})();`;
+
+const HANDOFF_SCRIPT_HASH = `sha256-${createHash("sha256").update(HANDOFF_SCRIPT, "utf8").digest("base64")}`;
+
 export const PAGE_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
 export const CONFIRM_PAGE_CSP = PAGE_CSP.replace(
   "default-src 'none';",
   `default-src 'none'; script-src '${CONFIRM_SCRIPT_HASH}'; connect-src 'self';`,
+);
+
+export const HANDOFF_PAGE_CSP = PAGE_CSP.replace(
+  "default-src 'none';",
+  `default-src 'none'; script-src '${HANDOFF_SCRIPT_HASH}';`,
 );
 
 const STYLE = `<style>
@@ -102,6 +115,17 @@ const STYLE = `<style>
   .help{ color:var(--muted); font-size:12.5px; margin:20px 0 0; }
   .who{ display:block; margin:0 auto 22px; font-size:13px; color:var(--text); background:var(--secondary);
     border:1px solid var(--border); border-radius:var(--radius-md); padding:11px 14px; word-break:break-word; }
+  .qr{ width:200px; height:200px; margin:0 auto 6px; display:block; background:#fff;
+    border:1px solid var(--border); border-radius:var(--radius-md); padding:10px; box-sizing:border-box; }
+  .qr svg{ width:100%; height:100%; display:block; }
+  details{ margin:0 0 18px; }
+  summary{ cursor:pointer; font-size:12.5px; color:var(--muted); padding:6px 0; }
+  .waiting{ display:flex; align-items:center; justify-content:center; gap:8px;
+    color:var(--muted); font-size:12.5px; margin:0 0 4px; }
+  .waiting:before{ content:""; width:10px; height:10px; border-radius:50%;
+    border:2px solid var(--border); border-top-color:var(--muted); animation:spin 1s linear infinite; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce){ .waiting:before{ animation:none; } }
 </style>`;
 
 const MAIL_ICON = `<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>`;
@@ -204,6 +228,45 @@ export function confirmSignInPage(o: { brandName: string; action: string }): str
       </form>
       <script>${CONFIRM_SCRIPT}</script>`,
     help: "Didn't ask to sign in? Close this page — nothing happens until you confirm.",
+  });
+}
+
+export function handoffWaitingPage(o: {
+  brandName: string;
+  authorizeUrl: string;
+  qr: string;
+  promptDelivered: boolean;
+}): string {
+  const scan = `<div class="qr">${o.qr}</div>
+      <p class="help" style="margin:0 0 18px">Scan it with WeCom, or open the link on a device where you are signed in to WeCom.</p>`;
+  const qrBlock = o.promptDelivered
+    ? `<details><summary>Didn't get the message? Scan a code instead</summary>${scan}</details>`
+    : scan;
+  return page({
+    title: "Waiting for authorization",
+    brandName: o.brandName,
+    icon: LOCK_ICON,
+    heading: "Approve this sign-in in WeCom",
+    msg: o.promptDelivered
+      ? "We sent an authorization card to your WeCom. Open it and approve to finish signing in here."
+      : "WeCom only shows the authorization screen inside its own app, so approve it there. This page finishes on its own.",
+    body: `${qrBlock}
+      <a class="btn secondary" href="${escapeHtml(o.authorizeUrl)}">Continue in WeCom</a>
+      <p class="waiting">Waiting for your approval…</p>
+      <noscript><p class="reason"><strong>JavaScript disabled</strong>This page checks for your approval automatically when scripts are enabled. Reload it after approving in WeCom.</p></noscript>
+      <script>${HANDOFF_SCRIPT}</script>`,
+    help: "Keep this page open. It refreshes by itself and signs you in as soon as WeCom confirms.",
+  });
+}
+
+export function handoffCompletePage(o: { brandName: string }): string {
+  return page({
+    title: "Authorization complete",
+    brandName: o.brandName,
+    icon: SENT_ICON,
+    heading: "Approved — go back to your computer",
+    msg: `Your authorization reached ${o.brandName}. The browser where you scanned the sign-in code finishes on its own within a few seconds.`,
+    help: "You can close this page.",
   });
 }
 

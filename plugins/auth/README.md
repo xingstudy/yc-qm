@@ -15,6 +15,7 @@ emailed to an allowed address.
 | `GET /verify`                           | browser, via the portal at `/idp/verify`    | consumes the link and redirects to the portal's `/auth/callback` with a code |
 | `GET /directory/login`                  | browser, via the portal                     | starts a configured managed-directory sign-in                                |
 | `GET /directory/callback`               | identity provider, via the portal           | asks Core to resolve the provider code and redirects with an OIDC code       |
+| `GET /directory/handoff`                | browser, via the portal                     | waits for a consent step that only the provider's own client can render      |
 | `POST /token`                           | portal, over the private network            | HTTP Basic client auth, authorization-code grant, PKCE S256                  |
 | `GET /userinfo`                         | portal, over the private network            | Bearer access token, verified statelessly                                    |
 | `GET /.well-known/jwks.json`            | portal, over the private network            | the ES256 public key                                                         |

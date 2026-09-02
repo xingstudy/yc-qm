@@ -169,15 +169,19 @@ function assertionMember(
     provider: assertion.provider,
     externalTenantId: assertion.externalTenantId,
     ...profile,
+    ...(previous?.primaryDepartmentId === undefined ? {} : { primaryDepartmentId: previous.primaryDepartmentId }),
     revision: profileHash,
     observedAt: at,
     profileHash,
     snapshotRevision: previous?.snapshotRevision ?? null,
-    matchState: assertion.status === "inactive" ? "inactive" : "unmatched",
-    matchReason: assertion.status === "inactive" ? "external_inactive" : "login_observed",
-    matchedPrincipalId: null,
-    ignoredBy: null,
-    ignoredReason: null,
+    ...(previous?.missingFromFullSyncCount === undefined
+      ? {}
+      : { missingFromFullSyncCount: previous.missingFromFullSyncCount }),
+    matchState: previous?.matchState ?? (assertion.status === "inactive" ? "inactive" : "unmatched"),
+    matchReason: previous?.matchReason ?? (assertion.status === "inactive" ? "external_inactive" : "login_observed"),
+    matchedPrincipalId: previous?.matchedPrincipalId ?? null,
+    ignoredBy: previous?.ignoredBy ?? null,
+    ignoredReason: previous?.ignoredReason ?? null,
     lastLoginAttemptAt: at,
   };
 }
@@ -414,22 +418,44 @@ export function createIdentityLinkingService(options: {
 
   const jitReady = async (
     source: NonNullable<Awaited<ReturnType<DirectorySourceService["get"]>>>,
+    member?: NormalizedDirectoryMember,
+    assertion?: ExternalIdentityAssertion,
   ): Promise<boolean> => {
     if (
       !source.jitProvisioningEnabled ||
       source.matchPolicy !== "verified_corporate_email" ||
       source.capabilities.corporateEmailSubjectLookup !== true ||
       source.capabilities.trustedCorporateEmail !== true ||
-      source.memberSnapshotRevision === null ||
-      source.reconciliationStatus !== "ready" ||
-      source.reconciledSourceRevision !== source.revision ||
-      source.reconciledMemberSnapshotRevision !== source.memberSnapshotRevision ||
-      (source.reconciliationExpiresAt ?? 0) <= now()
+      source.memberSnapshotRevision === null
     ) {
       return false;
     }
     const guard = await directoryStore.getEmailLookupGuard(orgId, source.id);
-    return (guard?.circuitOpenUntil ?? 0) <= now();
+    if ((guard?.circuitOpenUntil ?? 0) > now()) return false;
+    const assertedEmail =
+      assertion?.corporateEmailVerified === true ? assertion.corporateEmail?.trim().toLowerCase() : null;
+    if (
+      member &&
+      assertion &&
+      assertedEmail &&
+      member.sourceId === source.id &&
+      member.provider === assertion.provider &&
+      member.externalTenantId === assertion.externalTenantId &&
+      member.externalSubjectId === assertion.externalSubjectId &&
+      member.status === "active" &&
+      member.snapshotRevision === source.memberSnapshotRevision &&
+      member.emails.some(
+        (email) => email.kind === "corporate" && email.verified && email.value.toLowerCase() === assertedEmail,
+      )
+    ) {
+      return true;
+    }
+    return (
+      source.reconciliationStatus === "ready" &&
+      source.reconciledSourceRevision === source.revision &&
+      source.reconciledMemberSnapshotRevision === source.memberSnapshotRevision &&
+      (source.reconciliationExpiresAt ?? 0) > now()
+    );
   };
 
   const provisionInTransaction = async (
@@ -538,12 +564,7 @@ export function createIdentityLinkingService(options: {
   ): Promise<ExternalIdentityLoginResult> => {
     const execute = async () => {
       const current = await sources.get(source.id);
-      if (
-        !context.trustedSnapshot &&
-        (!current ||
-          current.revision !== source.revision ||
-          (context.requireJit ? !(await jitReady(current)) : current.mode !== "managed_directory"))
-      ) {
+      if (!context.trustedSnapshot && (!current || current.revision !== source.revision)) {
         return { status: "denied", reason: "identity_unmatched" } as const;
       }
       const currentMember = context.trustedSnapshot
@@ -551,6 +572,15 @@ export function createIdentityLinkingService(options: {
         : await directoryStore.getMember(orgId, member.sourceId, member.externalSubjectId);
       if (!currentMember || currentMember.status !== "active" || currentMember.profileHash !== member.profileHash) {
         return { status: "denied", reason: "external_inactive" } as const;
+      }
+      if (
+        !context.trustedSnapshot &&
+        current &&
+        (context.requireJit
+          ? !(await jitReady(current, currentMember, assertion))
+          : current.mode !== "managed_directory")
+      ) {
+        return { status: "denied", reason: "identity_unmatched" } as const;
       }
       return organizationStore.transact(orgId, (tx) =>
         provisionInTransaction(tx, source, currentMember, assertion, context),
@@ -999,6 +1029,13 @@ export function createIdentityLinkingService(options: {
       }
       let member = previous ?? (await directoryStore.getMember(orgId, assertion.sourceId, assertion.externalSubjectId));
       if (!member) return denied("unknown");
+      const snapshotCorporateEmail = member.emails.find((email) => email.kind === "corporate" && email.verified)?.value;
+      const assertedCorporateEmail =
+        assertion.corporateEmailVerified === true ? assertion.corporateEmail?.trim().toLowerCase() : null;
+      if (!snapshotCorporateEmail && assertedCorporateEmail && source.capabilities.trustedCorporateEmail === true) {
+        await directoryStore.upsertMember(assertionMember(orgId, assertion, at, true, member));
+        member = (await directoryStore.getMember(orgId, assertion.sourceId, assertion.externalSubjectId)) ?? member;
+      }
       const ignored = member.matchState === "ignored";
       const refreshed = await directoryStore.updateMemberMatch(
         orgId,
@@ -1092,9 +1129,6 @@ export function createIdentityLinkingService(options: {
       if (!source.memberSnapshotRevision || member.snapshotRevision !== source.memberSnapshotRevision) {
         return denied("identity_unmatched");
       }
-      const snapshotCorporateEmail = member.emails.find((email) => email.kind === "corporate" && email.verified)?.value;
-      const assertedCorporateEmail =
-        assertion.corporateEmailVerified === true ? assertion.corporateEmail?.trim().toLowerCase() : null;
       if (
         source.capabilities.trustedCorporateEmail === true &&
         snapshotCorporateEmail &&
@@ -1124,7 +1158,7 @@ export function createIdentityLinkingService(options: {
         if (
           match.state === "unmatched" &&
           member.snapshotRevision === source.memberSnapshotRevision &&
-          (await jitReady(source))
+          (await jitReady(source, member, assertion))
         ) {
           return jitLogin(source, member, assertion);
         }

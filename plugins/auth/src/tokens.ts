@@ -3,7 +3,13 @@ import { CompactEncrypt, compactDecrypt, jwtVerify, SignJWT, type JWTPayload } f
 import { ID_TOKEN_ALG, type SigningKey } from "./keys.ts";
 import type { ExternalIdentityAssertion } from "../../chassis/src/directory-source-client.ts";
 
-export type TokenPurpose = "request" | "link" | "code" | "access";
+export type TokenPurpose = "request" | "link" | "code" | "access" | "handoff";
+
+export interface HandoffClaims {
+  continuationState: string;
+  authorizeUrl: string;
+  promptDelivered: boolean;
+}
 
 export interface AuthRequest {
   clientId: string;
@@ -18,6 +24,7 @@ export interface AuthRequest {
     externalTenantId: string;
     externalSubjectId: string;
   };
+  directoryHandoff?: true;
 }
 
 export interface LinkClaims extends AuthRequest {
@@ -137,6 +144,23 @@ export class TokenSigner {
     const request = payload ? readRequest(payload) : null;
     if (!payload || !request) return null;
     return { claims: request, jti: String(payload.jti), expiresAtMs: Number(payload.exp) * 1000 };
+  }
+
+  async sealHandoff(claims: HandoffClaims, ttlS: number, nowMs?: number): Promise<SealedToken> {
+    return this.seal(
+      "handoff",
+      { cs: claims.continuationState, au: claims.authorizeUrl, pd: claims.promptDelivered },
+      ttlS,
+      nowMs,
+    );
+  }
+
+  async openHandoff(token: string, nowMs?: number): Promise<HandoffClaims | null> {
+    const payload = await this.open("handoff", token, nowMs);
+    if (!payload) return null;
+    const { cs, au, pd } = payload as Record<string, unknown>;
+    if (typeof cs !== "string" || !cs || typeof au !== "string" || !au) return null;
+    return { continuationState: cs, authorizeUrl: au, promptDelivered: pd === true };
   }
 
   async sealLink(claims: LinkClaims, ttlS: number, nowMs?: number): Promise<SealedToken> {
@@ -288,14 +312,16 @@ function requestClaims(request: AuthRequest): Record<string, unknown> {
           },
         }
       : {}),
+    ...(request.directoryHandoff ? { dh: true } : {}),
   };
 }
 
 function readRequest(payload: JWTPayload): AuthRequest | null {
-  const { cid, ru, st, no, cc, sc, ds, di } = payload as Record<string, unknown>;
+  const { cid, ru, st, no, cc, sc, ds, di, dh } = payload as Record<string, unknown>;
   if ([cid, ru, st, no, cc, sc].some((value) => typeof value !== "string" || !value)) return null;
   if (ds !== undefined && (typeof ds !== "string" || !ds)) return null;
   if (di !== undefined && (!di || typeof di !== "object" || Array.isArray(di) || typeof ds !== "string")) return null;
+  if (dh !== undefined && (dh !== true || di === undefined)) return null;
   const directoryIdentity = di as Record<string, unknown> | undefined;
   if (
     directoryIdentity &&
@@ -322,6 +348,7 @@ function readRequest(payload: JWTPayload): AuthRequest | null {
           },
         }
       : {}),
+    ...(dh === true ? { directoryHandoff: true as const } : {}),
   };
 }
 

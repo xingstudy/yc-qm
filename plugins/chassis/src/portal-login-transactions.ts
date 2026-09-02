@@ -4,6 +4,7 @@ import { errMessage } from "./errors.ts";
 const CREATE_PATH = "/v1/auth/portal-login/create";
 const CLAIM_PATH = "/v1/auth/portal-login/claim";
 const COMPLETE_PATH = "/v1/auth/portal-login/complete";
+const PUBLISH_PATH = "/v1/auth/portal-login/publish";
 const REQUEST_TIMEOUT_MS = 4_000;
 
 type PortalLoginClaim =
@@ -22,6 +23,14 @@ export interface PortalLoginTransactions {
     claimId: string,
     outcome: "succeeded" | "failed",
   ): Promise<"completed" | "missing" | "mismatch" | "unavailable">;
+  publish(
+    state: string,
+    claimId: string,
+    resultState: string,
+    payload: string,
+    expiresAtMs: number,
+    outcome: "succeeded" | "failed",
+  ): Promise<"published" | "conflict" | "missing" | "mismatch" | "unavailable">;
 }
 
 export function corePortalLoginTransactions(
@@ -74,6 +83,15 @@ export function corePortalLoginTransactions(
     async complete(state, claimId, outcome) {
       const result = await call(COMPLETE_PATH, { state, claimId, outcome });
       return result?.status === "completed" || result?.status === "missing" || result?.status === "mismatch"
+        ? result.status
+        : "unavailable";
+    },
+    async publish(state, claimId, resultState, payload, expiresAtMs, outcome) {
+      const result = await call(PUBLISH_PATH, { state, claimId, resultState, payload, expiresAtMs, outcome });
+      return result?.status === "published" ||
+        result?.status === "conflict" ||
+        result?.status === "missing" ||
+        result?.status === "mismatch"
         ? result.status
         : "unavailable";
     },

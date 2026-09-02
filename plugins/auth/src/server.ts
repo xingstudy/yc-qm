@@ -16,7 +16,18 @@ import {
 } from "./tokens.ts";
 import { ID_TOKEN_ALG, type SigningKey } from "./keys.ts";
 import { renderSignInEmail, type Mailer } from "./email.ts";
-import { confirmSignInPage, emailFormPage, linkSentPage, problemPage, CONFIRM_PAGE_CSP, PAGE_CSP } from "./pages.ts";
+import {
+  confirmSignInPage,
+  emailFormPage,
+  handoffCompletePage,
+  handoffWaitingPage,
+  linkSentPage,
+  problemPage,
+  CONFIRM_PAGE_CSP,
+  HANDOFF_PAGE_CSP,
+  PAGE_CSP,
+} from "./pages.ts";
+import { qrSvg } from "./qr.ts";
 import type { DirectorySourceClient } from "../../chassis/src/directory-source-client.ts";
 import type { PortalLoginTransactions } from "../../chassis/src/portal-login-transactions.ts";
 
@@ -59,6 +70,15 @@ function clientIpOf(req: IncomingMessage): string {
 
 function directoryContinuationBucket(secret: string, clientIp: string): string {
   return createHmac("sha256", secret).update(`directory-profile|${clientIp}`, "utf8").digest("base64url");
+}
+
+function handoffResultState(secret: string, continuationState: string): string {
+  return createHmac("sha256", secret).update(`directory-handoff-result|${continuationState}`, "utf8").digest("hex");
+}
+
+function isWeComClient(req: IncomingMessage): boolean {
+  const agent = req.headers["user-agent"];
+  return typeof agent === "string" && /wxwork/i.test(agent);
 }
 
 function noStore(extra: Record<string, string> = {}): Record<string, string> {
@@ -148,6 +168,16 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
   const problem = (res: ServerResponse, status: number, heading: string, msg: string, detail?: string): void =>
     sendHtml(res, status, problemPage({ brandName: brandName(), heading, msg, ...(detail ? { detail } : {}) }));
 
+  const continuationUnavailable = (res: ServerResponse, status: string): void =>
+    status === "client_limited" || status === "global_limited"
+      ? problem(
+          res,
+          429,
+          "Too many sign-ins right now",
+          "Enterprise sign-in is busy. Wait a moment and start again from the sign-in page.",
+        )
+      : problem(res, 503, "Enterprise sign-in failed", "The sign-in service is temporarily unavailable.");
+
   const signInUrl = ((): string | undefined => {
     try {
       return new URL("/auth/login", cfg.redirectUri).toString();
@@ -155,6 +185,16 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
       return undefined;
     }
   })();
+
+  const sameRelyingParty = (candidate: string): boolean => {
+    try {
+      const target = new URL(candidate);
+      const expected = new URL(cfg.redirectUri);
+      return target.origin === expected.origin && target.pathname === expected.pathname;
+    } catch {
+      return false;
+    }
+  };
 
   const staleLink = (res: ServerResponse): void =>
     sendHtml(
@@ -424,7 +464,18 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
     }
     const fail = async (status: number, heading: string, msg: string, detail?: string): Promise<void> => {
       if (continuationClaim && deps.directoryContinuations) {
-        await deps.directoryContinuations.complete(continuationClaim.state, continuationClaim.claimId, "failed");
+        if (openedState?.claims.directoryHandoff) {
+          await deps.directoryContinuations.publish(
+            continuationClaim.state,
+            continuationClaim.claimId,
+            handoffResultState(cfg.tokenSecret, continuationClaim.state),
+            JSON.stringify({ error: heading }),
+            openedState.expiresAtMs,
+            "failed",
+          );
+        } else {
+          await deps.directoryContinuations.complete(continuationClaim.state, continuationClaim.claimId, "failed");
+        }
       }
       problem(res, status, heading, msg, detail);
     };
@@ -487,6 +538,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
           if (!deps.directorySources.profileAuthorizationUrl || !deps.directoryContinuations) {
             throw new Error("directory profile authorization is unavailable");
           }
+          const inClient = isWeComClient(req);
           const continuation = await signer.sealRequest(
             {
               ...request,
@@ -495,23 +547,37 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
                 externalTenantId: externalIdentity.externalTenantId,
                 externalSubjectId: externalIdentity.externalSubjectId,
               },
+              ...(inClient ? {} : { directoryHandoff: true as const }),
             },
             cfg.requestTtlS,
             now(),
           );
           const continuationState = randomBytes(32).toString("hex");
-          const authorizeUrl = await deps.directorySources.profileAuthorizationUrl(
-            request.directorySourceId,
-            continuationState,
-          );
           const created = await deps.directoryContinuations.create(
             continuationState,
             continuation.token,
             continuation.expiresAtMs,
             directoryContinuationBucket(cfg.tokenSecret, clientIpOf(req)),
           );
-          if (created !== "created") throw new Error(`directory profile continuation ${created}`);
-          res.writeHead(302, noStore({ location: authorizeUrl }));
+          if (created !== "created") return continuationUnavailable(res, created);
+          const { authorizeUrl, promptDelivered } = await deps.directorySources.profileAuthorizationUrl(
+            request.directorySourceId,
+            continuationState,
+            inClient ? undefined : { externalSubjectId: externalIdentity.externalSubjectId, brandName: brandName() },
+          );
+          if (inClient) {
+            res.writeHead(302, noStore({ location: authorizeUrl }));
+            res.end();
+            return;
+          }
+          const handoff = await signer.sealHandoff(
+            { continuationState, authorizeUrl, promptDelivered },
+            Math.max(1, Math.round((continuation.expiresAtMs - now()) / 1000)),
+            now(),
+          );
+          const handoffUrl = new URL(`${cfg.publicPath}/directory/handoff`, cfg.issuer);
+          handoffUrl.searchParams.set("h", handoff.token);
+          res.writeHead(302, noStore({ location: handoffUrl.toString() }));
           res.end();
           return;
         }
@@ -537,7 +603,22 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
       cfg.codeTtlS,
       now(),
     );
-    if (continuationClaim && deps.directoryContinuations) {
+    const destination = new URL(request.redirectUri);
+    destination.searchParams.set("code", code.token);
+    destination.searchParams.set("state", request.state);
+    if (request.directoryHandoff && continuationClaim && deps.directoryContinuations) {
+      const published = await deps.directoryContinuations.publish(
+        continuationClaim.state,
+        continuationClaim.claimId,
+        handoffResultState(cfg.tokenSecret, continuationClaim.state),
+        JSON.stringify({ destination: destination.toString() }),
+        code.expiresAtMs,
+        "succeeded",
+      );
+      if (published !== "published") {
+        return problem(res, 503, "Enterprise sign-in failed", "The sign-in service is temporarily unavailable.");
+      }
+    } else if (continuationClaim && deps.directoryContinuations) {
       const completed = await deps.directoryContinuations.complete(
         continuationClaim.state,
         continuationClaim.claimId,
@@ -547,10 +628,77 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
         return problem(res, 503, "Enterprise sign-in failed", "The sign-in service is temporarily unavailable.");
       }
     }
-    const destination = new URL(request.redirectUri);
-    destination.searchParams.set("code", code.token);
-    destination.searchParams.set("state", request.state);
+    if (request.directoryHandoff) {
+      return sendHtml(res, 200, handoffCompletePage({ brandName: brandName() }));
+    }
     res.writeHead(302, noStore({ location: destination.toString() }));
+    res.end();
+  }
+
+  async function directoryHandoff(res: ServerResponse, params: URLSearchParams): Promise<void> {
+    if (!deps.directoryContinuations) {
+      return problem(res, 503, "Enterprise sign-in failed", "The sign-in service is temporarily unavailable.");
+    }
+    const opened = await signer.openHandoff(params.get("h") ?? "", now());
+    if (!opened) {
+      return problem(
+        res,
+        400,
+        "This enterprise sign-in expired",
+        "Approval takes a few minutes at most. Start again from the page you were trying to reach.",
+      );
+    }
+    const claimed = await deps.directoryContinuations.claim(
+      handoffResultState(cfg.tokenSecret, opened.continuationState),
+    );
+    if (claimed.status === "unavailable") {
+      return problem(res, 503, "Enterprise sign-in failed", "The sign-in service is temporarily unavailable.");
+    }
+    if (claimed.status === "missing") {
+      return sendHtml(
+        res,
+        200,
+        handoffWaitingPage({
+          brandName: brandName(),
+          authorizeUrl: opened.authorizeUrl,
+          qr: qrSvg(opened.authorizeUrl),
+          promptDelivered: opened.promptDelivered,
+        }),
+        HANDOFF_PAGE_CSP,
+      );
+    }
+    if (claimed.status !== "claimed") {
+      return sendHtml(
+        res,
+        200,
+        problemPage({
+          brandName: brandName(),
+          heading: "This sign-in is already finished",
+          msg: "It was completed in another tab, or it expired before you approved it. Check your other tabs first.",
+          ...(signInUrl ? { retryUrl: signInUrl } : {}),
+        }),
+      );
+    }
+    await deps.directoryContinuations.complete(
+      handoffResultState(cfg.tokenSecret, opened.continuationState),
+      claimed.claimId,
+      "succeeded",
+    );
+    let parsed: { destination?: unknown; error?: unknown };
+    try {
+      parsed = JSON.parse(claimed.payload) as { destination?: unknown; error?: unknown };
+    } catch {
+      return problem(res, 502, "Enterprise sign-in failed", "We couldn't finish signing you in.");
+    }
+    if (typeof parsed.destination !== "string" || !sameRelyingParty(parsed.destination)) {
+      return problem(
+        res,
+        403,
+        "Enterprise sign-in failed",
+        typeof parsed.error === "string" && parsed.error ? parsed.error : "We couldn't finish signing you in.",
+      );
+    }
+    res.writeHead(302, noStore({ location: parsed.destination }));
     res.end();
   }
 
@@ -702,6 +850,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
       return directoryLogin(req, res, url.searchParams);
     if (method === "GET" && (path === "/directory/callback" || path === "/wecom/callback"))
       return directoryCallback(req, res, url.searchParams);
+    if (method === "GET" && path === "/directory/handoff") return directoryHandoff(res, url.searchParams);
     if (method === "POST" && path === "/token") return token(req, res);
     if ((method === "GET" || method === "POST") && path === "/userinfo") return userinfo(req, res);
     return sendJson(res, 404, { error: "not_found" });

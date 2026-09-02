@@ -54,6 +54,10 @@ export interface DirectoryProviderAdapter {
   ): Promise<ExternalIdentityAssertion>;
   authorizeUrl(config: Record<string, string>, input: { sourceId: string; state: string }): string;
   profileAuthorizeUrl?(config: Record<string, string>, input: { sourceId: string; state: string }): string;
+  sendProfileAuthorizationPrompt?(
+    config: DirectoryProviderConfiguration,
+    input: { externalSubjectId: string; authorizeUrl: string; brandName: string },
+  ): Promise<boolean>;
   resolveProfileAuthorizationCode?(
     config: DirectoryProviderConfiguration,
     input: { sourceId: string; code: string; expectedExternalSubjectId: string },

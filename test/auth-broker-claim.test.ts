@@ -21,7 +21,9 @@ const CLAIM_PATH = "/v1/auth/broker/claim";
 const PORTAL_LOGIN_CREATE_PATH = "/v1/auth/portal-login/create";
 const PORTAL_LOGIN_CLAIM_PATH = "/v1/auth/portal-login/claim";
 const PORTAL_LOGIN_COMPLETE_PATH = "/v1/auth/portal-login/complete";
+const PORTAL_LOGIN_PUBLISH_PATH = "/v1/auth/portal-login/publish";
 const PORTAL_LOGIN_CLIENT_BUCKET = "c".repeat(43);
+const portalLoginClientBucket = (n: number): string => n.toString(36).padStart(43, "c");
 let portalLoginNonce = 0;
 
 function durableStub(): ReplayDedupe {
@@ -193,6 +195,67 @@ test("portal login transactions are durable source-auth records with one claiman
   );
 });
 
+test("a claimed portal login can publish its result after the global creation limit is full", async (t) => {
+  const srv = start();
+  t.after(() => srv.close());
+  const state = "a".repeat(64);
+  const resultState = "b".repeat(64);
+  const expiresAtMs = Date.now() + 60_000;
+  assert.deepEqual(
+    (
+      await portalLogin(srv.base, PORTAL_LOGIN_CREATE_PATH, {
+        state,
+        payload: "source",
+        expiresAtMs,
+        clientBucket: portalLoginClientBucket(0),
+      })
+    ).json,
+    { status: "created" },
+  );
+  const claimed = await portalLogin(srv.base, PORTAL_LOGIN_CLAIM_PATH, { state });
+  assert.equal(claimed.json.status, "claimed");
+  const claimId = claimed.json.claimId;
+  assert.equal(typeof claimId, "string");
+  for (let index = 1; index < 64; index++) {
+    const created = await portalLogin(srv.base, PORTAL_LOGIN_CREATE_PATH, {
+      state: index.toString(16).padStart(64, "0"),
+      payload: "{}",
+      expiresAtMs,
+      clientBucket: portalLoginClientBucket(index),
+    });
+    assert.equal(created.json.status, "created");
+  }
+  assert.equal(
+    (
+      await portalLogin(srv.base, PORTAL_LOGIN_CREATE_PATH, {
+        state: "c".repeat(64),
+        payload: "{}",
+        expiresAtMs,
+        clientBucket: portalLoginClientBucket(64),
+      })
+    ).json.status,
+    "global_limited",
+  );
+  const payload = JSON.stringify({ destination: "https://agent.example.test/auth/callback?code=code" });
+  assert.deepEqual(
+    (
+      await portalLogin(srv.base, PORTAL_LOGIN_PUBLISH_PATH, {
+        state,
+        claimId,
+        resultState,
+        payload,
+        expiresAtMs,
+        outcome: "succeeded",
+      })
+    ).json,
+    { status: "published" },
+  );
+  const result = await portalLogin(srv.base, PORTAL_LOGIN_CLAIM_PATH, { state: resultState });
+  assert.equal(result.json.status, "claimed");
+  assert.equal(result.json.payload, payload);
+  assert.deepEqual((await portalLogin(srv.base, PORTAL_LOGIN_CLAIM_PATH, { state })).json, { status: "used" });
+});
+
 test("portal login routes reject non-durable stores and malformed input", async (t) => {
   const srv = start(durableStub(), createMemoryPortalLoginTransactionStore());
   t.after(() => srv.close());
@@ -284,6 +347,19 @@ test("portal login routes validate state, expiry, payload, and completion input"
       await portalLogin(srv.base, PORTAL_LOGIN_COMPLETE_PATH, {
         state: "9".repeat(64),
         claimId: "bad",
+        outcome: "done",
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await portalLogin(srv.base, PORTAL_LOGIN_PUBLISH_PATH, {
+        state: "9".repeat(64),
+        resultState: "9".repeat(64),
+        claimId: "bad",
+        payload: "{}",
+        expiresAtMs,
         outcome: "done",
       })
     ).status,

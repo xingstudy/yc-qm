@@ -75,6 +75,9 @@ const provider: DirectoryProviderAdapter = {
   profileAuthorizeUrl(_config, input) {
     return `https://profile.example.test/authorize?state=${encodeURIComponent(input.state)}`;
   },
+  async sendProfileAuthorizationPrompt(_config, input) {
+    return input.externalSubjectId === "external-user";
+  },
   async resolveProfileAuthorizationCode(config, input) {
     return {
       sourceId: input.sourceId,
@@ -259,10 +262,19 @@ test("directory sign-in requests profile authorization only for an unbound ident
       body: urlBody,
     });
     assert.equal(urlResponse.status, 200);
-    assert.equal(
-      ((await urlResponse.json()) as { authorizeUrl: string }).authorizeUrl,
-      "https://profile.example.test/authorize?state=sealed-profile-state",
-    );
+    assert.deepEqual(await urlResponse.json(), {
+      authorizeUrl: "https://profile.example.test/authorize?state=sealed-profile-state",
+      promptDelivered: false,
+    });
+
+    const promptBody = JSON.stringify({ state: "sealed-profile-state-2", externalSubjectId: "external-user" });
+    const promptResponse = await fetch(`${server.base}${urlPath}`, {
+      method: "POST",
+      headers: signedHeaders("POST", urlPath, promptBody),
+      body: promptBody,
+    });
+    assert.equal(promptResponse.status, 200);
+    assert.equal(((await promptResponse.json()) as { promptDelivered: boolean }).promptDelivered, true);
 
     const profilePath = `/v1/auth/directory-sources/${source.id}/resolve-profile-authorization-code`;
     const profileBody = JSON.stringify({
