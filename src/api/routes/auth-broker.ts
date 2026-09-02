@@ -132,6 +132,32 @@ async function completePortalLogin(ctx: ApiCtx): Promise<void> {
   return sendJson(ctx.res, 200, await store.complete(state, claimId, outcome));
 }
 
+async function publishPortalLogin(ctx: ApiCtx): Promise<void> {
+  const store = portalLoginStore(ctx);
+  if (!store) return portalLoginUnavailable(ctx);
+  const body = isObj(ctx.body) ? ctx.body : {};
+  const state = portalLoginState(body);
+  const resultState = typeof body.resultState === "string" ? body.resultState : "";
+  const claimId = body.claimId;
+  const payload = body.payload;
+  const expiresAtMs = portalLoginExpiry(body);
+  const outcome = body.outcome;
+  if (
+    !state ||
+    !PORTAL_LOGIN_STATE_RE.test(resultState) ||
+    resultState === state ||
+    typeof claimId !== "string" ||
+    !PORTAL_LOGIN_CLAIM_ID_RE.test(claimId) ||
+    typeof payload !== "string" ||
+    Buffer.byteLength(payload) > PORTAL_LOGIN_MAX_PAYLOAD_BYTES ||
+    !expiresAtMs ||
+    (outcome !== "succeeded" && outcome !== "failed")
+  ) {
+    return sendJson(ctx.res, 400, { error: "bad_request", message: "invalid portal login publication" });
+  }
+  return sendJson(ctx.res, 200, await store.publish(state, claimId, resultState, payload, expiresAtMs, outcome));
+}
+
 async function directoryLoginOptions(ctx: ApiCtx): Promise<void> {
   if (!ctx.deps.directorySources) return sendJson(ctx.res, 200, { options: [] });
   const state = ctx.url.searchParams.get("state") ?? "";
@@ -176,10 +202,21 @@ async function directoryProfileAuthorizationUrl(ctx: ApiCtx): Promise<void> {
   const state = typeof body.state === "string" ? body.state : "";
   const sourceId = ctx.params.sourceId ?? "";
   if (!sourceId || !state || state.length > 8_192) return sendJson(ctx.res, 400, { error: "bad_request" });
+  const externalSubjectId = typeof body.externalSubjectId === "string" ? body.externalSubjectId.trim() : "";
+  const brandName = typeof body.brandName === "string" ? body.brandName.trim() : "";
+  if (externalSubjectId.length > 512 || brandName.length > 200) {
+    return sendJson(ctx.res, 400, { error: "bad_request" });
+  }
   try {
-    return sendJson(ctx.res, 200, {
-      authorizeUrl: await ctx.deps.directorySources.profileAuthorizationUrl(sourceId, state),
-    });
+    return sendJson(
+      ctx.res,
+      200,
+      await ctx.deps.directorySources.profileAuthorizationUrl(
+        sourceId,
+        state,
+        externalSubjectId ? { externalSubjectId, brandName: brandName || "qm" } : undefined,
+      ),
+    );
   } catch {
     return sendJson(ctx.res, 403, { error: "directory_identity_rejected" });
   }
@@ -224,6 +261,7 @@ export const authBrokerRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/auth/portal-login/create", auth: "source", handle: createPortalLogin },
   { method: "POST", path: "/v1/auth/portal-login/claim", auth: "source", handle: claimPortalLogin },
   { method: "POST", path: "/v1/auth/portal-login/complete", auth: "source", handle: completePortalLogin },
+  { method: "POST", path: "/v1/auth/portal-login/publish", auth: "source", handle: publishPortalLogin },
   { method: "GET", path: "/v1/auth/directory-sources/login-options", auth: "source", handle: directoryLoginOptions },
   {
     method: "POST",

@@ -206,6 +206,8 @@ test("brokerRouteFor matches only the exact public routes", () => {
   assert.equal(brokerRouteFor("GET", "/idp/verify"), "/verify");
   assert.equal(brokerRouteFor("GET", "/idp/wecom/login"), "/wecom/login");
   assert.equal(brokerRouteFor("GET", "/idp/wecom/callback"), "/wecom/callback");
+  assert.equal(brokerRouteFor("GET", "/idp/directory/handoff"), "/directory/handoff");
+  assert.equal(brokerRouteFor("POST", "/idp/directory/handoff"), null);
   for (const path of ["/idp/authorize/extra", "/idpauthorize", "/idp/", "/idp", "/idp/token", "/authorize"]) {
     assert.equal(brokerRouteFor("GET", path), null, path);
   }

@@ -13,6 +13,7 @@ const API_ORIGIN = "https://qyapi.weixin.qq.com";
 const AUTHORIZE_URL = "https://open.work.weixin.qq.com/wwopen/sso/qrConnect";
 const PROFILE_AUTHORIZE_URL = "https://open.weixin.qq.com/connect/oauth2/authorize";
 const PROFILE_STATE_RE = /^[A-Za-z0-9]{1,128}$/;
+const MAX_TEXTCARD_URL_BYTES = 2_048;
 const TIMEOUT_MS = 8_000;
 const READ_CONCURRENCY = 8;
 
@@ -39,6 +40,23 @@ function validEmail(value: string): boolean {
   return value.length <= 254 && /^[^@\s,;<>"]+@[^@\s,;<>"]+\.[^@\s,;<>"]+$/.test(value);
 }
 
+function normalizedRedirectUri(value: string): string {
+  let redirect: URL;
+  try {
+    redirect = new URL(value);
+  } catch {
+    throw new Error("wecom_redirect_uri_invalid");
+  }
+  if (
+    (redirect.protocol !== "https:" && redirect.hostname !== "localhost" && redirect.hostname !== "127.0.0.1") ||
+    redirect.username ||
+    redirect.password
+  ) {
+    throw new Error("wecom_redirect_uri_invalid");
+  }
+  return redirect.toString();
+}
+
 function configValues(config: DirectoryProviderConfiguration): {
   corpId: string;
   agentId: string;
@@ -53,11 +71,13 @@ function configValues(config: DirectoryProviderConfiguration): {
     stringValue(config.secretConfig.applicationSecret) || stringValue(config.secretConfig.secret);
   const directorySyncSecret = stringValue(config.secretConfig.directorySyncSecret);
   if (!corpId || !agentId || !redirectUri || !applicationSecret) throw new Error("wecom_config_incomplete");
-  const redirect = new URL(redirectUri);
-  if (redirect.protocol !== "https:" && redirect.hostname !== "localhost" && redirect.hostname !== "127.0.0.1") {
-    throw new Error("wecom_redirect_uri_invalid");
-  }
-  return { corpId, agentId, redirectUri: redirect.toString(), applicationSecret, directorySyncSecret };
+  return {
+    corpId,
+    agentId,
+    redirectUri: normalizedRedirectUri(redirectUri),
+    applicationSecret,
+    directorySyncSecret,
+  };
 }
 
 function sanitizedError(label: string, code: number): Error {
@@ -83,6 +103,13 @@ async function readJson(
   const errcode = typeof data.errcode === "number" ? data.errcode : 0;
   if (!response.ok || errcode !== 0) throw sanitizedError(label, errcode || response.status);
   return data;
+}
+
+function deliveryRejected(data: Record<string, unknown>): boolean {
+  return ["invaliduser", "invalidparty", "invalidtag", "unlicenseduser"].some((field) => {
+    const value = data[field];
+    return Array.isArray(value) ? value.length > 0 : stringValue(value).length > 0;
+  });
 }
 
 function memberStatus(value: unknown): DirectoryMemberStatus {
@@ -492,6 +519,44 @@ export function createWeComDirectoryProvider(options: WeComProviderOptions = {})
         status: "active",
       };
     },
+    async sendProfileAuthorizationPrompt(config, input) {
+      if (Buffer.byteLength(input.authorizeUrl, "utf8") > MAX_TEXTCARD_URL_BYTES) return false;
+      try {
+        const values = configValues(config);
+        const agentId = Number(values.agentId);
+        if (!Number.isInteger(agentId)) return false;
+        const { token } = await applicationTokenFor(config);
+        const url = new URL("/cgi-bin/message/send", API_ORIGIN);
+        url.searchParams.set("access_token", token);
+        const data = await readJson(
+          fetchImpl,
+          url,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              touser: input.externalSubjectId,
+              msgtype: "textcard",
+              agentid: agentId,
+              textcard: {
+                title: `${input.brandName} sign-in / 登录确认`.slice(0, 128),
+                description:
+                  "Authorize your corporate email to finish signing in on your computer. 请授权企业邮箱，以在电脑上完成登录。".slice(
+                    0,
+                    512,
+                  ),
+                url: input.authorizeUrl,
+                btntxt: "去授权",
+              },
+            }),
+          },
+          "profile_prompt",
+        );
+        return !deliveryRejected(data);
+      } catch {
+        return false;
+      }
+    },
     authorizeUrl(config, input) {
       const corpId = stringValue(config.corpId);
       const agentId = stringValue(config.agentId);
@@ -500,7 +565,7 @@ export function createWeComDirectoryProvider(options: WeComProviderOptions = {})
       const url = new URL(AUTHORIZE_URL);
       url.searchParams.set("appid", corpId);
       url.searchParams.set("agentid", agentId);
-      url.searchParams.set("redirect_uri", redirectUri);
+      url.searchParams.set("redirect_uri", normalizedRedirectUri(redirectUri));
       url.searchParams.set("state", input.state);
       return url.toString();
     },
@@ -512,7 +577,7 @@ export function createWeComDirectoryProvider(options: WeComProviderOptions = {})
       if (!PROFILE_STATE_RE.test(input.state)) throw new Error("wecom_profile_state_invalid");
       const url = new URL(PROFILE_AUTHORIZE_URL);
       url.searchParams.set("appid", corpId);
-      url.searchParams.set("redirect_uri", redirectUri);
+      url.searchParams.set("redirect_uri", normalizedRedirectUri(redirectUri));
       url.searchParams.set("response_type", "code");
       url.searchParams.set("scope", "snsapi_privateinfo");
       url.searchParams.set("state", input.state);

@@ -160,6 +160,7 @@ const BROKER_PUBLIC_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
   { method: "GET", path: "/wecom/callback" },
   { method: "GET", path: "/directory/login" },
   { method: "GET", path: "/directory/callback" },
+  { method: "GET", path: "/directory/handoff" },
 ];
 
 export function brokerRouteFor(method: string, pathname: string): string | null {

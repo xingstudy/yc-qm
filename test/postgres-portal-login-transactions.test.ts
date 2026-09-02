@@ -59,5 +59,18 @@ test(
       ),
     );
     assert.ok(overflow.every((result) => result === "global_limited"));
+    const sourceState = state("100");
+    const source = await first.claim(sourceState);
+    assert.equal(source.status, "claimed");
+    if (source.status !== "claimed") return;
+    const resultState = state("500");
+    assert.deepEqual(
+      await second.publish(sourceState, source.claimId, resultState, "result", expiresAtMs, "succeeded"),
+      { status: "published" },
+    );
+    const result = await first.claim(resultState);
+    assert.equal(result.status, "claimed");
+    if (result.status === "claimed") assert.equal(result.payload, "result");
+    assert.deepEqual(await second.claim(sourceState), { status: "used" });
   },
 );

@@ -94,7 +94,11 @@ export interface DirectorySourceService {
   loginOptions(state: string): Promise<DirectoryLoginOption[]>;
   resolveLoginCode(sourceId: string, code: string): Promise<ExternalIdentityAssertion>;
   profileAuthorizationSupported(sourceId: string): Promise<boolean>;
-  profileAuthorizationUrl(sourceId: string, state: string): Promise<string>;
+  profileAuthorizationUrl(
+    sourceId: string,
+    state: string,
+    notify?: { externalSubjectId: string; brandName: string },
+  ): Promise<{ authorizeUrl: string; promptDelivered: boolean }>;
   resolveProfileAuthorizationCode(
     sourceId: string,
     code: string,
@@ -231,6 +235,7 @@ export function createDirectorySourceService(options: {
       externalTenantId: string;
       environmentConfigFingerprint: string;
       syncRequested: boolean;
+      jitRequested: boolean;
     }
   >();
   const requiredSecretFields = (adapter: DirectoryProviderAdapter): readonly string[] =>
@@ -454,8 +459,10 @@ export function createDirectorySourceService(options: {
     left.name === right.name &&
     left.externalTenantId === right.externalTenantId &&
     left.status === right.status &&
+    left.mode === right.mode &&
     left.loginEnabled === right.loginEnabled &&
     left.syncEnabled === right.syncEnabled &&
+    left.jitProvisioningEnabled === right.jitProvisioningEnabled &&
     left.scheduleMinutes === right.scheduleMinutes &&
     left.matchPolicy === right.matchPolicy &&
     left.lastTestStatus === right.lastTestStatus &&
@@ -514,6 +521,7 @@ export function createDirectorySourceService(options: {
         externalTenantId,
         environmentConfigFingerprint,
         syncRequested: configured.syncEnabled === true,
+        jitRequested: configured.jitProvisioningEnabled === true,
       });
       for (let attempt = 0; attempt < 5; attempt++) {
         if (await adminSource()) {
@@ -555,10 +563,13 @@ export function createDirectorySourceService(options: {
           externalTenantId,
           status: tested ? "active" : "paused",
           origin: "environment",
-          mode: "identity_only",
+          mode: sourceMode(configured.mode),
           loginEnabled,
           syncEnabled: previewConfirmed && configured.syncEnabled === true && capabilities.fullSync,
-          jitProvisioningEnabled: false,
+          jitProvisioningEnabled:
+            configured.jitProvisioningEnabled === true &&
+            Boolean(existing?.memberSnapshotRevision) &&
+            supportsAutomaticEmailLinking(capabilities, configured.matchPolicy ?? "verified_corporate_email"),
           scheduleMinutes: configured.scheduleMinutes!,
           matchPolicy: configured.matchPolicy ?? "verified_corporate_email",
           capabilities,
@@ -848,16 +859,8 @@ export function createDirectorySourceService(options: {
         if (patch.jitProvisioningEnabled === true && !jitSupported) {
           throw new Error("directory_source_jit_unsupported");
         }
-        if (
-          patch.jitProvisioningEnabled === true &&
-          (reconciliationInvalidated ||
-            source.reconciliationStatus !== "ready" ||
-            source.memberSnapshotRevision === null ||
-            source.reconciledSourceRevision !== source.revision ||
-            source.reconciledMemberSnapshotRevision !== source.memberSnapshotRevision ||
-            (source.reconciliationExpiresAt ?? 0) <= now())
-        ) {
-          throw new Error("directory_source_reconciliation_required");
+        if (patch.jitProvisioningEnabled === true && (reconciliationInvalidated || !source.memberSnapshotRevision)) {
+          throw new Error("directory_source_jit_snapshot_required");
         }
         const loginEnabled = requestedLoginEnabled && capabilities.login;
         const syncEnabled =
@@ -1053,9 +1056,14 @@ export function createDirectorySourceService(options: {
       if (source.revision !== sourceRevision) return "conflict";
       const at = now();
       const reconciled = status === "ready";
+      const environment = source.origin === "environment" ? environmentConfigurations.get(source.id) : undefined;
       const next: StoredDirectorySource = {
         ...source,
-        jitProvisioningEnabled: reconciled ? source.jitProvisioningEnabled : false,
+        jitProvisioningEnabled:
+          status !== "stale" &&
+          source.memberSnapshotRevision !== null &&
+          supportsAutomaticEmailLinking(source.capabilities, source.matchPolicy) &&
+          (source.origin === "environment" ? environment?.jitRequested === true : source.jitProvisioningEnabled),
         reconciliationStatus: status,
         reconciledSourceRevision: reconciled ? source.revision : null,
         reconciledMemberSnapshotRevision: reconciled ? source.memberSnapshotRevision : null,
@@ -1172,7 +1180,7 @@ export function createDirectorySourceService(options: {
       const adapter = providers.get(source.provider);
       return Boolean(adapter?.profileAuthorizeUrl && adapter.resolveProfileAuthorizationCode);
     },
-    async profileAuthorizationUrl(sourceId, state) {
+    async profileAuthorizationUrl(sourceId, state, notify) {
       await ready;
       if (!state || state.length > 8_192) throw new Error("directory_source_invalid_login_state");
       const source = await store.getSource(orgId, sourceId);
@@ -1182,7 +1190,15 @@ export function createDirectorySourceService(options: {
       if (!adapter?.profileAuthorizeUrl || !adapter.resolveProfileAuthorizationCode) {
         throw new Error("directory_source_profile_authorization_unsupported");
       }
-      return adapter.profileAuthorizeUrl(source.publicConfig, { sourceId, state });
+      const authorizeUrl = adapter.profileAuthorizeUrl(source.publicConfig, { sourceId, state });
+      if (!notify?.externalSubjectId || !adapter.sendProfileAuthorizationPrompt) {
+        return { authorizeUrl, promptDelivered: false };
+      }
+      const configured = await configurationFor(source);
+      const promptDelivered = await adapter
+        .sendProfileAuthorizationPrompt(configured.config, { ...notify, authorizeUrl })
+        .catch(() => false);
+      return { authorizeUrl, promptDelivered };
     },
     async resolveProfileAuthorizationCode(sourceId, code, expected) {
       await ready;
@@ -1272,6 +1288,7 @@ export function directoryEnvironmentSourcesFromEnv(
       },
       loginEnabled: env.AUTH_WECOM_LOGIN_ENABLED !== "0",
       syncEnabled: Boolean(directorySyncSecret) && env.AUTH_WECOM_SYNC_ENABLED === "1",
+      jitProvisioningEnabled: env.AUTH_WECOM_JIT_PROVISIONING_ENABLED === "1",
       scheduleMinutes: Number(env.AUTH_WECOM_SYNC_MINUTES ?? 360),
       matchPolicy: env.AUTH_WECOM_MATCH_POLICY === "manual_only" ? "manual_only" : "verified_corporate_email",
     },

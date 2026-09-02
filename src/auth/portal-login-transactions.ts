@@ -9,6 +9,8 @@ type PortalLoginClaim =
 
 type PortalLoginCompletion = { status: "completed" | "missing" | "mismatch" };
 
+type PortalLoginPublication = { status: "published" | "conflict" | "missing" | "mismatch" };
+
 export interface PortalLoginTransactionStore {
   readonly durable: boolean;
   create(
@@ -19,6 +21,14 @@ export interface PortalLoginTransactionStore {
   ): Promise<PortalLoginTransactionStatus>;
   claim(state: string): Promise<PortalLoginClaim>;
   complete(state: string, claimId: string, outcome: "succeeded" | "failed"): Promise<PortalLoginCompletion>;
+  publish(
+    state: string,
+    claimId: string,
+    resultState: string,
+    payload: string,
+    expiresAtMs: number,
+    outcome: "succeeded" | "failed",
+  ): Promise<PortalLoginPublication>;
 }
 
 type Transaction = {
@@ -99,6 +109,18 @@ export function createMemoryPortalLoginTransactionStore(now: () => number = Date
       transaction.status = outcome;
       transaction.payload = null;
       return { status: "completed" };
+    },
+    async publish(state, claimId, resultState, payload, expiresAtMs, outcome) {
+      const transaction = transactions.get(stateHash(state));
+      if (!transaction || expired(transaction.expiresAtMs, now())) return { status: "missing" };
+      prune();
+      if (transaction.status !== "claimed" || transaction.claimId !== claimId) return { status: "mismatch" };
+      const resultHash = stateHash(resultState);
+      if (transactions.has(resultHash)) return { status: "conflict" };
+      transaction.status = outcome;
+      transaction.payload = null;
+      transactions.set(resultHash, { status: "pending", claimId: null, payload, expiresAtMs });
+      return { status: "published" };
     },
   };
 }
@@ -238,6 +260,39 @@ export function createPostgresPortalLoginTransactionStore(connectionString: stri
       if (completed.rowCount === 1) return { status: "completed" };
       const existing = await pg.query("SELECT status FROM portal_login_transactions WHERE state_hash = $1", [hash]);
       return existing.rowCount === 0 ? { status: "missing" } : { status: "mismatch" };
+    },
+    async publish(state, claimId, resultState, payload, expiresAtMs, outcome) {
+      await prune();
+      return withPgTransaction(await pg.pool(), async (client) => {
+        const sourceHash = stateHash(state);
+        const source = await client.query(
+          `SELECT status, claim_id, expires_at <= NOW() AS expired
+           FROM portal_login_transactions
+           WHERE state_hash = $1
+           FOR UPDATE`,
+          [sourceHash],
+        );
+        const transaction = source.rows[0] as
+          { status: Transaction["status"]; claim_id: string | null; expired: boolean } | undefined;
+        if (!transaction || transaction.expired) return { status: "missing" as const };
+        if (transaction.status !== "claimed" || transaction.claim_id !== claimId) {
+          return { status: "mismatch" as const };
+        }
+        const inserted = await client.query(
+          `INSERT INTO portal_login_transactions (state_hash, status, claim_id, payload, expires_at)
+           VALUES ($1, 'pending', NULL, $2, to_timestamp($3 / 1000.0))
+           ON CONFLICT (state_hash) DO NOTHING`,
+          [stateHash(resultState), payload, expiresAtMs],
+        );
+        if (inserted.rowCount !== 1) return { status: "conflict" as const };
+        await client.query(
+          `UPDATE portal_login_transactions
+           SET status = $2, payload = NULL
+           WHERE state_hash = $1`,
+          [sourceHash, outcome],
+        );
+        return { status: "published" as const };
+      });
     },
   };
 }

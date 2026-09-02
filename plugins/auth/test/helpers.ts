@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { readConfig, type AuthConfig } from "../src/config.ts";
 import type { ClaimStore } from "../../chassis/src/claims.ts";
 import type { Mailer, OutgoingEmail } from "../src/email.ts";
@@ -8,7 +8,6 @@ import { TokenSigner } from "../src/tokens.ts";
 import { createAuthHandler } from "../src/server.ts";
 import type { DirectorySourceClient } from "../../chassis/src/directory-source-client.ts";
 import type { PortalLoginTransactions } from "../../chassis/src/portal-login-transactions.ts";
-import { createMemoryPortalLoginTransactionStore } from "../../../src/auth/portal-login-transactions.ts";
 
 export const CLIENT_ID = "qm-portal";
 export const CLIENT_SECRET = "0123456789abcdef0123456789abcdef";
@@ -83,13 +82,67 @@ export function captureMailer(): Mailer & { sent: OutgoingEmail[]; failNext: boo
   return state;
 }
 
-function memoryContinuations(now: () => number): PortalLoginTransactions {
-  const store = createMemoryPortalLoginTransactionStore(now);
+const CONTINUATION_RATE_WINDOW_MS = 60_000;
+const CONTINUATION_CLIENT_LIMIT = 10;
+const CONTINUATION_GLOBAL_LIMIT = 64;
+
+export function memoryContinuations(now: () => number): PortalLoginTransactions {
+  type Entry = {
+    status: "pending" | "claimed" | "succeeded" | "failed";
+    claimId: string | null;
+    payload: string | null;
+    expiresAtMs: number;
+  };
+  const entries = new Map<string, Entry>();
+  const rates = new Map<string, { window: number; used: number }>();
+  const key = (state: string): string => createHash("sha256").update(state).digest("hex");
+  const used = (bucket: string, window: number): number => {
+    const rate = rates.get(bucket);
+    return rate?.window === window ? rate.used : 0;
+  };
+  const take = (bucket: string, window: number): void => {
+    rates.set(bucket, { window, used: used(bucket, window) + 1 });
+  };
   return {
-    create: (state, payload, expiresAtMs, clientBucket) => store.create(state, payload, expiresAtMs, clientBucket),
-    claim: (state) => store.claim(state),
+    async create(state, payload, expiresAtMs, clientBucket) {
+      if (entries.has(key(state))) return "conflict";
+      const window = Math.floor(now() / CONTINUATION_RATE_WINDOW_MS);
+      const client = `client:${clientBucket}`;
+      if (used(client, window) >= CONTINUATION_CLIENT_LIMIT) return "client_limited";
+      if (used("global", window) >= CONTINUATION_GLOBAL_LIMIT) return "global_limited";
+      take(client, window);
+      take("global", window);
+      entries.set(key(state), { status: "pending", claimId: null, payload, expiresAtMs });
+      return "created";
+    },
+    async claim(state) {
+      const entry = entries.get(key(state));
+      if (!entry) return { status: "missing" };
+      if (entry.expiresAtMs <= now()) return { status: "expired" };
+      if (entry.status !== "pending" || entry.payload === null) return { status: "used" };
+      const claimId = randomUUID();
+      entry.status = "claimed";
+      entry.claimId = claimId;
+      return { status: "claimed", payload: entry.payload, claimId };
+    },
     async complete(state, claimId, outcome) {
-      return (await store.complete(state, claimId, outcome)).status;
+      const entry = entries.get(key(state));
+      if (!entry || entry.expiresAtMs <= now()) return "missing";
+      if (entry.status !== "claimed" || entry.claimId !== claimId) return "mismatch";
+      entry.status = outcome;
+      entry.payload = null;
+      return "completed";
+    },
+    async publish(state, claimId, resultState, payload, expiresAtMs, outcome) {
+      const entry = entries.get(key(state));
+      if (!entry || entry.expiresAtMs <= now()) return "missing";
+      if (entry.status !== "claimed" || entry.claimId !== claimId) return "mismatch";
+      const resultKey = key(resultState);
+      if (entries.has(resultKey)) return "conflict";
+      entry.status = outcome;
+      entry.payload = null;
+      entries.set(resultKey, { status: "pending", claimId: null, payload, expiresAtMs });
+      return "published";
     },
   };
 }

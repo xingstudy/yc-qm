@@ -23,12 +23,12 @@ export interface ExternalIdentityAssertion {
   proof: string;
 }
 
-export interface DirectoryCodeResolution {
+interface DirectoryCodeResolution {
   identity: ExternalIdentityAssertion;
   authorizationRequired: boolean;
 }
 
-export interface DirectoryProfileIdentity {
+interface DirectoryProfileIdentity {
   provider: string;
   externalTenantId: string;
   externalSubjectId: string;
@@ -37,7 +37,11 @@ export interface DirectoryProfileIdentity {
 export interface DirectorySourceClient {
   loginOptions(state: string): Promise<DirectoryLoginOption[]>;
   resolveCode(sourceId: string, code: string): Promise<DirectoryCodeResolution>;
-  profileAuthorizationUrl?(sourceId: string, state: string): Promise<string>;
+  profileAuthorizationUrl?(
+    sourceId: string,
+    state: string,
+    notify?: { externalSubjectId: string; brandName: string },
+  ): Promise<{ authorizeUrl: string; promptDelivered: boolean }>;
   resolveProfileAuthorizationCode?(
     sourceId: string,
     code: string,
@@ -156,10 +160,10 @@ export function createDirectorySourceClient(options: {
         throw new Error(`${label}: ${errMessage(error)}`, { cause: error });
       }
     },
-    async profileAuthorizationUrl(sourceId, state) {
+    async profileAuthorizationUrl(sourceId, state, notify) {
       const base = `/v1/auth/directory-sources/${encodeURIComponent(sourceId)}/profile-authorization-url`;
       const path = withSourceAuthNonce(base, options.signingSecret);
-      const body = JSON.stringify({ state });
+      const body = JSON.stringify({ state, ...notify });
       try {
         const response = await fetchImpl(`${options.coreApiUrl}${path}`, {
           method: "POST",
@@ -168,11 +172,11 @@ export function createDirectorySourceClient(options: {
           signal: AbortSignal.timeout(timeoutMs),
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = (await response.json()) as { authorizeUrl?: unknown };
+        const data = (await response.json()) as { authorizeUrl?: unknown; promptDelivered?: unknown };
         if (typeof data.authorizeUrl !== "string" || !data.authorizeUrl) {
           throw new Error("invalid profile authorization response");
         }
-        return data.authorizeUrl;
+        return { authorizeUrl: data.authorizeUrl, promptDelivered: data.promptDelivered === true };
       } catch (error) {
         throw new Error(`${label}: ${errMessage(error)}`, { cause: error });
       }

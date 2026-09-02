@@ -628,7 +628,7 @@ test("source service encrypts secrets, exposes no ciphertext, and uses revision 
   assert.equal(typeof updated === "string" ? null : updated.syncEnabled, false);
 });
 
-test("pausing and reactivating a source invalidates its JIT reconciliation baseline", async () => {
+test("pausing and reactivating a source requires a current snapshot before JIT can be enabled", async () => {
   const store = createMemoryDirectorySourceStore();
   const state = { members: [member()], lookups: 0 };
   const adapter = automaticProvider(state);
@@ -664,10 +664,14 @@ test("pausing and reactivating a source invalidates its JIT reconciliation basel
   if (typeof active === "string") throw new Error("unexpected source conflict");
   assert.equal(active.jitProvisioningEnabled, false);
   assert.equal(active.reconciliationStatus, "stale");
-  await assert.rejects(
-    () => service.update("source-1", { expectedRevision: active.revision, jitProvisioningEnabled: true }, "admin"),
-    /reconciliation_required/,
+  const enabled = await service.update(
+    "source-1",
+    { expectedRevision: active.revision, jitProvisioningEnabled: true },
+    "admin",
   );
+  assert.notEqual(enabled, "conflict");
+  assert.equal(typeof enabled === "string" ? null : enabled.jitProvisioningEnabled, true);
+  assert.equal(typeof enabled === "string" ? null : enabled.reconciliationStatus, "stale");
 });
 
 test("managed login can start after connection verification while synchronization still requires a preview", async () => {
@@ -738,9 +742,12 @@ test("managed login can start after connection verification while synchronizatio
   assert.equal(assertion.mobile, null);
   assert.ok(service.verifyLoginAssertion(assertion));
   assert.equal(await service.profileAuthorizationSupported(created.id), true);
+  const profileAuthorization = await service.profileAuthorizationUrl(created.id, "profile-state");
+  assert.equal(new URL(profileAuthorization.authorizeUrl).searchParams.get("state"), "profile-state");
   assert.equal(
-    new URL(await service.profileAuthorizationUrl(created.id, "profile-state")).searchParams.get("state"),
-    "profile-state",
+    profileAuthorization.promptDelivered,
+    false,
+    "a provider without a prompt channel never claims delivery",
   );
   const profileAssertion = await service.resolveProfileAuthorizationCode(created.id, "profile-code", {
     provider: "fake",
@@ -961,11 +968,13 @@ test("environment sources pause safely and an Admin tombstone blocks environment
       AUTH_WECOM_SECRET: "provider-secret",
       AUTH_WECOM_DIRECTORY_SYNC_SECRET: "directory-secret",
       AUTH_WECOM_SYNC_ENABLED: "0",
+      AUTH_WECOM_JIT_PROVISIONING_ENABLED: "1",
       AUTH_WECOM_MATCH_POLICY: "manual_only",
     },
     "https://agent.example.test/idp/directory/callback",
   );
   assert.equal(parsed[0]?.syncEnabled, false);
+  assert.equal(parsed[0]?.jitProvisioningEnabled, true);
   assert.equal(parsed[0]?.matchPolicy, "manual_only");
   assert.deepEqual(parsed[0]?.secretConfig, {
     applicationSecret: "provider-secret",
@@ -1539,7 +1548,12 @@ test("managed login binds an existing member, remains stable after email changes
     "admin",
   );
   assert.ok(enabled !== "conflict");
-  const snapshotMember = member({ sourceId: created.id });
+  const snapshotMember = member({
+    sourceId: created.id,
+    emails: [],
+    revision: "revision-without-email",
+    profileHash: "hash-without-email",
+  });
   await store.upsertMember(snapshotMember);
   const sourceWithLogin = await store.getSource(ORG, created.id);
   assert.ok(sourceWithLogin);
@@ -1578,6 +1592,9 @@ test("managed login binds an existing member, remains stable after email changes
   assert.equal(first.status, "ok");
   assert.equal(first.status === "ok" ? first.user.principalId : null, "alice");
   assert.equal((await organization.listUsers(ORG)).length, 1);
+  assert.deepEqual((await store.getMember(ORG, created.id, "external-1"))?.emails, [
+    { value: "alice@example.com", kind: "corporate", verified: true },
+  ]);
   const changed = await linking.login({
     issuer: "https://auth.example.test",
     subject: "another-transient-value",
@@ -1755,6 +1772,62 @@ test("directory login provisions once and a later verified email login reuses th
   assert.equal(emailLogin.status === "ok" ? emailLogin.user.email : null, "alice@example.com");
   assert.equal((await organizationStore.listUsers(ORG)).length, 1);
   assert.equal((await organizationStore.listIdentities(ORG)).length, 2);
+});
+
+test("a current snapshot member with a live verified corporate email can use JIT while reconciliation is blocked", async () => {
+  const { store, organizationStore, linking, assertion } = await automaticLinkingSetup();
+  const source = await store.getSource(ORG, "source-1");
+  assert.ok(source);
+  await store.putSource(
+    {
+      ...source,
+      reconciliationStatus: "blocked",
+      reconciledSourceRevision: null,
+      reconciledMemberSnapshotRevision: null,
+      reconciledAt: null,
+      reconciliationExpiresAt: null,
+    },
+    source.revision,
+  );
+  const login = await linking.login({ issuer: "transient", subject: "transient", assertion });
+  assert.equal(login.status, "ok");
+  assert.equal(login.status === "ok" ? login.user.email : null, assertion.corporateEmail);
+  assert.equal((await organizationStore.listUsers(ORG)).length, 1);
+  assert.equal((await organizationStore.listIdentities(ORG)).length, 1);
+});
+
+test("blocked reconciliation still rejects snapshot JIT without a live verified corporate email", async () => {
+  const { store, organizationStore, linking, assertion } = await automaticLinkingSetup();
+  await store.upsertMember(
+    member({
+      emails: [],
+      revision: "revision-without-email",
+      profileHash: "hash-without-email",
+    }),
+  );
+  const source = await store.getSource(ORG, "source-1");
+  assert.ok(source);
+  await store.putSource(
+    {
+      ...source,
+      reconciliationStatus: "blocked",
+      reconciledSourceRevision: null,
+      reconciledMemberSnapshotRevision: null,
+      reconciledAt: null,
+      reconciliationExpiresAt: null,
+    },
+    source.revision,
+  );
+  assert.deepEqual(
+    await linking.login({
+      issuer: "transient",
+      subject: "transient",
+      assertion: { ...assertion, corporateEmailVerified: false },
+    }),
+    { status: "denied", reason: "identity_unmatched" },
+  );
+  assert.equal((await organizationStore.listUsers(ORG)).length, 0);
+  assert.equal((await organizationStore.listIdentities(ORG)).length, 0);
 });
 
 test("JIT rejects login-observed subjects that were never present in the reconciled snapshot", async () => {
@@ -2008,7 +2081,7 @@ test("email reconciliation never looks up or approves a profile email without ve
   });
   assert.equal(state.lookups, 0);
   assert.equal((await sources.get("source-1"))?.reconciliationStatus, "blocked");
-  assert.equal((await sources.get("source-1"))?.jitProvisioningEnabled, false);
+  assert.equal((await sources.get("source-1"))?.jitProvisioningEnabled, true);
 });
 
 test("email reconciliation fails closed when the source cannot provide trusted email lookup", async () => {
@@ -2707,6 +2780,88 @@ test("WeCom QR identity resolution does not depend on the member-detail endpoint
     status: "active",
   });
   assert.deepEqual(calls, ["/cgi-bin/gettoken", "/cgi-bin/auth/getuserinfo"]);
+});
+
+test("WeCom rejects callback URLs containing credentials on every authorization path", async () => {
+  const adapter = createWeComDirectoryProvider({
+    fetchImpl: async () => {
+      throw new Error("provider request must not be sent");
+    },
+  });
+  const publicConfig = {
+    corpId: "wwcorp",
+    agentId: "1000002",
+    redirectUri: "https://operator:secret@agent.example.test/idp/directory/callback",
+  };
+  const config = { publicConfig, secretConfig: { applicationSecret: "application-secret" } };
+
+  assert.throws(
+    () => adapter.authorizeUrl(publicConfig, { sourceId: "source-wecom", state: "login-state" }),
+    /wecom_redirect_uri_invalid/,
+  );
+  assert.throws(
+    () => adapter.profileAuthorizeUrl?.(publicConfig, { sourceId: "source-wecom", state: "profilestate" }),
+    /wecom_redirect_uri_invalid/,
+  );
+  await assert.rejects(() => adapter.testConnection(config), /wecom_redirect_uri_invalid/);
+});
+
+test("WeCom authorization prompts are best effort and never claim an undelivered message", async () => {
+  const sent: unknown[] = [];
+  const adapter = (rejected: Record<string, string> = {}) =>
+    createWeComDirectoryProvider({
+      fetchImpl: async (input, init) => {
+        const url = new URL(input.toString());
+        if (url.pathname === "/cgi-bin/gettoken") {
+          return new Response(JSON.stringify({ errcode: 0, access_token: "application-token", expires_in: 7200 }));
+        }
+        if (url.pathname === "/cgi-bin/message/send") {
+          sent.push(JSON.parse(String(init?.body)) as unknown);
+          return new Response(JSON.stringify({ errcode: 0, ...rejected }));
+        }
+        return new Response(JSON.stringify({ errcode: 40000 }), { status: 400 });
+      },
+    });
+  const config = {
+    publicConfig: { corpId: "wwcorp", agentId: "1000002", redirectUri: "https://agent.example.test/cb" },
+    secretConfig: { applicationSecret: "application-secret" },
+  };
+  const input = { externalSubjectId: "alice", authorizeUrl: "https://open.weixin.qq.com/x", brandName: "qm" };
+
+  assert.equal(await adapter().sendProfileAuthorizationPrompt?.(config, input), true);
+  const body = sent[0] as { touser: string; msgtype: string; agentid: number; textcard: { url: string } };
+  assert.equal(body.touser, "alice");
+  assert.equal(body.msgtype, "textcard");
+  assert.equal(body.agentid, 1000002);
+  assert.equal(body.textcard.url, input.authorizeUrl);
+
+  assert.equal(
+    await adapter({ invaliduser: "alice" }).sendProfileAuthorizationPrompt?.(config, input),
+    false,
+    "errcode 0 with invaliduser means the member never got it",
+  );
+  assert.equal(
+    await adapter({ unlicenseduser: "alice" }).sendProfileAuthorizationPrompt?.(config, input),
+    false,
+    "errcode 0 with unlicenseduser means the member never got it",
+  );
+  assert.equal(
+    await adapter().sendProfileAuthorizationPrompt?.(config, {
+      ...input,
+      authorizeUrl: `https://x/${"u".repeat(2100)}`,
+    }),
+    false,
+    "an over-long url is refused before it reaches WeCom",
+  );
+
+  const broken = createWeComDirectoryProvider({
+    fetchImpl: async () => new Response(JSON.stringify({ errcode: 40001 }), { status: 200 }),
+  });
+  assert.equal(
+    await broken.sendProfileAuthorizationPrompt?.(config, input),
+    false,
+    "a provider failure degrades to the QR path instead of throwing",
+  );
 });
 
 test("WeCom profile authorization resolves consented corporate email and fences the QR UserID", async () => {

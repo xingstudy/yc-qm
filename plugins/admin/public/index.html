@@ -14506,11 +14506,6 @@
             syncToggle.title = adminTr("Preview required");
           }
           syncToggle.onclick = () => patchSource(source, { syncEnabled: !source.syncEnabled }, "Sync setting updated.");
-          const reconciliationReady =
-            source.reconciliationStatus === "ready" &&
-            source.reconciledSourceRevision === source.revision &&
-            source.reconciledMemberSnapshotRevision === source.memberSnapshotRevision &&
-            Number(source.reconciliationExpiresAt || 0) > Date.now();
           const reconcileButton = document.createElement("button");
           reconcileButton.type = "button";
           reconcileButton.textContent = adminTr("Reconcile corporate emails");
@@ -14531,8 +14526,8 @@
             source.matchPolicy !== "verified_corporate_email" ||
             !source.capabilities?.corporateEmailSubjectLookup ||
             !source.capabilities?.trustedCorporateEmail ||
-            (!source.jitProvisioningEnabled && !reconciliationReady);
-          jitButton.title = reconciliationReady ? "" : adminTr("Fresh reconciliation required");
+            (!source.jitProvisioningEnabled && !source.memberSnapshotRevision);
+          jitButton.title = source.memberSnapshotRevision ? "" : adminTr("Full directory sync required");
           jitButton.onclick = () =>
             patchSource(
               source,

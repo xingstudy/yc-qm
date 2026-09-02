@@ -11,6 +11,7 @@ import {
   ISSUER,
   linkFrom,
   memoryClaimStore,
+  memoryContinuations,
   pkcePair,
   REDIRECT_URI,
   refusingClaimStore,
@@ -337,6 +338,9 @@ test("an already-bound WeCom QR member signs in without profile authorization wh
   assert.equal(userinfo.name, "无邮箱成员");
 });
 
+const WECOM_CLIENT_UA =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 MicroMessenger/7.0 wxwork/4.1.20";
+
 test("an unbound WeCom QR member authorizes private profile access before OIDC completion", async (t) => {
   const sourceId = "source-private-profile";
   let profileResolutionCalls = 0;
@@ -378,7 +382,7 @@ test("an unbound WeCom QR member authorizes private profile access before OIDC c
         url.searchParams.set("scope", "snsapi_privateinfo");
         url.searchParams.set("state", state);
         url.hash = "wechat_redirect";
-        return url.toString();
+        return { authorizeUrl: url.toString(), promptDelivered: false };
       },
       async resolveProfileAuthorizationCode(receivedSourceId, code, expected) {
         profileResolutionCalls++;
@@ -419,6 +423,7 @@ test("an unbound WeCom QR member authorizes private profile access before OIDC c
   const qrState = new URL(login.headers.get("location")!).searchParams.get("state")!;
   const qrCallback = await fetch(`${h.base}/directory/callback?code=wecom-code&state=${encodeURIComponent(qrState)}`, {
     redirect: "manual",
+    headers: { "user-agent": WECOM_CLIENT_UA },
   });
   assert.equal(qrCallback.status, 302, await qrCallback.text());
   const privateAuthorization = new URL(qrCallback.headers.get("location")!);
@@ -431,13 +436,13 @@ test("an unbound WeCom QR member authorizes private profile access before OIDC c
 
   const profileCallback = await fetch(
     `${h.base}/directory/callback?code=profile-code&state=${encodeURIComponent(privateAuthorization.searchParams.get("state")!)}`,
-    { redirect: "manual" },
+    { redirect: "manual", headers: { "user-agent": WECOM_CLIENT_UA } },
   );
   assert.equal(profileCallback.status, 302, await profileCallback.text());
   assert.equal(profileResolutionCalls, 1);
   const profileReplay = await fetch(
     `${h.base}/directory/callback?code=profile-code&state=${encodeURIComponent(privateAuthorization.searchParams.get("state")!)}`,
-    { redirect: "manual" },
+    { redirect: "manual", headers: { "user-agent": WECOM_CLIENT_UA } },
   );
   assert.equal(profileReplay.status, 400);
   assert.equal(profileResolutionCalls, 1);
@@ -452,6 +457,183 @@ test("an unbound WeCom QR member authorizes private profile access before OIDC c
   assert.equal(claims.email, "member@example.com");
   assert.equal(claims.email_verified, true);
   assert.equal(claims.qm_principal, `directory:${sourceId}:wwcorp:wecom-user`);
+});
+
+function handoffDirectorySources(
+  sourceId: string,
+  state: { profileCalls: number; prompt: boolean; fail?: boolean; assertContinuationStored?: () => void },
+) {
+  const identity = {
+    sourceId,
+    provider: "wecom",
+    externalTenantId: "wwcorp",
+    externalSubjectId: "wecom-user",
+    displayName: "待授权成员",
+    corporateEmail: null,
+    corporateEmailVerified: false,
+    personalEmail: null,
+    employeeNumber: null,
+    mobile: null,
+    status: "active" as const,
+    proof: "initial-proof",
+  };
+  return {
+    async loginOptions(loginState: string) {
+      return [
+        {
+          sourceId,
+          provider: "wecom",
+          displayName: "WeCom",
+          authorizeUrl: `https://open.work.weixin.qq.com/wwopen/sso/qrConnect?state=${encodeURIComponent(loginState)}`,
+        },
+      ];
+    },
+    async resolveCode() {
+      return { authorizationRequired: true, identity };
+    },
+    async profileAuthorizationUrl(_sourceId: string, profileState: string, notify?: { externalSubjectId: string }) {
+      state.assertContinuationStored?.();
+      assert.equal(notify?.externalSubjectId, "wecom-user");
+      const url = new URL("https://open.weixin.qq.com/connect/oauth2/authorize");
+      url.searchParams.set("scope", "snsapi_privateinfo");
+      url.searchParams.set("state", profileState);
+      url.hash = "wechat_redirect";
+      return { authorizeUrl: url.toString(), promptDelivered: state.prompt };
+    },
+    async resolveProfileAuthorizationCode() {
+      state.profileCalls++;
+      if (state.fail) throw new Error("wecom_profile_login_user_mismatch");
+      return {
+        ...identity,
+        corporateEmail: "member@example.com",
+        corporateEmailVerified: true,
+        proof: "profile-proof",
+      };
+    },
+  };
+}
+
+async function startHandoff(h: Harness, sourceId: string) {
+  const { verifier, challenge } = pkcePair();
+  const query = authorizeQuery({ code_challenge: challenge });
+  const page = await fetch(`${h.base}/authorize?${query}`);
+  const request = hiddenRequestToken(await page.text());
+  const login = await fetch(
+    `${h.base}/directory/login?request=${encodeURIComponent(request)}&source=${encodeURIComponent(sourceId)}`,
+    { redirect: "manual" },
+  );
+  const qrState = new URL(login.headers.get("location")!).searchParams.get("state")!;
+  const callback = await fetch(`${h.base}/directory/callback?code=wecom-code&state=${encodeURIComponent(qrState)}`, {
+    redirect: "manual",
+  });
+  return { verifier, query, callback };
+}
+
+test("an unbound WeCom member on a desktop browser hands the consent step to the WeCom client", async (t) => {
+  const sourceId = "source-handoff";
+  let continuationStored = false;
+  const state = {
+    profileCalls: 0,
+    prompt: true,
+    assertContinuationStored: () => assert.equal(continuationStored, true),
+  };
+  const continuations = memoryContinuations(Date.now);
+  const h = await startHarness({
+    directorySources: handoffDirectorySources(sourceId, state),
+    directoryContinuations: {
+      ...continuations,
+      async create(...args) {
+        const created = await continuations.create(...args);
+        if (created === "created") continuationStored = true;
+        return created;
+      },
+    },
+  });
+  t.after(() => h.close());
+
+  const { verifier, query, callback } = await startHandoff(h, sourceId);
+  assert.equal(callback.status, 302, await callback.text());
+  const handoffUrl = new URL(callback.headers.get("location")!);
+  assert.equal(
+    `${handoffUrl.origin}${handoffUrl.pathname}`,
+    `${ISSUER}/directory/handoff`,
+    "the desktop must return to the configured issuer instead of staying on the callback bridge",
+  );
+  assert.ok(handoffUrl.searchParams.get("h"));
+
+  const poll = `${h.base}/directory/handoff?h=${encodeURIComponent(handoffUrl.searchParams.get("h")!)}`;
+  const waiting = await fetch(poll, { redirect: "manual" });
+  assert.equal(waiting.status, 200);
+  const waitingHtml = await waiting.text();
+  assert.match(waitingHtml, /<svg /, "the waiting page carries an inline QR code");
+  assert.doesNotMatch(waitingHtml, /<img /, "a data: image would be blocked by the page CSP");
+  assert.match(waiting.headers.get("content-security-policy")!, /script-src 'sha256-/);
+  assert.equal(state.profileCalls, 0, "polling must not consume the WeCom authorization");
+  assert.equal((await fetch(poll, { redirect: "manual" })).status, 200, "polling again keeps waiting");
+
+  const profileState = new URL(
+    /https:\/\/open\.weixin\.qq\.com[^"]*/.exec(waitingHtml)![0].replace(/&amp;/g, "&"),
+  ).searchParams.get("state")!;
+  const inClient = await fetch(
+    `${h.base}/directory/callback?code=profile-code&state=${encodeURIComponent(profileState)}`,
+    { redirect: "manual", headers: { "user-agent": WECOM_CLIENT_UA } },
+  );
+  assert.equal(inClient.status, 200, "the WeCom client sees a completion page, not a redirect");
+  assert.equal(inClient.headers.get("location"), null, "redirecting the phone would strand the desktop");
+  assert.equal(state.profileCalls, 1);
+
+  const done = await fetch(poll, { redirect: "manual" });
+  assert.equal(done.status, 302);
+  const location = new URL(done.headers.get("location")!);
+  assert.equal(`${location.origin}${location.pathname}`, REDIRECT_URI);
+  assert.equal(location.searchParams.get("state"), query.get("state"));
+
+  assert.equal((await fetch(poll, { redirect: "manual" })).status, 200, "a second claim cannot mint a second code");
+  const tokens = await exchange(h, location.searchParams.get("code")!, verifier);
+  assert.equal(tokens.status, 200);
+  const claims = await verifyIdTokenLikePortal(
+    h,
+    ((await tokens.json()) as { id_token: string }).id_token,
+    "nonce-value",
+  );
+  assert.equal(claims.email, "member@example.com");
+  assert.equal(claims.email_verified, true);
+});
+
+test("a refused WeCom consent stops the waiting desktop instead of spinning", async (t) => {
+  const sourceId = "source-handoff-refused";
+  const state = { profileCalls: 0, prompt: false, fail: true };
+  const h = await startHarness({ directorySources: handoffDirectorySources(sourceId, state) });
+  t.after(() => h.close());
+
+  const { callback } = await startHandoff(h, sourceId);
+  const poll = `${h.base}/directory/handoff?h=${encodeURIComponent(new URL(callback.headers.get("location")!, h.base).searchParams.get("h")!)}`;
+  const waitingHtml = await (await fetch(poll, { redirect: "manual" })).text();
+  const profileState = new URL(
+    /https:\/\/open\.weixin\.qq\.com[^"]*/.exec(waitingHtml)![0].replace(/&amp;/g, "&"),
+  ).searchParams.get("state")!;
+
+  const inClient = await fetch(
+    `${h.base}/directory/callback?code=profile-code&state=${encodeURIComponent(profileState)}`,
+    { redirect: "manual", headers: { "user-agent": WECOM_CLIENT_UA } },
+  );
+  assert.equal(inClient.status, 502);
+  const stopped = await fetch(poll, { redirect: "manual" });
+  assert.equal(stopped.status, 403, "the desktop is told it failed rather than waiting forever");
+  assert.equal(stopped.headers.get("location"), null);
+});
+
+test("an expired handoff token stops the desktop poll", async (t) => {
+  const sourceId = "source-handoff-expired";
+  const state = { profileCalls: 0, prompt: false };
+  const h = await startHarness({ directorySources: handoffDirectorySources(sourceId, state) });
+  t.after(() => h.close());
+
+  const { callback } = await startHandoff(h, sourceId);
+  const poll = `${h.base}/directory/handoff?h=${encodeURIComponent(new URL(callback.headers.get("location")!, h.base).searchParams.get("h")!)}`;
+  h.now.ms += (h.cfg.requestTtlS + 60) * 1000;
+  const expired = await fetch(poll, { redirect: "manual" });
+  assert.equal(expired.status, 400);
 });
 
 test("a replayed magic link is refused", async (t) => {
