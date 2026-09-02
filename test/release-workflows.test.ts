@@ -36,7 +36,10 @@ test("the release is the sole sandbox-base publisher and bakes in the browser en
     workflow,
     /- name: sandbox-base\n\s+dockerfile: fly\/Dockerfile\n\s+build-args: INSTALL_BROWSER_ENGINE=1\n/,
   );
-  assert.match(workflow, /build-args: \$\{\{ matrix\.build-args \}\}/);
+  assert.match(
+    workflow,
+    /build-args: \|\n\s+\$\{\{ matrix\.build-args \}\}\n\s+PKG_REFRESH_WEEK=\$\{\{ steps\.refresh\.outputs\.week \}\}/,
+  );
   assert.equal(existsSync(".github/workflows/publish-sandbox-base.yml"), false);
   assert.equal(existsSync(".github/workflows/publish-images.yml"), false);
 });

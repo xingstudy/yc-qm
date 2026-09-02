@@ -1,6 +1,6 @@
 FROM golang:1.26.6-alpine@sha256:af8d6740070b8906d12eae1c3e3ea0957fb63f492051ea05e354c38ef9fe88df AS gh-builder
 
-ARG GH_VERSION=2.98.0
+ARG GH_VERSION=2.99.0
 ARG X_MOD_VERSION=0.40.0
 RUN go mod download "github.com/cli/cli/v2@v${GH_VERSION}" \
   && mkdir /tmp/gh \
@@ -41,6 +41,7 @@ ARG INSTALL_BROWSER_ENGINE=0
 ARG CHROME_VERSION=151.0.7922.137-1
 ARG CHROME_SHA=e6dabf044cf9cd0279cfe86efa431682c18bfc06d06339ce055aaa87ae871727
 ARG PIP_VERSION=26.2.1
+ARG PKG_REFRESH_WEEK=
 
 RUN cp /etc/apt/sources.list.d/ubuntu.sources /tmp/ubuntu.sources \
   && if [ -n "$APT_MIRROR" ]; then \
@@ -50,6 +51,8 @@ RUN cp /etc/apt/sources.list.d/ubuntu.sources /tmp/ubuntu.sources \
          /etc/apt/sources.list.d/ubuntu.sources; \
      fi \
   && apt-get update \
+  && apt-get upgrade -y \
+  && printf 'os packages refreshed for week %s\n' "${PKG_REFRESH_WEEK:-unknown}" \
   && apt-get install -y --no-install-recommends \
       bash coreutils findutils grep sed gawk \
       git curl wget jq unzip \

@@ -101,6 +101,8 @@ jobs:
           registry: docker.io
           username: lijixing
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - id: refresh
+        run: echo "week=$(date +%G-W%V)" >> "$GITHUB_OUTPUT"
       - id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
@@ -110,7 +112,9 @@ jobs:
           provenance: mode=max
           sbom: true
           push: true
-          build-args: INSTALL_BROWSER_ENGINE=1
+          build-args: |
+            INSTALL_BROWSER_ENGINE=1
+            PKG_REFRESH_WEEK=${{ steps.refresh.outputs.week }}
           tags: docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}:sandbox-base-${{ github.sha }}-${{ github.run_id }}
           cache-from: type=gha,scope=production-qm-sandbox-base
           cache-to: type=gha,mode=max,scope=production-qm-sandbox-base
@@ -191,6 +195,8 @@ jobs:
           registry: docker.io
           username: lijixing
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - id: refresh
+        run: echo "week=$(date +%G-W%V)" >> "$GITHUB_OUTPUT"
       - id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
@@ -200,6 +206,7 @@ jobs:
           provenance: mode=max
           sbom: true
           push: true
+          build-args: PKG_REFRESH_WEEK=${{ steps.refresh.outputs.week }}
           tags: docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}:${{ matrix.name }}-${{ github.sha }}-${{ github.run_id }}
           cache-from: type=gha,scope=production-qm-${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=production-qm-${{ matrix.name }}
