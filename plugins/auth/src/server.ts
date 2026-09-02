@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { createHmac, randomBytes } from "node:crypto";
 import { readBody, PayloadTooLargeError, serveEmojiFavicon } from "../../chassis/src/http.ts";
 import { errMessage } from "../../chassis/src/errors.ts";
 import type { AuthConfig } from "./config.ts";
@@ -17,10 +18,12 @@ import { ID_TOKEN_ALG, type SigningKey } from "./keys.ts";
 import { renderSignInEmail, type Mailer } from "./email.ts";
 import { confirmSignInPage, emailFormPage, linkSentPage, problemPage, CONFIRM_PAGE_CSP, PAGE_CSP } from "./pages.ts";
 import type { DirectorySourceClient } from "../../chassis/src/directory-source-client.ts";
+import type { PortalLoginTransactions } from "../../chassis/src/portal-login-transactions.ts";
 
 const MAX_FORM_BYTES = 8 * 1024;
 const ID_TOKEN_TTL_S = 300;
 const MAX_INFLIGHT_SENDS = 32;
+const DIRECTORY_PROFILE_STATE_RE = /^[0-9a-f]{64}$/;
 
 export interface AuthDeps {
   cfg: AuthConfig;
@@ -30,6 +33,7 @@ export interface AuthDeps {
   mailer: Mailer;
   brandName?: () => string;
   directorySources?: DirectorySourceClient;
+  directoryContinuations?: PortalLoginTransactions;
   now?: () => number;
   onBackgroundTask?: (task: Promise<void>) => void;
 }
@@ -51,6 +55,10 @@ function clientIpOf(req: IncomingMessage): string {
   const forwarded = req.headers["x-qm-client-ip"];
   const declared = typeof forwarded === "string" ? forwarded.trim() : "";
   return declared || req.socket.remoteAddress || "unknown";
+}
+
+function directoryContinuationBucket(secret: string, clientIp: string): string {
+  return createHmac("sha256", secret).update(`directory-profile|${clientIp}`, "utf8").digest("base64url");
 }
 
 function noStore(extra: Record<string, string> = {}): Record<string, string> {
@@ -396,22 +404,46 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
         "Ask your administrator to configure an identity source.",
       );
     const state = params.get("state") ?? "";
-    const openedState = await signer.openRequestEnvelope(state, now());
+    let continuationClaim: { state: string; claimId: string } | null = null;
+    let openedState;
+    if (DIRECTORY_PROFILE_STATE_RE.test(state)) {
+      if (!deps.directoryContinuations) {
+        return problem(res, 503, "Enterprise sign-in failed", "The sign-in service is temporarily unavailable.");
+      }
+      const claimed = await deps.directoryContinuations.claim(state);
+      if (claimed.status === "unavailable") {
+        return problem(res, 503, "Enterprise sign-in failed", "The sign-in service is temporarily unavailable.");
+      }
+      if (claimed.status !== "claimed") {
+        return problem(res, 400, "This enterprise sign-in no longer works", "Start again from the sign-in page.");
+      }
+      continuationClaim = { state, claimId: claimed.claimId };
+      openedState = await signer.openRequestEnvelope(claimed.payload, now());
+    } else {
+      openedState = await signer.openRequestEnvelope(state, now());
+    }
+    const fail = async (status: number, heading: string, msg: string, detail?: string): Promise<void> => {
+      if (continuationClaim && deps.directoryContinuations) {
+        await deps.directoryContinuations.complete(continuationClaim.state, continuationClaim.claimId, "failed");
+      }
+      problem(res, status, heading, msg, detail);
+    };
     if (!openedState) {
-      return problem(
-        res,
-        400,
-        "This enterprise sign-in expired",
-        "Start again from the page you were trying to reach.",
-      );
+      return fail(400, "This enterprise sign-in expired", "Start again from the page you were trying to reach.");
     }
     const request = openedState.claims;
+    if (continuationClaim && !request.directoryProfileIdentity) {
+      return fail(400, "This enterprise sign-in expired", "Start again from the page you were trying to reach.");
+    }
     const directoryCode = params.get("code") ?? "";
     if (!directoryCode)
-      return problem(res, 400, "Enterprise sign-in was cancelled", "Start again when you're ready to sign in.");
-    if (!request.directorySourceId) return problem(res, 400, "This sign-in source is missing", "Start again.");
-    if (!(await claimOnce(claims, `directory-state:${openedState.jti}`, openedState.expiresAtMs))) {
-      return problem(res, 400, "This enterprise sign-in no longer works", "Start again from the sign-in page.");
+      return fail(400, "Enterprise sign-in was cancelled", "Start again when you're ready to sign in.");
+    if (!request.directorySourceId) return fail(400, "This sign-in source is missing", "Start again.");
+    if (
+      !continuationClaim &&
+      !(await claimOnce(claims, `directory-state:${openedState.jti}`, openedState.expiresAtMs))
+    ) {
+      return fail(400, "This enterprise sign-in no longer works", "Start again from the sign-in page.");
     }
     const at = now();
     const ipAllowed = await withinRateLimit(claims, {
@@ -423,7 +455,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
       nowMs: at,
     });
     if (!ipAllowed) {
-      return problem(res, 429, "Too many enterprise sign-in attempts", "Wait a minute and start again.");
+      return fail(429, "Too many enterprise sign-in attempts", "Wait a minute and start again.");
     }
     const sourceAllowed = await withinRateLimit(claims, {
       secret: cfg.tokenSecret,
@@ -434,11 +466,56 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
       nowMs: at,
     });
     if (!sourceAllowed) {
-      return problem(res, 429, "Too many enterprise sign-in attempts", "Wait a minute and start again.");
+      return fail(429, "Too many enterprise sign-in attempts", "Wait a minute and start again.");
     }
     let identity: AuthIdentity;
     try {
-      const externalIdentity = await deps.directorySources.resolveCode(request.directorySourceId, directoryCode);
+      let externalIdentity;
+      if (request.directoryProfileIdentity) {
+        if (!deps.directorySources.resolveProfileAuthorizationCode) {
+          throw new Error("directory profile authorization is unavailable");
+        }
+        externalIdentity = await deps.directorySources.resolveProfileAuthorizationCode(
+          request.directorySourceId,
+          directoryCode,
+          request.directoryProfileIdentity,
+        );
+      } else {
+        const resolved = await deps.directorySources.resolveCode(request.directorySourceId, directoryCode);
+        externalIdentity = resolved.identity;
+        if (resolved.authorizationRequired) {
+          if (!deps.directorySources.profileAuthorizationUrl || !deps.directoryContinuations) {
+            throw new Error("directory profile authorization is unavailable");
+          }
+          const continuation = await signer.sealRequest(
+            {
+              ...request,
+              directoryProfileIdentity: {
+                provider: externalIdentity.provider,
+                externalTenantId: externalIdentity.externalTenantId,
+                externalSubjectId: externalIdentity.externalSubjectId,
+              },
+            },
+            cfg.requestTtlS,
+            now(),
+          );
+          const continuationState = randomBytes(32).toString("hex");
+          const authorizeUrl = await deps.directorySources.profileAuthorizationUrl(
+            request.directorySourceId,
+            continuationState,
+          );
+          const created = await deps.directoryContinuations.create(
+            continuationState,
+            continuation.token,
+            continuation.expiresAtMs,
+            directoryContinuationBucket(cfg.tokenSecret, clientIpOf(req)),
+          );
+          if (created !== "created") throw new Error(`directory profile continuation ${created}`);
+          res.writeHead(302, noStore({ location: authorizeUrl }));
+          res.end();
+          return;
+        }
+      }
       identity = {
         principal: `directory:${externalIdentity.sourceId}:${externalIdentity.externalTenantId}:${externalIdentity.externalSubjectId}`,
         ...(externalIdentity.corporateEmail ? { email: externalIdentity.corporateEmail } : {}),
@@ -447,13 +524,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
         externalIdentity,
       };
     } catch (e) {
-      return problem(
-        res,
-        502,
-        "Enterprise sign-in failed",
-        "We couldn't verify your enterprise account.",
-        errMessage(e),
-      );
+      return fail(502, "Enterprise sign-in failed", "We couldn't verify your enterprise account.", errMessage(e));
     }
     const code = await signer.sealCode(
       {
@@ -466,6 +537,16 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
       cfg.codeTtlS,
       now(),
     );
+    if (continuationClaim && deps.directoryContinuations) {
+      const completed = await deps.directoryContinuations.complete(
+        continuationClaim.state,
+        continuationClaim.claimId,
+        "succeeded",
+      );
+      if (completed !== "completed") {
+        return problem(res, 503, "Enterprise sign-in failed", "The sign-in service is temporarily unavailable.");
+      }
+    }
     const destination = new URL(request.redirectUri);
     destination.searchParams.set("code", code.token);
     destination.searchParams.set("state", request.state);

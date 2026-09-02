@@ -7,6 +7,8 @@ import { loadSigningKey } from "../src/keys.ts";
 import { TokenSigner } from "../src/tokens.ts";
 import { createAuthHandler } from "../src/server.ts";
 import type { DirectorySourceClient } from "../../chassis/src/directory-source-client.ts";
+import type { PortalLoginTransactions } from "../../chassis/src/portal-login-transactions.ts";
+import { createMemoryPortalLoginTransactionStore } from "../../../src/auth/portal-login-transactions.ts";
 
 export const CLIENT_ID = "qm-portal";
 export const CLIENT_SECRET = "0123456789abcdef0123456789abcdef";
@@ -81,6 +83,17 @@ export function captureMailer(): Mailer & { sent: OutgoingEmail[]; failNext: boo
   return state;
 }
 
+function memoryContinuations(now: () => number): PortalLoginTransactions {
+  const store = createMemoryPortalLoginTransactionStore(now);
+  return {
+    create: (state, payload, expiresAtMs, clientBucket) => store.create(state, payload, expiresAtMs, clientBucket),
+    claim: (state) => store.claim(state),
+    async complete(state, claimId, outcome) {
+      return (await store.complete(state, claimId, outcome)).status;
+    },
+  };
+}
+
 export interface Harness {
   cfg: AuthConfig;
   base: string;
@@ -97,6 +110,7 @@ export async function startHarness(
     claims?: ClaimStore & { calls: string[][] };
     brandName?: () => string;
     directorySources?: DirectorySourceClient;
+    directoryContinuations?: PortalLoginTransactions;
   } = {},
 ): Promise<Harness> {
   const cfg = readConfig(testEnv(options.env));
@@ -110,6 +124,7 @@ export async function startHarness(
     signer: new TokenSigner(cfg.tokenSecret, cfg.issuer),
     claims,
     mailer,
+    directoryContinuations: options.directoryContinuations ?? memoryContinuations(() => now.ms),
     ...(options.brandName ? { brandName: options.brandName } : {}),
     ...(options.directorySources ? { directorySources: options.directorySources } : {}),
     now: () => now.ms,

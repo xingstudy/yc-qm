@@ -160,18 +160,21 @@ test("WeCom QR sign-in issues the same OIDC code using the member email", async 
         assert.equal(receivedSourceId, sourceId);
         assert.equal(code, "wecom-code");
         return {
-          sourceId,
-          provider: "wecom",
-          externalTenantId: "wwcorp",
-          externalSubjectId: "wecom-user",
-          displayName: "企业管理员",
-          corporateEmail: "admin@example.com",
-          corporateEmailVerified: false,
-          personalEmail: null,
-          employeeNumber: null,
-          mobile: null,
-          status: "active",
-          proof: "test-proof",
+          authorizationRequired: false,
+          identity: {
+            sourceId,
+            provider: "wecom",
+            externalTenantId: "wwcorp",
+            externalSubjectId: "wecom-user",
+            displayName: "企业管理员",
+            corporateEmail: "admin@example.com",
+            corporateEmailVerified: false,
+            personalEmail: null,
+            employeeNumber: null,
+            mobile: null,
+            status: "active",
+            proof: "test-proof",
+          },
         };
       },
     },
@@ -255,7 +258,7 @@ test("WeCom QR sign-in issues the same OIDC code using the member email", async 
   assert.equal(userinfo.qm_external_identity.externalSubjectId, "wecom-user");
 });
 
-test("WeCom QR sign-in works when the member has no email", async (t) => {
+test("an already-bound WeCom QR member signs in without profile authorization when no email is returned", async (t) => {
   const sourceId = "source-no-email";
   const h = await startHarness({
     directorySources: {
@@ -271,18 +274,21 @@ test("WeCom QR sign-in works when the member has no email", async (t) => {
       },
       async resolveCode() {
         return {
-          sourceId,
-          provider: "wecom",
-          externalTenantId: "wwcorp",
-          externalSubjectId: "wecom-user",
-          displayName: "无邮箱成员",
-          corporateEmail: null,
-          corporateEmailVerified: false,
-          personalEmail: null,
-          employeeNumber: null,
-          mobile: null,
-          status: "active",
-          proof: "test-proof",
+          authorizationRequired: false,
+          identity: {
+            sourceId,
+            provider: "wecom",
+            externalTenantId: "wwcorp",
+            externalSubjectId: "wecom-user",
+            displayName: "无邮箱成员",
+            corporateEmail: null,
+            corporateEmailVerified: false,
+            personalEmail: null,
+            employeeNumber: null,
+            mobile: null,
+            status: "active",
+            proof: "test-proof",
+          },
         };
       },
     },
@@ -329,6 +335,123 @@ test("WeCom QR sign-in works when the member has no email", async (t) => {
   assert.equal(userinfo.qm_principal, "directory:source-no-email:wwcorp:wecom-user");
   assert.equal(userinfo.qm_principal_verified, true);
   assert.equal(userinfo.name, "无邮箱成员");
+});
+
+test("an unbound WeCom QR member authorizes private profile access before OIDC completion", async (t) => {
+  const sourceId = "source-private-profile";
+  let profileResolutionCalls = 0;
+  const h = await startHarness({
+    directorySources: {
+      async loginOptions(state) {
+        return [
+          {
+            sourceId,
+            provider: "wecom",
+            displayName: "WeCom",
+            authorizeUrl: `https://open.work.weixin.qq.com/wwopen/sso/qrConnect?state=${encodeURIComponent(state)}`,
+          },
+        ];
+      },
+      async resolveCode() {
+        return {
+          authorizationRequired: true,
+          identity: {
+            sourceId,
+            provider: "wecom",
+            externalTenantId: "wwcorp",
+            externalSubjectId: "wecom-user",
+            displayName: "待授权成员",
+            corporateEmail: null,
+            corporateEmailVerified: false,
+            personalEmail: null,
+            employeeNumber: null,
+            mobile: null,
+            status: "active",
+            proof: "initial-proof",
+          },
+        };
+      },
+      async profileAuthorizationUrl(receivedSourceId, state) {
+        assert.equal(receivedSourceId, sourceId);
+        const url = new URL("https://open.weixin.qq.com/connect/oauth2/authorize");
+        url.searchParams.set("appid", "wwcorp");
+        url.searchParams.set("scope", "snsapi_privateinfo");
+        url.searchParams.set("state", state);
+        url.hash = "wechat_redirect";
+        return url.toString();
+      },
+      async resolveProfileAuthorizationCode(receivedSourceId, code, expected) {
+        profileResolutionCalls++;
+        assert.equal(receivedSourceId, sourceId);
+        assert.equal(code, "profile-code");
+        assert.deepEqual(expected, {
+          provider: "wecom",
+          externalTenantId: "wwcorp",
+          externalSubjectId: "wecom-user",
+        });
+        return {
+          sourceId,
+          provider: "wecom",
+          externalTenantId: "wwcorp",
+          externalSubjectId: "wecom-user",
+          displayName: "已授权成员",
+          corporateEmail: "member@example.com",
+          corporateEmailVerified: true,
+          personalEmail: null,
+          employeeNumber: null,
+          mobile: null,
+          status: "active",
+          proof: "profile-proof",
+        };
+      },
+    },
+  });
+  t.after(() => h.close());
+
+  const { verifier, challenge } = pkcePair();
+  const query = authorizeQuery({ code_challenge: challenge });
+  const page = await fetch(`${h.base}/authorize?${query}`);
+  const request = hiddenRequestToken(await page.text());
+  const login = await fetch(
+    `${h.base}/directory/login?request=${encodeURIComponent(request)}&source=${encodeURIComponent(sourceId)}`,
+    { redirect: "manual" },
+  );
+  const qrState = new URL(login.headers.get("location")!).searchParams.get("state")!;
+  const qrCallback = await fetch(`${h.base}/directory/callback?code=wecom-code&state=${encodeURIComponent(qrState)}`, {
+    redirect: "manual",
+  });
+  assert.equal(qrCallback.status, 302, await qrCallback.text());
+  const privateAuthorization = new URL(qrCallback.headers.get("location")!);
+  assert.equal(privateAuthorization.origin, "https://open.weixin.qq.com");
+  assert.equal(privateAuthorization.searchParams.get("scope"), "snsapi_privateinfo");
+  assert.notEqual(privateAuthorization.searchParams.get("state"), qrState);
+  assert.match(privateAuthorization.searchParams.get("state")!, /^[0-9a-f]{64}$/);
+  assert.ok(Buffer.byteLength(privateAuthorization.searchParams.get("state")!) <= 128);
+  assert.equal(profileResolutionCalls, 0);
+
+  const profileCallback = await fetch(
+    `${h.base}/directory/callback?code=profile-code&state=${encodeURIComponent(privateAuthorization.searchParams.get("state")!)}`,
+    { redirect: "manual" },
+  );
+  assert.equal(profileCallback.status, 302, await profileCallback.text());
+  assert.equal(profileResolutionCalls, 1);
+  const profileReplay = await fetch(
+    `${h.base}/directory/callback?code=profile-code&state=${encodeURIComponent(privateAuthorization.searchParams.get("state")!)}`,
+    { redirect: "manual" },
+  );
+  assert.equal(profileReplay.status, 400);
+  assert.equal(profileResolutionCalls, 1);
+  const location = new URL(profileCallback.headers.get("location")!);
+  assert.equal(`${location.origin}${location.pathname}`, REDIRECT_URI);
+  assert.equal(location.searchParams.get("state"), query.get("state"));
+
+  const tokens = await exchange(h, location.searchParams.get("code")!, verifier);
+  assert.equal(tokens.status, 200);
+  const body = (await tokens.json()) as { id_token: string };
+  const claims = await verifyIdTokenLikePortal(h, body.id_token, "nonce-value");
+  assert.equal(claims.email, "member@example.com");
+  assert.equal(claims.email_verified, true);
+  assert.equal(claims.qm_principal, `directory:${sourceId}:wwcorp:wecom-user`);
 });
 
 test("a replayed magic link is refused", async (t) => {

@@ -93,6 +93,13 @@ export interface DirectorySourceService {
   configuration(sourceId: string): Promise<{ source: DirectorySource; config: DirectoryProviderConfiguration } | null>;
   loginOptions(state: string): Promise<DirectoryLoginOption[]>;
   resolveLoginCode(sourceId: string, code: string): Promise<ExternalIdentityAssertion>;
+  profileAuthorizationSupported(sourceId: string): Promise<boolean>;
+  profileAuthorizationUrl(sourceId: string, state: string): Promise<string>;
+  resolveProfileAuthorizationCode(
+    sourceId: string,
+    code: string,
+    expected: { provider: string; externalTenantId: string; externalSubjectId: string },
+  ): Promise<ExternalIdentityAssertion>;
   verifyLoginAssertion(assertion: ExternalIdentityAssertion): { jti: string; expiresAtMs: number } | null;
 }
 
@@ -310,24 +317,62 @@ export function createDirectorySourceService(options: {
     };
   };
 
+  const assertionClaims = (assertion: ExternalIdentityAssertion): ExternalIdentityAssertion => {
+    const optional = (value: string | null | undefined): string | null => value?.trim() || null;
+    const corporateEmail = optional(assertion.corporateEmail);
+    return {
+      sourceId: assertion.sourceId.trim(),
+      provider: assertion.provider.trim(),
+      externalTenantId: assertion.externalTenantId.trim(),
+      externalSubjectId: assertion.externalSubjectId.trim(),
+      displayName: assertion.displayName.trim(),
+      corporateEmail,
+      corporateEmailVerified: corporateEmail !== null && assertion.corporateEmailVerified === true,
+      personalEmail: optional(assertion.personalEmail),
+      employeeNumber: optional(assertion.employeeNumber),
+      mobile: optional(assertion.mobile),
+      status: assertion.status,
+    };
+  };
+
   const assertionDigest = (assertion: ExternalIdentityAssertion): string => {
-    const { proof: _proof, ...claims } = assertion;
+    const { proof: _proof, ...claims } = assertionClaims(assertion);
     return createHash("sha256").update(JSON.stringify(claims)).digest("base64url");
   };
 
+  const legacyAssertionDigest = (assertion: ExternalIdentityAssertion): string => {
+    const claims = assertionClaims(assertion);
+    const legacyClaims = {
+      sourceId: claims.sourceId,
+      provider: claims.provider,
+      externalTenantId: claims.externalTenantId,
+      externalSubjectId: claims.externalSubjectId,
+      displayName: claims.displayName,
+      corporateEmail: claims.corporateEmail,
+      personalEmail: claims.personalEmail,
+      employeeNumber: claims.employeeNumber,
+      mobile: claims.mobile,
+      status: claims.status,
+      corporateEmailVerified: claims.corporateEmailVerified,
+    };
+    return createHash("sha256").update(JSON.stringify(legacyClaims)).digest("base64url");
+  };
+
   const signAssertion = (assertion: ExternalIdentityAssertion): ExternalIdentityAssertion => {
+    const claims = assertionClaims(assertion);
     const issuedAt = Math.floor(now() / 1000);
     const payload = Buffer.from(
       JSON.stringify({
         aud: `qm-core:${orgId}`,
-        digest: assertionDigest(assertion),
+        digest: assertionDigest(claims),
         exp: issuedAt + 120,
         iat: issuedAt,
         jti: randomBytes(18).toString("base64url"),
+        v: 2,
       }),
     ).toString("base64url");
     const signature = createHmac("sha256", assertionKey.current).update(payload).digest("base64url");
-    return { ...assertion, proof: `${payload}.${signature}` };
+    return { ...claims, proof: `${payload}.${signature}` };
   };
 
   const verifyAssertion = (assertion: ExternalIdentityAssertion): { jti: string; expiresAtMs: number } | null => {
@@ -350,6 +395,9 @@ export function createDirectorySourceService(options: {
     if (!claims || typeof claims !== "object" || Array.isArray(claims)) return null;
     const record = claims as Record<string, unknown>;
     const current = Math.floor(now() / 1000);
+    const digestMatches =
+      record.digest === assertionDigest(assertion) ||
+      (record.v === undefined && record.digest === legacyAssertionDigest(assertion));
     if (
       record.aud !== `qm-core:${orgId}` ||
       typeof record.jti !== "string" ||
@@ -359,7 +407,8 @@ export function createDirectorySourceService(options: {
       record.iat > current + 5 ||
       record.exp <= current ||
       record.exp - record.iat > 120 ||
-      record.digest !== assertionDigest(assertion)
+      (record.v !== undefined && record.v !== 2) ||
+      !digestMatches
     ) {
       return null;
     }
@@ -1114,6 +1163,64 @@ export function createDirectorySourceService(options: {
       return signAssertion({
         ...assertion,
         corporateEmailVerified: assertion.corporateEmail !== null && source.capabilities.trustedCorporateEmail === true,
+      });
+    },
+    async profileAuthorizationSupported(sourceId) {
+      await ready;
+      const source = await store.getSource(orgId, sourceId);
+      if (!source || source.status !== "active" || !source.loginEnabled) return false;
+      const adapter = providers.get(source.provider);
+      return Boolean(adapter?.profileAuthorizeUrl && adapter.resolveProfileAuthorizationCode);
+    },
+    async profileAuthorizationUrl(sourceId, state) {
+      await ready;
+      if (!state || state.length > 8_192) throw new Error("directory_source_invalid_login_state");
+      const source = await store.getSource(orgId, sourceId);
+      if (!source || source.status !== "active" || !source.loginEnabled)
+        throw new Error("directory_source_login_disabled");
+      const adapter = providers.get(source.provider);
+      if (!adapter?.profileAuthorizeUrl || !adapter.resolveProfileAuthorizationCode) {
+        throw new Error("directory_source_profile_authorization_unsupported");
+      }
+      return adapter.profileAuthorizeUrl(source.publicConfig, { sourceId, state });
+    },
+    async resolveProfileAuthorizationCode(sourceId, code, expected) {
+      await ready;
+      if (!code || code.length > 2_048) throw new Error("directory_source_invalid_login_code");
+      const source = await store.getSource(orgId, sourceId);
+      if (!source || source.status !== "active" || !source.loginEnabled)
+        throw new Error("directory_source_login_disabled");
+      if (
+        expected.provider !== source.provider ||
+        expected.externalTenantId !== source.externalTenantId ||
+        !expected.externalSubjectId
+      ) {
+        throw new Error("directory_source_profile_identity_mismatch");
+      }
+      const configured = await configurationFor(source);
+      const adapter = providers.get(source.provider);
+      if (!adapter?.profileAuthorizeUrl || !adapter.resolveProfileAuthorizationCode) {
+        throw new Error("directory_source_profile_authorization_unsupported");
+      }
+      const assertion = await adapter.resolveProfileAuthorizationCode(configured.config, {
+        sourceId,
+        code,
+        expectedExternalSubjectId: expected.externalSubjectId,
+      });
+      if (
+        assertion.sourceId !== source.id ||
+        assertion.provider !== source.provider ||
+        assertion.externalTenantId !== source.externalTenantId ||
+        assertion.externalSubjectId !== expected.externalSubjectId
+      ) {
+        throw new Error("directory_source_profile_identity_mismatch");
+      }
+      if (!assertion.corporateEmail || source.capabilities.trustedCorporateEmail !== true) {
+        throw new Error("directory_source_profile_corporate_email_missing");
+      }
+      return signAssertion({
+        ...assertion,
+        corporateEmailVerified: true,
       });
     },
     verifyLoginAssertion: verifyAssertion,

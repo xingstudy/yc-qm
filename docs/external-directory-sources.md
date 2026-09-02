@@ -6,7 +6,7 @@ External identity sources connect a managed directory to qm for sign-in and iden
 
 Open Admin and select **Identity sources**. An organization administrator can create a source, test its credentials, independently enable login and scheduled synchronization, choose a synchronization interval from 15 minutes to 24 hours, and select a match policy.
 
-The initial provider is WeCom. Login and targeted member lookup need a CorpID, AgentID, self-built application Secret, and a trusted callback URL. Full synchronization additionally needs the separate directory synchronization Secret from WeCom's address-book synchronization management page. The default callback is `<AUTH_ISSUER>/directory/callback`; the legacy `/wecom/callback` path remains accepted. The application member visibility must cover every member expected to sign in or be synchronized. WeCom may still withhold sensitive member fields unless the tenant and user grants permit them.
+The initial provider is WeCom. Login and targeted member lookup need a CorpID, AgentID, self-built application Secret, and a trusted callback URL. Full synchronization additionally needs the separate directory synchronization Secret from WeCom's address-book synchronization management page. The default callback is `<AUTH_ISSUER>/directory/callback`; the legacy `/wecom/callback` path remains accepted. Register that callback under the application's trusted web authorization domain, enable the sensitive fields needed for `snsapi_privateinfo`, and keep the application member visibility broad enough for every member expected to sign in or be synchronized. WeCom may still withhold sensitive member fields until the user grants them.
 
 Secrets are encrypted with the connector secret key and are write-only in Admin. Leaving the replacement Secret blank preserves the current value. Saving a new Secret or public connection field runs the provider connection test before committing the change.
 
@@ -34,6 +34,8 @@ Matching follows one shared policy for all providers:
 3. Show employee-number and mobile matches as administrator suggestions only.
 4. Treat duplicate or contradictory evidence as a conflict.
 5. Leave all other members unmatched.
+
+WeCom QR login first resolves the stable UserID. Core checks the durable binding before asking for sensitive profile data. An already-bound UserID signs in immediately even when WeCom returns no email. Only an unbound identity without a trusted corporate email is redirected through `snsapi_privateinfo`; Core exchanges that authorization for a `user_ticket`, calls `auth/getuserdetail`, verifies that every response carries the same UserID, and then uses only `biz_mail` for unique matching or controlled creation. Cancelling the second authorization, receiving a different UserID, or receiving no `biz_mail` fails closed without creating or linking an account. See the official [authorization URL](https://developer.work.weixin.qq.com/document/path/91022), [access-user identity](https://developer.work.weixin.qq.com/document/path/91023), and [sensitive-profile](https://developer.work.weixin.qq.com/document/path/95833) documentation.
 
 An unmatched or conflicting managed sign-in fails closed and never creates an organization user. Administrators resolve it from the source's member workbench by binding, ignoring, unignoring, or correcting a binding. Different sources may bind to the same qm member, while one source cannot bind two external members to that member.
 

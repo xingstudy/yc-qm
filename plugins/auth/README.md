@@ -62,8 +62,18 @@ The broker retrieves available login options through the signed chassis client
 and sends provider codes back to Core for resolution. It never receives a
 provider Secret or calls a provider API directly. Core returns a normalized,
 signed external identity assertion which the broker carries through OIDC to the
-portal. Legacy `/wecom/login` and `/wecom/callback` aliases remain available for
-existing callback registrations.
+portal. Core may mark an unbound identity as requiring profile authorization. In
+that case the broker seals the original OIDC request together with the expected
+provider, tenant, and external subject in Core's durable one-time transaction
+store. The provider receives only a 64-character hexadecimal random state. The
+broker atomically claims that transaction on the second callback and accepts it
+only for the exact original identity before issuing the OIDC code. Existing
+stable bindings skip this second redirect. The Core response carries an explicit
+protocol version and uses a non-success precondition response when consent is
+required, so either side of a mixed-version deployment fails closed rather than
+silently completing an email-less first login.
+Legacy `/wecom/login` and `/wecom/callback` aliases remain available for existing
+callback registrations.
 
 ## Email transport
 

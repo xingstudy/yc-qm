@@ -1,6 +1,7 @@
 import "./support/auto-fake-sprites.ts";
 
 import assert from "node:assert/strict";
+import { createHash, createHmac } from "node:crypto";
 import { test } from "node:test";
 import { createAuditLog } from "../src/audit/audit-log.ts";
 import { createMetricsSink } from "../src/admin/metrics-sink.ts";
@@ -20,6 +21,7 @@ import { createIdentityLinkingService } from "../src/directory-sources/identity-
 import { createDirectoryEmailResolutionService } from "../src/directory-sources/email-resolution-service.ts";
 import { createManagedDirectoryService } from "../src/directory-sources/managed-directory-service.ts";
 import { createDirectoryIdentityMigrationService } from "../src/directory-sources/identity-migration.ts";
+import { deriveConnectorKey } from "../src/connectors/connector-client-store.ts";
 import type { DirectoryProviderAdapter } from "../src/directory-sources/provider.ts";
 import type {
   ExternalIdentityAssertion,
@@ -164,7 +166,25 @@ function provider(
         sourceId: input.sourceId,
         provider: "fake",
         externalTenantId: value.externalTenantId,
-        externalSubjectId: value.externalSubjectId,
+        externalSubjectId: value.externalSubjectId.trim(),
+        displayName: value.displayName,
+        corporateEmail: value.emails.find((email) => email.kind === "corporate")?.value ?? null,
+        personalEmail: value.emails.find((email) => email.kind === "personal")?.value ?? null,
+        employeeNumber: value.employeeNumber,
+        mobile: value.mobile,
+        status: value.status,
+      };
+    },
+    async resolveProfileAuthorizationCode(_config, input) {
+      const value = state.members[0]!;
+      if (value.externalSubjectId.trim() !== input.expectedExternalSubjectId) {
+        throw new Error("profile_identity_mismatch");
+      }
+      return {
+        sourceId: input.sourceId,
+        provider: "fake",
+        externalTenantId: value.externalTenantId,
+        externalSubjectId: value.externalSubjectId.trim(),
         displayName: value.displayName,
         corporateEmail: value.emails.find((email) => email.kind === "corporate")?.value ?? null,
         personalEmail: value.emails.find((email) => email.kind === "personal")?.value ?? null,
@@ -175,6 +195,12 @@ function provider(
     },
     authorizeUrl(config, input) {
       const url = new URL("https://login.example.test/authorize");
+      url.searchParams.set("tenant", config.tenant!);
+      url.searchParams.set("state", input.state);
+      return url.toString();
+    },
+    profileAuthorizeUrl(config, input) {
+      const url = new URL("https://login.example.test/profile-authorize");
       url.searchParams.set("tenant", config.tenant!);
       url.searchParams.set("state", input.state);
       return url.toString();
@@ -691,10 +717,110 @@ test("managed login can start after connection verification while synchronizatio
     () => service.update(created.id, { expectedRevision: rotated.revision, syncEnabled: true }, "admin"),
     /preview_required/,
   );
+  state.members[0] = member({
+    externalSubjectId: " external-1 ",
+    displayName: " Alice External ",
+    emails: [
+      { value: " alice@example.com ", kind: "corporate", verified: true },
+      { value: " ", kind: "personal", verified: false },
+    ],
+    employeeNumber: " E-1 ",
+    mobile: " ",
+  });
   const assertion = await service.resolveLoginCode(created.id, "provider-code");
   assert.ok(assertion.proof);
+  assert.equal(assertion.externalSubjectId, "external-1");
+  assert.equal(assertion.displayName, "Alice External");
+  assert.equal(assertion.corporateEmail, "alice@example.com");
   assert.equal(assertion.corporateEmailVerified, true);
+  assert.equal(assertion.personalEmail, null);
+  assert.equal(assertion.employeeNumber, "E-1");
+  assert.equal(assertion.mobile, null);
   assert.ok(service.verifyLoginAssertion(assertion));
+  assert.equal(await service.profileAuthorizationSupported(created.id), true);
+  assert.equal(
+    new URL(await service.profileAuthorizationUrl(created.id, "profile-state")).searchParams.get("state"),
+    "profile-state",
+  );
+  const profileAssertion = await service.resolveProfileAuthorizationCode(created.id, "profile-code", {
+    provider: "fake",
+    externalTenantId: "tenant-1",
+    externalSubjectId: "external-1",
+  });
+  assert.equal(profileAssertion.corporateEmail, "alice@example.com");
+  assert.equal(profileAssertion.corporateEmailVerified, true);
+  assert.ok(service.verifyLoginAssertion(profileAssertion));
+  const transported = {
+    sourceId: assertion.sourceId,
+    provider: assertion.provider,
+    externalTenantId: assertion.externalTenantId,
+    externalSubjectId: assertion.externalSubjectId,
+    displayName: assertion.displayName,
+    corporateEmail: assertion.corporateEmail,
+    corporateEmailVerified: assertion.corporateEmailVerified,
+    personalEmail: assertion.personalEmail,
+    employeeNumber: assertion.employeeNumber,
+    mobile: assertion.mobile,
+    status: assertion.status,
+    proof: assertion.proof,
+  };
+  const [payload] = assertion.proof.split(".");
+  const signed = JSON.parse(Buffer.from(payload!, "base64url").toString("utf8")) as { digest: string; v: number };
+  const { proof: _proof, ...oldVerifierClaims } = transported;
+  assert.equal(signed.v, 2);
+  assert.equal(signed.digest, createHash("sha256").update(JSON.stringify(oldVerifierClaims)).digest("base64url"));
+  assert.ok(service.verifyLoginAssertion(transported));
+  const legacySignerClaims = {
+    sourceId: transported.sourceId,
+    provider: transported.provider,
+    externalTenantId: transported.externalTenantId,
+    externalSubjectId: transported.externalSubjectId,
+    displayName: transported.displayName,
+    corporateEmail: transported.corporateEmail,
+    personalEmail: transported.personalEmail,
+    employeeNumber: transported.employeeNumber,
+    mobile: transported.mobile,
+    status: transported.status,
+    corporateEmailVerified: transported.corporateEmailVerified,
+  };
+  const legacyIssuedAt = Math.floor(Date.now() / 1000);
+  const legacyPayload = Buffer.from(
+    JSON.stringify({
+      aud: `qm-core:${ORG}`,
+      digest: createHash("sha256").update(JSON.stringify(legacySignerClaims)).digest("base64url"),
+      exp: legacyIssuedAt + 120,
+      iat: legacyIssuedAt,
+      jti: "legacy-assertion",
+    }),
+  ).toString("base64url");
+  const assertionKey = deriveConnectorKey("directory-test-key-material-0123456789", "directory-login-assertions");
+  const legacySignature = createHmac("sha256", assertionKey.current).update(legacyPayload).digest("base64url");
+  assert.ok(service.verifyLoginAssertion({ ...transported, proof: `${legacyPayload}.${legacySignature}` }));
+  assert.ok(
+    service.verifyLoginAssertion({
+      ...transported,
+      externalSubjectId: " external-1 ",
+      displayName: " Alice External ",
+      corporateEmail: " alice@example.com ",
+      personalEmail: " ",
+      employeeNumber: " E-1 ",
+      mobile: " ",
+    }),
+  );
+  state.members[0] = member({ emails: [], employeeNumber: null, mobile: null });
+  const emailLess = await service.resolveLoginCode(created.id, "provider-code");
+  assert.equal(emailLess.corporateEmail, null);
+  assert.equal(emailLess.corporateEmailVerified, false);
+  assert.ok(service.verifyLoginAssertion(emailLess));
+  await assert.rejects(
+    () =>
+      service.resolveProfileAuthorizationCode(created.id, "profile-code", {
+        provider: "fake",
+        externalTenantId: "tenant-1",
+        externalSubjectId: "external-1",
+      }),
+    /profile_corporate_email_missing/,
+  );
   assert.equal(service.verifyLoginAssertion({ ...assertion, displayName: "Forged" }), null);
 });
 
@@ -2540,6 +2666,132 @@ test("WeCom adapter fixes API hosts and preserves corporate versus personal emai
   const authorize = new URL(adapter.authorizeUrl(config.publicConfig, { sourceId: "source-wecom", state: "sealed" }));
   assert.equal(authorize.hostname, "open.work.weixin.qq.com");
   assert.equal(authorize.searchParams.get("state"), "sealed");
+});
+
+test("WeCom QR identity resolution does not depend on the member-detail endpoint", async () => {
+  const calls: string[] = [];
+  const adapter = createWeComDirectoryProvider({
+    fetchImpl: async (input) => {
+      const url = new URL(input.toString());
+      calls.push(url.pathname);
+      if (url.pathname === "/cgi-bin/gettoken") {
+        return new Response(JSON.stringify({ errcode: 0, access_token: "application-token", expires_in: 7200 }));
+      }
+      if (url.pathname === "/cgi-bin/auth/getuserinfo") {
+        return new Response(JSON.stringify({ errcode: 0, UserId: "alice" }));
+      }
+      throw new Error(`unexpected endpoint ${url.pathname}`);
+    },
+  });
+  const identity = await adapter.resolveLoginCode(
+    {
+      publicConfig: {
+        corpId: "wwcorp",
+        agentId: "1000002",
+        redirectUri: "https://agent.example.test/idp/directory/callback",
+      },
+      secretConfig: { applicationSecret: "application-secret" },
+    },
+    { sourceId: "source-wecom", code: "qr-code" },
+  );
+  assert.deepEqual(identity, {
+    sourceId: "source-wecom",
+    provider: "wecom",
+    externalTenantId: "wwcorp",
+    externalSubjectId: "alice",
+    displayName: "alice",
+    corporateEmail: null,
+    personalEmail: null,
+    employeeNumber: null,
+    mobile: null,
+    status: "active",
+  });
+  assert.deepEqual(calls, ["/cgi-bin/gettoken", "/cgi-bin/auth/getuserinfo"]);
+});
+
+test("WeCom profile authorization resolves consented corporate email and fences the QR UserID", async () => {
+  const profileBodies: unknown[] = [];
+  let detailedSubjectId = "alice";
+  const adapter = createWeComDirectoryProvider({
+    fetchImpl: async (input, init) => {
+      const url = new URL(input.toString());
+      if (url.pathname === "/cgi-bin/gettoken") {
+        return new Response(JSON.stringify({ errcode: 0, access_token: "application-token", expires_in: 7200 }));
+      }
+      if (url.pathname === "/cgi-bin/user/getuserinfo") {
+        assert.equal(url.searchParams.get("access_token"), "application-token");
+        assert.equal(url.searchParams.get("code"), "profile-code");
+        return new Response(JSON.stringify({ errcode: 0, UserId: "alice", user_ticket: "user-ticket" }));
+      }
+      if (url.pathname === "/cgi-bin/auth/getuserdetail") {
+        profileBodies.push(JSON.parse(String(init?.body)) as unknown);
+        return new Response(
+          JSON.stringify({
+            errcode: 0,
+            userid: detailedSubjectId,
+            name: "Alice Authorized",
+            biz_mail: "Alice@Corp.Example",
+            email: "alice@personal.example",
+            mobile: "+8613800000000",
+          }),
+        );
+      }
+      return new Response(JSON.stringify({ errcode: 40000 }), { status: 400 });
+    },
+  });
+  const config = {
+    publicConfig: {
+      corpId: "wwcorp",
+      agentId: "1000002",
+      redirectUri: "https://agent.example.test/idp/directory/callback",
+    },
+    secretConfig: { applicationSecret: "application-secret" },
+  };
+  const authorize = new URL(
+    adapter.profileAuthorizeUrl?.(config.publicConfig, { sourceId: "source-wecom", state: "sealedProfile" }) ?? "",
+  );
+  assert.equal(`${authorize.origin}${authorize.pathname}`, "https://open.weixin.qq.com/connect/oauth2/authorize");
+  assert.equal(authorize.searchParams.get("appid"), "wwcorp");
+  assert.equal(authorize.searchParams.get("agentid"), "1000002");
+  assert.equal(authorize.searchParams.get("redirect_uri"), config.publicConfig.redirectUri);
+  assert.equal(authorize.searchParams.get("response_type"), "code");
+  assert.equal(authorize.searchParams.get("scope"), "snsapi_privateinfo");
+  assert.equal(authorize.searchParams.get("state"), "sealedProfile");
+  assert.equal(authorize.hash, "#wechat_redirect");
+  assert.throws(
+    () => adapter.profileAuthorizeUrl?.(config.publicConfig, { sourceId: "source-wecom", state: "invalid-state" }),
+    /profile_state_invalid/,
+  );
+
+  const identity = await adapter.resolveProfileAuthorizationCode?.(config, {
+    sourceId: "source-wecom",
+    code: "profile-code",
+    expectedExternalSubjectId: "alice",
+  });
+  assert.deepEqual(profileBodies, [{ user_ticket: "user-ticket" }]);
+  assert.deepEqual(identity, {
+    sourceId: "source-wecom",
+    provider: "wecom",
+    externalTenantId: "wwcorp",
+    externalSubjectId: "alice",
+    displayName: "Alice Authorized",
+    corporateEmail: "alice@corp.example",
+    personalEmail: "alice@personal.example",
+    employeeNumber: null,
+    mobile: "+8613800000000",
+    status: "active",
+  });
+
+  detailedSubjectId = "mallory";
+  await assert.rejects(
+    () =>
+      adapter.resolveProfileAuthorizationCode!(config, {
+        sourceId: "source-wecom",
+        code: "profile-code",
+        expectedExternalSubjectId: "alice",
+      }),
+    /profile_detail_user_mismatch/,
+  );
 });
 
 test("WeCom full sync rejects cursor cycles, malformed cursors, malformed list entries, and unknown member status", async () => {

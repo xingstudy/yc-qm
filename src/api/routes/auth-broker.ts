@@ -144,7 +144,9 @@ async function directoryLoginOptions(ctx: ApiCtx): Promise<void> {
 }
 
 async function resolveDirectoryLoginCode(ctx: ApiCtx): Promise<void> {
-  if (!ctx.deps.directorySources) return sendJson(ctx.res, 404, { error: "not_configured" });
+  if (!ctx.deps.directorySources || !ctx.deps.identityLinking) {
+    return sendJson(ctx.res, 404, { error: "not_configured" });
+  }
   const body = isObj(ctx.body) ? ctx.body : {};
   const code = typeof body.code === "string" ? body.code.trim() : "";
   const sourceId = ctx.params.sourceId ?? "";
@@ -152,8 +154,65 @@ async function resolveDirectoryLoginCode(ctx: ApiCtx): Promise<void> {
     return sendJson(ctx.res, 400, { error: "bad_request" });
   }
   try {
+    const identity = await ctx.deps.directorySources.resolveLoginCode(sourceId, code);
+    const hasStableBinding = await ctx.deps.identityLinking.hasStableBinding(identity);
+    const authorizationRequired =
+      !hasStableBinding &&
+      !(identity.corporateEmail && identity.corporateEmailVerified) &&
+      (await ctx.deps.directorySources.profileAuthorizationSupported(sourceId));
+    return sendJson(ctx.res, authorizationRequired ? 428 : 200, {
+      protocolVersion: 2,
+      identity,
+      authorizationRequired,
+    });
+  } catch {
+    return sendJson(ctx.res, 403, { error: "directory_identity_rejected" });
+  }
+}
+
+async function directoryProfileAuthorizationUrl(ctx: ApiCtx): Promise<void> {
+  if (!ctx.deps.directorySources) return sendJson(ctx.res, 404, { error: "not_configured" });
+  const body = isObj(ctx.body) ? ctx.body : {};
+  const state = typeof body.state === "string" ? body.state : "";
+  const sourceId = ctx.params.sourceId ?? "";
+  if (!sourceId || !state || state.length > 8_192) return sendJson(ctx.res, 400, { error: "bad_request" });
+  try {
     return sendJson(ctx.res, 200, {
-      identity: await ctx.deps.directorySources.resolveLoginCode(sourceId, code),
+      authorizeUrl: await ctx.deps.directorySources.profileAuthorizationUrl(sourceId, state),
+    });
+  } catch {
+    return sendJson(ctx.res, 403, { error: "directory_identity_rejected" });
+  }
+}
+
+async function resolveDirectoryProfileAuthorizationCode(ctx: ApiCtx): Promise<void> {
+  if (!ctx.deps.directorySources) return sendJson(ctx.res, 404, { error: "not_configured" });
+  const body = isObj(ctx.body) ? ctx.body : {};
+  const code = typeof body.code === "string" ? body.code.trim() : "";
+  const provider = typeof body.provider === "string" ? body.provider.trim() : "";
+  const externalTenantId = typeof body.externalTenantId === "string" ? body.externalTenantId.trim() : "";
+  const externalSubjectId = typeof body.externalSubjectId === "string" ? body.externalSubjectId.trim() : "";
+  const sourceId = ctx.params.sourceId ?? "";
+  if (
+    !sourceId ||
+    !code ||
+    code.length > 2_048 ||
+    !provider ||
+    provider.length > 200 ||
+    !externalTenantId ||
+    externalTenantId.length > 512 ||
+    !externalSubjectId ||
+    externalSubjectId.length > 512
+  ) {
+    return sendJson(ctx.res, 400, { error: "bad_request" });
+  }
+  try {
+    return sendJson(ctx.res, 200, {
+      identity: await ctx.deps.directorySources.resolveProfileAuthorizationCode(sourceId, code, {
+        provider,
+        externalTenantId,
+        externalSubjectId,
+      }),
     });
   } catch {
     return sendJson(ctx.res, 403, { error: "directory_identity_rejected" });
@@ -171,5 +230,17 @@ export const authBrokerRoutes: ReadonlyArray<Route<ApiCtx>> = [
     path: "/v1/auth/directory-sources/:sourceId/resolve-code",
     auth: "source",
     handle: resolveDirectoryLoginCode,
+  },
+  {
+    method: "POST",
+    path: "/v1/auth/directory-sources/:sourceId/profile-authorization-url",
+    auth: "source",
+    handle: directoryProfileAuthorizationUrl,
+  },
+  {
+    method: "POST",
+    path: "/v1/auth/directory-sources/:sourceId/resolve-profile-authorization-code",
+    auth: "source",
+    handle: resolveDirectoryProfileAuthorizationCode,
   },
 ];

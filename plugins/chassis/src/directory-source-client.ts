@@ -23,9 +23,26 @@ export interface ExternalIdentityAssertion {
   proof: string;
 }
 
+export interface DirectoryCodeResolution {
+  identity: ExternalIdentityAssertion;
+  authorizationRequired: boolean;
+}
+
+export interface DirectoryProfileIdentity {
+  provider: string;
+  externalTenantId: string;
+  externalSubjectId: string;
+}
+
 export interface DirectorySourceClient {
   loginOptions(state: string): Promise<DirectoryLoginOption[]>;
-  resolveCode(sourceId: string, code: string): Promise<ExternalIdentityAssertion>;
+  resolveCode(sourceId: string, code: string): Promise<DirectoryCodeResolution>;
+  profileAuthorizationUrl?(sourceId: string, state: string): Promise<string>;
+  resolveProfileAuthorizationCode?(
+    sourceId: string,
+    code: string,
+    expected: DirectoryProfileIdentity,
+  ): Promise<ExternalIdentityAssertion>;
 }
 
 function assertion(value: unknown): ExternalIdentityAssertion | null {
@@ -69,7 +86,7 @@ export function createDirectorySourceClient(options: {
 }): DirectorySourceClient {
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? 4_000;
-  const resolveTimeoutMs = options.resolveTimeoutMs ?? 25_000;
+  const resolveTimeoutMs = options.resolveTimeoutMs ?? 35_000;
   const label = options.label ?? "directory-source-client";
   return {
     async loginOptions(state) {
@@ -118,10 +135,71 @@ export function createDirectorySourceClient(options: {
           body,
           signal: AbortSignal.timeout(resolveTimeoutMs),
         });
+        if (response.status !== 200 && response.status !== 428) throw new Error(`HTTP ${response.status}`);
+        const data = (await response.json()) as {
+          protocolVersion?: unknown;
+          identity?: unknown;
+          authorizationRequired?: unknown;
+        };
+        const parsed = assertion(data.identity);
+        const authorizationRequired = response.status === 428;
+        if (
+          data.protocolVersion !== 2 ||
+          !parsed ||
+          parsed.sourceId !== sourceId ||
+          data.authorizationRequired !== authorizationRequired
+        ) {
+          throw new Error("invalid identity response");
+        }
+        return { identity: parsed, authorizationRequired };
+      } catch (error) {
+        throw new Error(`${label}: ${errMessage(error)}`, { cause: error });
+      }
+    },
+    async profileAuthorizationUrl(sourceId, state) {
+      const base = `/v1/auth/directory-sources/${encodeURIComponent(sourceId)}/profile-authorization-url`;
+      const path = withSourceAuthNonce(base, options.signingSecret);
+      const body = JSON.stringify({ state });
+      try {
+        const response = await fetchImpl(`${options.coreApiUrl}${path}`, {
+          method: "POST",
+          headers: signedHeaders(options.signingSecret, "POST", path, body),
+          body,
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = (await response.json()) as { authorizeUrl?: unknown };
+        if (typeof data.authorizeUrl !== "string" || !data.authorizeUrl) {
+          throw new Error("invalid profile authorization response");
+        }
+        return data.authorizeUrl;
+      } catch (error) {
+        throw new Error(`${label}: ${errMessage(error)}`, { cause: error });
+      }
+    },
+    async resolveProfileAuthorizationCode(sourceId, code, expected) {
+      const base = `/v1/auth/directory-sources/${encodeURIComponent(sourceId)}/resolve-profile-authorization-code`;
+      const path = withSourceAuthNonce(base, options.signingSecret);
+      const body = JSON.stringify({ code, ...expected });
+      try {
+        const response = await fetchImpl(`${options.coreApiUrl}${path}`, {
+          method: "POST",
+          headers: signedHeaders(options.signingSecret, "POST", path, body),
+          body,
+          signal: AbortSignal.timeout(resolveTimeoutMs),
+        });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = (await response.json()) as { identity?: unknown };
         const parsed = assertion(data.identity);
-        if (!parsed || parsed.sourceId !== sourceId) throw new Error("invalid identity response");
+        if (
+          !parsed ||
+          parsed.sourceId !== sourceId ||
+          parsed.provider !== expected.provider ||
+          parsed.externalTenantId !== expected.externalTenantId ||
+          parsed.externalSubjectId !== expected.externalSubjectId
+        ) {
+          throw new Error("invalid profile identity response");
+        }
         return parsed;
       } catch (error) {
         throw new Error(`${label}: ${errMessage(error)}`, { cause: error });

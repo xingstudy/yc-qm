@@ -11,6 +11,8 @@ import { normalizeDirectoryEmail } from "../types.ts";
 
 const API_ORIGIN = "https://qyapi.weixin.qq.com";
 const AUTHORIZE_URL = "https://open.work.weixin.qq.com/wwopen/sso/qrConnect";
+const PROFILE_AUTHORIZE_URL = "https://open.weixin.qq.com/connect/oauth2/authorize";
+const PROFILE_STATE_RE = /^[A-Za-z0-9]{1,128}$/;
 const TIMEOUT_MS = 8_000;
 const READ_CONCURRENCY = 8;
 
@@ -429,21 +431,65 @@ export function createWeComDirectoryProvider(options: WeComProviderOptions = {})
       const identity = await readJson(fetchImpl, identityUrl, { headers: { accept: "application/json" } }, "login");
       const externalSubjectId = stringValue(identity.UserId) || stringValue(identity.userid);
       if (!externalSubjectId) throw new Error("wecom_login_missing_userid");
-      const member = await getUser(config, { orgId: "", sourceId: input.sourceId, externalSubjectId });
-      if (!member) throw new Error("wecom_login_user_not_visible");
-      const corporateEmail = member.emails.find((email) => email.kind === "corporate")?.value ?? null;
-      const personalEmail = member.emails.find((email) => email.kind === "personal")?.value ?? null;
+      const identityEmails = emailsFrom(identity);
       return {
         sourceId: input.sourceId,
         provider: "wecom",
         externalTenantId: corpId,
         externalSubjectId,
-        displayName: member.displayName,
-        corporateEmail,
-        personalEmail,
-        employeeNumber: member.employeeNumber,
-        mobile: member.mobile,
-        status: member.status,
+        displayName: (stringValue(identity.name) || externalSubjectId).slice(0, 200),
+        corporateEmail: identityEmails.find((email) => email.kind === "corporate")?.value ?? null,
+        personalEmail: identityEmails.find((email) => email.kind === "personal")?.value ?? null,
+        employeeNumber: employeeNumber(identity),
+        mobile: stringValue(identity.mobile) || null,
+        status: "active",
+      };
+    },
+    async resolveProfileAuthorizationCode(config, input): Promise<ExternalIdentityAssertion> {
+      const { token, corpId } = await applicationTokenFor(config);
+      const identityUrl = new URL("/cgi-bin/user/getuserinfo", API_ORIGIN);
+      identityUrl.searchParams.set("access_token", token);
+      identityUrl.searchParams.set("code", input.code);
+      const identity = await readJson(
+        fetchImpl,
+        identityUrl,
+        { headers: { accept: "application/json" } },
+        "profile_login",
+      );
+      const externalSubjectId = stringValue(identity.UserId) || stringValue(identity.userid);
+      const userTicket = stringValue(identity.user_ticket);
+      if (!externalSubjectId || !userTicket) throw new Error("wecom_profile_login_missing_identity");
+      if (externalSubjectId !== input.expectedExternalSubjectId) {
+        throw new Error("wecom_profile_login_user_mismatch");
+      }
+      const detailUrl = new URL("/cgi-bin/auth/getuserdetail", API_ORIGIN);
+      detailUrl.searchParams.set("access_token", token);
+      const detail = await readJson(
+        fetchImpl,
+        detailUrl,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ user_ticket: userTicket }),
+        },
+        "profile_detail",
+      );
+      const detailedSubjectId = stringValue(detail.userid) || stringValue(detail.UserId);
+      if (!detailedSubjectId || detailedSubjectId !== externalSubjectId) {
+        throw new Error("wecom_profile_detail_user_mismatch");
+      }
+      const detailEmails = emailsFrom(detail);
+      return {
+        sourceId: input.sourceId,
+        provider: "wecom",
+        externalTenantId: corpId,
+        externalSubjectId,
+        displayName: (stringValue(detail.name) || externalSubjectId).slice(0, 200),
+        corporateEmail: detailEmails.find((email) => email.kind === "corporate")?.value ?? null,
+        personalEmail: detailEmails.find((email) => email.kind === "personal")?.value ?? null,
+        employeeNumber: employeeNumber(detail),
+        mobile: stringValue(detail.mobile) || null,
+        status: "active",
       };
     },
     authorizeUrl(config, input) {
@@ -456,6 +502,22 @@ export function createWeComDirectoryProvider(options: WeComProviderOptions = {})
       url.searchParams.set("agentid", agentId);
       url.searchParams.set("redirect_uri", redirectUri);
       url.searchParams.set("state", input.state);
+      return url.toString();
+    },
+    profileAuthorizeUrl(config, input) {
+      const corpId = stringValue(config.corpId);
+      const agentId = stringValue(config.agentId);
+      const redirectUri = stringValue(config.redirectUri);
+      if (!corpId || !agentId || !redirectUri) throw new Error("wecom_config_incomplete");
+      if (!PROFILE_STATE_RE.test(input.state)) throw new Error("wecom_profile_state_invalid");
+      const url = new URL(PROFILE_AUTHORIZE_URL);
+      url.searchParams.set("appid", corpId);
+      url.searchParams.set("redirect_uri", redirectUri);
+      url.searchParams.set("response_type", "code");
+      url.searchParams.set("scope", "snsapi_privateinfo");
+      url.searchParams.set("state", input.state);
+      url.searchParams.set("agentid", agentId);
+      url.hash = "wechat_redirect";
       return url.toString();
     },
   };

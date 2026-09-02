@@ -13,6 +13,11 @@ export interface AuthRequest {
   codeChallenge: string;
   scope: string;
   directorySourceId?: string;
+  directoryProfileIdentity?: {
+    provider: string;
+    externalTenantId: string;
+    externalSubjectId: string;
+  };
 }
 
 export interface LinkClaims extends AuthRequest {
@@ -274,13 +279,32 @@ function requestClaims(request: AuthRequest): Record<string, unknown> {
     cc: request.codeChallenge,
     sc: request.scope,
     ...(request.directorySourceId ? { ds: request.directorySourceId } : {}),
+    ...(request.directoryProfileIdentity
+      ? {
+          di: {
+            pr: request.directoryProfileIdentity.provider,
+            ti: request.directoryProfileIdentity.externalTenantId,
+            su: request.directoryProfileIdentity.externalSubjectId,
+          },
+        }
+      : {}),
   };
 }
 
 function readRequest(payload: JWTPayload): AuthRequest | null {
-  const { cid, ru, st, no, cc, sc, ds } = payload as Record<string, unknown>;
+  const { cid, ru, st, no, cc, sc, ds, di } = payload as Record<string, unknown>;
   if ([cid, ru, st, no, cc, sc].some((value) => typeof value !== "string" || !value)) return null;
   if (ds !== undefined && (typeof ds !== "string" || !ds)) return null;
+  if (di !== undefined && (!di || typeof di !== "object" || Array.isArray(di) || typeof ds !== "string")) return null;
+  const directoryIdentity = di as Record<string, unknown> | undefined;
+  if (
+    directoryIdentity &&
+    [directoryIdentity.pr, directoryIdentity.ti, directoryIdentity.su].some(
+      (value) => typeof value !== "string" || !value,
+    )
+  ) {
+    return null;
+  }
   return {
     clientId: cid as string,
     redirectUri: ru as string,
@@ -289,6 +313,15 @@ function readRequest(payload: JWTPayload): AuthRequest | null {
     codeChallenge: cc as string,
     scope: sc as string,
     ...(typeof ds === "string" ? { directorySourceId: ds } : {}),
+    ...(directoryIdentity
+      ? {
+          directoryProfileIdentity: {
+            provider: directoryIdentity.pr as string,
+            externalTenantId: directoryIdentity.ti as string,
+            externalSubjectId: directoryIdentity.su as string,
+          },
+        }
+      : {}),
   };
 }
 

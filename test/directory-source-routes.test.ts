@@ -37,6 +37,7 @@ const capabilities = {
   employeeNumber: false,
   mobile: false,
   departments: false,
+  trustedCorporateEmail: true,
 };
 
 const provider: DirectoryProviderAdapter = {
@@ -54,11 +55,39 @@ const provider: DirectoryProviderAdapter = {
   async targetedLookup() {
     return null;
   },
-  async resolveLoginCode() {
-    throw new Error("unused");
+  async resolveLoginCode(config, input) {
+    return {
+      sourceId: input.sourceId,
+      provider: "fake",
+      externalTenantId: config.publicConfig.tenant!,
+      externalSubjectId: "external-user",
+      displayName: "External User",
+      corporateEmail: null,
+      personalEmail: null,
+      employeeNumber: null,
+      mobile: null,
+      status: "active",
+    };
   },
   authorizeUrl() {
     return "https://login.example.test";
+  },
+  profileAuthorizeUrl(_config, input) {
+    return `https://profile.example.test/authorize?state=${encodeURIComponent(input.state)}`;
+  },
+  async resolveProfileAuthorizationCode(config, input) {
+    return {
+      sourceId: input.sourceId,
+      provider: "fake",
+      externalTenantId: config.publicConfig.tenant!,
+      externalSubjectId: input.expectedExternalSubjectId,
+      displayName: "External User",
+      corporateEmail: "external@example.com",
+      personalEmail: null,
+      employeeNumber: null,
+      mobile: null,
+      status: "active",
+    };
   },
 };
 
@@ -96,6 +125,7 @@ async function start(withDirectory: boolean, environmentSources: readonly Enviro
   });
   await directorySources.ready;
   const identityEvents = { invalidatedSources: [] as string[], invalidatedRevisions: [] as number[] };
+  let stableBinding = false;
   const identityLinking = {
     async sourceImpact() {
       return { members: 4, bindings: 2, affectedUsers: 2 };
@@ -104,6 +134,9 @@ async function start(withDirectory: boolean, environmentSources: readonly Enviro
       identityEvents.invalidatedSources.push(sourceId);
       if (sourceRevision !== undefined) identityEvents.invalidatedRevisions.push(sourceRevision);
       return 2;
+    },
+    async hasStableBinding() {
+      return stableBinding;
     },
   } as unknown as IdentityLinkingService;
   const managedEvents = {
@@ -145,8 +178,12 @@ async function start(withDirectory: boolean, environmentSources: readonly Enviro
   await built.organization.setStatus({ principalId: ADMIN, status: "active", actor: "test" });
   return {
     base: `http://localhost:${(server.address() as AddressInfo).port}`,
+    directorySources,
     identityEvents,
     managedEvents,
+    setStableBinding(value: boolean) {
+      stableBinding = value;
+    },
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }
@@ -162,6 +199,90 @@ test("directory source admin routes fail closed without a durable source service
       error: "not_configured",
       message: "directory sources require PostgreSQL",
     });
+  } finally {
+    await server.close();
+  }
+});
+
+test("directory sign-in requests profile authorization only for an unbound identity without corporate email", async () => {
+  const server = await start(true);
+  try {
+    const source = await server.directorySources.create(
+      {
+        provider: "fake",
+        name: "Corporate directory",
+        publicConfig: {
+          tenant: "tenant-1",
+          redirectUri: "https://agent.example.test/idp/directory/callback",
+        },
+        secretConfig: { clientId: "client-id", clientSecret: "client-secret" },
+        loginEnabled: true,
+      },
+      ADMIN,
+    );
+    const resolvePath = `/v1/auth/directory-sources/${source.id}/resolve-code`;
+    const firstBody = JSON.stringify({ code: "first-code" });
+    const first = await fetch(`${server.base}${resolvePath}`, {
+      method: "POST",
+      headers: signedHeaders("POST", resolvePath, firstBody),
+      body: firstBody,
+    });
+    assert.equal(first.status, 428);
+    const firstResult = (await first.json()) as {
+      protocolVersion: number;
+      authorizationRequired: boolean;
+      identity: { externalSubjectId: string; corporateEmail: string | null; proof: string };
+    };
+    assert.equal(firstResult.protocolVersion, 2);
+    assert.equal(firstResult.authorizationRequired, true);
+    assert.equal(firstResult.identity.externalSubjectId, "external-user");
+    assert.equal(firstResult.identity.corporateEmail, null);
+    assert.ok(firstResult.identity.proof);
+
+    server.setStableBinding(true);
+    const secondBody = JSON.stringify({ code: "second-code" });
+    const second = await fetch(`${server.base}${resolvePath}`, {
+      method: "POST",
+      headers: signedHeaders("POST", resolvePath, secondBody),
+      body: secondBody,
+    });
+    assert.equal(second.status, 200);
+    const secondResult = (await second.json()) as { protocolVersion: number; authorizationRequired: boolean };
+    assert.equal(secondResult.protocolVersion, 2);
+    assert.equal(secondResult.authorizationRequired, false);
+
+    const urlPath = `/v1/auth/directory-sources/${source.id}/profile-authorization-url`;
+    const urlBody = JSON.stringify({ state: "sealed-profile-state" });
+    const urlResponse = await fetch(`${server.base}${urlPath}`, {
+      method: "POST",
+      headers: signedHeaders("POST", urlPath, urlBody),
+      body: urlBody,
+    });
+    assert.equal(urlResponse.status, 200);
+    assert.equal(
+      ((await urlResponse.json()) as { authorizeUrl: string }).authorizeUrl,
+      "https://profile.example.test/authorize?state=sealed-profile-state",
+    );
+
+    const profilePath = `/v1/auth/directory-sources/${source.id}/resolve-profile-authorization-code`;
+    const profileBody = JSON.stringify({
+      code: "profile-code",
+      provider: "fake",
+      externalTenantId: "tenant-1",
+      externalSubjectId: "external-user",
+    });
+    const profile = await fetch(`${server.base}${profilePath}`, {
+      method: "POST",
+      headers: signedHeaders("POST", profilePath, profileBody),
+      body: profileBody,
+    });
+    assert.equal(profile.status, 200);
+    const profileResult = (await profile.json()) as {
+      identity: { corporateEmail: string; corporateEmailVerified: boolean; proof: string };
+    };
+    assert.equal(profileResult.identity.corporateEmail, "external@example.com");
+    assert.equal(profileResult.identity.corporateEmailVerified, true);
+    assert.ok(profileResult.identity.proof);
   } finally {
     await server.close();
   }

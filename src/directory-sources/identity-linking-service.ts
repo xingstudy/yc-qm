@@ -63,6 +63,7 @@ export interface IdentityLinkingService {
   }): Promise<"bound" | "not_found" | "conflict" | "deprovisioned" | "stale">;
   ignore(sourceId: string, externalSubjectId: string, actor: string, reason: string): Promise<boolean>;
   unignore(sourceId: string, externalSubjectId: string, actor: string): Promise<boolean>;
+  hasStableBinding(assertion: ExternalIdentityAssertion): Promise<boolean>;
   login(input: {
     issuer: string;
     subject: string;
@@ -943,6 +944,11 @@ export function createIdentityLinkingService(options: {
       return true;
     },
     loginEmail,
+    async hasStableBinding(assertion) {
+      return (await organizationStore.listIdentities(orgId)).some((candidate) =>
+        externalIdentityMatches(candidate, assertion),
+      );
+    },
     async provisionSnapshotMemberWithSourceLockHeld(member, actor) {
       const source = await sources.get(member.sourceId, true);
       if (!source) return { status: "denied", reason: "source_disabled" };
