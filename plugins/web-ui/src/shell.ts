@@ -1909,10 +1909,15 @@ export async function boot(): Promise<void> {
     if (wanted === "crons" && wantedItem) openCronById(wantedItem);
     switchView(wanted as View);
   } else if (wantedSession) {
-    const match = sessionsState.list.find((s) => s.id === wantedSession);
-    if (match) {
+    const listedSession = sessionsState.list.find((s) => s.id === wantedSession);
+    const linkedTranscript = listedSession ? null : await entriesPrefetch;
+    const linkedSession = listedSession ?? linkedTranscript?.session;
+    if (linkedSession) {
       exitSplitIfActive();
-      await openSession(match, entriesPrefetch ?? undefined);
+      await openSession(
+        linkedSession,
+        linkedTranscript ? Promise.resolve(linkedTranscript) : (entriesPrefetch ?? undefined),
+      );
     } else if (mountRestoredCanvas()) {
       canvasToast("That conversation wasn't found, or you don't have access to it.");
       syncUrlFromState();

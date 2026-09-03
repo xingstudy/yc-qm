@@ -10,6 +10,12 @@ test("a run's worklog link addresses the chats view, not the page it was rendere
   assert.doesNotMatch(source, /location\.pathname\}\?session=/);
 });
 
+test("a retained worklog deep link opens even though background sessions stay out of conversation history", () => {
+  assert.match(shell, /const linkedTranscript = listedSession \? null : await entriesPrefetch;/);
+  assert.match(shell, /const linkedSession = listedSession \?\? linkedTranscript\?\.session;/);
+  assert.match(shell, /await openSession\([\s\S]*?linkedSession,[\s\S]*?Promise\.resolve\(linkedTranscript\)/);
+});
+
 test("a cron row is a real link to its own path", () => {
   assert.match(source, /<a\s+class="cron-row-main"\s+href=\$\{deepLinkPath\(UI_BASE, "crons", null, null, c\.id\)\}/);
 });

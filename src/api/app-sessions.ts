@@ -2,7 +2,7 @@ import type { PendingApprovalRecord } from "../types.ts";
 import { orgId as orgIdOf } from "../config.ts";
 import { parseScopeId, scopeId } from "../types.ts";
 import { fileArtifactId, artifactPath } from "../files/file-artifact-store.ts";
-import { transcriptEntries, windowedTranscript } from "../sessions/session-store.ts";
+import { cronIdOf, transcriptEntries, windowedTranscript } from "../sessions/session-store.ts";
 import { SEARCH_HIT_LIMIT, searchSnippet, searchTerms } from "../sessions/entry-search.ts";
 import { supportsProcessSessions } from "../sandbox/sandbox.ts";
 import { processIsGone } from "../sandbox/process-poll.ts";
@@ -14,6 +14,7 @@ import { type ArtifactHome } from "./artifact-share.ts";
 import { randomUUID } from "node:crypto";
 import { MAX_ATTACHMENT_BYTES, mimeFromName, safeAttachmentName } from "../core/attachments.ts";
 import { projectIdFromGroupRef, projectScopeId } from "../projects/project-store.ts";
+import { canAdministerCron } from "./control-service.ts";
 
 import type { App, AppDeps } from "./app-types.ts";
 import { toFileItem, type ScopeDeployment, type SessionSearchHit } from "./app-types.ts";
@@ -22,6 +23,7 @@ import type { AppHelpers } from "./app-helpers.ts";
 export function createSessionMethods(
   deps: AppDeps,
   h: AppHelpers,
+  app: Pick<App, "membershipControlsScope" | "managesScope" | "samePerson">,
 ): Pick<
   App,
   | "getSession"
@@ -98,6 +100,26 @@ export function createSessionMethods(
     if (!member || member.type !== "internal") return null;
     return (await deps.organization?.checkRuntimeActive(principalId))?.status === "active" ? member : null;
   }
+  async function sessionAndEntriesForViewer(sessionId: string, principalId: string) {
+    const participantSession = (await sessionsForViewer(principalId)).find((session) => session.id === sessionId);
+    if (participantSession) {
+      return {
+        session: participantSession,
+        entries: transcriptEntries(await deps.sessions.visibleEntries(sessionId, principalId)),
+      };
+    }
+    const session = await deps.sessions.get(sessionId);
+    const cronId = cronIdOf(session?.threadRef);
+    if (!session || !cronId) return null;
+    const cron = await deps.crons.get(cronId);
+    if (
+      !cron ||
+      !cron.fireLog?.some((run) => run.sessionId === sessionId) ||
+      !(await canAdministerCron(app, cron, principalId))
+    )
+      return null;
+    return { session, entries: transcriptEntries(await deps.sessions.getEntries(sessionId)) };
+  }
   return {
     async getSession(sessionId, window) {
       const session = await deps.sessions.get(sessionId);
@@ -107,21 +129,16 @@ export function createSessionMethods(
     },
 
     async getSessionForViewer(sessionId, principalId, window) {
-      const session = (await sessionsForViewer(principalId)).find((s) => s.id === sessionId);
-      if (!session) return null;
-      const w = windowedTranscript(
-        transcriptEntries(await deps.sessions.visibleEntries(sessionId, principalId)),
-        window,
-      );
-      return { session, entries: w.entries, ...(w.earlier > 0 ? { earlierEntries: w.earlier } : {}) };
+      const found = await sessionAndEntriesForViewer(sessionId, principalId);
+      if (!found) return null;
+      const w = windowedTranscript(found.entries, window);
+      return { session: found.session, entries: w.entries, ...(w.earlier > 0 ? { earlierEntries: w.earlier } : {}) };
     },
 
     async getSessionEntryForViewer(sessionId, principalId, seq) {
-      const session = (await sessionsForViewer(principalId)).find((s) => s.id === sessionId);
-      if (!session) return null;
-      const entry = transcriptEntries(await deps.sessions.visibleEntries(sessionId, principalId)).find(
-        (e) => e.seq === seq,
-      );
+      const found = await sessionAndEntriesForViewer(sessionId, principalId);
+      if (!found) return null;
+      const entry = found.entries.find((e) => e.seq === seq);
       return entry ? { entry } : null;
     },
 
