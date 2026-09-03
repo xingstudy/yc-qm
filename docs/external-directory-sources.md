@@ -60,6 +60,11 @@ Existing `AUTH_WECOM_CORP_ID`, `AUTH_WECOM_AGENT_ID`, and `AUTH_WECOM_SECRET` va
 - `AUTH_WECOM_SYNC_MINUTES`
 - `AUTH_WECOM_MATCH_POLICY`
 
+`AUTH_WECOM_REDIRECT_URI` is the public callback registered with WeCom. Its origin and deployment prefix may
+differ from `AUTH_ISSUER`, but it must use HTTPS and end with `/directory/callback` or the legacy
+`/wecom/callback`. An external proxy must preserve the query string and route that public path to the matching
+broker callback under `AUTH_BROKER_PREFIX`.
+
 Environment-managed credentials enter only the Core container and are not persisted. Admin identifies the source as environment managed and disables inline edits and deletion. Invalid fallback credentials or metadata never prevent Admin from loading. An administrator can pause it until Core restarts. `AUTH_WECOM_SYNC_ENABLED=1` requests synchronization but does not bypass safety review: the source starts with synchronization disabled and a successful preview enables it. `AUTH_WECOM_JIT_PROVISIONING_ENABLED=1` explicitly opts the fallback source into snapshot-scoped automatic provisioning; a current complete snapshot and every runtime identity safety check remain mandatory. Core stores only an irreversible keyed configuration fingerprint, so unchanged configuration keeps its preview confirmation across restarts while any credential, connection, matching-policy, or capability change disables synchronization and requires a new preview. Creating an administrator-managed source for the same provider tenant atomically takes over the existing source ID, so member snapshots and bindings remain stable. Administrator-managed configuration always wins for the same provider tenant, including during concurrent instance startup. If that source is later deleted, its durable tombstone blocks environment fallback until the same source is explicitly restored or the tombstone is deliberately removed.
 
 ## Failure recovery

@@ -124,7 +124,7 @@ const IM_PROGRESS_KEY_PREFIX = `${IM_PROGRESS_LEGACY_KEY}-`;
 const IM_TOKENS_PRINCIPAL = "web-ui-im";
 const IM_CREDENTIALS_KEY = parseImCredentialsKey(process.env.WEB_UI_IM_CREDENTIALS_KEY);
 if (process.env.NODE_ENV === "production" && !IM_CREDENTIALS_KEY) {
-  throw new Error("WEB_UI_IM_CREDENTIALS_KEY must be exactly 32 bytes encoded as hexadecimal");
+  throw new Error("WEB_UI_IM_CREDENTIALS_KEY must be at least 32 characters");
 }
 const WEIXIN_ILINK_BASE_URL = "https://ilinkai.weixin.qq.com";
 const WEIXIN_ILINK_BOT_TYPE = "3";
@@ -436,9 +436,9 @@ function truncateUtf8(value: string, maxBytes: number, suffix: string): string {
 
 function parseImCredentialsKey(value: string | undefined): Buffer | undefined {
   const key = value?.trim();
-  if (!key || !/^[0-9a-f]{64}$/i.test(key)) return undefined;
-  const decoded = Buffer.from(key, "hex");
-  return decoded.length === 32 ? decoded : undefined;
+  if (!key || key.length < 32) return undefined;
+  if (/^[0-9a-f]{64}$/i.test(key)) return Buffer.from(key, "hex");
+  return createHash("sha256").update(`web-ui-im-resource-v2\0${key}`).digest();
 }
 
 function encryptImSecret(value: unknown): string {

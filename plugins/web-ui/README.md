@@ -41,7 +41,8 @@ Env (see `.env.example`): `CORE_API_URL` (default `http://localhost:8080`),
 `CORE_ORG_ID` (default `acme`), `PORT` (default 8096), `WEB_UI_PUBLIC_URL`,
 `WEB_UI_PRINCIPALS` (csv allowlist; empty = any id, **dev only**),
 `CORE_SIGNING_SECRET` (same value as the core when source-auth is enabled), and
-`WEB_UI_IM_CREDENTIALS_KEY` (a dedicated 32-byte hexadecimal key for IM Bot credentials).
+`WEB_UI_IM_CREDENTIALS_KEY` (a dedicated high-entropy secret of at least 32 characters for IM Bot credentials;
+a 32-byte hexadecimal key is also accepted directly).
 
 ## What you get
 

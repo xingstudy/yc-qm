@@ -132,8 +132,6 @@ export function productionPreflightProblems(
   const webUiImCredentialsKey = secretValues.find(([name]) => name === "WEB_UI_IM_CREDENTIALS_KEY")?.[1];
   if (webUiImCredentialsKey && /^0{64}$/.test(webUiImCredentialsKey)) {
     problems.push("WEB_UI_IM_CREDENTIALS_KEY must be replaced with a deployment value");
-  } else if (webUiImCredentialsKey && !/^[0-9a-f]{64}$/i.test(webUiImCredentialsKey)) {
-    problems.push("WEB_UI_IM_CREDENTIALS_KEY must be exactly 32 bytes encoded as hexadecimal");
   }
   const canonicalSecretValue = (value: string): string => (/^[0-9a-f]{64}$/i.test(value) ? value.toLowerCase() : value);
   for (let i = 0; i < secretValues.length; i++) {
@@ -201,14 +199,12 @@ export function productionPreflightProblems(
     if (!/^[0-9]+$/.test(wecomValues[1]!)) problems.push("AUTH_WECOM_AGENT_ID must be numeric");
     const callback = env.AUTH_WECOM_REDIRECT_URI?.trim();
     const callbackUrl = callback ? absoluteUrl("AUTH_WECOM_REDIRECT_URI", true) : undefined;
-    if (issuer && callbackUrl) {
-      const allowed = [
-        `${issuer.href.replace(/\/$/, "")}/directory/callback`,
-        `${issuer.href.replace(/\/$/, "")}/wecom/callback`,
-      ];
-      if (!allowed.includes(callbackUrl.href.replace(/\/$/, ""))) {
-        problems.push("AUTH_WECOM_REDIRECT_URI must be the broker directory callback");
-      }
+    if (callbackUrl?.username || callbackUrl?.password) {
+      problems.push("AUTH_WECOM_REDIRECT_URI must not include URL credentials");
+    } else if (callbackUrl?.hash) {
+      problems.push("AUTH_WECOM_REDIRECT_URI must not include a URL fragment");
+    } else if (callbackUrl && !/\/(?:directory|wecom)\/callback\/?$/.test(callbackUrl.pathname)) {
+      problems.push("AUTH_WECOM_REDIRECT_URI must end with /directory/callback or /wecom/callback");
     }
     const syncMinutes = Number(env.AUTH_WECOM_SYNC_MINUTES ?? 360);
     if (!Number.isInteger(syncMinutes) || syncMinutes < 15 || syncMinutes > 1440) {

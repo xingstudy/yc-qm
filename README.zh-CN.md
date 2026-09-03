@@ -272,7 +272,7 @@ sed -i 's/^ADMIN_GRANTS=.*/ADMIN_GRANTS=dev-admin:org_admin/' .env
 | `POSTGRES_PASSWORD`                                                           | 必填                                        | Compose 初始化和连接 Postgres 使用的密码。数据卷创建后再修改该值，不会自动轮换数据库角色密码。            |
 | `DOCKER_GID`                                                                  | 必填                                        | `/var/run/docker.sock` 的数字组 ID，使非 root 的 core 进程能够创建沙箱容器。                              |
 | `CONNECTOR_SECRET_KEY`                                                        | 必填                                        | 加密连接器凭据和其他持久密钥材料。丢失后，已存储的凭据可能无法读取。                                      |
-| `WEB_UI_IM_CREDENTIALS_KEY`                                                   | 必填                                        | 加密持久化 IM Bot 凭据的专用 32 字节十六进制密钥。                                                        |
+| `WEB_UI_IM_CREDENTIALS_KEY`                                                   | 必填                                        | 加密持久化 IM Bot 凭据的专用高熵密钥，至少 32 个字符；也可直接使用 32 字节十六进制密钥。                  |
 | `CORE_SIGNING_SECRET`                                                         | 必填                                        | 认证 core 与可信服务之间的请求。                                                                          |
 | `CAPABILITY_SECRET`                                                           | 必填                                        | 为沙箱、blob 和出口流量路径使用的作用域能力令牌签名。                                                     |
 | `PORTAL_IDENTITY_SECRET`                                                      | 必填                                        | 为 Portal 转发给私有服务和 core 的浏览器身份签名。                                                        |

@@ -237,7 +237,7 @@ export const FIRST_PARTY_SECRET_SPECS: readonly SecretSpec[] = [
     name: "WEB_UI_IM_CREDENTIALS_KEY",
     service: "web-ui",
     required: true,
-    description: "Dedicated 32-byte hex key for durable IM Bot credentials.",
+    description: "Dedicated high-entropy secret of at least 32 characters for durable IM Bot credentials.",
     generate: MINT_LOCALLY,
   },
   {
