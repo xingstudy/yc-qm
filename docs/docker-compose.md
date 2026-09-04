@@ -292,6 +292,10 @@ Set `POSTGRES_PASSWORD`, `CONNECTOR_SECRET_KEY`, `WEB_UI_IM_CREDENTIALS_KEY`, `C
 distinct. Compose requires `DOCKER_GID` while resolving its configuration, so set it
 before the first `docker compose` command.
 
+Docker BuildKit keeps the npm and Alpine package caches between image builds. In regions
+where the npm registry is slow, set `NPM_INSTALL_REGISTRY` in `.env` to a trusted mirror;
+the production dependency audit continues to use the official npm registry.
+
 ```bash
 npm ci
 npm run sandbox:local:build

@@ -250,9 +250,10 @@ export async function exerciseDeliveryStore(store: DeliveryStore): Promise<void>
     text: "claimed, then the drainer died mid-post",
     idempotencyKey: "fire-race-2",
   });
-  assert.equal((await store.claimPending("group", 50)).length, 1);
-  assert.equal((await store.claimPending("group", 50)).length, 0, "still claimed before the TTL");
-  await new Promise((r) => setTimeout(r, 80));
+  const abandonedClaimTtlMs = 1_000;
+  assert.equal((await store.claimPending("group", abandonedClaimTtlMs)).length, 1);
+  assert.equal((await store.claimPending("group", abandonedClaimTtlMs)).length, 0, "still claimed before the TTL");
+  await new Promise((r) => setTimeout(r, abandonedClaimTtlMs + 100));
   assert.deepEqual(
     (await store.claimPending("group", 60_000)).map((d) => d.id),
     [abandoned.id],

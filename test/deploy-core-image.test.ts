@@ -32,3 +32,37 @@ test("core deploy image includes git", () => {
     }
   }
 });
+
+test("deploy image package installs reuse BuildKit caches", () => {
+  const npmDockerfiles = [
+    "deploy/core/Dockerfile",
+    "deploy/portal/Dockerfile",
+    "deploy/auth/Dockerfile",
+    "deploy/web-ui/Dockerfile",
+    "deploy/egress-proxy/Dockerfile",
+  ];
+  for (const path of npmDockerfiles) {
+    const dockerfile = readFileSync(join(repoRoot, path), "utf8");
+    const installs = dockerfile.split("\n").filter((line) => line.includes("npm ci"));
+    assert.notEqual(installs.length, 0, `${path} must install dependencies`);
+    for (const install of installs) {
+      assert.match(install, /--mount=type=cache,target=\/root\/\.npm,sharing=shared/);
+      assert.match(install, /--prefer-offline/);
+      assert.match(install, /--registry=/);
+    }
+    assert.doesNotMatch(dockerfile, /rm -rf \/root\/\.npm/);
+  }
+
+  const apkDockerfiles = [
+    "deploy/core/Dockerfile",
+    "deploy/portal/Dockerfile",
+    "deploy/auth/Dockerfile",
+    "deploy/web-ui/Dockerfile",
+    "deploy/admin/Dockerfile",
+    "deploy/edge/Dockerfile",
+  ];
+  for (const path of apkDockerfiles) {
+    const dockerfile = readFileSync(join(repoRoot, path), "utf8");
+    assert.match(dockerfile, /--mount=type=cache,target=\/var\/cache\/apk,sharing=locked apk upgrade/);
+  }
+});

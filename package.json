@@ -73,7 +73,7 @@
     "croner": "^10.0.1",
     "dingtalk-stream": "^2.1.6-beta.1",
     "emoji-datasource": "^16.0.0",
-    "fastify": "^5.10.0",
+    "fastify": "^5.12.1",
     "jose": "^6.2.3",
     "lru-cache": "^11.5.2",
     "opencode-ai": "1.17.18",
@@ -90,15 +90,16 @@
     "@hono/node-server": "2.0.10",
     "hono": "4.13.1",
     "@fastify/ajv-compiler": {
-      "fast-uri": "3.1.5"
+      "fast-uri": "3.1.7"
     },
     "ajv": {
-      "fast-uri": "3.1.5"
+      "fast-uri": "3.1.7"
     },
     "brace-expansion": "5.0.9",
     "fast-json-stringify": {
-      "fast-uri": "4.1.2"
+      "fast-uri": "4.1.4"
     },
+    "qs": "6.16.0",
     "protobufjs": "7.6.5"
   },
   "devDependencies": {

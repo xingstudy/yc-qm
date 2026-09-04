@@ -143,18 +143,19 @@ test("a claim-less fetch stays claim-agnostic (the web-ui drain re-reads rows it
 test("an expired claim re-surfaces the row to a later poll (drainer died mid-post)", async () => {
   const srv = start();
   try {
+    const abandonedClaimTtlMs = 1_000;
     await srv.app.enqueueDelivery({
       destination: { type: "group", target: "C2" },
       text: "claimed then abandoned",
       idempotencyKey: "post:sess-3:one",
     });
-    assert.equal((await fetchPending(srv.base, "type=group&claimMs=50")).length, 1);
+    assert.equal((await fetchPending(srv.base, `type=group&claimMs=${abandonedClaimTtlMs}`)).length, 1);
     assert.equal(
-      (await fetchPending(srv.base, "type=group&claimMs=50")).length,
+      (await fetchPending(srv.base, `type=group&claimMs=${abandonedClaimTtlMs}`)).length,
       0,
       "claimed rows are invisible before the TTL",
     );
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, abandonedClaimTtlMs + 100));
     assert.equal((await fetchPending(srv.base, "type=group&claimMs=15000")).length, 1, "the abandoned row comes back");
   } finally {
     await srv.close();
