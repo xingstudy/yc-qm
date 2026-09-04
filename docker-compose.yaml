@@ -31,6 +31,8 @@ services:
     build:
       context: .
       dockerfile: deploy/core/Dockerfile
+      args:
+        NPM_INSTALL_REGISTRY: ${NPM_INSTALL_REGISTRY:-https://registry.npmjs.org}
     env_file:
       - .env
     environment:
@@ -98,6 +100,8 @@ services:
     build:
       context: .
       dockerfile: deploy/web-ui/Dockerfile
+      args:
+        NPM_INSTALL_REGISTRY: ${NPM_INSTALL_REGISTRY:-https://registry.npmjs.org}
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       PORT: "8080"
@@ -172,6 +176,8 @@ services:
     build:
       context: .
       dockerfile: deploy/portal/Dockerfile
+      args:
+        NPM_INSTALL_REGISTRY: ${NPM_INSTALL_REGISTRY:-https://registry.npmjs.org}
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       PORT: "8080"
@@ -244,6 +250,8 @@ services:
     build:
       context: .
       dockerfile: deploy/auth/Dockerfile
+      args:
+        NPM_INSTALL_REGISTRY: ${NPM_INSTALL_REGISTRY:-https://registry.npmjs.org}
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       PORT: "8080"
