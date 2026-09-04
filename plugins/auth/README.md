@@ -16,6 +16,8 @@ emailed to an allowed address.
 | `GET /directory/login`                  | browser, via the portal                     | starts a configured managed-directory sign-in                                |
 | `GET /directory/callback`               | identity provider, via the portal           | asks Core to resolve the provider code and redirects with an OIDC code       |
 | `GET /directory/handoff`                | browser, via the portal                     | waits for a consent step that only the provider's own client can render      |
+| `GET /wecom-jssdk.js`                   | browser, via the portal                     | serves the pinned official WeCom browser SDK                                 |
+| `GET /wecom-login.js`                   | browser, via the portal                     | initializes the WeCom login panel                                            |
 | `POST /token`                           | portal, over the private network            | HTTP Basic client auth, authorization-code grant, PKCE S256                  |
 | `GET /userinfo`                         | portal, over the private network            | Bearer access token, verified statelessly                                    |
 | `GET /.well-known/jwks.json`            | portal, over the private network            | the ES256 public key                                                         |
@@ -73,6 +75,12 @@ stable bindings skip this second redirect. The Core response carries an explicit
 protocol version and uses a non-success precondition response when consent is
 required, so either side of a mixed-version deployment fails closed rather than
 silently completing an email-less first login.
+
+WeCom sign-in uses the official Web login component. On a supported desktop
+browser over HTTPS it detects an already signed-in WeCom desktop client and
+offers quick login; otherwise the same panel displays a QR code. The old direct
+QR URL remains on the page as a fallback. Both paths return the same one-time
+code to the existing directory callback.
 Legacy `/wecom/login` and `/wecom/callback` aliases remain available for existing
 callback registrations.
 

@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { runInNewContext } from "node:vm";
 import { createLocalJWKSet, decodeProtectedHeader, jwtVerify, type JWK } from "jose";
+import { WECOM_LOGIN_SCRIPT } from "../src/pages.ts";
 import {
   authorizeQuery,
   basicAuth,
@@ -105,6 +107,42 @@ async function verifyIdTokenLikePortal(h: Harness, idToken: string, nonce: strin
   return payload as Record<string, unknown>;
 }
 
+test("the WeCom initializer passes the sealed login request to the official component", () => {
+  const mount: { dataset: Record<string, string> } = {
+    dataset: {
+      appid: "wwcorp",
+      agentid: "1000002",
+      redirectUri: "https://agent.example.test/idp/directory/callback",
+      state: "sealed-state",
+    },
+  };
+  const captured: { options?: Record<string, unknown> } = {};
+  runInNewContext(WECOM_LOGIN_SCRIPT, {
+    document: { documentElement: { lang: "en" }, getElementById: () => mount },
+    window: {
+      ww: {
+        createWWLoginPanel(value: Record<string, unknown>) {
+          captured.options = value;
+        },
+      },
+    },
+  });
+  const options = captured.options;
+  assert.ok(options);
+  assert.equal(options.el, mount);
+  const params = options.params as Record<string, unknown>;
+  assert.equal(params.login_type, "CorpApp");
+  assert.equal(params.appid, mount.dataset.appid);
+  assert.equal(params.agentid, mount.dataset.agentid);
+  assert.equal(params.redirect_uri, mount.dataset.redirectUri);
+  assert.equal(params.state, mount.dataset.state);
+  assert.equal(params.redirect_type, "top");
+  assert.equal(params.panel_size, "small");
+  const check = options.onCheckWeComLogin as (result: { isWeComLogin: boolean }) => void;
+  check({ isWeComLogin: true });
+  assert.equal(mount.dataset.clientLoggedIn, "1");
+});
+
 test("the whole authorization-code flow the portal drives succeeds", async (t) => {
   const h = await startHarness();
   t.after(() => h.close());
@@ -141,7 +179,7 @@ test("the whole authorization-code flow the portal drives succeeds", async (t) =
   assert.equal(userinfo.email_verified, true);
 });
 
-test("WeCom QR sign-in issues the same OIDC code using the member email", async (t) => {
+test("WeCom web sign-in issues the same OIDC code using the member email", async (t) => {
   const sourceId = "source-wecom";
   let loginOptionsCalls = 0;
   const h = await startHarness({
@@ -194,7 +232,17 @@ test("WeCom QR sign-in issues the same OIDC code using the member email", async 
     `${h.base}/directory/login?request=${encodeURIComponent(request)}&source=${encodeURIComponent(sourceId)}`,
     { redirect: "manual" },
   );
-  assert.equal(login.status, 302);
+  assert.equal(login.status, 200);
+  const loginPage = await login.text();
+  assert.match(loginPage, /id="wecom-login"/);
+  assert.match(loginPage, /data-appid="wwcorp"/);
+  assert.match(loginPage, /data-agentid="1000002"/);
+  assert.match(loginPage, /data-redirect-uri="https:\/\/verified\.example\.test\/corp\/wecom"/);
+  assert.match(loginPage, /Use QR sign-in instead/);
+  assert.match(login.headers.get("content-security-policy") ?? "", /script-src 'self'/);
+  assert.match(login.headers.get("content-security-policy") ?? "", /frame-src https:\/\/login\.work\.weixin\.qq\.com/);
+  const directoryState = loginPage.match(/data-state="([^"]+)"/)?.[1];
+  assert.ok(directoryState);
   const callsAfterLogin = loginOptionsCalls;
   const claimsAfterLogin = h.claims.calls.length;
   const loginReplay = await fetch(
@@ -205,21 +253,26 @@ test("WeCom QR sign-in issues the same OIDC code using the member email", async 
   assert.equal(loginOptionsCalls, callsAfterLogin);
   assert.equal(h.claims.calls.length, claimsAfterLogin + 1);
   assert.equal(h.claims.calls.at(-1)?.length, 1);
-  const qr = new URL(login.headers.get("location")!);
-  assert.equal(`${qr.origin}${qr.pathname}`, "https://open.work.weixin.qq.com/wwopen/sso/qrConnect");
-  assert.equal(qr.searchParams.get("appid"), "wwcorp");
-  assert.equal(qr.searchParams.get("agentid"), "1000002");
-  assert.equal(qr.searchParams.get("redirect_uri"), "https://verified.example.test/corp/wecom");
-  assert.notEqual(qr.searchParams.get("state"), request);
+  assert.notEqual(directoryState, request);
+
+  const sdk = await fetch(`${h.base}/wecom-jssdk.js`);
+  assert.equal(sdk.status, 200);
+  assert.match(sdk.headers.get("content-type") ?? "", /text\/javascript/);
+  assert.match(await sdk.text(), /createWWLoginPanel/);
+  const initializer = await fetch(`${h.base}/wecom-login.js`);
+  assert.equal(initializer.status, 200);
+  const initializerScript = await initializer.text();
+  assert.match(initializerScript, /createWWLoginPanel/);
+  assert.match(initializerScript, /onCheckWeComLogin/);
 
   const callback = await fetch(
-    `${h.base}/directory/callback?code=wecom-code&state=${encodeURIComponent(qr.searchParams.get("state")!)}`,
+    `${h.base}/directory/callback?code=wecom-code&state=${encodeURIComponent(directoryState)}`,
     { redirect: "manual" },
   );
   assert.equal(callback.status, 302, await callback.text());
   const claimsAfterCallback = h.claims.calls.length;
   const replay = await fetch(
-    `${h.base}/directory/callback?code=wecom-code&state=${encodeURIComponent(qr.searchParams.get("state")!)}`,
+    `${h.base}/directory/callback?code=wecom-code&state=${encodeURIComponent(directoryState)}`,
     { redirect: "manual" },
   );
   assert.equal(replay.status, 400);
@@ -257,6 +310,49 @@ test("WeCom QR sign-in issues the same OIDC code using the member email", async 
   assert.equal(userinfo.name, "企业管理员");
   assert.equal(userinfo.qm_external_identity.sourceId, sourceId);
   assert.equal(userinfo.qm_external_identity.externalSubjectId, "wecom-user");
+});
+
+test("WeCom web login stays on the QR flow without HTTPS or inside the WeCom client", async (t) => {
+  const sourceId = "source-wecom-fallback";
+  for (const variant of [
+    {
+      env: {
+        AUTH_ISSUER: "http://localhost:8088/idp",
+        AUTH_REDIRECT_URI: "http://localhost:8088/auth/callback",
+      },
+      headers: {},
+    },
+    { env: {}, headers: { "user-agent": "wxwork/5.0.10" } },
+  ]) {
+    const h = await startHarness({
+      env: variant.env,
+      directorySources: {
+        async loginOptions(state) {
+          return [
+            {
+              sourceId,
+              provider: "wecom",
+              displayName: "WeCom",
+              authorizeUrl: `https://open.work.weixin.qq.com/wwopen/sso/qrConnect?appid=wwcorp&agentid=1000002&redirect_uri=${encodeURIComponent("https://verified.example.test/corp/wecom")}&state=${encodeURIComponent(state)}`,
+            },
+          ];
+        },
+        async resolveCode() {
+          throw new Error("callback not expected");
+        },
+      },
+    });
+    t.after(() => h.close());
+    const query = authorizeQuery({ redirect_uri: h.cfg.redirectUri });
+    const page = await fetch(`${h.base}/authorize?${query}`);
+    const request = hiddenRequestToken(await page.text());
+    const login = await fetch(
+      `${h.base}/directory/login?request=${encodeURIComponent(request)}&source=${encodeURIComponent(sourceId)}`,
+      { redirect: "manual", headers: variant.headers },
+    );
+    assert.equal(login.status, 302);
+    assert.equal(new URL(login.headers.get("location")!).pathname, "/wwopen/sso/qrConnect");
+  }
 });
 
 test("an already-bound WeCom QR member signs in without profile authorization when no email is returned", async (t) => {

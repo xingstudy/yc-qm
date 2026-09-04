@@ -17,6 +17,7 @@
     "typescript": "^5.8.2"
   },
   "dependencies": {
+    "@wecom/jssdk": "2.4.3",
     "jose": "^6.2.3",
     "qrcode-generator": "^2.0.4"
   }
