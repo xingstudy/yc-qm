@@ -465,6 +465,9 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
     if (option.provider === "wecom" && wecomWebLoginEnabled && !isWeComClient(req)) {
       const login = wecomLoginParams(option.authorizeUrl);
       if (login) {
+        const fallback = await signer.sealRequest({ ...request, directorySourceId: sourceId }, cfg.requestTtlS, now());
+        const fallbackUrl = new URL(option.authorizeUrl);
+        fallbackUrl.searchParams.set("state", fallback.token);
         return sendHtml(
           res,
           200,
@@ -473,7 +476,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
             ...login,
             sdkUrl: `${cfg.publicPath}/wecom-jssdk.js`,
             initializerUrl: `${cfg.publicPath}/wecom-login.js`,
-            fallbackUrl: option.authorizeUrl,
+            fallbackUrl: fallbackUrl.toString(),
           }),
           WECOM_LOGIN_PAGE_CSP,
         );

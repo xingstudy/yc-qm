@@ -117,9 +117,16 @@ test("the WeCom initializer passes the sealed login request to the official comp
     },
   };
   const captured: { options?: Record<string, unknown> } = {};
+  let assigned = "";
   runInNewContext(WECOM_LOGIN_SCRIPT, {
     document: { documentElement: { lang: "en" }, getElementById: () => mount },
+    URL,
     window: {
+      location: {
+        assign(value: string) {
+          assigned = value;
+        },
+      },
       ww: {
         createWWLoginPanel(value: Record<string, unknown>) {
           captured.options = value;
@@ -136,11 +143,21 @@ test("the WeCom initializer passes the sealed login request to the official comp
   assert.equal(params.agentid, mount.dataset.agentid);
   assert.equal(params.redirect_uri, mount.dataset.redirectUri);
   assert.equal(params.state, mount.dataset.state);
-  assert.equal(params.redirect_type, "top");
+  assert.equal(params.redirect_type, "callback");
   assert.equal(params.panel_size, "small");
   const check = options.onCheckWeComLogin as (result: { isWeComLogin: boolean }) => void;
   check({ isWeComLogin: true });
   assert.equal(mount.dataset.clientLoggedIn, "1");
+  const success = options.onLoginSuccess as (result: { code?: string }) => void;
+  success({ code: "wecom-code" });
+  const destination = new URL(assigned);
+  assert.equal(`${destination.origin}${destination.pathname}`, mount.dataset.redirectUri);
+  assert.equal(destination.searchParams.get("code"), "wecom-code");
+  assert.equal(destination.searchParams.get("state"), mount.dataset.state);
+  assigned = "";
+  success({ code: "" });
+  assert.equal(assigned, "");
+  assert.equal(mount.dataset.loginFailed, "1");
 });
 
 test("the whole authorization-code flow the portal drives succeeds", async (t) => {
@@ -243,6 +260,12 @@ test("WeCom web sign-in issues the same OIDC code using the member email", async
   assert.match(login.headers.get("content-security-policy") ?? "", /frame-src https:\/\/login\.work\.weixin\.qq\.com/);
   const directoryState = loginPage.match(/data-state="([^"]+)"/)?.[1];
   assert.ok(directoryState);
+  const fallbackUrl = new URL(
+    loginPage.match(/class="wecom-fallback" href="([^"]+)"/)?.[1]?.replaceAll("&amp;", "&") ?? "",
+  );
+  assert.equal(fallbackUrl.origin, "https://open.work.weixin.qq.com");
+  assert.equal(fallbackUrl.pathname, "/wwopen/sso/qrConnect");
+  assert.notEqual(fallbackUrl.searchParams.get("state"), directoryState);
   const callsAfterLogin = loginOptionsCalls;
   const claimsAfterLogin = h.claims.calls.length;
   const loginReplay = await fetch(
@@ -285,6 +308,20 @@ test("WeCom web sign-in issues the same OIDC code using the member email", async
   const location = new URL(callback.headers.get("location")!);
   assert.equal(`${location.origin}${location.pathname}`, REDIRECT_URI);
   assert.equal(location.searchParams.get("state"), query.get("state"));
+
+  const fallbackCallback = await fetch(
+    `${h.base}/directory/callback?code=wecom-code&state=${encodeURIComponent(fallbackUrl.searchParams.get("state")!)}`,
+    { redirect: "manual" },
+  );
+  assert.equal(fallbackCallback.status, 302, await fallbackCallback.text());
+  const fallbackLocation = new URL(fallbackCallback.headers.get("location")!);
+  assert.equal(`${fallbackLocation.origin}${fallbackLocation.pathname}`, REDIRECT_URI);
+  assert.equal(fallbackLocation.searchParams.get("state"), query.get("state"));
+  const fallbackReplay = await fetch(
+    `${h.base}/directory/callback?code=wecom-code&state=${encodeURIComponent(fallbackUrl.searchParams.get("state")!)}`,
+    { redirect: "manual" },
+  );
+  assert.equal(fallbackReplay.status, 400);
 
   const tokens = await exchange(h, location.searchParams.get("code")!, verifier);
   assert.equal(tokens.status, 200);

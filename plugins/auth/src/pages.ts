@@ -63,7 +63,7 @@ export const WECOM_LOGIN_SCRIPT = `(function () {
       agentid: mount.dataset.agentid,
       redirect_uri: mount.dataset.redirectUri,
       state: mount.dataset.state,
-      redirect_type: "top",
+      redirect_type: "callback",
       panel_size: "small",
       lang: document.documentElement.lang === "zh" ? "zh" : "en"
     },
@@ -72,6 +72,16 @@ export const WECOM_LOGIN_SCRIPT = `(function () {
     },
     onLoginFail: function () {
       mount.dataset.loginFailed = "1";
+    },
+    onLoginSuccess: function (result) {
+      if (!result || typeof result.code !== "string" || !result.code) {
+        mount.dataset.loginFailed = "1";
+        return;
+      }
+      var destination = new URL(mount.dataset.redirectUri);
+      destination.searchParams.set("code", result.code);
+      destination.searchParams.set("state", mount.dataset.state);
+      window.location.assign(destination.toString());
     },
     onOpenInWecom: function () {
       mount.dataset.clientOpened = "1";
