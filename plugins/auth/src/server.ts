@@ -139,6 +139,41 @@ function wecomLoginParams(authorizeUrl: string): {
   }
 }
 
+function wecomBridgeUrls(
+  redirectUri: string,
+  loginUrlValue: string | undefined,
+): {
+  loginUrl: URL;
+  sdkUrl: string;
+  initializerUrl: string;
+} | null {
+  if (!loginUrlValue) return null;
+  try {
+    const callback = new URL(redirectUri);
+    const loginUrl = new URL(loginUrlValue);
+    const match = /^(.*)\/wecom\/login\/?$/.exec(loginUrl.pathname);
+    if (
+      callback.protocol !== "https:" ||
+      loginUrl.protocol !== "https:" ||
+      callback.origin !== loginUrl.origin ||
+      !match
+    )
+      return null;
+    const urlFor = (path: string): URL => {
+      const url = new URL(callback.origin);
+      url.pathname = `${match[1]}${path}`;
+      return url;
+    };
+    return {
+      loginUrl,
+      sdkUrl: urlFor("/wecom-jssdk.js").toString(),
+      initializerUrl: urlFor("/wecom-login.js").toString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function basicCredentials(header: string | undefined): { id: string; secret: string } | null {
   if (!header || !/^basic /i.test(header)) return null;
   const decoded = Buffer.from(header.slice(6).trim(), "base64").toString("utf8");
@@ -397,7 +432,12 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
     res.end();
   }
 
-  async function directoryLogin(req: IncomingMessage, res: ServerResponse, params: URLSearchParams): Promise<void> {
+  async function directoryLogin(
+    req: IncomingMessage,
+    res: ServerResponse,
+    params: URLSearchParams,
+    bridge = false,
+  ): Promise<void> {
     if (!deps.directorySources)
       return problem(
         res,
@@ -465,18 +505,62 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
     if (option.provider === "wecom" && wecomWebLoginEnabled && !isWeComClient(req)) {
       const login = wecomLoginParams(option.authorizeUrl);
       if (login) {
+        const bridgeUrls = wecomBridgeUrls(login.redirectUri, cfg.wecomLoginBridgeUrl);
+        const sameOrigin = new URL(cfg.issuer).origin === new URL(login.redirectUri).origin;
+        if (!bridge && !sameOrigin && bridgeUrls) {
+          bridgeUrls.loginUrl.searchParams.set("request", selected.token);
+          bridgeUrls.loginUrl.searchParams.set("source", sourceId);
+          res.writeHead(302, noStore({ location: bridgeUrls.loginUrl.toString() }));
+          res.end();
+          return;
+        }
+        if (!sameOrigin && (!bridge || !bridgeUrls || !deps.directoryContinuations)) {
+          res.writeHead(302, noStore({ location: option.authorizeUrl }));
+          res.end();
+          return;
+        }
         const fallback = await signer.sealRequest({ ...request, directorySourceId: sourceId }, cfg.requestTtlS, now());
         const fallbackUrl = new URL(option.authorizeUrl);
         fallbackUrl.searchParams.set("state", fallback.token);
+        let componentState = login.state;
+        let handoffUrl: string | undefined;
+        if (bridge && bridgeUrls && deps.directoryContinuations) {
+          const continuation = await signer.sealRequest(
+            { ...request, directorySourceId: sourceId, directoryHandoff: true },
+            cfg.requestTtlS,
+            now(),
+          );
+          const continuationState = randomBytes(32).toString("hex");
+          const created = await deps.directoryContinuations.create(
+            continuationState,
+            continuation.token,
+            continuation.expiresAtMs,
+            directoryContinuationBucket(cfg.tokenSecret, clientIpOf(req)),
+          );
+          if (created !== "created") return continuationUnavailable(res, created);
+          const authorizeUrl = new URL(option.authorizeUrl);
+          authorizeUrl.searchParams.set("state", continuationState);
+          const handoff = await signer.sealHandoff(
+            { continuationState, authorizeUrl: authorizeUrl.toString(), promptDelivered: false },
+            Math.max(1, Math.round((continuation.expiresAtMs - now()) / 1000)),
+            now(),
+          );
+          const destination = new URL(`${cfg.publicPath}/directory/handoff`, cfg.issuer);
+          destination.searchParams.set("h", handoff.token);
+          componentState = continuationState;
+          handoffUrl = destination.toString();
+        }
         return sendHtml(
           res,
           200,
           wecomLoginPage({
             brandName: brandName(),
             ...login,
-            sdkUrl: `${cfg.publicPath}/wecom-jssdk.js`,
-            initializerUrl: `${cfg.publicPath}/wecom-login.js`,
+            state: componentState,
+            sdkUrl: bridge && bridgeUrls ? bridgeUrls.sdkUrl : `${cfg.publicPath}/wecom-jssdk.js`,
+            initializerUrl: bridge && bridgeUrls ? bridgeUrls.initializerUrl : `${cfg.publicPath}/wecom-login.js`,
             fallbackUrl: fallbackUrl.toString(),
+            ...(handoffUrl ? { handoffUrl } : {}),
           }),
           WECOM_LOGIN_PAGE_CSP,
         );
@@ -534,7 +618,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
       return fail(400, "This enterprise sign-in expired", "Start again from the page you were trying to reach.");
     }
     const request = openedState.claims;
-    if (continuationClaim && !request.directoryProfileIdentity) {
+    if (continuationClaim && !request.directoryProfileIdentity && !request.directoryHandoff) {
       return fail(400, "This enterprise sign-in expired", "Start again from the page you were trying to reach.");
     }
     const directoryCode = params.get("code") ?? "";
@@ -899,8 +983,8 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
     if (method === "POST" && path === "/authorize") return authorizeSubmit(req, res);
     if (method === "GET" && path === "/verify") return confirmVerify(res);
     if (method === "POST" && path === "/verify") return verify(req, res);
-    if (method === "GET" && (path === "/directory/login" || path === "/wecom/login"))
-      return directoryLogin(req, res, url.searchParams);
+    if (method === "GET" && path === "/directory/login") return directoryLogin(req, res, url.searchParams);
+    if (method === "GET" && path === "/wecom/login") return directoryLogin(req, res, url.searchParams, true);
     if (method === "GET" && (path === "/directory/callback" || path === "/wecom/callback"))
       return directoryCallback(req, res, url.searchParams);
     if (method === "GET" && path === "/directory/handoff") return directoryHandoff(res, url.searchParams);

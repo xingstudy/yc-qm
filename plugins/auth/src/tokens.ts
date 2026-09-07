@@ -321,7 +321,7 @@ function readRequest(payload: JWTPayload): AuthRequest | null {
   if ([cid, ru, st, no, cc, sc].some((value) => typeof value !== "string" || !value)) return null;
   if (ds !== undefined && (typeof ds !== "string" || !ds)) return null;
   if (di !== undefined && (!di || typeof di !== "object" || Array.isArray(di) || typeof ds !== "string")) return null;
-  if (dh !== undefined && (dh !== true || di === undefined)) return null;
+  if (dh !== undefined && dh !== true) return null;
   const directoryIdentity = di as Record<string, unknown> | undefined;
   if (
     directoryIdentity &&
