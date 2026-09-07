@@ -90,6 +90,35 @@ test("production refuses cleartext endpoints and cleartext SMTP", () => {
   );
 });
 
+test("the WeCom login bridge accepts valid endpoints and reports invalid URLs without throwing", () => {
+  for (const isProd of [false, true]) {
+    for (const [url, expected] of [
+      [undefined, ""],
+      ["https://agent.example.test/wecom/login", ""],
+      ["https://agent.example.test/wecom/login/", ""],
+      ["not-a-url", "AUTH_WECOM_LOGIN_BRIDGE_URL must be an absolute URL"],
+      ["https://[invalid/wecom/login", "AUTH_WECOM_LOGIN_BRIDGE_URL must be an absolute URL"],
+      ["https://agent.example.test/other", "AUTH_WECOM_LOGIN_BRIDGE_URL must end with /wecom/login"],
+      ["http://agent.example.test/wecom/login", "AUTH_WECOM_LOGIN_BRIDGE_URL must be https in production"],
+      ["https://example.com/wecom/login", "AUTH_WECOM_LOGIN_BRIDGE_URL must not use example.com in production"],
+      [
+        "https://agent.example.test/wecom/login?next=other",
+        "AUTH_WECOM_LOGIN_BRIDGE_URL must not carry a query string or fragment",
+      ],
+      [
+        "https://agent.example.test/wecom/login#other",
+        "AUTH_WECOM_LOGIN_BRIDGE_URL must not carry a query string or fragment",
+      ],
+    ] as const) {
+      assert.equal(
+        problemsFor({ AUTH_WECOM_LOGIN_BRIDGE_URL: url, CORE_SIGNING_SECRET: "a".repeat(48) }, isProd),
+        expected,
+        `${url} (production=${isProd})`,
+      );
+    }
+  }
+});
+
 test("production requires the core signing secret that makes links single-use", () => {
   assert.match(problemsFor({}), /CORE_SIGNING_SECRET is required/);
   assert.equal(problemsFor({ CORE_SIGNING_SECRET: "a".repeat(48) }), "");
