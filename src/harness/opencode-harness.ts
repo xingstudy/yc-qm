@@ -112,7 +112,7 @@ type Runtime = {
   toolContract: BridgeToolContract;
   lastUsed: number;
   namespace: string;
-  close(): Promise<void>;
+  close(force?: boolean): Promise<void>;
 };
 
 type BridgeToolContract = Pick<
@@ -536,10 +536,14 @@ async function closeServer(server: ReturnType<typeof createServer>): Promise<voi
   await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
 }
 
-async function terminateProcess(proc: ChildProcess): Promise<void> {
+async function terminateProcess(proc: ChildProcess, force = false): Promise<void> {
   if (proc.exitCode !== null || proc.signalCode !== null) return;
   const exited = new Promise<void>((resolveExit) => proc.once("exit", () => resolveExit()));
-  proc.kill("SIGTERM");
+  proc.kill(force ? "SIGKILL" : "SIGTERM");
+  if (force) {
+    await exited;
+    return;
+  }
   const stopped = await Promise.race([exited.then(() => true), sleep(2_000).then(() => false as const)]);
   if (!stopped && proc.exitCode === null && proc.signalCode === null) {
     proc.kill("SIGKILL");
@@ -557,6 +561,7 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
     DEFAULT_AGENT_MODEL_ID;
   const defaultTurnWallClockMs = opts.turnWallClockMs ?? CONFIG_DEFAULTS.turnWallClockSec * 1000;
   const runtimes = new Map<string, Runtime>();
+  const retiringRuntimes = new Map<Runtime, Promise<void>>();
   const starting = new Map<string, Promise<Runtime>>();
   const startingProcesses = new Set<ChildProcess>();
   let auxiliaryHarness: Harness | null = null;
@@ -969,9 +974,9 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
           toolContract: definitionSnapshot.toolContract,
           lastUsed: Date.now(),
           namespace,
-          async close() {
+          async close(force = false) {
             events.abort();
-            await terminateProcess(proc!);
+            await terminateProcess(proc!, force);
             await closeServer(bridge);
             rmSync(jail, { recursive: true, force: true });
           },
@@ -1038,7 +1043,7 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
         }
         if (runtimes.size + reservedRuntimeSlots >= OPENCODE_RUNTIME_POOL_LIMIT) {
           const idle = [...runtimes.entries()]
-            .filter(([, runtime]) => (runtimeUsers.get(runtime) ?? 0) === 0)
+            .filter(([, runtime]) => (runtimeUsers.get(runtime) ?? 0) === 0 && !retiringRuntimes.has(runtime))
             .sort(([, left], [, right]) => left.lastUsed - right.lastUsed)[0];
           if (!idle) break;
           const [idleKey, idleRuntime] = idle;
@@ -1146,9 +1151,69 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
       const expectedDefinitions = bridgeDefinitionSnapshot(opts, turn);
       const key = runtimeKey(expectedCustomProvidersVersion, expectedDefinitions.key);
       const current = runtimes.get(key);
-      if (current && current.process.exitCode === null) {
-        await new Promise<void>((resolveImmediate) => setImmediate(resolveImmediate));
-        if (runtimes.get(key) === current && current.process.exitCode === null) return leaseRuntime(current);
+      const retiring = current && retiringRuntimes.get(current);
+      if (current && retiring) {
+        const retired = await waitForRuntime(
+          retiring.then(() => current),
+          turn,
+          deadline,
+          wallMs,
+        );
+        if (!retired) return null;
+        continue;
+      }
+      if (current && current.process.exitCode === null && current.process.signalCode === null) {
+        if ((runtimeUsers.get(current) ?? 0) > 0) {
+          await new Promise<void>((resolveImmediate) => setImmediate(resolveImmediate));
+          if (closed) throw new Error("OpenCode harness is closed");
+          if (turn.cancel?.aborted) return null;
+          if (deadline !== null && Date.now() >= deadline) throw deadlineError(wallMs);
+          if (
+            runtimes.get(key) === current &&
+            current.process.exitCode === null &&
+            current.process.signalCode === null &&
+            (runtimeUsers.get(current) ?? 0) > 0
+          )
+            return leaseRuntime(current);
+          continue;
+        }
+        const readinessTimeoutMs = Math.max(1, Math.min(1_000, deadline === null ? 1_000 : deadline - Date.now()));
+        try {
+          await current.client.session.status({
+            throwOnError: true,
+            signal: turn.cancel
+              ? AbortSignal.any([turn.cancel, AbortSignal.timeout(readinessTimeoutMs)])
+              : AbortSignal.timeout(readinessTimeoutMs),
+          });
+          if (closed) throw new Error("OpenCode harness is closed");
+          if (turn.cancel?.aborted) return null;
+          if (deadline !== null && Date.now() >= deadline) throw deadlineError(wallMs);
+          if (
+            runtimes.get(key) === current &&
+            !retiringRuntimes.has(current) &&
+            current.process.exitCode === null &&
+            current.process.signalCode === null
+          )
+            return leaseRuntime(current);
+        } catch {
+          if (closed) throw new Error("OpenCode harness is closed");
+          if (turn.cancel?.aborted) return null;
+          if (deadline !== null && Date.now() >= deadline) throw deadlineError(wallMs);
+          let retirement = retiringRuntimes.get(current);
+          if (!retirement && runtimes.get(key) === current && (runtimeUsers.get(current) ?? 0) === 0) {
+            retirement = current.close(true).finally(() => retiringRuntimes.delete(current));
+            retiringRuntimes.set(current, retirement);
+          }
+          if (retirement) {
+            const retired = await waitForRuntime(
+              retirement.then(() => current),
+              turn,
+              deadline,
+              wallMs,
+            );
+            if (!retired) return null;
+          }
+        }
         continue;
       }
       let pending = starting.get(key);
@@ -1588,8 +1653,12 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
       }
       if (auxiliaryHarness?.turns.close) await waitWithinDrain(Promise.resolve(auxiliaryHarness.turns.close()));
       auxiliaryHarness = null;
-      await Promise.all([...runtimes.values()].map((runtime) => runtime.close()));
+      await Promise.all([
+        ...retiringRuntimes.values(),
+        ...[...runtimes.values()].filter((runtime) => !retiringRuntimes.has(runtime)).map((runtime) => runtime.close()),
+      ]);
       runtimes.clear();
+      retiringRuntimes.clear();
       runtimeUsers.clear();
       activeTurnAborts.clear();
       signalLeases();

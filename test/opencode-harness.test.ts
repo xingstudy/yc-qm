@@ -547,6 +547,75 @@ test("OpenCode replaces a crashed leased runtime and releases its pool accountin
   assert.equal((await harness.turns.runTurn(turnInput([], []))).reply, "hello from fake");
 });
 
+test("OpenCode replaces a leased runtime whose listener disappears", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-opencode-test-"));
+  const unavailable = join(dir, "unavailable-once");
+  const handlers = `
+  if (req.method === "POST" && message) {
+    await readBody(req);
+    const fs = require("node:fs");
+    if (!fs.existsSync(${JSON.stringify(unavailable)})) {
+      fs.writeFileSync(${JSON.stringify(unavailable)}, "unavailable");
+      server.close();
+      res.destroy();
+      return;
+    }
+    await capture(message[1], { system: "s", messages: [{ role: "user" }] });
+    return json(res, ${okAssistant});
+  }
+  if (req.method === "GET" && message) return json(res, [${okAssistant}]);
+`;
+  const harness = createOpenCodeHarness({ binaryPath: fakeSidecar(dir, "listener-replace", handlers) });
+  t.after(async () => {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await assert.rejects(() => harness.turns.runTurn(turnInput([], [])));
+  assert.equal((await harness.turns.runTurn(turnInput([], []))).reply, "hello from fake");
+});
+
+test("OpenCode does not probe or replace a runtime while another turn holds a lease", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-opencode-test-"));
+  const statusChecks = join(dir, "status-checks");
+  const promptStarted = join(dir, "prompt-started");
+  const handlers = `
+  if (req.method === "GET" && url.pathname === "/session/status") {
+    const fs = require("node:fs");
+    const checks = fs.existsSync(${JSON.stringify(statusChecks)}) ? Number(fs.readFileSync(${JSON.stringify(statusChecks)}, "utf8")) : 0;
+    fs.writeFileSync(${JSON.stringify(statusChecks)}, String(checks + 1));
+    if (checks > 1) {
+      res.destroy();
+      return;
+    }
+    return json(res, {});
+  }
+  if (req.method === "POST" && message) {
+    await readBody(req);
+    const fs = require("node:fs");
+    if (!fs.existsSync(${JSON.stringify(promptStarted)})) {
+      fs.writeFileSync(${JSON.stringify(promptStarted)}, "started");
+      return await new Promise(() => {});
+    }
+    await capture(message[1], { system: "s", messages: [{ role: "user" }] });
+    return json(res, ${okAssistant});
+  }
+  if (req.method === "GET" && message) return json(res, [${okAssistant}]);
+`;
+  const harness = createOpenCodeHarness({ binaryPath: fakeSidecar(dir, "active-lease", handlers) });
+  const blocked = harness.turns.runTurn(turnInput([], [])).then(
+    () => "fulfilled" as const,
+    () => "rejected" as const,
+  );
+  t.after(async () => {
+    await harness.turns.close?.();
+    assert.equal(await blocked, "rejected");
+    rmSync(dir, { recursive: true, force: true });
+  });
+  while (!existsSync(promptStarted)) await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  assert.equal((await harness.turns.runTurn(turnInput([], []))).reply, "hello from fake");
+  assert.equal(readFileSync(statusChecks, "utf8"), "2");
+});
+
 test("OpenCode routes each turn through the MCP snapshot leased with its runtime", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "qm-opencode-test-"));
   const statePath = join(dir, "mcp-state");
