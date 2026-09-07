@@ -4,7 +4,12 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createLocalSandbox, localContainerName, localVolumeName } from "../src/sandbox/local-sandbox.ts";
+import {
+  createLocalSandbox,
+  localContainerName,
+  localNetworkName,
+  localVolumeName,
+} from "../src/sandbox/local-sandbox.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { scopeId } from "../src/types.ts";
 
@@ -53,6 +58,21 @@ async function main(): Promise<void> {
     assert.equal(await sandbox.readFile(h2, "notes/marker.txt"), marker, "file present after restart");
     log("warm restart OK, marker intact");
 
+    assert.equal((await sandbox.run(h2, "printf retained > /tmp/network-repair-marker")).code, 0);
+    assert.equal(spawnSync("docker", ["stop", h2.id]).status, 0);
+    assert.equal(spawnSync("docker", ["network", "rm", localNetworkName(h2.id)]).status, 0);
+    log("recovering from manually deleted network...");
+    assert.equal((await sandbox.run(h2, "cat /tmp/network-repair-marker")).stdout, "retained");
+    assert.equal(createdAt(h2.id), created1);
+    assert.equal(await sandbox.readFile(h2, "notes/marker.txt"), marker);
+
+    assert.equal(spawnSync("docker", ["stop", h2.id]).status, 0);
+    assert.equal(spawnSync("docker", ["network", "rm", localNetworkName(h2.id)]).status, 0);
+    assert.equal(spawnSync("docker", ["network", "create", localNetworkName(h2.id)]).status, 0);
+    log("recovering from a replacement network with the same name...");
+    assert.equal((await sandbox.run(h2, "cat /tmp/network-repair-marker")).stdout, "retained");
+    assert.equal(createdAt(h2.id), created1);
+
     log("scratch box...");
     const hs = await sandbox.provision(layers, { scratch: { key: `smoke-${Date.now()}` } });
     assert.equal(hs.scratch, true);
@@ -66,6 +86,7 @@ async function main(): Promise<void> {
     log("\n=== ALL LIVE ASSERTIONS PASSED ===");
   } finally {
     spawnSync("docker", ["rm", "-f", localContainerName(scope)], { stdio: "ignore" });
+    spawnSync("docker", ["network", "rm", localNetworkName(localContainerName(scope))], { stdio: "ignore" });
     spawnSync("docker", ["volume", "rm", localVolumeName(scope)], { stdio: "ignore" });
     log("cleanup done");
   }

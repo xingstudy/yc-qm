@@ -82,14 +82,16 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
 
   let preflightDone: Promise<string> | undefined;
   let staleWarned = false;
+  let smallSubnets = false;
 
   async function preflight(): Promise<string> {
     preflightDone ??= (async () => {
-      const version = await dexec(["version"], 15_000);
+      const version = await dexec(["version", "--format", "{{.Server.Version}}"], 15_000);
       if (version.code !== 0) {
         preflightDone = undefined;
         throw new Error("SANDBOX_BACKEND=local requires a running Docker daemon (is Docker Desktop running?)");
       }
+      smallSubnets = Number.parseInt(version.stdout, 10) >= 29;
       const img = await dexec([
         "image",
         "inspect",
@@ -171,15 +173,32 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
 
   async function startContainer(name: string): Promise<void> {
     portByName.delete(name);
+    await releaseNetwork(name);
+    const net = await ensureNetwork(name);
+    await checkedDocker(["network", "connect", net, name]);
     const r = await dexec(["start", name]);
     if (r.code !== 0) throw new Error(`docker start ${name} failed: ${r.stderr.trim()}`);
     await waitDaemon(name);
   }
 
   async function ensureRunning(name: string): Promise<void> {
-    const state = await containerState(name);
-    if (!state) throw new Error(`local sandbox container ${name} is gone`);
-    if (!state.running) await startContainer(name);
+    await provisionQueue(name, async () => {
+      const state = await containerState(name);
+      if (!state) throw new Error(`local sandbox container ${name} is gone`);
+      if (!state.running) await startContainer(name);
+    });
+  }
+
+  async function checkedDocker(args: string[], missing?: RegExp): Promise<void> {
+    const r = await dexec(args);
+    if (r.code !== 0 && !missing?.test(r.stderr))
+      throw new Error(`docker ${args.join(" ")} failed: ${r.stderr.trim()}`);
+  }
+
+  async function releaseNetwork(name: string): Promise<void> {
+    const net = localNetworkName(name);
+    await checkedDocker(["network", "disconnect", "--force", net, name], /not found|No such network|not connected/i);
+    await checkedDocker(["network", "rm", net], /not found|No such network/i);
   }
 
   async function execRaw(name: string, command: string, timeoutSec: number, signal?: AbortSignal): Promise<ExecResult> {
@@ -206,7 +225,16 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
   async function ensureNetwork(name: string): Promise<string> {
     const net = localNetworkName(name);
     if ((await dexec(["network", "inspect", net])).code !== 0) {
-      const r = await dexec(["network", "create", net]);
+      const r = await dexec([
+        "network",
+        "create",
+        "--label",
+        "qm.sandbox=1",
+        "--label",
+        `qm.org=${configOrgId()}`,
+        ...(smallSubnets ? ["--subnet", "0.0.0.0/29"] : []),
+        net,
+      ]);
       if (r.code !== 0 && !/already exists/i.test(r.stderr)) {
         throw new Error(`docker network create ${net} failed: ${r.stderr.trim()}`);
       }
@@ -245,7 +273,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
   }
 
   async function ensureContainer(scope: string): Promise<{ name: string; coldStart: boolean }> {
-    return provisionQueue(scope, async () => {
+    return provisionQueue(localContainerName(scope), async () => {
       const imageId = await preflight();
       const name = localContainerName(scope);
       scopeByContainer.set(name, scope);
@@ -255,7 +283,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
         activeByContainer.set(name, (activeByContainer.get(name) ?? 0) + 1);
         return { name, coldStart: false };
       }
-      if (state) await dexec(["rm", "-f", name]);
+      if (state) await checkedDocker(["rm", "-f", name]);
       const volume = localVolumeName(scope);
       const hadVolume = (await dexec(["volume", "inspect", volume])).code === 0;
       if (!hadVolume) {
@@ -269,7 +297,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
   }
 
   async function ensureScratch(key: string): Promise<{ name: string; coldStart: boolean }> {
-    return provisionQueue(`scratch:${key}`, async () => {
+    return provisionQueue(localScratchName(key), async () => {
       await preflight();
       const name = localScratchName(key);
       scratchByKey.set(key, name);
@@ -283,14 +311,6 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
       activeByContainer.set(name, (activeByContainer.get(name) ?? 0) + 1);
       return { name, coldStart: true };
     });
-  }
-
-  function teardownQueueKey(handle: SandboxHandle): string {
-    if (handle.scratch) {
-      for (const [k, name] of scratchByKey) if (name === handle.id) return `scratch:${k}`;
-      return handle.id;
-    }
-    return scopeByContainer.get(handle.id) ?? handle.id;
   }
 
   const profile: AgentComputerProfile = {
@@ -422,7 +442,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     backupComputer: execBackup.backupComputer,
 
     async teardown(handle, tdOpts?: TeardownOptions): Promise<void> {
-      return provisionQueue(teardownQueueKey(handle), async () => {
+      return provisionQueue(handle.id, async () => {
         const remaining = (activeByContainer.get(handle.id) ?? 1) - 1;
         if (remaining > 0) {
           activeByContainer.set(handle.id, remaining);
@@ -432,11 +452,8 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
 
         if (handle.scratch) {
           for (const [k, name] of scratchByKey) if (name === handle.id) scratchByKey.delete(k);
-          if (tdOpts?.destroy) await dexec(["rm", "-f", handle.id]);
-          else await dexec(["rm", "-f", handle.id]).catch(swallowAs("local-sandbox: scratch rm", undefined));
-          await dexec(["network", "rm", localNetworkName(handle.id)]).catch(
-            swallowAs("local-sandbox: scratch network rm", undefined),
-          );
+          await checkedDocker(["rm", "-f", handle.id], /No such container/i);
+          await checkedDocker(["network", "rm", localNetworkName(handle.id)], /not found|No such network/i);
           portByName.delete(handle.id);
           return;
         }
@@ -444,15 +461,10 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
         if (tdOpts?.keepWarm) return;
 
         if (tdOpts?.destroy) {
-          await dexec(["rm", "-f", handle.id]).catch(swallowAs("local-sandbox: destroy rm", undefined));
-          await dexec(["network", "rm", localNetworkName(handle.id)]).catch(
-            swallowAs("local-sandbox: destroy network rm", undefined),
-          );
+          await checkedDocker(["rm", "-f", handle.id], /No such container/i);
+          await checkedDocker(["network", "rm", localNetworkName(handle.id)], /not found|No such network/i);
           const scope = scopeByContainer.get(handle.id);
-          if (scope)
-            await dexec(["volume", "rm", localVolumeName(scope)]).catch(
-              swallowAs("local-sandbox: destroy volume rm", undefined),
-            );
+          if (scope) await checkedDocker(["volume", "rm", localVolumeName(scope)], /no such volume/i);
           scopeByContainer.delete(handle.id);
           portByName.delete(handle.id);
           return;
@@ -466,8 +478,40 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
             message: r.stderr.trim(),
             ...(scopeByContainer.get(handle.id) ? { scopeLabel: scopeByContainer.get(handle.id)! } : {}),
           });
+        if (r.code === 0) await releaseNetwork(handle.id);
         portByName.delete(handle.id);
       });
+    },
+
+    async reapDeepIdle(idleMs): Promise<{ reaped: number }> {
+      if (!(idleMs > 0)) return { reaped: 0 };
+      const listed = await dexec([
+        "ps",
+        "-a",
+        "--filter",
+        "label=qm.sandbox=1",
+        "--filter",
+        `label=qm.org=${configOrgId()}`,
+        "--format",
+        "{{.Names}}",
+      ]);
+      if (listed.code !== 0) throw new Error(`docker ps failed: ${listed.stderr.trim()}`);
+      let reaped = 0;
+      for (const name of listed.stdout.trim().split(/\s+/).filter(Boolean)) {
+        await provisionQueue(name, async () => {
+          if ((activeByContainer.get(name) ?? 0) > 0) return;
+          const state = await dexec(["inspect", "-f", "{{.State.Running}} {{.State.FinishedAt}}", name]);
+          if (state.code !== 0) return;
+          const [running, finished] = state.stdout.trim().split(/\s+/);
+          const stoppedAt = Date.parse(finished ?? "");
+          if (running !== "false" || !Number.isFinite(stoppedAt) || stoppedAt <= 0 || stoppedAt > Date.now() - idleMs)
+            return;
+          if ((await dexec(["network", "inspect", localNetworkName(name)])).code !== 0) return;
+          await releaseNetwork(name);
+          reaped++;
+        });
+      }
+      return { reaped };
     },
   };
 

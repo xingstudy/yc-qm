@@ -125,12 +125,106 @@ test("teardown parks the container and the next provision restarts it warm", asy
   const h1 = await sb.provision(layers);
   await sb.teardown(h1);
   assert.equal(fake.containers.get(h1.id)!.running, false);
+  assert.equal(fake.networks.has(localNetworkName(h1.id)), false);
 
   const h2 = await sb.provision(layers);
   assert.equal(h2.id, h1.id, "same container reused");
   assert.equal(h2.coldStart, false);
   assert.equal(fake.runCount, 1, "no new container run");
   assert.equal(fake.containers.get(h1.id)!.running, true, "restarted");
+});
+
+test("a manually deleted network heals without replacing the container or home", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const sb = makeSandbox(fake);
+  const layers = rw(scopeId("personal", "network-repair"));
+  const handle = await sb.provision(layers);
+  await sb.writeFile(handle, "preserved.txt", "keep me");
+  fake.containers.get(handle.id)!.running = false;
+  fake.networks.delete(localNetworkName(handle.id));
+  const restored = await sb.provision(layers);
+  assert.equal(fake.runCount, 1);
+  assert.equal(restored.coldStart, false);
+  assert.equal(await sb.readFile(restored, "preserved.txt"), "keep me");
+  assert.equal(fake.volumes.has(localVolumeName(layers[0]!.scopeId)), true);
+  assert.equal(fake.networks.has(localNetworkName(handle.id)), true);
+});
+
+test("running a parked handle reconnects its network", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const sb = makeSandbox(fake);
+  const handle = await sb.provision(rw(scopeId("personal", "parked-run")));
+  await sb.teardown(handle);
+  assert.equal(fake.networks.size, 0);
+  assert.equal((await sb.run(handle, "echo resumed")).stdout.trim(), "resumed");
+  assert.equal(fake.runCount, 1);
+});
+
+test("deep idle reaping releases only old stopped owned networks and preserves containers and volumes", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const sb = makeSandbox(fake);
+  const handles = [];
+  for (const id of ["old", "recent", "running", "foreign"]) {
+    const h = await sb.provision(rw(scopeId("personal", id)));
+    await sb.teardown(h, { keepWarm: true });
+    const c = fake.containers.get(h.id)!;
+    c.running = id === "running";
+    c.finishedAt = new Date(Date.now() - (id === "recent" ? 0 : 100_000)).toISOString();
+    if (id === "foreign") c.labels["qm.org"] = "other";
+    handles.push(h);
+  }
+  const fresh = makeSandbox(fake);
+  assert.deepEqual(await fresh.reapDeepIdle!(10_000), { reaped: 1 });
+  assert.equal(fake.networks.has(localNetworkName(handles[0]!.id)), false);
+  assert.equal(fake.containers.size, 4);
+  assert.equal(fake.volumes.size, 4);
+  assert.equal(fake.networks.size, 3);
+  assert.deepEqual(await fresh.reapDeepIdle!(10_000), { reaped: 0 });
+});
+
+test("Docker 29 networks request small dynamically allocated subnets", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const calls: string[][] = [];
+  const sb = makeSandbox(fake, {
+    dockerExec: async (args: string[]) => {
+      calls.push(args);
+      return fake.dockerExec(args);
+    },
+  });
+  await sb.provision(rw(scopeId("personal", "small-network")));
+  const create = calls.find((args) => args[0] === "network" && args[1] === "create")!;
+  assert.ok(create.includes("0.0.0.0/29"));
+  assert.ok(create.includes("qm.org=default-org"));
+});
+
+test("older Docker engines retain supported automatic allocation", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const calls: string[][] = [];
+  const sb = makeSandbox(fake, {
+    dockerExec: async (args: string[]) => {
+      calls.push(args);
+      if (args[0] === "version") return { code: 0, stdout: "27.4.0\n", stderr: "" };
+      return fake.dockerExec(args);
+    },
+  });
+  await sb.provision(rw(scopeId("personal", "older-network")));
+  assert.ok(!calls.find((args) => args[0] === "network" && args[1] === "create")!.includes("--subnet"));
+});
+
+test("network cleanup failures are surfaced without deleting the container or home", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const sb = makeSandbox(fake, {
+    dockerExec: async (args: string[]) => {
+      if (args[0] === "network" && args[1] === "rm")
+        return { code: 1, stdout: "", stderr: "network has active endpoints" };
+      return fake.dockerExec(args);
+    },
+  });
+  const scope = scopeId("personal", "cleanup-failure");
+  const h = await sb.provision(rw(scope));
+  await assert.rejects(sb.teardown(h), /network has active endpoints/);
+  assert.ok(fake.containers.has(h.id));
+  assert.ok(fake.volumes.has(localVolumeName(scope)));
 });
 
 test("a stale-image container is recreated while its home volume survives", async () => {

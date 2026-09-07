@@ -308,6 +308,18 @@ production deployment, use the source-tree CLI described under
 The root Compose stack is different from the Docker target created by `qm init`: their
 topologies, ports, configuration, and lifecycle commands are not interchangeable.
 
+The local Docker sandbox releases its dedicated network when parked, retaining both
+the stopped container and its home volume. Restart reconnects the container to a
+fresh network, including when an operator deleted the previous network. The idle
+sweeper also releases networks belonging to old stopped sandboxes in the current
+organization without deleting their containers or volumes. Docker Engine 29+ uses
+dynamically allocated `/29` sandbox subnets; older engines retain daemon-default
+allocation. On older engines, size `default-address-pools` for expected concurrent
+sandboxes using ranges that do not overlap host, LAN, or VPN routes. Changing daemon
+pool settings requires an operator-managed Docker restart and does not resize
+existing networks. Do not delete active sandbox networks or prune volumes to
+recover address space.
+
 ### Prerequisites
 
 - Linux or WSL2 with a running Docker Engine and Docker Compose v2
