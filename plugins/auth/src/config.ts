@@ -40,6 +40,7 @@ export interface AuthConfig {
   sendLimitPerIp: number;
   coreApiUrl: string;
   coreSigningSecret: string | undefined;
+  wecomLoginBridgeUrl: string | undefined;
 }
 
 const MAX_RATE_LIMIT_SLOTS = 64;
@@ -114,6 +115,7 @@ export function readConfig(env: NodeJS.ProcessEnv): AuthConfig {
     sendLimitPerIp: numberFrom(env.AUTH_SEND_LIMIT_PER_IP, 20),
     coreApiUrl: (env.CORE_API_URL ?? "http://localhost:8080").replace(/\/$/, ""),
     coreSigningSecret: env.CORE_SIGNING_SECRET,
+    wecomLoginBridgeUrl: env.AUTH_WECOM_LOGIN_BRIDGE_URL?.trim() || undefined,
   };
 }
 
@@ -152,6 +154,14 @@ export function bootProblems(cfg: AuthConfig, isProd: boolean): string[] {
 
   push(httpsUrlProblem("AUTH_ISSUER", cfg.issuer, isProd));
   push(httpsUrlProblem("AUTH_REDIRECT_URI", cfg.redirectUri, isProd));
+  if (cfg.wecomLoginBridgeUrl) {
+    push(httpsUrlProblem("AUTH_WECOM_LOGIN_BRIDGE_URL", cfg.wecomLoginBridgeUrl, true));
+    try {
+      if (!/\/wecom\/login\/?$/.test(new URL(cfg.wecomLoginBridgeUrl).pathname)) {
+        problems.push("AUTH_WECOM_LOGIN_BRIDGE_URL must end with /wecom/login");
+      }
+    } catch {}
+  }
   if (isProductionPlaceholder(cfg.clientId)) problems.push("AUTH_CLIENT_ID is required and may not be a placeholder");
   if (isProductionPlaceholder(cfg.clientSecret))
     problems.push("AUTH_CLIENT_SECRET is required and may not be a placeholder");

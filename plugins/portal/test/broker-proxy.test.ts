@@ -27,6 +27,10 @@ const broker = createServer((req: IncomingMessage, res) => {
       res.writeHead(302, { location: verifyLocation(token) });
       return void res.end();
     }
+    if (req.url === "/wecom-jssdk.js" || req.url === "/wecom-login.js") {
+      res.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
+      return void res.end(`window.asset = ${JSON.stringify(req.url)}`);
+    }
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end("<form>broker</form>");
   });
@@ -78,6 +82,14 @@ test("the broker's sign-in pages are reachable without a session", async () => {
   const wecomCallback = await fetch(`${base}/idp/wecom/callback?code=c&state=s`);
   assert.equal(wecomCallback.status, 200);
   assert.equal(seen.at(-1)!.url, "/wecom/callback?code=c&state=s");
+
+  for (const path of ["/wecom-jssdk.js", "/wecom-login.js"]) {
+    const asset = await fetch(`${base}/idp${path}`);
+    assert.equal(asset.status, 200);
+    assert.match(asset.headers.get("content-type") ?? "", /text\/javascript/);
+    assert.equal(await asset.text(), `window.asset = ${JSON.stringify(path)}`);
+    assert.equal(seen.at(-1)!.url, path);
+  }
 });
 
 test("the verify redirect is relayed back to the browser", async () => {
@@ -206,6 +218,9 @@ test("brokerRouteFor matches only the exact public routes", () => {
   assert.equal(brokerRouteFor("GET", "/idp/verify"), "/verify");
   assert.equal(brokerRouteFor("GET", "/idp/wecom/login"), "/wecom/login");
   assert.equal(brokerRouteFor("GET", "/idp/wecom/callback"), "/wecom/callback");
+  assert.equal(brokerRouteFor("GET", "/idp/wecom-jssdk.js"), "/wecom-jssdk.js");
+  assert.equal(brokerRouteFor("GET", "/idp/wecom-login.js"), "/wecom-login.js");
+  assert.equal(brokerRouteFor("POST", "/idp/wecom-login.js"), null);
   assert.equal(brokerRouteFor("GET", "/idp/directory/handoff"), "/directory/handoff");
   assert.equal(brokerRouteFor("POST", "/idp/directory/handoff"), null);
   for (const path of ["/idp/authorize/extra", "/idpauthorize", "/idp/", "/idp", "/idp/token", "/authorize"]) {

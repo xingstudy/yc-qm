@@ -38,6 +38,11 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
   const lock = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8")) as {
     packages?: Record<string, { resolved?: unknown; version?: unknown; hasShrinkwrap?: unknown; license?: unknown }>;
   };
+  const webUiLock = JSON.parse(
+    readFileSync(new URL("../plugins/web-ui/package-lock.json", import.meta.url), "utf8"),
+  ) as {
+    packages?: Record<string, { version?: unknown }>;
+  };
   const packages = lock.packages ?? {};
   const pi = packages["node_modules/@earendil-works/pi-coding-agent"];
   const piManifest = new URL("../node_modules/@earendil-works/pi-coding-agent/package.json", import.meta.url);
@@ -60,7 +65,10 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
   }
   assert.deepEqual(lockedVersions(packages, "brace-expansion"), ["5.0.9"]);
   assert.deepEqual(lockedVersions(packages, "fast-uri").sort(), ["3.1.7", "4.1.4"]);
+  assert.deepEqual(lockedVersions(packages, "fastify"), ["5.12.1"]);
   assert.deepEqual(lockedVersions(packages, "protobufjs"), ["7.6.5"]);
+  assert.deepEqual(lockedVersions(packages, "qs"), ["6.16.0"]);
+  assert.deepEqual(lockedVersions(webUiLock.packages ?? {}, "qs"), ["6.16.0"]);
   assert.deepEqual(lockedVersions(packages, "@hono/node-server"), ["2.0.10"]);
   assert.equal(dependencyVersion(minimatchManifest, "brace-expansion"), "5.0.9");
   assert.equal(dependencyVersion(piManifest, "undici"), "8.9.0");

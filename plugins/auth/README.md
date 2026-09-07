@@ -16,6 +16,8 @@ emailed to an allowed address.
 | `GET /directory/login`                  | browser, via the portal                     | starts a configured managed-directory sign-in                                |
 | `GET /directory/callback`               | identity provider, via the portal           | asks Core to resolve the provider code and redirects with an OIDC code       |
 | `GET /directory/handoff`                | browser, via the portal                     | waits for a consent step that only the provider's own client can render      |
+| `GET /wecom-jssdk.js`                   | browser, via the portal                     | serves the pinned official WeCom browser SDK                                 |
+| `GET /wecom-login.js`                   | browser, via the portal                     | initializes the WeCom login panel                                            |
 | `POST /token`                           | portal, over the private network            | HTTP Basic client auth, authorization-code grant, PKCE S256                  |
 | `GET /userinfo`                         | portal, over the private network            | Bearer access token, verified statelessly                                    |
 | `GET /.well-known/jwks.json`            | portal, over the private network            | the ES256 public key                                                         |
@@ -50,6 +52,7 @@ store; the broker refuses to start if any of it is missing or a placeholder.
 | `AUTH_ALLOWED_EMAILS`, `AUTH_ALLOWED_EMAIL_DOMAIN`                              | the operator's admin address or domain                                                                                      |
 | `AUTH_EMAIL_FROM`                                                               | the operator's verified sender                                                                                              |
 | `AUTH_BRAND_NAME`                                                               | `botName` in the deployment config; the Admin page's live branding, when set, takes precedence on rendered pages and emails |
+| `AUTH_WECOM_LOGIN_BRIDGE_URL`                                                   | optional registered-domain bridge ending in `/wecom/login`; cross-origin Web login otherwise stays on direct QR             |
 | `AUTH_EMAIL_TRANSPORT` and the chosen transport's variables (below)             | the operator's email provider                                                                                               |
 | `AUTH_LINK_TTL_S`, `AUTH_CODE_TTL_S`, `AUTH_ACCESS_TTL_S`, `AUTH_REQUEST_TTL_S` | optional, capped                                                                                                            |
 | `AUTH_SEND_WINDOW_S`, `AUTH_SEND_LIMIT_PER_EMAIL`, `AUTH_SEND_LIMIT_PER_IP`     | optional                                                                                                                    |
@@ -73,6 +76,12 @@ stable bindings skip this second redirect. The Core response carries an explicit
 protocol version and uses a non-success precondition response when consent is
 required, so either side of a mixed-version deployment fails closed rather than
 silently completing an email-less first login.
+
+WeCom sign-in uses the official Web login component. On a supported desktop
+browser over HTTPS it detects an already signed-in WeCom desktop client and
+offers quick login; otherwise the same panel displays a QR code. The old direct
+QR URL remains on the page as a fallback. Both paths return the same one-time
+code to the existing directory callback.
 Legacy `/wecom/login` and `/wecom/callback` aliases remain available for existing
 callback registrations.
 

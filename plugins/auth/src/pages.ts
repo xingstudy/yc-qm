@@ -52,6 +52,52 @@ const HANDOFF_SCRIPT = `(function () {
 
 const HANDOFF_SCRIPT_HASH = `sha256-${createHash("sha256").update(HANDOFF_SCRIPT, "utf8").digest("base64")}`;
 
+export const WECOM_LOGIN_SCRIPT = `(function () {
+  var mount = document.getElementById("wecom-login");
+  if (!mount || !window.ww) return;
+  window.ww.createWWLoginPanel({
+    el: mount,
+    params: {
+      login_type: "CorpApp",
+      appid: mount.dataset.appid,
+      agentid: mount.dataset.agentid,
+      redirect_uri: mount.dataset.redirectUri,
+      state: mount.dataset.state,
+      redirect_type: "callback",
+      panel_size: "small",
+      lang: document.documentElement.lang === "zh" ? "zh" : "en"
+    },
+    onCheckWeComLogin: function (result) {
+      mount.dataset.clientLoggedIn = result && result.isWeComLogin ? "1" : "0";
+    },
+    onLoginFail: function () {
+      mount.dataset.loginFailed = "1";
+    },
+    onLoginSuccess: function (result) {
+      if (!result || typeof result.code !== "string" || !result.code) {
+        mount.dataset.loginFailed = "1";
+        return;
+      }
+      var destination = new URL(mount.dataset.redirectUri);
+      destination.searchParams.set("code", result.code);
+      destination.searchParams.set("state", mount.dataset.state);
+      if (mount.dataset.handoffUrl) {
+        fetch(destination.toString(), { credentials: "same-origin" }).then(function () {
+          window.location.assign(mount.dataset.handoffUrl);
+        }, function () {
+          mount.dataset.loginFailed = "1";
+        });
+        return;
+      }
+      window.location.assign(destination.toString());
+    },
+    onOpenInWecom: function () {
+      mount.dataset.clientOpened = "1";
+      if (mount.dataset.handoffUrl) window.location.assign(mount.dataset.handoffUrl);
+    }
+  });
+})();`;
+
 export const PAGE_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
@@ -63,6 +109,11 @@ export const CONFIRM_PAGE_CSP = PAGE_CSP.replace(
 export const HANDOFF_PAGE_CSP = PAGE_CSP.replace(
   "default-src 'none';",
   `default-src 'none'; script-src '${HANDOFF_SCRIPT_HASH}';`,
+);
+
+export const WECOM_LOGIN_PAGE_CSP = PAGE_CSP.replace(
+  "default-src 'none';",
+  "default-src 'none'; script-src 'self'; frame-src https://login.work.weixin.qq.com https://open.work.weixin.qq.com; connect-src 'self' https://login.work.weixin.qq.com https://open.work.weixin.qq.com;",
 );
 
 const STYLE = `<style>
@@ -118,6 +169,9 @@ const STYLE = `<style>
   .qr{ width:200px; height:200px; margin:0 auto 6px; display:block; background:#fff;
     border:1px solid var(--border); border-radius:var(--radius-md); padding:10px; box-sizing:border-box; }
   .qr svg{ width:100%; height:100%; display:block; }
+  .wecom-login{ width:320px; max-width:100%; min-height:380px; margin:0 auto; }
+  .wecom-login iframe{ width:100%!important; max-width:320px; border:0; }
+  .wecom-fallback{ display:inline-block; margin-top:12px; color:var(--muted); font-size:12.5px; }
   details{ margin:0 0 18px; }
   summary{ cursor:pointer; font-size:12.5px; color:var(--muted); padding:6px 0; }
   .waiting{ display:flex; align-items:center; justify-content:center; gap:8px;
@@ -126,6 +180,11 @@ const STYLE = `<style>
     border:2px solid var(--border); border-top-color:var(--muted); animation:spin 1s linear infinite; }
   @keyframes spin{ to{ transform:rotate(360deg); } }
   @media (prefers-reduced-motion: reduce){ .waiting:before{ animation:none; } }
+  @media (max-width:420px){
+    main{ padding-left:0; padding-right:0; }
+    .wecom-card{ width:100vw; max-width:none; padding-left:max(0px, calc((100vw - 320px)/2));
+      padding-right:max(0px, calc((100vw - 320px)/2)); border-left:0; border-right:0; border-radius:0; }
+  }
 </style>`;
 
 const MAIL_ICON = `<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>`;
@@ -142,6 +201,7 @@ function page(o: {
   msg: string;
   body?: string;
   help: string;
+  cardClass?: string;
 }): string {
   return `<!doctype html>
 <html lang="en">
@@ -154,7 +214,7 @@ ${STYLE}
 </head>
 <body>
   <main>
-    <section class="card" aria-labelledby="t">
+    <section class="card${o.cardClass ? ` ${escapeHtml(o.cardClass)}` : ""}" aria-labelledby="t">
       <div class="icon${o.warn ? " warn" : ""}" aria-hidden="true">${o.icon}</div>
       <h1 id="t">${escapeHtml(o.heading)}</h1>
       <p class="msg">${escapeHtml(o.msg)}</p>
@@ -209,6 +269,32 @@ export function linkSentPage(o: { brandName: string; email: string; ttlMinutes: 
     msg: `If that address can sign in, a one-time link is on its way. Open it in the browser where you want to sign in — it works once and expires in ${o.ttlMinutes} minutes.`,
     body: `<p class="who">${escapeHtml(o.email)}</p>`,
     help: "Nothing after a minute or two? Check spam, then ask your administrator whether the address is allowed.",
+  });
+}
+
+export function wecomLoginPage(o: {
+  brandName: string;
+  appId: string;
+  agentId: string;
+  redirectUri: string;
+  state: string;
+  sdkUrl: string;
+  initializerUrl: string;
+  fallbackUrl: string;
+  handoffUrl?: string;
+}): string {
+  return page({
+    title: "WeCom sign-in",
+    brandName: o.brandName,
+    icon: LOCK_ICON,
+    heading: "Sign in with WeCom",
+    msg: `Continue to ${o.brandName} with your corporate identity.`,
+    body: `<div id="wecom-login" class="wecom-login" data-appid="${escapeHtml(o.appId)}" data-agentid="${escapeHtml(o.agentId)}" data-redirect-uri="${escapeHtml(o.redirectUri)}" data-state="${escapeHtml(o.state)}" data-handoff-url="${escapeHtml(o.handoffUrl ?? "")}"></div>
+      <a class="wecom-fallback" href="${escapeHtml(o.fallbackUrl)}">Use QR sign-in instead</a>
+      <script src="${escapeHtml(o.sdkUrl)}" defer></script>
+      <script src="${escapeHtml(o.initializerUrl)}" defer></script>`,
+    help: "Only members allowed to use this application can sign in.",
+    cardClass: "wecom-card",
   });
 }
 

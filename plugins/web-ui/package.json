@@ -51,6 +51,7 @@
     },
     "@mariozechner/mini-lit": {
       "marked": "^18.0.5"
-    }
+    },
+    "qs": "6.16.0"
   }
 }

@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHmac, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { readBody, PayloadTooLargeError, serveEmojiFavicon } from "../../chassis/src/http.ts";
 import { errMessage } from "../../chassis/src/errors.ts";
 import type { AuthConfig } from "./config.ts";
@@ -23,9 +24,12 @@ import {
   handoffWaitingPage,
   linkSentPage,
   problemPage,
+  wecomLoginPage,
   CONFIRM_PAGE_CSP,
   HANDOFF_PAGE_CSP,
   PAGE_CSP,
+  WECOM_LOGIN_PAGE_CSP,
+  WECOM_LOGIN_SCRIPT,
 } from "./pages.ts";
 import { qrSvg } from "./qr.ts";
 import type { DirectorySourceClient } from "../../chassis/src/directory-source-client.ts";
@@ -35,6 +39,7 @@ const MAX_FORM_BYTES = 8 * 1024;
 const ID_TOKEN_TTL_S = 300;
 const MAX_INFLIGHT_SENDS = 32;
 const DIRECTORY_PROFILE_STATE_RE = /^[0-9a-f]{64}$/;
+const WECOM_JSSDK = readFileSync(new URL(import.meta.resolve("@wecom/jssdk/dist/wecom.global.prod.js")), "utf8");
 
 export interface AuthDeps {
   cfg: AuthConfig;
@@ -109,6 +114,66 @@ function sendHtml(res: ServerResponse, status: number, html: string, csp = PAGE_
   res.end(html);
 }
 
+function sendJavaScript(res: ServerResponse, body: string): void {
+  res.writeHead(200, noStore({ "content-type": "text/javascript; charset=utf-8" }));
+  res.end(body);
+}
+
+function wecomLoginParams(authorizeUrl: string): {
+  appId: string;
+  agentId: string;
+  redirectUri: string;
+  state: string;
+} | null {
+  try {
+    const url = new URL(authorizeUrl);
+    if (url.origin !== "https://open.work.weixin.qq.com" || url.pathname !== "/wwopen/sso/qrConnect") return null;
+    const appId = url.searchParams.get("appid") ?? "";
+    const agentId = url.searchParams.get("agentid") ?? "";
+    const redirectUri = url.searchParams.get("redirect_uri") ?? "";
+    const state = url.searchParams.get("state") ?? "";
+    if (!appId || !agentId || !redirectUri || !state) return null;
+    return { appId, agentId, redirectUri, state };
+  } catch {
+    return null;
+  }
+}
+
+function wecomBridgeUrls(
+  redirectUri: string,
+  loginUrlValue: string | undefined,
+): {
+  loginUrl: URL;
+  sdkUrl: string;
+  initializerUrl: string;
+} | null {
+  if (!loginUrlValue) return null;
+  try {
+    const callback = new URL(redirectUri);
+    const loginUrl = new URL(loginUrlValue);
+    const match = /^(.*)\/wecom\/login\/?$/.exec(loginUrl.pathname);
+    if (
+      callback.protocol !== "https:" ||
+      loginUrl.protocol !== "https:" ||
+      callback.origin !== loginUrl.origin ||
+      !match
+    )
+      return null;
+    const urlFor = (path: string): URL => {
+      const url = new URL(callback.origin);
+      url.pathname = `${match[1]}${path}`;
+      return url;
+    };
+    return {
+      loginUrl,
+      sdkUrl: urlFor("/wecom-jssdk.js").toString(),
+      initializerUrl: urlFor("/wecom-login.js").toString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function basicCredentials(header: string | undefined): { id: string; secret: string } | null {
   if (!header || !/^basic /i.test(header)) return null;
   const decoded = Buffer.from(header.slice(6).trim(), "base64").toString("utf8");
@@ -151,6 +216,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
   const formAction = `${cfg.publicPath}/authorize`;
   const directoryLoginAction = `${cfg.publicPath}/directory/login`;
   const linkTtlMinutes = Math.max(1, Math.round(cfg.linkTtlS / 60));
+  const wecomWebLoginEnabled = new URL(cfg.issuer).protocol === "https:";
   let inFlightSends = 0;
   const background = (task: () => Promise<void>): void => {
     if (inFlightSends >= MAX_INFLIGHT_SENDS) {
@@ -366,7 +432,12 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
     res.end();
   }
 
-  async function directoryLogin(req: IncomingMessage, res: ServerResponse, params: URLSearchParams): Promise<void> {
+  async function directoryLogin(
+    req: IncomingMessage,
+    res: ServerResponse,
+    params: URLSearchParams,
+    bridge = false,
+  ): Promise<void> {
     if (!deps.directorySources)
       return problem(
         res,
@@ -431,6 +502,70 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
       );
     }
     if (!option) return problem(res, 404, "This sign-in source isn't available", "Ask your administrator to check it.");
+    if (option.provider === "wecom" && wecomWebLoginEnabled && !isWeComClient(req)) {
+      const login = wecomLoginParams(option.authorizeUrl);
+      if (login) {
+        const bridgeUrls = wecomBridgeUrls(login.redirectUri, cfg.wecomLoginBridgeUrl);
+        const sameOrigin = new URL(cfg.issuer).origin === new URL(login.redirectUri).origin;
+        if (!bridge && !sameOrigin && bridgeUrls) {
+          bridgeUrls.loginUrl.searchParams.set("request", selected.token);
+          bridgeUrls.loginUrl.searchParams.set("source", sourceId);
+          res.writeHead(302, noStore({ location: bridgeUrls.loginUrl.toString() }));
+          res.end();
+          return;
+        }
+        if (!sameOrigin && (!bridge || !bridgeUrls || !deps.directoryContinuations)) {
+          res.writeHead(302, noStore({ location: option.authorizeUrl }));
+          res.end();
+          return;
+        }
+        const fallback = await signer.sealRequest({ ...request, directorySourceId: sourceId }, cfg.requestTtlS, now());
+        const fallbackUrl = new URL(option.authorizeUrl);
+        fallbackUrl.searchParams.set("state", fallback.token);
+        let componentState = login.state;
+        let handoffUrl: string | undefined;
+        if (bridge && bridgeUrls && deps.directoryContinuations) {
+          const continuation = await signer.sealRequest(
+            { ...request, directorySourceId: sourceId, directoryHandoff: true },
+            cfg.requestTtlS,
+            now(),
+          );
+          const continuationState = randomBytes(32).toString("hex");
+          const created = await deps.directoryContinuations.create(
+            continuationState,
+            continuation.token,
+            continuation.expiresAtMs,
+            directoryContinuationBucket(cfg.tokenSecret, clientIpOf(req)),
+          );
+          if (created !== "created") return continuationUnavailable(res, created);
+          const authorizeUrl = new URL(option.authorizeUrl);
+          authorizeUrl.searchParams.set("state", continuationState);
+          const handoff = await signer.sealHandoff(
+            { continuationState, authorizeUrl: authorizeUrl.toString(), promptDelivered: false },
+            Math.max(1, Math.round((continuation.expiresAtMs - now()) / 1000)),
+            now(),
+          );
+          const destination = new URL(`${cfg.publicPath}/directory/handoff`, cfg.issuer);
+          destination.searchParams.set("h", handoff.token);
+          componentState = continuationState;
+          handoffUrl = destination.toString();
+        }
+        return sendHtml(
+          res,
+          200,
+          wecomLoginPage({
+            brandName: brandName(),
+            ...login,
+            state: componentState,
+            sdkUrl: bridge && bridgeUrls ? bridgeUrls.sdkUrl : `${cfg.publicPath}/wecom-jssdk.js`,
+            initializerUrl: bridge && bridgeUrls ? bridgeUrls.initializerUrl : `${cfg.publicPath}/wecom-login.js`,
+            fallbackUrl: fallbackUrl.toString(),
+            ...(handoffUrl ? { handoffUrl } : {}),
+          }),
+          WECOM_LOGIN_PAGE_CSP,
+        );
+      }
+    }
     res.writeHead(302, noStore({ location: option.authorizeUrl }));
     res.end();
   }
@@ -483,7 +618,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
       return fail(400, "This enterprise sign-in expired", "Start again from the page you were trying to reach.");
     }
     const request = openedState.claims;
-    if (continuationClaim && !request.directoryProfileIdentity) {
+    if (continuationClaim && !request.directoryProfileIdentity && !request.directoryHandoff) {
       return fail(400, "This enterprise sign-in expired", "Start again from the page you were trying to reach.");
     }
     const directoryCode = params.get("code") ?? "";
@@ -837,6 +972,8 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
     if (method === "GET" && (path === "/favicon.ico" || path === "/favicon.svg")) {
       return serveEmojiFavicon(res, "✉️", "max-age=86400");
     }
+    if (method === "GET" && path === "/wecom-jssdk.js") return sendJavaScript(res, WECOM_JSSDK);
+    if (method === "GET" && path === "/wecom-login.js") return sendJavaScript(res, WECOM_LOGIN_SCRIPT);
     if (method === "GET" && path === "/.well-known/jwks.json") {
       res.writeHead(200, { "content-type": "application/json", "cache-control": "public, max-age=300" });
       return void res.end(JSON.stringify({ keys: [signingKey.publicJwk] }));
@@ -846,8 +983,8 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
     if (method === "POST" && path === "/authorize") return authorizeSubmit(req, res);
     if (method === "GET" && path === "/verify") return confirmVerify(res);
     if (method === "POST" && path === "/verify") return verify(req, res);
-    if (method === "GET" && (path === "/directory/login" || path === "/wecom/login"))
-      return directoryLogin(req, res, url.searchParams);
+    if (method === "GET" && path === "/directory/login") return directoryLogin(req, res, url.searchParams);
+    if (method === "GET" && path === "/wecom/login") return directoryLogin(req, res, url.searchParams, true);
     if (method === "GET" && (path === "/directory/callback" || path === "/wecom/callback"))
       return directoryCallback(req, res, url.searchParams);
     if (method === "GET" && path === "/directory/handoff") return directoryHandoff(res, url.searchParams);
