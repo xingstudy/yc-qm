@@ -6,6 +6,8 @@ export interface FakeContainer {
   running: boolean;
   labels: Record<string, string>;
   volume?: string;
+  network?: string;
+  finishedAt?: string;
 }
 
 export interface FakeDocker {
@@ -48,6 +50,7 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
         const [k = "", v = ""] = args[++i]!.split("=");
         c.labels[k] = v;
       } else if (a === "-v") c.volume = args[++i]!.split(":")[0]!;
+      else if (a === "--network") c.network = args[++i]!;
       else if (a === "-p" || a === "--cpus" || a === "--memory") i++;
     }
     return c;
@@ -58,7 +61,7 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
     if (self.daemonDown) return fail("Cannot connect to the Docker daemon");
     switch (cmd) {
       case "version":
-        return ok("Docker version fake");
+        return ok("29.7.2");
       case "image": {
         if (self.imageMissing) return fail("Error: No such image");
         return ok(`${self.imageId} ${self.imageFingerprint}`);
@@ -67,10 +70,23 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
         const name = rest[rest.length - 1]!;
         const c = containers.get(name);
         if (!c) return fail(`Error: No such object: ${name}`);
+        if (rest.includes("{{.State.Running}} {{.State.FinishedAt}}"))
+          return ok(`${c.running} ${c.finishedAt ?? "0001-01-01T00:00:00Z"}`);
         return ok(`${c.running} ${c.imageId}`);
       }
       case "network": {
-        const [sub, name] = rest as [string, string];
+        const sub = rest[0];
+        const name = sub === "create" ? rest[rest.length - 1]! : rest[1]!;
+        if (sub === "connect" || sub === "disconnect") {
+          const c = containers.get(rest[rest.length - 1]!);
+          const net = rest[rest.length - 2]!;
+          if (!c) return fail("No such container");
+          if (sub === "connect") {
+            if (!networks.has(net)) return fail(`network ${net} not found`);
+            c.network = net;
+          } else c.network = undefined;
+          return ok();
+        }
         if (sub === "inspect") return networks.has(name) ? ok(name) : fail(`Error: No such network: ${name}`);
         if (sub === "create") {
           if (networks.has(name)) return fail(`network with name ${name} already exists`);
@@ -105,6 +121,7 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
       case "start": {
         const c = containers.get(rest[0]!);
         if (!c) return fail("Error: No such container");
+        if (!c.network || !networks.has(c.network)) return fail(`network ${c.network} not found`);
         c.running = true;
         return ok(rest[0]!);
       }
@@ -112,6 +129,7 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
         const c = containers.get(rest[rest.length - 1]!);
         if (!c) return fail("Error: No such container");
         c.running = false;
+        c.finishedAt = new Date().toISOString();
         return ok();
       }
       case "rm": {
@@ -124,6 +142,13 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
         if (!c || !c.running) return fail("Error: No such container or not running");
         return ok(`127.0.0.1:${daemonPort}`);
       }
+      case "ps":
+        return ok(
+          [...containers.values()]
+            .filter((c) => c.labels["qm.sandbox"] === "1" && c.labels["qm.org"] === "default-org")
+            .map((c) => c.name)
+            .join("\n"),
+        );
       default:
         return fail(`fake docker: unsupported command ${cmd}`);
     }
