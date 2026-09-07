@@ -64,12 +64,16 @@ Copy its shape, then replace or delete it.
 
 ## The workflow
 
-Run every command from this directory.
+Run the relevant commands from this directory. This is a deployment lifecycle
+reference, not a checklist for every edit. Documentation-only changes need
+format/link checks; sandbox skill edits need frontmatter and relevant behavior
+checks. Do not deploy merely to validate prose.
 
 1. \`npm exec qm -- check\` validates the config and the sandbox layer and prints the
    secret names the config currently requires. It builds nothing, and when
    credential values are already present in \`.env\` it also verifies them
-   against their providers, so run it after every edit.
+   against their providers. Run it after config, secret-contract, sandbox tool,
+   or dependency changes, and before a requested deployment.
 2. \`npm exec qm -- plan\` reports what deployment would do
    without changing anything.
 3. After the target prerequisites are complete, \`npm exec qm -- up\` brings the

@@ -72,14 +72,20 @@ cd repo
 git checkout -b codex/small-change
 ```
 
-Keep changes scoped. Run the repo's tests. If a push or PR/MR creation is requested,
+Keep changes scoped and read the checkout's applicable instructions. Select tests
+covering the changed behavior and its callers, preserving the package runner's
+flags and environment. Prose-only changes need document checks; a small code fix
+does not automatically need every suite. Run full local suites only when requested
+or justified by unbounded cross-cutting impact. If a push or PR/MR is requested,
 prepare the branch and summary first.
 
 ## Writes require approval
 
 Pushing branches, creating PRs/MRs, merging, closing issues, editing labels, changing
 repo settings, releases, or workflows are writes. Ask for approval before running the
-write command.
+write command when that action and target are not already authorized in the
+conversation. Do not ask again for an explicitly requested push or PR; approval
+for a PR does not authorize a merge or a change to another repository.
 
 After approval:
 
