@@ -52,6 +52,7 @@ store; the broker refuses to start if any of it is missing or a placeholder.
 | `AUTH_ALLOWED_EMAILS`, `AUTH_ALLOWED_EMAIL_DOMAIN`                              | the operator's admin address or domain                                                                                      |
 | `AUTH_EMAIL_FROM`                                                               | the operator's verified sender                                                                                              |
 | `AUTH_BRAND_NAME`                                                               | `botName` in the deployment config; the Admin page's live branding, when set, takes precedence on rendered pages and emails |
+| `AUTH_WECOM_LOGIN_BRIDGE_URL`                                                   | optional registered-domain bridge ending in `/wecom/login`; cross-origin Web login otherwise stays on direct QR             |
 | `AUTH_EMAIL_TRANSPORT` and the chosen transport's variables (below)             | the operator's email provider                                                                                               |
 | `AUTH_LINK_TTL_S`, `AUTH_CODE_TTL_S`, `AUTH_ACCESS_TTL_S`, `AUTH_REQUEST_TTL_S` | optional, capped                                                                                                            |
 | `AUTH_SEND_WINDOW_S`, `AUTH_SEND_LIMIT_PER_EMAIL`, `AUTH_SEND_LIMIT_PER_IP`     | optional                                                                                                                    |

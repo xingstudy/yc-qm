@@ -107,7 +107,7 @@ async function verifyIdTokenLikePortal(h: Harness, idToken: string, nonce: strin
   return payload as Record<string, unknown>;
 }
 
-test("the WeCom initializer passes the sealed login request to the official component", () => {
+test("the WeCom initializer passes the sealed login request to the official component", async () => {
   const mount: { dataset: Record<string, string> } = {
     dataset: {
       appid: "wwcorp",
@@ -118,8 +118,13 @@ test("the WeCom initializer passes the sealed login request to the official comp
   };
   const captured: { options?: Record<string, unknown> } = {};
   let assigned = "";
+  let requested = "";
   runInNewContext(WECOM_LOGIN_SCRIPT, {
     document: { documentElement: { lang: "en" }, getElementById: () => mount },
+    fetch(value: string) {
+      requested = value;
+      return Promise.resolve();
+    },
     URL,
     window: {
       location: {
@@ -158,6 +163,15 @@ test("the WeCom initializer passes the sealed login request to the official comp
   success({ code: "" });
   assert.equal(assigned, "");
   assert.equal(mount.dataset.loginFailed, "1");
+  mount.dataset.handoffUrl = "https://agent.example.test/idp/directory/handoff?h=sealed";
+  success({ code: "wecom-code" });
+  await Promise.resolve();
+  assert.equal(new URL(requested).searchParams.get("code"), "wecom-code");
+  assert.equal(assigned, mount.dataset.handoffUrl);
+  assigned = "";
+  const opened = options.onOpenInWecom as () => void;
+  opened();
+  assert.equal(assigned, mount.dataset.handoffUrl);
 });
 
 test("the whole authorization-code flow the portal drives succeeds", async (t) => {
@@ -200,6 +214,7 @@ test("WeCom web sign-in issues the same OIDC code using the member email", async
   const sourceId = "source-wecom";
   let loginOptionsCalls = 0;
   const h = await startHarness({
+    env: { AUTH_WECOM_LOGIN_BRIDGE_URL: "https://verified.example.test/corp/wecom/login" },
     directorySources: {
       async loginOptions(state) {
         loginOptionsCalls++;
@@ -208,7 +223,7 @@ test("WeCom web sign-in issues the same OIDC code using the member email", async
             sourceId,
             provider: "wecom",
             displayName: "WeCom",
-            authorizeUrl: `https://open.work.weixin.qq.com/wwopen/sso/qrConnect?appid=wwcorp&agentid=1000002&redirect_uri=${encodeURIComponent("https://verified.example.test/corp/wecom")}&state=${encodeURIComponent(state)}`,
+            authorizeUrl: `https://open.work.weixin.qq.com/wwopen/sso/qrConnect?appid=wwcorp&agentid=1000002&redirect_uri=${encodeURIComponent("https://verified.example.test/corp/wecom/callback")}&state=${encodeURIComponent(state)}`,
           },
         ];
       },
@@ -245,21 +260,31 @@ test("WeCom web sign-in issues the same OIDC code using the member email", async
   assert.match(html, /Sign in with WeCom/);
   const request = hiddenRequestToken(html);
 
-  const login = await fetch(
+  const bridge = await fetch(
     `${h.base}/directory/login?request=${encodeURIComponent(request)}&source=${encodeURIComponent(sourceId)}`,
     { redirect: "manual" },
   );
+  assert.equal(bridge.status, 302);
+  const bridgeUrl = new URL(bridge.headers.get("location")!);
+  assert.equal(`${bridgeUrl.origin}${bridgeUrl.pathname}`, "https://verified.example.test/corp/wecom/login");
+  assert.equal(bridgeUrl.searchParams.get("source"), sourceId);
+  const login = await fetch(`${h.base}/wecom/login?${bridgeUrl.searchParams}`, { redirect: "manual" });
   assert.equal(login.status, 200);
   const loginPage = await login.text();
   assert.match(loginPage, /id="wecom-login"/);
   assert.match(loginPage, /data-appid="wwcorp"/);
   assert.match(loginPage, /data-agentid="1000002"/);
-  assert.match(loginPage, /data-redirect-uri="https:\/\/verified\.example\.test\/corp\/wecom"/);
+  assert.match(loginPage, /data-redirect-uri="https:\/\/verified\.example\.test\/corp\/wecom\/callback"/);
   assert.match(loginPage, /Use QR sign-in instead/);
+  assert.match(loginPage, /src="https:\/\/verified\.example\.test\/corp\/wecom-jssdk\.js"/);
+  assert.match(loginPage, /src="https:\/\/verified\.example\.test\/corp\/wecom-login\.js"/);
   assert.match(login.headers.get("content-security-policy") ?? "", /script-src 'self'/);
   assert.match(login.headers.get("content-security-policy") ?? "", /frame-src https:\/\/login\.work\.weixin\.qq\.com/);
   const directoryState = loginPage.match(/data-state="([^"]+)"/)?.[1];
   assert.ok(directoryState);
+  assert.match(directoryState, /^[a-f0-9]{64}$/);
+  const handoffUrl = new URL(loginPage.match(/data-handoff-url="([^"]+)"/)?.[1]?.replaceAll("&amp;", "&") ?? "");
+  assert.equal(`${handoffUrl.origin}${handoffUrl.pathname}`, `${ISSUER}/directory/handoff`);
   const fallbackUrl = new URL(
     loginPage.match(/class="wecom-fallback" href="([^"]+)"/)?.[1]?.replaceAll("&amp;", "&") ?? "",
   );
@@ -290,22 +315,24 @@ test("WeCom web sign-in issues the same OIDC code using the member email", async
 
   const callback = await fetch(
     `${h.base}/directory/callback?code=wecom-code&state=${encodeURIComponent(directoryState)}`,
-    { redirect: "manual" },
+    { redirect: "manual", headers: { "user-agent": WECOM_CLIENT_UA } },
   );
-  assert.equal(callback.status, 302, await callback.text());
+  assert.equal(callback.status, 200, await callback.text());
   const claimsAfterCallback = h.claims.calls.length;
   const replay = await fetch(
     `${h.base}/directory/callback?code=wecom-code&state=${encodeURIComponent(directoryState)}`,
     { redirect: "manual" },
   );
   assert.equal(replay.status, 400);
-  assert.equal(h.claims.calls.length, claimsAfterCallback + 1);
-  assert.equal(h.claims.calls.at(-1)?.length, 1);
+  assert.equal(h.claims.calls.length, claimsAfterCallback);
   assert.equal(
     h.claims.calls.every((ids) => ids.length <= 64),
     true,
   );
-  const location = new URL(callback.headers.get("location")!);
+  const handoffPath = handoffUrl.pathname.slice(new URL(ISSUER).pathname.length);
+  const done = await fetch(`${h.base}${handoffPath}${handoffUrl.search}`, { redirect: "manual" });
+  assert.equal(done.status, 302, await done.text());
+  const location = new URL(done.headers.get("location")!);
   assert.equal(`${location.origin}${location.pathname}`, REDIRECT_URI);
   assert.equal(location.searchParams.get("state"), query.get("state"));
 

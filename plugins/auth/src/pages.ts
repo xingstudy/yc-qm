@@ -81,10 +81,19 @@ export const WECOM_LOGIN_SCRIPT = `(function () {
       var destination = new URL(mount.dataset.redirectUri);
       destination.searchParams.set("code", result.code);
       destination.searchParams.set("state", mount.dataset.state);
+      if (mount.dataset.handoffUrl) {
+        fetch(destination.toString(), { credentials: "same-origin" }).then(function () {
+          window.location.assign(mount.dataset.handoffUrl);
+        }, function () {
+          mount.dataset.loginFailed = "1";
+        });
+        return;
+      }
       window.location.assign(destination.toString());
     },
     onOpenInWecom: function () {
       mount.dataset.clientOpened = "1";
+      if (mount.dataset.handoffUrl) window.location.assign(mount.dataset.handoffUrl);
     }
   });
 })();`;
@@ -104,7 +113,7 @@ export const HANDOFF_PAGE_CSP = PAGE_CSP.replace(
 
 export const WECOM_LOGIN_PAGE_CSP = PAGE_CSP.replace(
   "default-src 'none';",
-  "default-src 'none'; script-src 'self'; frame-src https://login.work.weixin.qq.com https://open.work.weixin.qq.com; connect-src https://login.work.weixin.qq.com https://open.work.weixin.qq.com;",
+  "default-src 'none'; script-src 'self'; frame-src https://login.work.weixin.qq.com https://open.work.weixin.qq.com; connect-src 'self' https://login.work.weixin.qq.com https://open.work.weixin.qq.com;",
 );
 
 const STYLE = `<style>
@@ -272,6 +281,7 @@ export function wecomLoginPage(o: {
   sdkUrl: string;
   initializerUrl: string;
   fallbackUrl: string;
+  handoffUrl?: string;
 }): string {
   return page({
     title: "WeCom sign-in",
@@ -279,7 +289,7 @@ export function wecomLoginPage(o: {
     icon: LOCK_ICON,
     heading: "Sign in with WeCom",
     msg: `Continue to ${o.brandName} with your corporate identity.`,
-    body: `<div id="wecom-login" class="wecom-login" data-appid="${escapeHtml(o.appId)}" data-agentid="${escapeHtml(o.agentId)}" data-redirect-uri="${escapeHtml(o.redirectUri)}" data-state="${escapeHtml(o.state)}"></div>
+    body: `<div id="wecom-login" class="wecom-login" data-appid="${escapeHtml(o.appId)}" data-agentid="${escapeHtml(o.agentId)}" data-redirect-uri="${escapeHtml(o.redirectUri)}" data-state="${escapeHtml(o.state)}" data-handoff-url="${escapeHtml(o.handoffUrl ?? "")}"></div>
       <a class="wecom-fallback" href="${escapeHtml(o.fallbackUrl)}">Use QR sign-in instead</a>
       <script src="${escapeHtml(o.sdkUrl)}" defer></script>
       <script src="${escapeHtml(o.initializerUrl)}" defer></script>`,
