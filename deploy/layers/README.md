@@ -2,12 +2,13 @@
 
 This directory is where an organization's own deployment material lives when qm is
 customized from a private fork: a standalone private repository whose history begins as
-a clone of qm, in which core stays identical to upstream and everything
-organization-specific is confined here, under `deploy/layers/<org>/`.
+a clone of qm. This fork intentionally permits core changes; organization-specific
+deployment material stays here, under `deploy/layers/<org>/`.
 
 In upstream qm this directory holds nothing but this file, and it stays that way. A layer
-belongs to one organization's private fork and never travels upstream. The `upstream-pr` skill
-enforces that boundary; the `update-qm` skill merges upstream changes in around it.
+belongs to one organization's private fork and never travels upstream. This fork keeps
+all changes in its own origin; the `update-qm` skill merges upstream changes inward
+only when requested.
 
 ## Creating a layer
 
@@ -43,6 +44,12 @@ node cli/bin/qm.ts check --config deploy/layers/<org>/qm.config.jsonc
 
 Run the CLI from the tree as shown. `npm exec qm` does not work in a source checkout
 because the workspace symlink points at `cli/`, which is unbuilt.
+
+For deployment from this fork, follow the
+[source deployment skill](../../.codex/skills/deploy-qm/SKILL.md). Use
+`up --build-from=.` from the repository root on every deployment, including repeat
+checks. Plain `up` can select packaged images. `init` and `setup` take the layer
+directory as a positional argument instead of a `--config` flag.
 
 ## Nearby directories
 

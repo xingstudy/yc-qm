@@ -1,1 +1,0 @@
-../../../.codex/skills/upstream-pr/SKILL.md

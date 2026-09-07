@@ -30,7 +30,8 @@ have not named one, use your deployment's house-style skill (a `*-design` skill 
 1. Pick a design from the catalog below
 2. Read it: `read skills/popular-web-designs/templates/<site>.md`
 3. Use the design tokens and component specs when generating HTML
-4. Build with `write`, then serve the result with the `publish` skill (`skills/publish/SKILL.md`)
+4. Build in the requested stack and verify the affected page locally. Use the `publish`
+   skill (`skills/publish/SKILL.md`) when a hosted artifact and its audience are authorized.
 
 Each template includes an **Implementation Notes** block at the top with:
 
@@ -69,8 +70,8 @@ Each template includes an **Implementation Notes** block at the top with:
 
 Write the file with `write`, verify the result locally (`curl -fsS http://localhost:<port>`,
 then `chromium --headless --no-sandbox --disable-gpu --screenshot=/tmp/page.png http://localhost:<port>`
-when a render check matters), and serve it with the `publish` skill to confirm visual
-accuracy and hand over a stable link.
+when a render check matters). Hand over the local artifact, or publish and return a
+stable link when hosting and its audience are authorized.
 
 ## Font Substitution Reference
 

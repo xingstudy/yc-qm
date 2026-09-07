@@ -78,9 +78,16 @@ For an already-initialized clone, install reproducibly. Use `npm ci` when
 `package-lock.json` exists; otherwise use `npm install` to create it:
 
 ```bash
-test -f package-lock.json && npm ci || npm install
+if test -f package-lock.json; then
+  npm ci
+else
+  npm install
+fi
 npm exec qm -- version
 ```
+
+If installation fails, diagnose that failure before continuing. An existing
+lockfile is not permission to fall back from a failed `npm ci` to `npm install`.
 
 Confirm `.env` is private and ignored before adding credentials:
 

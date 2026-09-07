@@ -19,8 +19,9 @@ on the `PORT` env var (the runtime sets it).
 ## Match the house style (the default)
 
 Anything browsable you publish should look designed, not defaulted. Before you build the
-UI, load the design skills and apply your organization's **house style** unless the user
-asked for a different look:
+UI, apply your organization's **house style** unless the user asked for a different
+look. For an existing app, preserve its design and load only guidance relevant to
+the changed surface. A small update does not require a redesign or new variants:
 
 - **The deployment's house-style skill** — if a `*-design` skill is installed (list
   `skills/`), it carries the org's look as ready-to-paste CSS and design tokens. Start

@@ -6,10 +6,9 @@ description: Deploy the QM package from an organization-owned deployment reposit
 # Deploy QM
 
 Read `../../../deployment.md` completely and follow it as the authoritative
-workflow. Read only the selected provider reference. Read `references/email.md`
-before collecting secrets, because sign-in needs an email transport and one of
-its steps needs the operator's DNS. Read `references/slack.md` only when Slack
-is requested.
+workflow when deployment is requested; a local edit alone does not initiate it.
+Read only the selected provider reference, and `references/slack.md` only when
+Slack is requested.
 
 A deployment needs a base model key and a way for people to sign in. Collect
 both in the same pass. The base model provider is a deployment choice recorded

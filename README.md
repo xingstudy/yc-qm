@@ -494,8 +494,14 @@ node cli/bin/qm.ts init deploy/layers/<org> --org <slug> --target <fly-or-aws>
 node cli/bin/qm.ts check --config deploy/layers/<org>/qm.config.jsonc
 ```
 
-Then follow [`deployment.md`](./deployment.md) and the generated layer runbook. These
-hosted targets use their own managed edge and do not use the root Compose stack.
+Then follow the [source deployment skill](./.codex/skills/deploy-qm/SKILL.md) for
+the layer paths and source-build commands, including `up --build-from=.` on every
+deployment. Plain `up` can select package images that omit this fork's changes.
+The skill applies the acceptance checks from [`deployment.md`](./deployment.md)
+and the generated layer runbook. These hosted targets use their own managed edge
+and do not use the root Compose stack.
+
+Local development and focused validation commands: [AGENTS.md](./AGENTS.md).
 
 ## Contributing
 
