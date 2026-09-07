@@ -156,11 +156,10 @@ export function bootProblems(cfg: AuthConfig, isProd: boolean): string[] {
   push(httpsUrlProblem("AUTH_REDIRECT_URI", cfg.redirectUri, isProd));
   if (cfg.wecomLoginBridgeUrl) {
     push(httpsUrlProblem("AUTH_WECOM_LOGIN_BRIDGE_URL", cfg.wecomLoginBridgeUrl, true));
-    try {
-      if (!/\/wecom\/login\/?$/.test(new URL(cfg.wecomLoginBridgeUrl).pathname)) {
-        problems.push("AUTH_WECOM_LOGIN_BRIDGE_URL must end with /wecom/login");
-      }
-    } catch {}
+    const bridgeUrl = URL.parse(cfg.wecomLoginBridgeUrl);
+    if (bridgeUrl && !/\/wecom\/login\/?$/.test(bridgeUrl.pathname)) {
+      problems.push("AUTH_WECOM_LOGIN_BRIDGE_URL must end with /wecom/login");
+    }
   }
   if (isProductionPlaceholder(cfg.clientId)) problems.push("AUTH_CLIENT_ID is required and may not be a placeholder");
   if (isProductionPlaceholder(cfg.clientSecret))
