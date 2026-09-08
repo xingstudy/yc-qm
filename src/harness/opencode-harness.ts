@@ -272,7 +272,7 @@ export function modelRef(id: string): { providerID: string; modelID: string } {
   // those must route to the registered provider, not a phantom "bedrock".
   if (isCustomModelId(id)) {
     const resolved = resolveModel(id);
-    if (resolved?.provider) return { providerID: String(resolved.provider), modelID: id };
+    if (resolved?.provider) return { providerID: String(resolved.provider), modelID: resolved.id };
   }
   const slash = id.indexOf("/");
   if (slash > 0) return { providerID: id.slice(0, slash), modelID: id.slice(slash + 1) };

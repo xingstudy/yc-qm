@@ -13,7 +13,8 @@ import { test } from "node:test";
 import { createInsecureTestServer } from "../src/api/server.ts";
 import { buildApp } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";
-import { oneShot } from "../src/harness/pi-harness.ts";
+import { createPiHarness, oneShot } from "../src/harness/pi-harness.ts";
+import type { HarnessTurnInput } from "../src/harness/harness.ts";
 import { resolveModel, modelSupportedByHarness, modelServiceable } from "../src/model/pi-models.ts";
 import { setCustomProviders } from "../src/model/custom-providers.ts";
 import { createCustomProviderStore } from "../src/model/custom-provider-store.ts";
@@ -130,6 +131,7 @@ test("QA: full custom-provider lifecycle against a live fake upstream", async ()
         models: [
           { id: "qa-chat", name: "QA Chat", contextWindow: 64000, maxTokens: 4096 },
           { id: "gpt-4o", name: "Gateway GPT" },
+          { id: "gpt-5.6-sol", name: "Gateway Sol" },
         ],
       }),
     });
@@ -188,7 +190,7 @@ test("QA: full custom-provider lifecycle against a live fake upstream", async ()
     assert.equal(call!.model, "qa-chat");
     assert.equal(call!.auth, "Bearer sk-qa-good", "stored key was sent to the custom endpoint");
 
-    const collidingModel = resolveModel("gpt-4o");
+    const collidingModel = resolveModel("qa/gpt-5.6-sol");
     assert.equal(collidingModel?.provider, "qa");
     assert.equal((collidingModel as { baseUrl?: string })?.baseUrl, upstreamUrl);
     const collidingReply = await oneShot(
@@ -199,7 +201,9 @@ test("QA: full custom-provider lifecycle against a live fake upstream", async ()
       "say anything",
     );
     assert.equal(collidingReply, "QA UPSTREAM REPLY");
-    const collidingCall = seen.find((record) => record.path.endsWith("/chat/completions") && record.model === "gpt-4o");
+    const collidingCall = seen.find(
+      (record) => record.path.endsWith("/chat/completions") && record.model === "gpt-5.6-sol",
+    );
     assert.equal(collidingCall?.auth, "Bearer sk-qa-good");
 
     // 7. edit WITHOUT key keeps the stored key
@@ -297,19 +301,48 @@ test("QA: anthropic-protocol custom provider serves a real turn (correct wire sh
         protocol: "anthropic",
         baseUrl: upstreamUrl,
         apiKey: "sk-ant-qa",
-        models: [{ id: "claude-compat", name: "Claude Compat" }],
+        models: [{ id: "claude-opus-5", name: "Claude Compat" }],
       }),
     });
     assert.equal(r.status, 200, "anthropic-protocol registration validates against /v1/models with x-api-key");
-    const model = resolveModel("claude-compat");
+    const model = resolveModel("antcompat/claude-opus-5");
     assert.ok(model);
     assert.equal((model as { api?: string }).api, "anthropic-messages");
     const reply = await oneShot("qa-ant", model as unknown as Model<Api>, { antcompat: "sk-ant-qa" }, "terse", "go");
     assert.equal(reply, "ANTHROPIC QA REPLY");
     const call = seen.find((s) => s.path.endsWith("/v1/messages"));
     assert.ok(call, "messages request reached the anthropic-compatible upstream");
-    assert.equal(call!.model, "claude-compat");
+    assert.equal(call!.model, "claude-opus-5");
     assert.equal(call!.apiKeyHeader, "sk-ant-qa", "anthropic wire auth uses x-api-key");
+    const harness = createPiHarness({
+      defaultModelId: "antcompat/claude-opus-5",
+      resolveProviderKeys: async () => ({ antcompat: "sk-ant-qa", anthropic: "sk-official-qa" }),
+    });
+    const realFetch = globalThis.fetch;
+    const destinations: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      destinations.push(String(input));
+      return realFetch(`${upstreamUrl}/v1/messages`, init);
+    };
+    try {
+      const result = await harness.turns.runTurn({
+        session: { id: "same-id-different-provider" } as HarnessTurnInput["session"],
+        input: "hi",
+        systemPrompt: "Be terse",
+        history: [],
+        tools: {} as HarnessTurnInput["tools"],
+        scopeLabel: "personal:alice",
+        orgScopeId: "org:default-org",
+        model: "claude-opus-5",
+        emit: async (entry) => ({ ...entry, seq: 1 }) as Awaited<ReturnType<HarnessTurnInput["emit"]>>,
+        recordModelCall: () => {},
+      });
+      assert.equal(result.reply, "ANTHROPIC QA REPLY");
+      assert.ok(destinations.some((url) => url === "https://api.anthropic.com/v1/messages"));
+      assert.equal(seen.at(-1)?.apiKeyHeader, "sk-official-qa");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   } finally {
     server.close();
     upstream.close();

@@ -113,6 +113,7 @@ function toRuntimeModel(provider: CustomProviderSpec, m: CustomModelSpec): Custo
 }
 
 let registry = new Map<string, CustomRuntimeModel>();
+let qualifiedRegistry = new Map<string, CustomRuntimeModel>();
 let providers: CustomProviderSpec[] = [];
 let version = 0;
 
@@ -127,12 +128,16 @@ export function setCustomProviders(specs: CustomProviderSpec[]): void {
     .map((spec) => ({ ...spec, models: spec.models.map((model) => ({ ...model })) }))
     .sort((a, b) => a.id.localeCompare(b.id));
   const next = new Map<string, CustomRuntimeModel>();
+  const qualified = new Map<string, CustomRuntimeModel>();
   for (const spec of normalized) {
     for (const m of spec.models) {
-      next.set(m.id, toRuntimeModel(spec, m));
+      const model = toRuntimeModel(spec, m);
+      next.set(m.id, model);
+      qualified.set(`${spec.id}/${m.id}`, model);
     }
   }
   registry = next;
+  qualifiedRegistry = qualified;
   providers = normalized;
   version += 1;
 }
@@ -143,15 +148,15 @@ export function customProvidersVersion(): number {
 }
 
 export function resolveCustomModel(id: string): CustomRuntimeModel | undefined {
-  return registry.get(id);
+  return qualifiedRegistry.get(id) ?? registry.get(id);
 }
 
 export function isCustomModelId(id: string): boolean {
-  return registry.has(id);
+  return qualifiedRegistry.has(id) || registry.has(id);
 }
 
 export function customModelCatalog(): Array<{ id: string; name: string; provider: string }> {
-  return [...registry.values()].map((m) => ({ id: m.id, name: m.name, provider: m.provider }));
+  return [...qualifiedRegistry].map(([id, m]) => ({ id, name: m.name, provider: m.provider }));
 }
 
 /**

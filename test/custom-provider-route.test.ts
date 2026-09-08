@@ -265,7 +265,7 @@ test("the model provider picker refreshes a registry changed outside the request
   }
 });
 
-test("a custom provider with only shadowed model ids does not satisfy the portal model gate", async () => {
+test("a custom provider with built-in model ids satisfies the portal model gate", async () => {
   const srv = start();
   try {
     const put = await fetch(`${srv.base}/v1/admin/custom-providers/shadow`, {
@@ -281,7 +281,7 @@ test("a custom provider with only shadowed model ids does not satisfy the portal
     assert.equal(put.status, 200);
     const surface = await fetch(`${srv.base}/v1/surface-config`);
     assert.equal(surface.status, 200);
-    assert.equal(((await surface.json()) as { modelProviderConfigured?: boolean }).modelProviderConfigured, false);
+    assert.equal(((await surface.json()) as { modelProviderConfigured?: boolean }).modelProviderConfigured, true);
   } finally {
     await srv.close();
   }
@@ -311,6 +311,111 @@ test("bad specs are refused with a reason", async () => {
     });
     assert.equal(reserved.status, 400);
     assert.match(((await reserved.json()) as { message: string }).message, /reserved/);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("onboarding exposes and saves each custom model when ids collide with built-ins", async () => {
+  const srv = start();
+  const ids = ["gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"];
+  try {
+    const put = await fetch(`${srv.base}/v1/admin/custom-providers/qfpay-cpa`, {
+      method: "PUT",
+      headers: ADMIN,
+      body: JSON.stringify({
+        ...BODY,
+        models: ids.map((id) => ({ id, contextWindow: 1_050_000, maxTokens: 128_000 })),
+      }),
+    });
+    assert.equal(put.status, 200);
+    const picker = await fetch(`${srv.base}/v1/admin/model-providers`, { headers: ADMIN });
+    const body = (await picker.json()) as { models: Array<{ id: string; provider: string }> };
+    const custom = body.models.filter((m) => m.provider === "qfpay-cpa");
+    assert.equal(custom.length, 3);
+    for (const entry of custom) {
+      const selected = await fetch(`${srv.base}/v1/admin/scopes/org%3Adefault-org/base-model`, {
+        method: "PUT",
+        headers: ADMIN,
+        body: JSON.stringify({ modelId: entry.id }),
+      });
+      assert.equal(selected.status, 200, await selected.text());
+      const scope = await fetch(`${srv.base}/v1/admin/scopes/org%3Adefault-org`, { headers: ADMIN });
+      assert.equal(((await scope.json()) as { baseModel: string }).baseModel, entry.id);
+      assert.equal(resolveModel(entry.id)?.provider, "qfpay-cpa");
+    }
+  } finally {
+    await srv.close();
+  }
+});
+
+test("Anthropic validation uses the messages protocol's model listing path and auth", async () => {
+  const srv = start(async (input, init) => {
+    assert.equal(String(input), "https://proxy.example/v1/models");
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get("x-api-key"), BODY.apiKey);
+    assert.equal(headers.get("anthropic-version"), "2023-06-01");
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  });
+  try {
+    const put = await fetch(`${srv.base}/v1/admin/custom-providers/anthropic-proxy`, {
+      method: "PUT",
+      headers: ADMIN,
+      body: JSON.stringify({
+        ...BODY,
+        protocol: "anthropic",
+        baseUrl: "https://proxy.example/",
+        models: [{ id: "claude-sonnet-5" }, { id: "claude-opus-5" }, { id: "claude-fable-5-1" }],
+      }),
+    });
+    assert.equal(put.status, 200, await put.text());
+  } finally {
+    await srv.close();
+  }
+});
+
+test("endpoint validation distinguishes authentication, unsupported listing, HTTP errors and network failure", async () => {
+  for (const status of [401, 403, 404, 405, 501, 429, 500, 0]) {
+    const srv = start(async () => {
+      if (!status) throw new Error("network unavailable");
+      return new Response(null, { status });
+    });
+    try {
+      const put = await fetch(`${srv.base}/v1/admin/custom-providers/acme-gateway`, {
+        method: "PUT",
+        headers: ADMIN,
+        body: JSON.stringify(BODY),
+      });
+      assert.equal(put.status, 400);
+      const body = (await put.json()) as { error: string; message: string };
+      let expected = "endpoint_validation_failed";
+      if ([401, 403].includes(status)) expected = "invalid_api_key";
+      if ([404, 405, 501].includes(status)) expected = "models_listing_unavailable";
+      assert.equal(body.error, expected);
+      assert.ok(!body.message.includes(BODY.apiKey));
+      if (status) assert.ok(body.message.includes(`HTTP ${status}`));
+      else assert.match(body.message, /connectivity, TLS/);
+      assert.equal(await srv.built.customProviders.resolveKey("acme-gateway"), null);
+    } finally {
+      await srv.close();
+    }
+  }
+});
+
+test("invalid provider specs never send credentials to an endpoint", async () => {
+  let calls = 0;
+  const srv = start(async () => {
+    calls++;
+    return new Response(null, { status: 200 });
+  });
+  try {
+    const put = await fetch(`${srv.base}/v1/admin/custom-providers/acme-gateway`, {
+      method: "PUT",
+      headers: ADMIN,
+      body: JSON.stringify({ ...BODY, models: [] }),
+    });
+    assert.equal(put.status, 400);
+    assert.equal(calls, 0);
   } finally {
     await srv.close();
   }

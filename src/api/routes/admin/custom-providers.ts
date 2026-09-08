@@ -1,5 +1,6 @@
 import {
   CUSTOM_PROVIDER_PROTOCOLS,
+  validateCustomProviderSpec,
   type CustomProviderSpec,
   type CustomProviderProtocol,
 } from "../../../model/custom-providers.ts";
@@ -22,7 +23,7 @@ async function validateKey(
   protocol: CustomProviderProtocol,
   baseUrl: string,
   apiKey: string,
-): Promise<boolean> {
+): Promise<{ error: string; message: string } | undefined> {
   const url = protocol === "anthropic" ? `${baseUrl}/v1/models` : `${baseUrl}/models`;
   const headers: Record<string, string> =
     protocol === "anthropic"
@@ -33,9 +34,28 @@ async function validateKey(
       headers,
       signal: AbortSignal.timeout(5_000),
     });
-    return response.ok;
+    if (response.ok) return undefined;
+    if (response.status === 401 || response.status === 403) {
+      return {
+        error: "invalid_api_key",
+        message: `${url} rejected authentication (HTTP ${response.status}). Check the proxy API key and its authentication settings.`,
+      };
+    }
+    if ([404, 405, 501].includes(response.status)) {
+      return {
+        error: "models_listing_unavailable",
+        message: `${url} does not support model listing (HTTP ${response.status}). If this endpoint supports inference, uncheck "Validate key against the endpoint" (API: "validate": false) and save again.`,
+      };
+    }
+    return {
+      error: "endpoint_validation_failed",
+      message: `${url} returned HTTP ${response.status} during model listing. Check the endpoint and retry.`,
+    };
   } catch {
-    return false;
+    return {
+      error: "endpoint_validation_failed",
+      message: `Could not reach ${url} for model listing. Check connectivity, TLS, and the endpoint's response time.`,
+    };
   }
 }
 
@@ -83,12 +103,15 @@ export async function putCustomProvider(ctx: ApiCtx): Promise<void> {
     models: Array.isArray(body.models) ? (body.models as CustomProviderSpec["models"]) : [],
   };
   const apiKey = typeof body.apiKey === "string" && body.apiKey.trim() ? body.apiKey.trim() : undefined;
+  try {
+    validateCustomProviderSpec(spec);
+  } catch (e) {
+    return sendJson(ctx.res, 400, { error: "bad_request", message: (e as Error).message });
+  }
   const shouldValidate = body.validate !== false && apiKey !== undefined;
-  if (shouldValidate && !(await validateKey(ctx, spec.protocol, spec.baseUrl, apiKey!))) {
-    return sendJson(ctx.res, 400, {
-      error: "invalid_api_key",
-      message: `${spec.baseUrl} rejected this API key (pass "validate": false to skip for endpoints without a models listing)`,
-    });
+  if (shouldValidate) {
+    const failure = await validateKey(ctx, spec.protocol, spec.baseUrl, apiKey!);
+    if (failure) return sendJson(ctx.res, 400, failure);
   }
   try {
     await ctx.deps.customProviders.upsert(spec, apiKey, authorized.id);

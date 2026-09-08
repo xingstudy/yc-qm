@@ -81,7 +81,9 @@ test("a registered custom model is serviceable regardless of built-in key availa
 
 test("catalog lists custom models; clearing the registry removes them", () => {
   setCustomProviders([GATEWAY]);
-  assert.deepEqual(customModelCatalog(), [{ id: "acme-large", name: "Acme Large", provider: "acme-gateway" }]);
+  assert.deepEqual(customModelCatalog(), [
+    { id: "acme-gateway/acme-large", name: "Acme Large", provider: "acme-gateway" },
+  ]);
   setCustomProviders([]);
   assert.equal(isCustomModelId("acme-large"), false);
   assert.equal(resolveModel("acme-large"), undefined);
@@ -247,4 +249,55 @@ test("catalog cache invalidates immediately when the custom registry changes", a
   }
   const cleared = await selectableModelCatalog(fetcher);
   assert.ok(!cleared.some((m) => m.id === "fresh-model"), "removal visible immediately too");
+});
+
+test("custom model collisions retain every provider and preserve built-in resolution", async () => {
+  const models = [
+    "gpt-5.6-terra",
+    "gpt-5.6-sol",
+    "gpt-6-astra",
+    "claude-sonnet-5",
+    "claude-opus-5",
+    "claude-fable-5-1",
+    "bedrock/claude-opus-5",
+  ];
+  setCustomProviders([
+    { ...GATEWAY, models: models.map((id) => ({ id, contextWindow: 1_050_000, maxTokens: 128_000 })) },
+    { ...GATEWAY, id: "second-gateway", baseUrl: "https://second.example/v1", models: [{ id: "gpt-6-astra" }] },
+  ]);
+  const catalog = builtInModelCatalog();
+  const { modelRef } = await import("../src/harness/opencode-harness.ts");
+  for (const id of models) {
+    const qualified = `acme-gateway/${id}`;
+    const model = resolveModel(qualified)!;
+    assert.equal(model.provider, GATEWAY.id);
+    assert.equal(model.id, id);
+    assert.equal(model.baseUrl, GATEWAY.baseUrl);
+    assert.equal(model.contextWindow, 1_050_000);
+    assert.equal(model.maxTokens, 128_000);
+    assert.equal(modelServiceable(qualified, { anthropic: false, openai: false, openrouter: false }), true);
+    assert.equal(modelSupportedByHarness(qualified, "pi"), true);
+    assert.equal(modelSupportedByHarness(qualified, "codex"), false);
+    assert.equal(modelSupportedByHarness(qualified, "claude"), false);
+    assert.deepEqual(modelRef(qualified), { providerID: GATEWAY.id, modelID: id });
+    assert.ok(catalog.some((m) => m.provider === GATEWAY.id && resolveModel(m.id)?.id === id));
+  }
+  assert.ok(catalog.some((m) => m.id === "acme-gateway/gpt-6-astra"));
+  assert.ok(catalog.some((m) => m.id === "second-gateway/gpt-6-astra"));
+  assert.equal(resolveModel("gpt-5.6-sol")?.provider, "openai");
+  assert.equal(resolveModel("claude-opus-5")?.provider, "anthropic");
+  setCustomProviders([]);
+  assert.equal(resolveModel("acme-gateway/gpt-5.6-sol"), undefined);
+});
+
+test("custom catalog additions and deletions remain visible when OpenRouter is offline", async () => {
+  const { selectableModelCatalog } = await import("../src/model/model-catalog.ts");
+  const fetcher: typeof fetch = async () => {
+    throw new Error("offline");
+  };
+  await selectableModelCatalog(fetcher);
+  setCustomProviders([GATEWAY]);
+  assert.ok((await selectableModelCatalog(fetcher)).some((m) => m.provider === GATEWAY.id));
+  setCustomProviders([]);
+  assert.ok(!(await selectableModelCatalog(fetcher)).some((m) => m.provider === GATEWAY.id));
 });
