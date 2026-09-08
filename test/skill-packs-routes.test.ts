@@ -1,4 +1,5 @@
 import "./support/auto-fake-sprites.ts";
+import { skillMarkdown, skillZip } from "./support/skill-upload-fixture.ts";
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -1004,6 +1005,114 @@ test("a pack skill whose name collides with a native skill in ANOTHER scope stil
     assert.equal(orgNative?.status, "published", "the org native skill is untouched");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+    await s.close();
+  }
+});
+
+test("uploaded admin skill packs persist their source and reuse catalog, import and remove", async () => {
+  const s = start();
+  try {
+    const upload = {
+      name: "skills.zip",
+      base64: skillZip([
+        { path: "skills/demo/SKILL.md", text: skillMarkdown("uploaded-demo") },
+        { path: "skills/demo/scripts/run.sh", text: "echo demo" },
+        { path: "lib/shared.sh", text: "echo shared" },
+      ]).toString("base64"),
+    };
+    const response = await fetch(`${s.base}/v1/admin/skill-packs`, {
+      method: "POST",
+      headers: ADMIN,
+      body: JSON.stringify({ upload }),
+    });
+    assert.equal(response.status, 200);
+    const { pack } = await json(response);
+    assert.equal(pack.kind, "upload");
+    assert.equal(pack.fileName, upload.name);
+    assert.equal(pack.upload, undefined);
+    assert.deepEqual((await s.built.app.getSkillPack(pack.id))?.upload, upload);
+    const listed = await json(await fetch(`${s.base}/v1/admin/skill-packs`, { headers: ADMIN }));
+    assert.equal(listed.packs.find((item: { id: string }) => item.id === pack.id).upload, undefined);
+    const catalog = await json(await fetch(`${s.base}/v1/admin/skill-packs/${pack.id}/catalog`, { headers: ADMIN }));
+    assert.equal(catalog.candidates[0].eligible, true);
+    assert.deepEqual(catalog.bundlePaths, ["lib/shared.sh"]);
+    const imported = await fetch(`${s.base}/v1/admin/skill-packs/${pack.id}/import`, {
+      method: "POST",
+      headers: ADMIN,
+      body: JSON.stringify({ selected: "all" }),
+    });
+    assert.equal(imported.status, 200);
+    assert.deepEqual((await json(imported)).imported, ["uploaded-demo"]);
+    const skill = (await s.built.skills.list()).find((skill) => skill.manifest.name === "uploaded-demo")!;
+    assert.equal(skill.scopeId, "org:default-org");
+    assert.equal(skill.manifest.files?.[0]?.content, "echo demo");
+    assert.equal(
+      (
+        await fetch(`${s.base}/v1/admin/skill-packs/${pack.id}`, {
+          method: "PATCH",
+          headers: ADMIN,
+          body: JSON.stringify({ syncMode: "tracked" }),
+        })
+      ).status,
+      400,
+    );
+    assert.equal(
+      (await fetch(`${s.base}/v1/admin/skill-packs/${pack.id}`, { method: "DELETE", headers: ADMIN })).status,
+      200,
+    );
+    assert.equal(await s.built.app.getSkillPack(pack.id), null);
+    assert.equal(await s.built.skills.get(skill.id), null);
+  } finally {
+    await s.close();
+  }
+});
+
+test("ordinary users import a Git project into personal ownership without registering an admin pack", async () => {
+  const repo = makeFixtureRepo();
+  const s = start();
+  try {
+    const actor = "import-user";
+    await s.built.organization.invite({ principalId: actor, email: null, displayName: actor, actor: "test" });
+    await s.built.organization.setStatus({ principalId: actor, status: "active", actor: "test" });
+    const source = { kind: "git", url: repo.dir, ref: repo.sha };
+    const request = (extra: Record<string, unknown> = {}) =>
+      fetch(`${s.base}/v1/skills/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ principalId: actor, source, ...extra }),
+      });
+    const previewResponse = await request();
+    assert.equal(previewResponse.status, 200);
+    const preview = await json(previewResponse);
+    const candidate = preview.candidates.find((item: { name: string }) => item.name === "reg-beta");
+    assert.ok(candidate.eligible);
+    const imported = await request({ selected: [candidate.path], fingerprint: preview.fingerprint });
+    assert.equal(imported.status, 201);
+    const skill = (await s.built.skills.list()).find((skill) => skill.manifest.name === "reg-beta")!;
+    assert.equal(skill.createdBy, actor);
+    assert.equal(skill.scopeId, `personal:${actor}`);
+    assert.equal(skill.manifest.files?.[0]?.content, "print(1)");
+    assert.equal((await s.built.app.listSkillPacks()).length, 0);
+  } finally {
+    await s.close();
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
+test("admin upload rejects unauthorized and malformed requests without registering a pack", async () => {
+  const s = start();
+  try {
+    const body = JSON.stringify({ upload: { name: "bad.zip", base64: "bad" } });
+    const denied = await fetch(`${s.base}/v1/admin/skill-packs`, {
+      method: "POST",
+      headers: { ...ADMIN, "x-admin-actor": "not-admin" },
+      body,
+    });
+    assert.equal(denied.status, 403);
+    const invalid = await fetch(`${s.base}/v1/admin/skill-packs`, { method: "POST", headers: ADMIN, body });
+    assert.equal(invalid.status, 400);
+    assert.equal((await s.built.app.listSkillPacks()).length, 0);
+  } finally {
     await s.close();
   }
 });

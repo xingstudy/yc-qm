@@ -18,7 +18,10 @@ export function isProbablyBinary(bytes: Buffer): boolean {
 
 function canonicalFilesKey(files: SkillFile[] | undefined): string {
   return [...(files ?? [])]
-    .map((f) => `${f.path}\0${f.content}\0${f.executable === true ? "1" : "0"}`)
+    .map(
+      (f) =>
+        `${f.path}\0${f.content}\0${f.executable === true ? "1" : "0"}${f.encoding === "base64" ? "\0base64" : ""}`,
+    )
     .sort()
     .join("");
 }

@@ -1,9 +1,17 @@
+import { readSkillUpload } from "../../skills/skill-upload.ts";
+import type { SkillUpload } from "../../../plugins/chassis/src/skill-import.ts";
+import { errMessage } from "../../util/errors.ts";
 import { sendJson } from "../http.ts";
 import type { ApiCtx, Route } from "./route.ts";
 import { audit, authorizeAdmin, orgScope } from "./shared.ts";
 import type { NewSkillPack, SkillPack } from "../../skills/skill-pack-store.ts";
 import type { PackConfig } from "../../skills/normalize.ts";
 import { parseScopeId, type ScopeId } from "../../types.ts";
+
+function publicPack(pack: SkillPack) {
+  const { upload, ...view } = pack;
+  return { ...view, ...(upload ? { fileName: upload.name } : {}) };
+}
 
 function asSubset(v: unknown): "all" | string[] | undefined {
   if (v === "all" || v === undefined) return "all";
@@ -48,7 +56,7 @@ async function listPacks(ctx: ApiCtx): Promise<void> {
       importedByPack.set(sk.pack.packId, set);
     }
   }
-  const decorated = packs.map((p) => ({ ...p, importedCount: importedByPack.get(p.id)?.size ?? 0 }));
+  const decorated = packs.map((p) => ({ ...publicPack(p), importedCount: importedByPack.get(p.id)?.size ?? 0 }));
   audit(ctx.deps, {
     principalId: actor.id,
     action: "skill_packs.read",
@@ -62,16 +70,30 @@ async function registerPack(ctx: ApiCtx): Promise<void> {
   const actor = await authorizeAdmin(ctx, orgScope(ctx.deps));
   if (!actor) return;
   const b = (ctx.body ?? {}) as Record<string, unknown>;
-  if (typeof b.url !== "string" || !b.url.trim()) {
+  let upload: SkillUpload | undefined;
+  let uploadRef = "";
+  if (b.upload !== undefined) {
+    try {
+      const repo = await readSkillUpload(b.upload as SkillUpload);
+      const value = b.upload as SkillUpload;
+      upload = { name: value.name, base64: value.base64 };
+      uploadRef = repo.commit;
+    } catch (error) {
+      return sendJson(ctx.res, 400, { error: "bad_request", message: errMessage(error) });
+    }
+  }
+  if (!upload && (typeof b.url !== "string" || !b.url.trim())) {
     return sendJson(ctx.res, 400, { error: "bad_request", message: "url is required" });
   }
   const subset = asSubset(b.subset);
   if (subset === undefined)
     return sendJson(ctx.res, 400, { error: "bad_request", message: "subset must be 'all' or string[]" });
+  const gitRef = typeof b.ref === "string" ? b.ref.trim() : "";
   const input: NewSkillPack = {
-    kind: "git",
-    url: b.url.trim(),
-    ref: typeof b.ref === "string" ? b.ref.trim() : "",
+    kind: upload ? "upload" : "git",
+    ...(upload ? { upload } : {}),
+    url: upload ? upload.name : (b.url as string).trim(),
+    ref: upload ? uploadRef : gitRef,
 
     syncMode: "pinned",
     trustTier: b.trustTier === "internal" ? "internal" : "third-party",
@@ -90,7 +112,7 @@ async function registerPack(ctx: ApiCtx): Promise<void> {
     resource: pack.id,
     scopeLabel: pack.targetScopeId,
   });
-  sendJson(ctx.res, 200, { pack });
+  sendJson(ctx.res, 200, { pack: publicPack(pack) });
 }
 
 async function packCatalog(ctx: ApiCtx): Promise<void> {
@@ -146,6 +168,13 @@ async function patchPack(ctx: ApiCtx): Promise<void> {
   const actor = await authorizeAdmin(ctx, orgScope(ctx.deps));
   if (!actor) return;
   const b = (ctx.body ?? {}) as Record<string, unknown>;
+  const existing = await ctx.app.getSkillPack(ctx.params.id!);
+  if (existing?.kind === "upload" && (b.url !== undefined || b.ref !== undefined || b.syncMode === "tracked")) {
+    return sendJson(ctx.res, 400, {
+      error: "bad_request",
+      message: "Uploaded packs are fixed snapshots; upload a new pack to update",
+    });
+  }
   const patch: Partial<Omit<SkillPack, "id" | "createdAt">> = {};
   if (typeof b.ref === "string" && b.ref.trim()) patch.ref = b.ref.trim();
   if (typeof b.url === "string" && b.url.trim()) patch.url = b.url.trim();
@@ -165,7 +194,7 @@ async function patchPack(ctx: ApiCtx): Promise<void> {
     resource: pack.id,
     scopeLabel: pack.targetScopeId,
   });
-  sendJson(ctx.res, 200, { pack });
+  sendJson(ctx.res, 200, { pack: publicPack(pack) });
 }
 
 async function removePack(ctx: ApiCtx): Promise<void> {

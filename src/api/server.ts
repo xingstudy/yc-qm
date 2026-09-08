@@ -22,6 +22,7 @@ import type { PortalIdentity } from "../auth/portal-identity.ts";
 import { isUserScoped, userScopedField, assertedActor, isUnclassifiedWrite } from "./user-scoped-routes.ts";
 import { errMessage } from "../util/errors.ts";
 import { parseScopeId } from "../types.ts";
+import { SKILL_IMPORT_BODY_MAX_BYTES } from "../../plugins/chassis/src/skill-import.ts";
 import { canonicalPayload, PayloadTooLargeError, readRawBody, sendJson, verifyOrReject } from "./http.ts";
 import { dispatch, findRoute, run, type ApiCtx, type BaseCtx, type Route, type RouteAuth } from "./routes/route.ts";
 import { apiRoutes, rawRoutes } from "./routes/index.ts";
@@ -496,10 +497,10 @@ function buildServer(app: App, deps: ServerOptions, allowUnsignedSourceAuth: boo
         return;
       }
     }
-    rawBodies.set(
-      req,
-      await readRawBody(req, base.pathname === "/v1/admin/org/users/imports/preview" ? 5 * 1024 * 1024 : undefined),
-    );
+    let bodyLimit: number | undefined;
+    if (["/v1/admin/skill-packs", "/v1/skills/import"].includes(base.pathname)) bodyLimit = SKILL_IMPORT_BODY_MAX_BYTES;
+    else if (base.pathname === "/v1/admin/org/users/imports/preview") bodyLimit = 5 * 1024 * 1024;
+    rawBodies.set(req, await readRawBody(req, bodyLimit));
     await ready;
     routing(req, res);
   }

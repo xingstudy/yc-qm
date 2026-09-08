@@ -156,3 +156,17 @@ test("skill-pack writes require a signed-in cookie", async () => {
   assert.equal(r.status, 401);
   assert.equal(calls.length, before, "a signed-out request is rejected at the surface, never forwarded");
 });
+
+test("skill archive uploads forward the complete file with the signed admin identity", async () => {
+  const upload = { name: "skills.zip", base64: "YWJj" };
+  const response = await fetch(`${base}/api/skill-packs`, {
+    method: "POST",
+    headers: { cookie: ADMIN, "content-type": "application/json" },
+    body: JSON.stringify({ upload }),
+  });
+  assert.equal(response.status, 200);
+  const call = calls.at(-1)!;
+  assert.deepEqual(JSON.parse(call.body), { upload });
+  assert.equal(call.actor, "U-admin@acme");
+  assert.equal(call.signed, true);
+});

@@ -1,3 +1,4 @@
+import { SKILL_IMPORT_BODY_MAX_BYTES } from "../../chassis/src/skill-import.ts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Readable } from "node:stream";
@@ -619,7 +620,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const corePath = `/v1/admin/${CORE_PREFIX[first] ?? first}${rest.slice(first.length)}${url.search}`;
     return m === "DELETE"
       ? forward(req, res, principal, m, corePath)
-      : forward(req, res, principal, m, corePath, await readBody(req));
+      : forward(
+          req,
+          res,
+          principal,
+          m,
+          corePath,
+          await readBody(req, pathname === "/api/skill-packs" ? SKILL_IMPORT_BODY_MAX_BYTES : undefined),
+        );
   }
 
   if (method === "GET" && READS.includes(first)) {

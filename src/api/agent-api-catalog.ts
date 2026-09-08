@@ -488,7 +488,7 @@ const FAMILIES: AgentApiFamily[] = [
   },
   {
     match: (m, p) =>
-      (m === "POST" && p === "/v1/skills") ||
+      (m === "POST" && (p === "/v1/skills" || p === "/v1/skills/import")) ||
       (m === "GET" && p.startsWith("/v1/skills/")) ||
       ((m === "PUT" || m === "DELETE") && p.startsWith("/v1/skills/")) ||
       (m === "POST" && /^\/v1\/skills\/[^/]+\/restore$/.test(p)),
@@ -500,6 +500,12 @@ const FAMILIES: AgentApiFamily[] = [
         path: "/v1/skills",
         summary:
           "save a NEW skill in this conversation's scope — {name, description, body} (the SKILL.md). Auto review+published; a name already taken in this scope is a 409 (edit it instead).",
+      },
+      {
+        method: "POST",
+        path: "/v1/skills/import",
+        summary:
+          "preview a Git repository or uploaded skill archive in this conversation's scope — {source: {kind:'git', url, ref?} | {kind:'upload', upload:{name, base64}}}. Confirm with the same source, preview fingerprint and selected SKILL.md paths. Names already present are excluded; no overwrite.",
       },
       {
         method: "GET",

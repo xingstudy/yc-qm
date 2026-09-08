@@ -1,3 +1,4 @@
+import { fetchSkillSource, previewSkillImport, SkillImportError } from "../skills/skill-import.ts";
 import type { ScopeId } from "../types.ts";
 import { parseScopeId, scopeId } from "../types.ts";
 import { orgId as orgIdOf } from "../config.ts";
@@ -77,6 +78,7 @@ interface ReconcileTarget {
 function skillPackSourceIdentity(pack: SkillPack): string {
   return JSON.stringify([
     pack.url,
+    pack.upload,
     pack.ref,
     pack.syncMode,
     pack.trustTier,
@@ -209,6 +211,7 @@ export function createSkillMethods(
   | "syncSkillPack"
   | "removeSkillPack"
   | "createOwnedSkill"
+  | "importOwnedSkills"
   | "deleteOwnedSkill"
 > {
   const { canManageSkill, republishIfShared, currentResourceScopesForViewer } = h;
@@ -226,6 +229,39 @@ export function createSkillMethods(
     if (!skill) return false;
     if (!deps.skillAccessRepository) return canManageSkill(skill, principalId);
     return deps.skillAccessRepository.canManage(skill.id, await accessActor(principalId, allowAdminElevation));
+  };
+  const createOwnedSkill = async (input: Parameters<App["createOwnedSkill"]>[0], onCreated?: (id: string) => void) => {
+    const name = input.name.trim();
+    const description = input.description.trim();
+    const body = input.body.trim();
+    if (!name || !description || !body) throw new Error("skill requires a non-empty name, description, and body");
+    const homeScope = input.homeScope ?? scopeId("personal", input.principalId);
+    const homeKind = parseScopeId(homeScope).kind;
+    if (homeKind !== "personal" && homeKind !== "channel" && homeKind !== "group") {
+      throw new Error("a skill cannot be created directly in an org or team scope — promote a published skill instead");
+    }
+    const existing = (await deps.skills.list()).find((s) => s.scopeId === homeScope && s.manifest.name === name);
+    if (existing && existing.status !== "archived") return null;
+    if (existing) await deps.skills.delete(existing.id);
+    const manifest: SkillManifest = {
+      name,
+      description,
+      requiredCapabilities: input.requiredCapabilities ?? [],
+      body,
+      ...(input.files ? { files: input.files } : {}),
+    };
+    const skill = await deps.skills.create({ scopeId: homeScope, manifest, createdBy: input.principalId });
+    onCreated?.(skill.id);
+    await deps.skills.review(skill.id, "system:skill-authoring", manifest.requiredCapabilities);
+    const published = await deps.skills.publish(skill.id);
+    deps.auditLog.record({
+      at: Date.now(),
+      principalId: input.principalId,
+      action: "skill_create",
+      resource: skill.id,
+      scopeLabel: homeScope,
+    });
+    return published;
   };
   return {
     listSkills() {
@@ -418,38 +454,67 @@ export function createSkillMethods(
         return { removed: mine.length };
       });
     },
-    async createOwnedSkill(input) {
-      const name = input.name.trim();
-      const description = input.description.trim();
-      const body = input.body.trim();
-      if (!name || !description || !body) throw new Error("skill requires a non-empty name, description, and body");
+    createOwnedSkill(input) {
+      return withSkillMutationLock(deps, () => createOwnedSkill(input));
+    },
+    async importOwnedSkills(input) {
       const homeScope = input.homeScope ?? scopeId("personal", input.principalId);
-      const homeKind = parseScopeId(homeScope).kind;
-      if (homeKind !== "personal" && homeKind !== "channel" && homeKind !== "group") {
-        throw new Error(
-          "a skill cannot be created directly in an org or team scope — promote a published skill instead",
-        );
+      const kind = parseScopeId(homeScope).kind;
+      if (kind !== "personal" && kind !== "channel" && kind !== "group") {
+        throw new SkillImportError("Skills can only be imported into a personal or shared context", 403);
       }
-      const existing = (await deps.skills.list()).find((s) => s.scopeId === homeScope && s.manifest.name === name);
-      if (existing && existing.status !== "archived") return null;
-      if (existing) await deps.skills.delete(existing.id);
-      const manifest: SkillManifest = {
-        name,
-        description,
-        requiredCapabilities: input.requiredCapabilities ?? [],
-        body,
-      };
-      const skill = await deps.skills.create({ scopeId: homeScope, manifest, createdBy: input.principalId });
-      await deps.skills.review(skill.id, "system:skill-authoring", manifest.requiredCapabilities);
-      const published = await deps.skills.publish(skill.id);
-      deps.auditLog.record({
-        at: Date.now(),
-        principalId: input.principalId,
-        action: "skill_create",
-        resource: skill.id,
-        scopeLabel: homeScope,
+      if (kind === "personal" && homeScope !== scopeId("personal", input.principalId)) {
+        throw new SkillImportError("You cannot import into another person's context", 403);
+      }
+      let repo;
+      try {
+        repo = await fetchSkillSource(input.source, input.principalId, deps.skillFetcher);
+      } catch (error) {
+        if (error instanceof SkillImportError) throw error;
+        throw new SkillImportError(error instanceof Error ? error.message : "Failed to read skill source");
+      }
+      return withSkillMutationLock(deps, async () => {
+        if (!(await h.principalCanManageScope(input.principalId, homeScope))) {
+          throw new SkillImportError("You cannot import skills into that context", 403);
+        }
+        const names = new Set(
+          (await deps.skills.list()).filter((skill) => skill.scopeId === homeScope).map((skill) => skill.manifest.name),
+        );
+        const { preview, manifests } = previewSkillImport(repo, names, kind === "personal");
+        if (input.selected === undefined) return preview;
+        if (input.fingerprint !== preview.fingerprint)
+          throw new SkillImportError("Source changed. Preview the skills again before importing", 409);
+        if (
+          !Array.isArray(input.selected) ||
+          !input.selected.length ||
+          input.selected.some((path) => typeof path !== "string" || !manifests.has(path))
+        ) {
+          throw new SkillImportError("Select available skills. Names may already exist; preview again", 409);
+        }
+        const imported: string[] = [];
+        const createdIds: string[] = [];
+        try {
+          for (const path of new Set(input.selected)) {
+            const manifest = manifests.get(path)!;
+            const skill = await createOwnedSkill({ ...manifest, principalId: input.principalId, homeScope }, (id) =>
+              createdIds.push(id),
+            );
+            if (!skill) throw new SkillImportError("A skill with that name already exists", 409);
+            imported.push(skill.manifest.name);
+          }
+        } catch (error) {
+          for (const id of createdIds.reverse()) await deps.skills.delete(id, input.principalId);
+          deps.auditLog.record({
+            at: Date.now(),
+            principalId: input.principalId,
+            action: "skill_import.failed",
+            resource: preview.fingerprint,
+            scopeLabel: homeScope,
+          });
+          throw error;
+        }
+        return { ...preview, imported };
       });
-      return published;
     },
     async deleteOwnedSkill({ principalId, id, liveActor, allowAdminElevation }) {
       const skill = await deps.skills.get(id);

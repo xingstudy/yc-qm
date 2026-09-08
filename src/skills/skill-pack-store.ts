@@ -3,7 +3,7 @@ import type { ScopeId } from "../types.ts";
 import { createMemoryMap, type DurableMap } from "../persistence/durable-map.ts";
 import type { PackConfig } from "./normalize.ts";
 
-type PackKind = "git";
+type PackKind = "git" | "upload";
 type SyncMode = "pinned" | "tracked";
 type TrustTier = "internal" | "third-party";
 
@@ -18,6 +18,7 @@ interface ImportRecord {
 export interface SkillPack {
   id: string;
   kind: PackKind;
+  upload?: import("../../plugins/chassis/src/skill-import.ts").SkillUpload;
   url: string;
   ref: string;
   syncMode: SyncMode;

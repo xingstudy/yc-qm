@@ -25,7 +25,7 @@ export function createSkillSyncEngine(deps: SkillSyncDeps): SkillSyncEngine {
 
   async function syncOne(packId: string): Promise<void> {
     const pack = await deps.packs.get(packId);
-    if (!pack) return;
+    if (!pack || pack.kind === "upload") return;
     if (pack.syncMode === "tracked") {
       const head = await deps.fetcher.resolveRef(pack);
       if (pack.lastImport?.status === "ok" && head === pack.lastImport.commit) return;

@@ -1,3 +1,4 @@
+import { isSafeSkillName } from "./skill-name.ts";
 import { isOrgEligibleScope, normalizeSkill, type NormalizedSkill, type PackConfig } from "./normalize.ts";
 import { upsertSeedSkill, type UpsertOutcome } from "./seed.ts";
 import { safeSkillFilePath, type SkillFile, type SkillManifest, type SkillStore } from "./skill-store.ts";
@@ -15,6 +16,8 @@ export interface RepoFile {
   path: string;
   text: string;
   binary: boolean;
+  base64?: string;
+  executable?: boolean;
 }
 export interface FetchedRepo {
   commit: string;
@@ -62,21 +65,26 @@ function lastSegment(path: string): string {
   return parts.at(-1) ?? path;
 }
 
-function collectAssets(repo: FetchedRepo, skillDir: string): SkillFile[] | null {
+export function collectAssets(repo: FetchedRepo, skillDir: string): SkillFile[] | null {
   const prefix = skillDir ? `${skillDir}/` : "";
   const out: SkillFile[] = [];
   for (const f of repo.files) {
     if (!f.path.startsWith(prefix)) continue;
     const rel = f.path.slice(prefix.length);
     if (rel === "SKILL.md" || rel.includes("/SKILL.md")) continue;
-    if (f.binary) return null;
+    if (f.binary && f.base64 === undefined) return null;
     let safe: string;
     try {
       safe = safeSkillFilePath(rel);
     } catch {
       return null;
     }
-    out.push({ path: safe, content: f.text });
+    out.push({
+      path: safe,
+      content: f.base64 ?? f.text,
+      ...(f.binary ? { encoding: "base64" as const } : {}),
+      ...(f.executable ? { executable: true } : {}),
+    });
   }
   return out.sort((a, b) => {
     if (a.path < b.path) return -1;
@@ -149,14 +157,19 @@ export function collectSharedBundle(repo: FetchedRepo, config?: PackConfig): Ski
     if (underSkillDir(f.path)) continue;
     if (isRepoMetadata(f.path)) continue;
     if (isExcludedPath(f.path, config?.exclude)) continue;
-    if (f.binary) continue;
+    if (f.binary && f.base64 === undefined) continue;
     let safe: string;
     try {
       safe = safeSkillFilePath(f.path);
     } catch {
       continue;
     }
-    out.push({ path: safe, content: f.text });
+    out.push({
+      path: safe,
+      content: f.base64 ?? f.text,
+      ...(f.binary ? { encoding: "base64" as const } : {}),
+      ...(f.executable ? { executable: true } : {}),
+    });
   }
   return out.sort((a, b) => {
     if (a.path < b.path) return -1;
@@ -168,6 +181,7 @@ export function collectSharedBundle(repo: FetchedRepo, config?: PackConfig): Ski
 export interface IngestContext {
   config?: PackConfig;
   nativeNames: Set<string>;
+  personal?: boolean;
 }
 
 export function planIngest(repo: FetchedRepo, ctx: IngestContext): IngestPlan {
@@ -184,15 +198,15 @@ export function planIngest(repo: FetchedRepo, ctx: IngestContext): IngestPlan {
     counts.total++;
     const upstreamName = lastSegment(skillDir) || lastSegment(f.path);
     const norm = normalizeSkill(f.text, f.path, cfg);
-    if ("skip" in norm) {
+    if ("skip" in norm || !isSafeSkillName(norm.manifest.name)) {
       counts.malformed++;
       candidates.push({ upstreamName, skillPath: f.path, eligible: false, excludeReason: "malformed" });
       continue;
     }
 
     let reason: ExcludeReason | undefined;
-    if (norm.private) reason = "private";
-    else if (!isOrgEligibleScope(norm.scopeHint)) reason = "scope";
+    if (!ctx.personal && norm.private) reason = "private";
+    else if (!ctx.personal && !isOrgEligibleScope(norm.scopeHint)) reason = "scope";
     else if (ctx.nativeNames.has(norm.manifest.name)) reason = "collision";
     else if (collectAssets(repo, skillDir) === null) reason = "binary-asset";
 

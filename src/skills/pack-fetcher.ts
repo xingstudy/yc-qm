@@ -1,6 +1,7 @@
+import { readSkillUpload } from "./skill-upload.ts";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { lookup as dnsLookup } from "node:dns/promises";
@@ -228,6 +229,8 @@ export function createGitFetcher(opts: GitFetcherOptions = {}): SkillPackFetcher
           path: relative(root, abs).split(sep).join("/"),
           text: binary ? "" : buf.toString("utf8"),
           binary,
+          ...(binary ? { base64: buf.toString("base64") } : {}),
+          ...((await stat(abs)).mode & 0o111 ? { executable: true } : {}),
         });
       }
     };
@@ -241,6 +244,10 @@ export function createGitFetcher(opts: GitFetcherOptions = {}): SkillPackFetcher
 
   return {
     async fetch(pack) {
+      if (pack.kind === "upload") {
+        if (!pack.upload) throw new Error("Skill pack upload is missing");
+        return readSkillUpload(pack.upload);
+      }
       const ref = (pack.ref ?? "").trim();
       if (ref && !SHA_RE.test(ref) && !BRANCH_RE.test(ref)) throw new Error(`invalid skill pack ref: ${ref}`);
       const repo = await validateRepoUrl(pack.url, allowLocalRepos, lookup);
@@ -260,6 +267,7 @@ export function createGitFetcher(opts: GitFetcherOptions = {}): SkillPackFetcher
     },
 
     async resolveRef(pack) {
+      if (pack.kind === "upload") return pack.ref;
       const ref = (pack.ref ?? "").trim();
       if (ref && !SHA_RE.test(ref) && !BRANCH_RE.test(ref)) throw new Error(`invalid skill pack ref: ${ref}`);
       const repo = await validateRepoUrl(pack.url, allowLocalRepos, lookup);

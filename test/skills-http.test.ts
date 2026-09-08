@@ -1,4 +1,6 @@
 import "./support/auto-fake-sprites.ts";
+import type { SkillImportPreview } from "../plugins/chassis/src/skill-import.ts";
+import { skillMarkdown, skillZip } from "./support/skill-upload-fixture.ts";
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -1122,6 +1124,212 @@ test("skill detail and restore capability calls hide other principals' skills an
       401,
     );
     assert.equal((await srv.skills.get(skill.id))?.status, "archived");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("skill upload preview and selected import preserve ownership and attachments without overwriting", async () => {
+  const s = await start();
+  try {
+    const source = {
+      kind: "upload",
+      upload: {
+        name: "skills.zip",
+        base64: skillZip([
+          { path: "demo/SKILL.md", text: skillMarkdown("import-demo") },
+          { path: "demo/scripts/run.sh", text: "echo demo" },
+          { path: "second/SKILL.md", text: skillMarkdown("import-second") },
+        ]).toString("base64"),
+      },
+    };
+    const request = (extra: Record<string, unknown> = {}) =>
+      fetch(`${s.base}/v1/skills/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ principalId: "author", source, ...extra }),
+      });
+    const response = await request();
+    assert.equal(response.status, 200);
+    const preview = (await response.json()) as SkillImportPreview;
+    assert.equal(preview.candidates.length, 2);
+    assert.equal((await s.skills.list()).length, 0);
+    const imported = await request({ fingerprint: preview.fingerprint, selected: ["demo/SKILL.md"] });
+    assert.equal(imported.status, 201);
+    assert.deepEqual(((await imported.json()) as SkillImportPreview).imported, ["import-demo"]);
+    const skills = await s.skills.list();
+    assert.equal(skills.length, 1);
+    assert.equal(skills[0]!.createdBy, "author");
+    assert.equal(skills[0]!.scopeId, "personal:author");
+    assert.equal(skills[0]!.status, "published");
+    assert.deepEqual(skills[0]!.manifest.files, [{ path: "scripts/run.sh", content: "echo demo" }]);
+    assert.equal(s.skills.verify(skills[0]!), true);
+    assert.equal(
+      (await request({ fingerprint: preview.fingerprint, selected: ["demo/SKILL.md", "second/SKILL.md"] })).status,
+      409,
+    );
+    assert.equal((await s.skills.list()).length, 1);
+    assert.equal((await request({ fingerprint: "stale", selected: ["second/SKILL.md"] })).status, 409);
+    assert.equal((await request({ fingerprint: preview.fingerprint, selected: ["missing/SKILL.md"] })).status, 409);
+    const latest = (await (await request()).json()) as SkillImportPreview;
+    assert.equal(latest.candidates[0]!.reason, "collision");
+  } finally {
+    await s.close();
+  }
+});
+
+test("skill import enforces creation scopes before reading the source and validates input", async () => {
+  const s = await start();
+  try {
+    const post = (body: unknown) =>
+      fetch(`${s.base}/v1/skills/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    for (const scopeId of ["personal:bob", "org:acme", "team:eng", "channel:missing"]) {
+      assert.equal(
+        (await post({ principalId: "author", scopeId, source: { kind: "upload", upload: {} } })).status,
+        403,
+      );
+    }
+    for (const source of [
+      null,
+      { kind: "upload", upload: {} },
+      { kind: "git", url: "http://127.0.0.1/private" },
+      { kind: "git", url: "https://user:password@example.com/repo" },
+    ]) {
+      assert.equal((await post({ principalId: "author", source })).status, 400);
+    }
+    assert.equal((await post({ source: {} })).status, 400);
+    assert.equal((await post({ principalId: "author", selected: "all", source: {} })).status, 400);
+    assert.equal((await s.skills.list()).length, 0);
+  } finally {
+    await s.close();
+  }
+});
+
+test("a failed multi-skill import removes every skill created by that attempt", async () => {
+  const s = await start();
+  try {
+    const source = {
+      kind: "upload",
+      upload: {
+        name: "skills.zip",
+        base64: skillZip([
+          { path: "first/SKILL.md", text: skillMarkdown("first") },
+          { path: "second/SKILL.md", text: skillMarkdown("second") },
+        ]).toString("base64"),
+      },
+    };
+    const post = (extra: Record<string, unknown>) =>
+      fetch(`${s.base}/v1/skills/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ principalId: "author", source, ...extra }),
+      });
+    const preview = (await (await post({})).json()) as SkillImportPreview;
+    const publish = s.skills.publish;
+    let count = 0;
+    s.skills.publish = async (...args) => {
+      if (++count === 2) throw new Error("Injected publish failure");
+      return publish(...args);
+    };
+    const result = await post({
+      fingerprint: preview.fingerprint,
+      selected: preview.candidates.map((candidate: { path: string }) => candidate.path),
+    });
+    assert.equal(result.status, 500);
+    assert.equal((await s.skills.list()).length, 0);
+    s.skills.publish = publish;
+    assert.equal((await post({ fingerprint: preview.fingerprint, selected: ["first/SKILL.md"] })).status, 201);
+  } finally {
+    await s.close();
+  }
+});
+
+test("capability imports bind to the token actor and block shared trigger writes", async () => {
+  const srv = await startSecure();
+  try {
+    const source = {
+      kind: "upload",
+      upload: { name: "demo.md", base64: Buffer.from(skillMarkdown("cap-import")).toString("base64") },
+    };
+    const request = (token: string, extra: Record<string, unknown> = {}) =>
+      fetch(`${srv.base}/v1/skills/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-agent-capability": token },
+        body: JSON.stringify({ principalId: "U2", scopeId: "personal:U2", source, ...extra }),
+      });
+    const token = await srv.cap("U1");
+    const previewResponse = await request(token);
+    assert.equal(previewResponse.status, 200);
+    const preview = (await previewResponse.json()) as SkillImportPreview;
+    assert.equal((await request(token, { fingerprint: preview.fingerprint, selected: ["SKILL.md"] })).status, 201);
+    const skill = (await srv.skills.list())[0]!;
+    assert.equal(skill.createdBy, "U1");
+    assert.equal(skill.scopeId, "personal:U1");
+    const trigger = await srv.cap("U1", scopeId("channel", "C9"), false);
+    assert.equal((await request(trigger)).status, 403);
+    assert.equal((await request("")).status, 401);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("concurrent confirms cannot create duplicate skills", async () => {
+  const srv = await start();
+  try {
+    const source = {
+      kind: "upload",
+      upload: { name: "race.md", base64: Buffer.from(skillMarkdown("race")).toString("base64") },
+    };
+    const post = (extra: Record<string, unknown>) =>
+      fetch(`${srv.base}/v1/skills/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ principalId: "author", source, ...extra }),
+      });
+    const preview = (await (await post({})).json()) as SkillImportPreview;
+    const selection = { fingerprint: preview.fingerprint, selected: ["SKILL.md"] };
+    const results = await Promise.all([post(selection), post(selection)]);
+    assert.deepEqual(results.map((response) => response.status).sort(), [201, 409]);
+    assert.equal((await srv.skills.list()).filter((skill) => skill.manifest.name === "race").length, 1);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a skill archive with an icon imports the complete bundle without disabling selection", async () => {
+  const srv = await start();
+  try {
+    const png = Buffer.from([137, 80, 78, 71, 0, 255]);
+    const source = {
+      kind: "upload",
+      upload: {
+        name: "transcribe.zip",
+        base64: skillZip([
+          { path: "transcribe/SKILL.md", text: skillMarkdown("transcribe") },
+          { path: "transcribe/assets/transcribe.png", text: png },
+          { path: "transcribe/scripts/transcribe_diarize.py", text: "print('transcribe')" },
+        ]).toString("base64"),
+      },
+    };
+    const post = (extra: Record<string, unknown>) =>
+      fetch(`${srv.base}/v1/skills/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ principalId: "author", source, ...extra }),
+      });
+    const preview = (await (await post({})).json()) as SkillImportPreview;
+    assert.equal(preview.candidates[0]?.eligible, true);
+    assert.deepEqual(preview.candidates[0]?.files, ["assets/transcribe.png", "scripts/transcribe_diarize.py"]);
+    assert.equal((await post({ fingerprint: preview.fingerprint, selected: ["SKILL.md"] })).status, 201);
+    const skill = (await srv.skills.list())[0]!;
+    const image = skill.manifest.files![0]!;
+    assert.deepEqual(Buffer.from(image.content, image.encoding), png);
+    assert.equal(skill.manifest.files![1]!.content, "print('transcribe')");
+    assert.equal(srv.skills.verify(skill), true);
   } finally {
     await srv.close();
   }

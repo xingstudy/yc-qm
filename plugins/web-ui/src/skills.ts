@@ -1,3 +1,4 @@
+import { SkillImportForm } from "./skill-import-form.ts";
 import { nothing, render, type TemplateResult } from "lit";
 import { html, t } from "./i18n.ts";
 import { Box, Search } from "lucide";
@@ -81,6 +82,8 @@ let accessSearch = "";
 let accessSearching = false;
 let accessSearchSeq = 0;
 
+let importForm = new SkillImportForm();
+
 let creating: {
   name: string;
   description: string;
@@ -113,6 +116,7 @@ async function startEdit(s: SkillItem): Promise<void> {
   const request = ++editRequestSeq;
   skillMutations.invalidate();
   flowFocusTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  importForm.invalidate();
   creating = null;
   editing = null;
   editingTarget = s;
@@ -185,6 +189,7 @@ function restoreFocusedFlow(target: HTMLElement | null): void {
 }
 
 function closeFocusedFlow(): void {
+  importForm.invalidate();
   editRequestSeq += 1;
   skillMutations.invalidate();
   editing = null;
@@ -214,11 +219,18 @@ function startCreate(): void {
   editing = null;
   editingTarget = null;
   editRequestSeq += 1;
-  creating = { name: "", description: "", body: "", scopeId: createScopes[0]?.scopeId ?? "", review: null };
+  importForm = new SkillImportForm();
+  creating = {
+    name: "",
+    description: "",
+    body: "",
+    scopeId: createScopes[0]?.scopeId ?? (appState.me ? `personal:${appState.me.user}` : ""),
+    review: null,
+  };
   createError = "";
   creatingSaving = false;
   drawSkills();
-  queueMicrotask(() => document.querySelector<HTMLInputElement>("#skill-create-name")?.focus());
+  queueMicrotask(() => skillsPageHost?.querySelector<HTMLInputElement>('[data-focus-key="skill-import-url"]')?.focus());
 }
 
 function skillMeta(s: SkillItem): string {
@@ -627,8 +639,103 @@ function editorPane() {
   `;
 }
 
+function skillSourcePicker() {
+  return html`<label class="skill-field"
+    ><span>Skill source</span> ${fieldSelect({
+      className: "skill-source-select",
+      value: importForm.mode,
+      disabled: creatingSaving || importForm.busy,
+      onChange: (value) => {
+        importForm.invalidate();
+        importForm.mode = value as typeof importForm.mode;
+        drawSkills();
+      },
+      options: [
+        html`<option value="git">Project URL</option>`,
+        html`<option value="upload">Upload file or archive</option>`,
+        html`<option value="manual">Write manually</option>`,
+      ],
+    })}</label
+  >`;
+}
+
+function importCreatorPane() {
+  const c = creating!;
+  const form = importForm;
+  const hasSource = form.mode === "git" ? Boolean(form.url.trim()) : Boolean(form.upload);
+  const ready = form.hasEligibleSkills ? form.selected.size > 0 : hasSource;
+  let submitLabel = "Preview skills";
+  if (form.preview) submitLabel = form.hasEligibleSkills ? "Confirm import" : "Preview again";
+  if (form.busy) submitLabel = "Working…";
+  return html`<form
+    class="skill-form-page"
+    @submit=${(event: SubmitEvent) => {
+      event.preventDefault();
+      void form.submit(c.scopeId, drawSkills, async () => {
+        if (creating !== c) return;
+        closeFocusedFlow();
+        await renderSkills();
+      });
+    }}
+  >
+    ${listBackLink("Back to skills", closeFocusedFlow)}
+    <div class="skill-form-heading">
+      <div>
+        <h1 class="pane-title">New skill</h1>
+        <p>Import reusable skills from a project or upload.</p>
+      </div>
+    </div>
+    ${skillSourcePicker()}
+    <label class="skill-field"
+      ><span>Available to</span>
+      ${fieldSelect({
+        className: "skill-scope-select",
+        value: c.scopeId,
+        disabled: form.busy,
+        onChange: (value) => {
+          c.scopeId = value;
+          form.invalidate();
+          drawSkills();
+        },
+        options: createScopes.map((scope) => html`<option value=${scope.scopeId}>${scope.name}</option>`),
+      })}
+      <small class="card-meta">Everyone in a shared context can invoke and edit this skill.</small>
+    </label>
+    ${form.render(drawSkills)}
+    <div class="actions skill-form-actions">
+      <button
+        class="btn primary"
+        type="submit"
+        @click=${(event: MouseEvent) => {
+          if (form.hasEligibleSkills && event.detail > 1) event.preventDefault();
+        }}
+        ?disabled=${form.busy || !ready}
+      >
+        ${t(submitLabel)}
+      </button>
+      ${
+        form.preview
+          ? html`<button
+              class="btn"
+              type="button"
+              ?disabled=${form.busy}
+              @click=${() => {
+                form.invalidate();
+                drawSkills();
+              }}
+            >
+              Review again
+            </button>`
+          : nothing
+      }
+      <button class="btn" type="button" ?disabled=${form.busy} @click=${closeFocusedFlow}>Cancel</button>
+    </div>
+  </form>`;
+}
+
 function creatorPane() {
   const c = creating!;
+  if (importForm.mode !== "manual") return importCreatorPane();
   const ready = c.name.trim() !== "" && c.description.trim() !== "" && c.body.trim() !== "";
   const reviewed = createReviewMatches(c.review, c.name.trim(), c.description.trim(), c.body.trim(), c.scopeId);
   let createLabel = "Create skill";
@@ -653,6 +760,7 @@ function creatorPane() {
       <div class="card-meta">
         New Skills start with Home context access. After publishing, open Edit to configure Skill Access.
       </div>
+      ${skillSourcePicker()}
       <label class="skill-field">
         <span>Name</span>
         <input

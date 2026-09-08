@@ -57,7 +57,10 @@ function indexHash(resolved: SkillResolution[]): string {
 function treeHash(resolution: SkillResolution, bundles: SkillBundle[]): string {
   const m = resolution.skill!.manifest;
   const files = [...(m.files ?? [])]
-    .map((f) => `${f.path}\0${f.content}\0${f.executable === true ? "1" : "0"}`)
+    .map(
+      (f) =>
+        `${f.path}\0${f.content}\0${f.executable === true ? "1" : "0"}${f.encoding === "base64" ? "\0base64" : ""}`,
+    )
     .sort()
     .join("\0");
   const folded = [...bundles]
@@ -88,6 +91,7 @@ function renderedBody(resolution: SkillResolution): string {
 interface LayEntry {
   path: string;
   content: string;
+  encoding?: "base64";
 }
 
 interface IndexMarkerState {
@@ -200,11 +204,14 @@ async function layFiles(sandbox: Sandbox, handle: SandboxHandle, entries: LayEnt
   if (sandbox.extractFiles) {
     await sandbox.extractFiles(
       handle,
-      entries.map((e) => ({ path: e.path, data: Buffer.from(e.content, "utf8") })),
+      entries.map((e) => ({ path: e.path, data: Buffer.from(e.content, e.encoding ?? "utf8") })),
     );
     return;
   }
-  for (const e of entries) await sandbox.writeFile(handle, e.path, e.content);
+  for (const e of entries) {
+    if (e.encoding === "base64") await sandbox.writeFileBytes(handle, e.path, Buffer.from(e.content, "base64"));
+    else await sandbox.writeFile(handle, e.path, e.content);
+  }
 }
 
 async function materializeSkillIndexUnlocked(
@@ -335,7 +342,8 @@ async function materializeSkillTreeUnlocked(
       continue;
     }
     const path = `${dir}/${rel}`;
-    if (!isSkillMaterializationControlPath(path)) entries.push({ path, content: f.content });
+    if (!isSkillMaterializationControlPath(path))
+      entries.push({ path, content: f.content, ...(f.encoding ? { encoding: f.encoding } : {}) });
   }
   for (const b of bundles) {
     const root = `${SKILL_PACKS_DIR}/${safeSkillDirName(b.packId)}`;
@@ -348,7 +356,8 @@ async function materializeSkillTreeUnlocked(
         continue;
       }
       const path = `${root}/${rel}`;
-      if (!isSkillMaterializationControlPath(path)) entries.push({ path, content: f.content });
+      if (!isSkillMaterializationControlPath(path))
+        entries.push({ path, content: f.content, ...(f.encoding ? { encoding: f.encoding } : {}) });
     }
   }
   entries.push({

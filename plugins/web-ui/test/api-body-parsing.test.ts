@@ -86,3 +86,48 @@ test("routes that historically tolerated an empty body still do", async () => {
   const forked = calls.at(-1);
   assert.deepEqual(forked?.body, { principalId: "alice" });
 });
+
+test("skill import forwards only the signed-in user and supported fields, including larger uploads", async () => {
+  const source = { kind: "upload", upload: { name: "skills.zip", base64: "A".repeat(1_100_000) } };
+  const response = await fetch(`${base}/api/skills/import`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      principalId: "mallory",
+      source,
+      selected: ["demo/SKILL.md"],
+      fingerprint: "hash",
+      scopeId: "personal:alice",
+      authCredentialSlug: "admin-secret",
+      trustTier: "internal",
+    }),
+  });
+  assert.equal(response.status, 200);
+  const call = calls.at(-1)!;
+  assert.match(call.url, /^\/v1\/skills\/import(?:\?|$)/);
+  assert.deepEqual(call.body, {
+    principalId: "alice",
+    source,
+    selected: ["demo/SKILL.md"],
+    fingerprint: "hash",
+    scopeId: "personal:alice",
+  });
+});
+
+test("skill import rejects malformed bodies and unsigned users before forwarding", async () => {
+  const before = calls.length;
+  for (const body of ["null", "[]", "false", "{broken"]) {
+    assert.equal((await fetch(`${base}/api/skills/import`, { method: "POST", headers, body })).status, 400);
+  }
+  assert.equal(
+    (
+      await fetch(`${base}/api/skills/import`, {
+        method: "POST",
+        body: "{}",
+        headers: { "content-type": "application/json" },
+      })
+    ).status,
+    401,
+  );
+  assert.equal(calls.length, before);
+});
