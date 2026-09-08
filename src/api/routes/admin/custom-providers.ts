@@ -34,7 +34,18 @@ async function validateKey(
       headers,
       signal: AbortSignal.timeout(5_000),
     });
-    if (response.ok) return undefined;
+    if (response.ok) {
+      const listing = (await response.json().catch(() => null)) as { data?: unknown } | null;
+      if (listing && Array.isArray(listing.data)) return undefined;
+      const hint =
+        protocol === "openai"
+          ? "Use the API base URL, usually ending in /v1, rather than the website URL."
+          : "Use the API base URL before /v1/messages.";
+      return {
+        error: "invalid_models_response",
+        message: `${url} returned HTTP ${response.status}, but not a JSON model list. ${hint}`,
+      };
+    }
     if (response.status === 401 || response.status === 403) {
       return {
         error: "invalid_api_key",

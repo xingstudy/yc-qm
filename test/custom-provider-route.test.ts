@@ -17,7 +17,7 @@ const USER = { "content-type": "application/json", "x-admin-actor": "bob@default
 
 afterEach(() => setCustomProviders([]));
 
-function start(modelCredentialFetch: typeof fetch = async () => new Response(null, { status: 200 })): {
+function start(modelCredentialFetch: typeof fetch = async () => Response.json({ data: [] })): {
   base: string;
   built: BuiltApp;
   close: () => Promise<void>;
@@ -59,7 +59,7 @@ test("custom provider lifecycle: register, list, resolve, delete — admin only,
   const validated: string[] = [];
   const srv = start(async (input) => {
     validated.push(String(input));
-    return new Response(null, { status: 200 });
+    return Response.json({ data: [] });
   });
   try {
     // Register (validates against the endpoint's /models).
@@ -406,7 +406,7 @@ test("invalid provider specs never send credentials to an endpoint", async () =>
   let calls = 0;
   const srv = start(async () => {
     calls++;
-    return new Response(null, { status: 200 });
+    return Response.json({ data: [] });
   });
   try {
     const put = await fetch(`${srv.base}/v1/admin/custom-providers/acme-gateway`, {
@@ -418,5 +418,29 @@ test("invalid provider specs never send credentials to an endpoint", async () =>
     assert.equal(calls, 0);
   } finally {
     await srv.close();
+  }
+});
+
+test("successful website responses cannot validate a custom provider key or replace its configuration", async () => {
+  for (const body of ["<html>Proxy dashboard</html>", "not json", "{}", '{"data":{}}', "null"]) {
+    const srv = start(async () => new Response(body, { status: 200 }));
+    try {
+      const { apiKey, ...spec } = BODY;
+      await srv.built.customProviders.upsert({ id: "acme-gateway", ...spec }, apiKey, "admin-alice@default-org");
+      const put = await fetch(`${srv.base}/v1/admin/custom-providers/acme-gateway`, {
+        method: "PUT",
+        headers: ADMIN,
+        body: JSON.stringify({ ...BODY, baseUrl: "https://proxy.example", apiKey: "wrong-key" }),
+      });
+      assert.equal(put.status, 400);
+      const result = (await put.json()) as { error: string; message: string };
+      assert.equal(result.error, "invalid_models_response");
+      assert.match(result.message, /not a JSON model list/);
+      assert.match(result.message, /usually ending in \/v1/);
+      assert.equal(await srv.built.customProviders.resolveKey("acme-gateway"), BODY.apiKey);
+      assert.equal((await srv.built.customProviders.statuses())[0]?.baseUrl, BODY.baseUrl);
+    } finally {
+      await srv.close();
+    }
   }
 });

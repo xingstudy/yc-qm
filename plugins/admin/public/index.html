@@ -4045,8 +4045,12 @@
                 >
                 <label
                   >Base URL
-                  <input id="custom-provider-url" autocomplete="off" placeholder="https://gateway.internal/v1"
-                /></label>
+                  <input id="custom-provider-url" autocomplete="off" placeholder="https://gateway.internal/v1" /><small
+                    class="muted"
+                    >OpenAI-compatible: use the API base URL, usually ending in /v1. Anthropic-compatible: use the base
+                    URL before /v1/messages.</small
+                  ></label
+                >
                 <label
                   >API key
                   <input
@@ -5506,6 +5510,8 @@
         "OpenAI-compatible": "OpenAI 兼容",
         "Anthropic-compatible": "Anthropic 兼容",
         "Base URL": "基础 URL",
+        "OpenAI-compatible: use the API base URL, usually ending in /v1. Anthropic-compatible: use the base URL before /v1/messages.":
+          "OpenAI 兼容：填写 API 基础地址，通常以 /v1 结尾。Anthropic 兼容：填写 /v1/messages 之前的基础地址。",
         "Models (one per line: id | name | context | maxTokens)": "模型（每行一个：ID | 名称 | 上下文 | 最大令牌数）",
         "Validate key against the endpoint (untick for gateways without a models listing)":
           "向端点验证密钥（无模型列表的网关请取消勾选）",
