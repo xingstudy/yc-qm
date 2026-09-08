@@ -102,7 +102,7 @@ test("file selection keeps the complete upload and rejected imports clear stale 
     () => {},
     async () => {},
   );
-  assert.equal(calls.at(-1)?.body.source && (calls.at(-1)?.body.source as { kind: string }).kind, "upload");
+  assert.deepEqual(calls.at(-1)?.body.source, { kind: "upload", upload: form.upload });
   respond = async () => {
     throw new Error("Source changed");
   };
