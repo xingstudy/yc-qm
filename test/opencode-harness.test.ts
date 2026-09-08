@@ -834,6 +834,7 @@ test("custom providers materialize into the opencode config (enabled + provider 
   chmodSync(wrapped, 0o755);
   let customVersion = 1;
   let customBaseUrl = "http://litellm.internal:4000/v1";
+  let anthropicBaseUrl = "http://anthropic.internal/gateway";
   let customKey = "sk-lite";
   let resolveCalls = 0;
   const harness = createOpenCodeHarness({
@@ -852,6 +853,16 @@ test("custom providers materialize into the opencode config (enabled + provider 
           },
           apiKey: customKey,
         },
+        {
+          spec: {
+            id: "anthropic-proxy",
+            name: "Anthropic proxy",
+            protocol: "anthropic" as const,
+            baseUrl: anthropicBaseUrl,
+            models: [{ id: "claude-sonnet-5" }],
+          },
+          apiKey: "sk-anthropic",
+        },
       ];
     },
   });
@@ -868,12 +879,15 @@ test("custom providers materialize into the opencode config (enabled + provider 
     assert.deepEqual(litellm.models["deepseek-chat"], { name: "DeepSeek", limit: { context: 128000, output: 8192 } });
     customBaseUrl = "http://litellm.internal:5000/v1";
     customKey = "sk-rotated";
+    assert.equal(config.provider["anthropic-proxy"].options.baseURL, "http://anthropic.internal/gateway/v1");
+    anthropicBaseUrl += "/v1/";
     customVersion += 1;
     await harness.turns.runTurn(turnInput(entries, llmRows));
     const refreshed = JSON.parse(readFileSync(dump, "utf8"));
     assert.equal(refreshed.provider.litellm.options.baseURL, customBaseUrl);
     assert.equal(refreshed.provider.litellm.options.apiKey, customKey);
     assert.equal(resolveCalls, 2);
+    assert.equal(refreshed.provider["anthropic-proxy"].options.baseURL, "http://anthropic.internal/gateway/v1");
   } finally {
     await harness.turns.close?.();
     rmSync(dir, { recursive: true, force: true });

@@ -358,17 +358,20 @@ test("Anthropic validation uses the messages protocol's model listing path and a
     return new Response(JSON.stringify({ data: [] }), { status: 200 });
   });
   try {
-    const put = await fetch(`${srv.base}/v1/admin/custom-providers/anthropic-proxy`, {
-      method: "PUT",
-      headers: ADMIN,
-      body: JSON.stringify({
-        ...BODY,
-        protocol: "anthropic",
-        baseUrl: "https://proxy.example/",
-        models: [{ id: "claude-sonnet-5" }, { id: "claude-opus-5" }, { id: "claude-fable-5-1" }],
-      }),
-    });
-    assert.equal(put.status, 200, await put.text());
+    for (const baseUrl of ["https://proxy.example/", "https://proxy.example/v1", "https://proxy.example/v1/"]) {
+      const put = await fetch(`${srv.base}/v1/admin/custom-providers/anthropic-proxy`, {
+        method: "PUT",
+        headers: ADMIN,
+        body: JSON.stringify({
+          ...BODY,
+          protocol: "anthropic",
+          baseUrl,
+          models: [{ id: "claude-sonnet-5" }, { id: "claude-opus-5" }, { id: "claude-fable-5-1" }],
+        }),
+      });
+      assert.equal(put.status, 200, await put.text());
+      assert.equal((await srv.built.customProviders.statuses())[0]?.baseUrl, "https://proxy.example");
+    }
   } finally {
     await srv.close();
   }

@@ -13,7 +13,7 @@
  * resolved per-call by wiring alongside the built-in provider keys.
  */
 
-import { parseProviderBaseUrl, PROVIDER_IDS } from "./provider-endpoints.ts";
+import { normalizeProviderBaseUrl, parseProviderBaseUrl, PROVIDER_IDS } from "./provider-endpoints.ts";
 
 export const CUSTOM_PROVIDER_PROTOCOLS = ["openai", "anthropic"] as const;
 export type CustomProviderProtocol = (typeof CUSTOM_PROVIDER_PROTOCOLS)[number];
@@ -125,7 +125,11 @@ let version = 0;
  */
 export function setCustomProviders(specs: CustomProviderSpec[]): void {
   const normalized = specs
-    .map((spec) => ({ ...spec, models: spec.models.map((model) => ({ ...model })) }))
+    .map((spec) => ({
+      ...spec,
+      baseUrl: normalizeProviderBaseUrl(spec.protocol, spec.baseUrl),
+      models: spec.models.map((model) => ({ ...model })),
+    }))
     .sort((a, b) => a.id.localeCompare(b.id));
   const next = new Map<string, CustomRuntimeModel>();
   const qualified = new Map<string, CustomRuntimeModel>();

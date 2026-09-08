@@ -5,6 +5,7 @@ import {
   resolveCustomModel,
   isCustomModelId,
   customModelCatalog,
+  customModelsJson,
   validateCustomProviderSpec,
 } from "../src/model/custom-providers.ts";
 import { builtInModelCatalog } from "../src/model/model-catalog.ts";
@@ -300,4 +301,28 @@ test("custom catalog additions and deletions remain visible when OpenRouter is o
   assert.ok((await selectableModelCatalog(fetcher)).some((m) => m.provider === GATEWAY.id));
   setCustomProviders([]);
   assert.ok(!(await selectableModelCatalog(fetcher)).some((m) => m.provider === GATEWAY.id));
+});
+
+test("Anthropic endpoint normalization preserves stored keys and hydrates legacy v1 URLs", async () => {
+  const backing = createMemoryMap<StoredCustomProvider>();
+  const store = createCustomProviderStore({ backing, keyMaterial: "test-key-material" });
+  const spec = { ...GATEWAY, protocol: "anthropic" as const, baseUrl: "https://gateway.example/anthropic/v1/" };
+  await store.upsert(spec, "sk-kept", "admin@example.com");
+  const saved = (await backing.get(spec.id))!;
+  assert.equal(saved.baseUrl, "https://gateway.example/anthropic");
+  await backing.put(spec.id, { ...saved, baseUrl: spec.baseUrl });
+  assert.equal((await store.statuses())[0]?.baseUrl, "https://gateway.example/anthropic");
+  setCustomProviders([{ ...spec }]);
+  assert.equal(resolveCustomModel("acme-large")?.baseUrl, "https://gateway.example/anthropic");
+  assert.equal(
+    (customModelsJson()?.providers[spec.id] as { baseUrl: string }).baseUrl,
+    "https://gateway.example/anthropic",
+  );
+  await store.upsert({ ...spec, name: "Renamed" }, undefined, "admin@example.com");
+  assert.equal((await backing.get(spec.id))?.apiKeyEnc, saved.apiKeyEnc);
+  assert.equal(await store.resolveKey(spec.id), "sk-kept");
+  await assert.rejects(
+    store.upsert({ ...spec, baseUrl: "https://gateway.example/other/v1" }, undefined, "admin@example.com"),
+    /API key is required/,
+  );
 });

@@ -1,6 +1,7 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
+  normalizeProviderBaseUrl,
   parseProviderBaseUrl,
   providerBaseUrl,
   providerBaseUrlsFromEnv,
@@ -78,4 +79,22 @@ test("loadConfig leaves child envs untouched when no override is set", () => {
   assert.deepEqual(config.providerBaseUrls, {});
   assert.equal(config.claudeProcessEnv.ANTHROPIC_BASE_URL, undefined);
   assert.equal(config.codexProcessEnv.OPENAI_BASE_URL, undefined);
+});
+
+test("Anthropic base URLs accept an optional v1 path while preserving gateway prefixes", () => {
+  for (const [input, expected] of [
+    ["https://gateway.example", "https://gateway.example"],
+    [" https://gateway.example/v1/// ", "https://gateway.example"],
+    ["https://gateway.example/anthropic/v1", "https://gateway.example/anthropic"],
+    ["https://v1", "https://v1"],
+    ["https://gateway.example/v10", "https://gateway.example/v10"],
+    ["https://gateway.example/v1?secret=x", "https://gateway.example/v1?secret=x"],
+  ])
+    assert.equal(normalizeProviderBaseUrl("anthropic", input!), expected);
+  assert.equal(normalizeProviderBaseUrl("openai", "https://gateway.example/v1/"), "https://gateway.example/v1");
+  const config = loadConfig({ ...BASE_ENV, ANTHROPIC_BASE_URL: "https://gateway.example/prefix/v1/" });
+  assert.equal(config.providerBaseUrls.anthropic, "https://gateway.example/prefix");
+  assert.equal(config.claudeProcessEnv.ANTHROPIC_BASE_URL, "https://gateway.example/prefix");
+  setProviderBaseUrls({ anthropic: "https://gateway.example/v1" });
+  assert.equal(resolveModel("claude-opus-5")?.baseUrl, "https://gateway.example");
 });

@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { decryptSecret, deriveConnectorKey, encryptSecret } from "../connectors/connector-client-store.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import { validateCustomProviderSpec, type CustomProviderSpec } from "./custom-providers.ts";
+import { normalizeProviderBaseUrl } from "./provider-endpoints.ts";
 
 export interface StoredCustomProvider extends CustomProviderSpec {
   apiKeyEnc?: string;
@@ -44,7 +45,7 @@ function strip(saved: StoredCustomProvider): CustomProviderSpec {
     id: saved.id,
     name: saved.name,
     protocol: saved.protocol,
-    baseUrl: saved.baseUrl,
+    baseUrl: normalizeProviderBaseUrl(saved.protocol, saved.baseUrl),
     models: saved.models,
   };
 }
@@ -108,6 +109,7 @@ export function createCustomProviderStore(input: {
 
     async upsert(spec, apiKey, updatedBy) {
       validateCustomProviderSpec(spec);
+      spec = { ...spec, baseUrl: normalizeProviderBaseUrl(spec.protocol, spec.baseUrl) };
       const actor = updatedBy.trim();
       if (!actor) throw new Error("updatedBy is required");
       const trimmedKey = apiKey?.trim();
@@ -127,7 +129,10 @@ export function createCustomProviderStore(input: {
       }
       const updated = await update(spec.id, (existing) => {
         const sameEndpoint =
-          existing && !existing.disabled && existing.protocol === spec.protocol && existing.baseUrl === spec.baseUrl;
+          existing &&
+          !existing.disabled &&
+          existing.protocol === spec.protocol &&
+          normalizeProviderBaseUrl(existing.protocol, existing.baseUrl) === spec.baseUrl;
         if (!sameEndpoint || !existing.apiKeyEnc) {
           throw new Error("API key is required when creating, restoring, or changing the provider endpoint");
         }

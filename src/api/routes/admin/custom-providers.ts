@@ -5,6 +5,7 @@ import {
   type CustomProviderProtocol,
 } from "../../../model/custom-providers.ts";
 import { sendJson } from "../../http.ts";
+import { normalizeProviderBaseUrl } from "../../../model/provider-endpoints.ts";
 import type { ApiCtx } from "../route.ts";
 import { audit, authorizeAdmin, orgScope } from "../shared.ts";
 
@@ -110,7 +111,7 @@ export async function putCustomProvider(ctx: ApiCtx): Promise<void> {
     id,
     name: body.name,
     protocol: body.protocol as CustomProviderProtocol,
-    baseUrl: body.baseUrl.trim().replace(/\/+$/, ""),
+    baseUrl: normalizeProviderBaseUrl(body.protocol, body.baseUrl),
     models: Array.isArray(body.models) ? (body.models as CustomProviderSpec["models"]) : [],
   };
   const apiKey = typeof body.apiKey === "string" && body.apiKey.trim() ? body.apiKey.trim() : undefined;

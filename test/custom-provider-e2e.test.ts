@@ -299,7 +299,7 @@ test("QA: anthropic-protocol custom provider serves a real turn (correct wire sh
       body: JSON.stringify({
         name: "Ant Compat",
         protocol: "anthropic",
-        baseUrl: upstreamUrl,
+        baseUrl: upstreamUrl + "/v1/",
         apiKey: "sk-ant-qa",
         models: [{ id: "claude-opus-5", name: "Claude Compat" }],
       }),
@@ -307,12 +307,15 @@ test("QA: anthropic-protocol custom provider serves a real turn (correct wire sh
     assert.equal(r.status, 200, "anthropic-protocol registration validates against /v1/models with x-api-key");
     const model = resolveModel("antcompat/claude-opus-5");
     assert.ok(model);
+    assert.equal(model.baseUrl, upstreamUrl);
+    assert.equal(seen[0]?.path, "/v1/models");
     assert.equal((model as { api?: string }).api, "anthropic-messages");
     const reply = await oneShot("qa-ant", model as unknown as Model<Api>, { antcompat: "sk-ant-qa" }, "terse", "go");
     assert.equal(reply, "ANTHROPIC QA REPLY");
     const call = seen.find((s) => s.path.endsWith("/v1/messages"));
     assert.ok(call, "messages request reached the anthropic-compatible upstream");
     assert.equal(call!.model, "claude-opus-5");
+    assert.equal(call!.path, "/v1/messages");
     assert.equal(call!.apiKeyHeader, "sk-ant-qa", "anthropic wire auth uses x-api-key");
     const harness = createPiHarness({
       defaultModelId: "antcompat/claude-opus-5",
