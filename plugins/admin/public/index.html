@@ -5843,6 +5843,37 @@
         "Trust tier": "信任等级",
         Advanced: "高级",
         Register: "注册",
+        "Skill source": "技能来源",
+        "Project URL": "项目 URL",
+        "Upload file or archive": "上传文件或压缩包",
+        "Write manually": "手动编写",
+        "Skill file or archive": "技能文件或压缩包",
+        "Import reusable skills from a project or upload.": "从项目或上传文件导入可复用的技能。",
+        "Use an HTTPS Git repository containing one or more SKILL.md files.":
+          "填写包含一个或多个 SKILL.md 文件的 HTTPS Git 仓库地址。",
+        "Branch, tag or commit (optional)": "分支、标签或提交（可选）",
+        "ZIP, tar.gz, tgz, tar or Markdown · maximum 8 MiB": "ZIP、tar.gz、tgz、tar 或 Markdown，最大 8 MiB",
+        "Import preserves instructions, text scripts and reference files inside each skill directory. Binary assets are preserved.":
+          "导入会保留每个技能目录中的指令、文本脚本和参考文件，会保留二进制资源。",
+        "Review skills before importing": "导入前审阅技能",
+        "Selected skills will be published to the context above. Review the instructions and files before confirming.":
+          "选中的技能将发布到上方所选上下文。请在确认前审阅指令和文件。",
+        "No SKILL.md files found.": "未找到 SKILL.md 文件。",
+        "Instructions and files": "指令和文件",
+        "Confirm import": "确认导入",
+        "Preview skills": "预览技能",
+        "Working…": "处理中…",
+        "Choose a file of at most 8 MiB.": "请选择不超过 8 MiB 的文件。",
+        "Failed to import skills.": "导入技能失败。",
+        "A skill with this name already exists in this context.": "此上下文已存在同名技能。",
+        "Multiple skills in this source use the same name.": "此来源中有多个技能使用相同名称。",
+        "This skill contains unsupported binary files or unsafe paths.": "此技能包含暂不支持的二进制文件或不安全路径。",
+        "Invalid skill name or empty instructions.": "技能名称无效或指令为空。",
+        "Private skills cannot be imported into a shared context.": "私有技能不能导入共享上下文。",
+        "This skill declares a personal scope.": "此技能声明为个人范围。",
+        "Choose a skill file or archive.": "请选择技能文件或压缩包。",
+        "ZIP, tar.gz, tgz, tar or Markdown · maximum 8 MiB. Browse and select skills after uploading. Binary assets are preserved.":
+          "支持 ZIP、tar.gz、tgz、tar 或 Markdown，最大 8 MiB。上传后浏览并选择要导入的技能，会保留二进制资源。",
         "A repo URL is required.": "仓库 URL 为必填项。",
         "Registering…": "正在注册…",
         "no scopes selected": "未选择范围",
@@ -5880,7 +5911,7 @@
           "未导入：声明了个人或所有者范围，因此不能作为共享技能包技能导入。",
         "Held back: marked owner-only / agent-only.": "未导入：标记为仅所有者或仅智能体可用。",
         "Held back: the name matches an existing platform or seed skill.": "未导入：名称与现有平台技能或种子技能冲突。",
-        "Held back: contains binary files (import is text-only).": "未导入：包含二进制文件（仅支持文本导入）。",
+        "Held back: contains unreadable files or unsafe paths.": "未导入：包含无法读取的文件或不安全路径。",
         "Held back: missing or unreadable SKILL.md frontmatter.": "未导入：SKILL.md 前置元数据缺失或无法读取。",
         "Click to show only these.": "点击仅显示此类项目。",
         "No skills found in this pack.": "此技能包中未找到技能。",
@@ -12372,6 +12403,37 @@
         const row = document.createElement("div");
         row.className = "pack-register";
         const url = mkInput("Register a pack — paste a git repo URL of SKILL.md files, then Browse it into scopes");
+        const source = document.createElement("select");
+        source.setAttribute("aria-label", adminTr("Skill source"));
+        for (const [value, label] of [
+          ["git", "Project URL"],
+          ["upload", "Upload file or archive"],
+        ]) {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = adminTr(label);
+          source.appendChild(option);
+        }
+        const upload = document.createElement("input");
+        upload.type = "file";
+        upload.accept = ".zip,.tar.gz,.tgz,.tar,.md";
+        upload.setAttribute("aria-label", adminTr("Skill file or archive"));
+        upload.hidden = true;
+        const uploadHelp = document.createElement("p");
+        uploadHelp.className = "muted";
+        uploadHelp.textContent = adminTr(
+          "ZIP, tar.gz, tgz, tar or Markdown · maximum 8 MiB. Browse and select skills after uploading. Binary assets are preserved.",
+        );
+        uploadHelp.hidden = true;
+        source.onchange = () => {
+          const isUpload = source.value === "upload";
+          upload.hidden = !isUpload;
+          uploadHelp.hidden = !isUpload;
+          url.hidden = isUpload;
+          ref.disabled = isUpload;
+          slug.disabled = isUpload;
+          btn.textContent = adminTr(isUpload ? "Upload" : "Register");
+        };
         const adv = document.createElement("div");
         adv.className = "pack-adv hidden";
         const ref = mkInput(
@@ -12418,35 +12480,52 @@
         btn.className = "primary";
         btn.textContent = adminTr("Register");
         btn.onclick = async () => {
-          if (!url.value.trim()) {
+          const isUpload = source.value === "upload";
+          const file = upload.files?.[0];
+          if ((isUpload && !file) || (!isUpload && !url.value.trim())) {
             status.className = "status err";
-            status.textContent = adminTr("A repo URL is required.");
+            status.textContent = adminTr(isUpload ? "Choose a skill file or archive." : "A repo URL is required.");
             return;
           }
-          btn.disabled = true;
+          if (isUpload && file.size > 8 * 1024 * 1024) {
+            status.className = "status err";
+            status.textContent = adminTr("Choose a file of at most 8 MiB.");
+            return;
+          }
+          btn.disabled = source.disabled = upload.disabled = true;
           status.className = "status";
-          status.textContent = adminTr("Registering…");
-          const body = { url: url.value.trim() };
-          if (ref.value.trim()) body.ref = ref.value.trim();
-          const ex = excl.value
-            .split(",")
-            .map((x) => x.trim())
-            .filter(Boolean);
-          if (ex.length) body.config = { exclude: ex };
-          if (slug.value.trim()) body.authCredentialSlug = slug.value.trim();
-          if (tier.value !== "third-party") body.trustTier = tier.value;
-          const r = await api("POST", "/api/skill-packs", body);
-          btn.disabled = false;
-          if (!r.ok) {
+          status.textContent = adminTr(isUpload ? "Uploading…" : "Registering…");
+          try {
+            const body = {};
+            if (isUpload) {
+              const bytes = new Uint8Array(await file.arrayBuffer());
+              let raw = "";
+              for (let i = 0; i < bytes.length; i += 8192) raw += String.fromCharCode(...bytes.subarray(i, i + 8192));
+              body.upload = { name: file.name, base64: btoa(raw) };
+            } else {
+              body.url = url.value.trim();
+              if (ref.value.trim()) body.ref = ref.value.trim();
+              if (slug.value.trim()) body.authCredentialSlug = slug.value.trim();
+            }
+            const ex = excl.value
+              .split(",")
+              .map((x) => x.trim())
+              .filter(Boolean);
+            if (ex.length) body.config = { exclude: ex };
+            if (tier.value !== "third-party") body.trustTier = tier.value;
+            const r = await api("POST", "/api/skill-packs", body);
+            if (!r.ok) throw new Error(r.data?.message || `${adminTr("Failed")} (${r.status}).`);
+            dataCache.clear();
+            await fillPacksSection(root);
+          } catch (error) {
             status.className = "status err";
-            status.textContent = r.data?.message || `${adminTr("Failed")} (${r.status}).`;
-            return;
+            status.textContent = error.message || adminTr("Failed");
+          } finally {
+            btn.disabled = source.disabled = upload.disabled = false;
           }
-          dataCache.clear();
-          renderData();
         };
-        row.append(url, advToggle, btn, status);
-        box.append(row, adv);
+        row.append(source, url, upload, advToggle, btn, status);
+        box.append(row, uploadHelp, adv);
 
         const rows = packs.map((s) => {
           const li = s.lastImport;
@@ -12470,7 +12549,7 @@
           const packNode = document.createElement("span");
           packNode.className = "pack-name";
           const nm = document.createElement("strong");
-          nm.textContent = packRepoLabel(s.url) || s.url;
+          nm.textContent = s.kind === "upload" ? s.fileName || s.url : packRepoLabel(s.url) || s.url;
           packNode.appendChild(nm);
           if (s.ref) {
             const rf = document.createElement("span");
@@ -12509,83 +12588,85 @@
           else setStatusText(adminTr(li ? "up to date" : "not imported"), "muted", delta);
           const isTracked = s.syncMode === "tracked";
           let busy = false;
-          const menu = overflowMenu([
-            { label: "Browse skills…", onClick: () => browsePack(s, detail) },
-            {
-              label: "Sync now",
-              title:
-                "Pull the pack's latest commit and refresh already-imported skills (update changed, archive removed). Does NOT add new skills — use Browse for that.",
-              onClick: async () => {
-                if (busy) return;
-                busy = true;
-                setStatusText(adminTr("syncing…"), "saving");
-                const r = await api("POST", "/api/skill-packs/" + encodeURIComponent(s.id) + "/sync", {});
-                busy = false;
-                if (!r.ok) {
+          const menu = overflowMenu(
+            [
+              { label: "Browse skills…", onClick: () => browsePack(s, detail) },
+              {
+                label: "Sync now",
+                title:
+                  "Pull the pack's latest commit and refresh already-imported skills (update changed, archive removed). Does NOT add new skills — use Browse for that.",
+                onClick: async () => {
+                  if (busy) return;
+                  busy = true;
+                  setStatusText(adminTr("syncing…"), "saving");
+                  const r = await api("POST", "/api/skill-packs/" + encodeURIComponent(s.id) + "/sync", {});
+                  busy = false;
+                  if (!r.ok) {
+                    setStatusText(
+                      adminTr("sync failed") + " — " + (r.data?.message || r.status),
+                      "err",
+                      r.data?.message || "",
+                    );
+                    return;
+                  }
+                  const d = r.data || {};
+                  const n = (d.imported || []).length,
+                    u = (d.updated || []).length,
+                    a = (d.archived || []).length;
                   setStatusText(
-                    adminTr("sync failed") + " — " + (r.data?.message || r.status),
-                    "err",
-                    r.data?.message || "",
+                    n || u || a
+                      ? "✓ " +
+                          n +
+                          " " +
+                          adminTr("new") +
+                          (u ? " · " + u + " " + adminTr("updated") : "") +
+                          (a ? " · " + a + " " + adminTr("removed") : "")
+                      : "✓ " + adminTr("up to date"),
+                    "ok",
                   );
-                  return;
-                }
-                const d = r.data || {};
-                const n = (d.imported || []).length,
-                  u = (d.updated || []).length,
-                  a = (d.archived || []).length;
-                setStatusText(
-                  n || u || a
-                    ? "✓ " +
-                        n +
-                        " " +
-                        adminTr("new") +
-                        (u ? " · " + u + " " + adminTr("updated") : "") +
-                        (a ? " · " + a + " " + adminTr("removed") : "")
-                    : "✓ " + adminTr("up to date"),
-                  "ok",
-                );
-                setTimeout(() => {
+                  setTimeout(() => {
+                    dataCache.clear();
+                    renderData();
+                  }, 1200);
+                },
+              },
+              {
+                label: isTracked ? "Turn off auto-sync" : "Turn on auto-sync",
+                title: isTracked
+                  ? "Auto-sync is ON — re-imports when the upstream advances."
+                  : "Auto-sync is OFF — manual Sync only.",
+                onClick: async () => {
+                  if (busy) return;
+                  busy = true;
+                  const r = await api("PATCH", "/api/skill-packs/" + encodeURIComponent(s.id), {
+                    syncMode: isTracked ? "pinned" : "tracked",
+                  });
+                  busy = false;
+                  if (!r.ok) {
+                    alert(r.data?.message || `${adminTr("Failed")} (${r.status}).`);
+                    return;
+                  }
                   dataCache.clear();
                   renderData();
-                }, 1200);
+                },
               },
-            },
-            {
-              label: isTracked ? "Turn off auto-sync" : "Turn on auto-sync",
-              title: isTracked
-                ? "Auto-sync is ON — re-imports when the upstream advances."
-                : "Auto-sync is OFF — manual Sync only.",
-              onClick: async () => {
-                if (busy) return;
-                busy = true;
-                const r = await api("PATCH", "/api/skill-packs/" + encodeURIComponent(s.id), {
-                  syncMode: isTracked ? "pinned" : "tracked",
-                });
-                busy = false;
-                if (!r.ok) {
-                  alert(r.data?.message || `${adminTr("Failed")} (${r.status}).`);
-                  return;
-                }
-                dataCache.clear();
-                renderData();
+              {
+                label: "Remove pack",
+                danger: true,
+                onClick: async () => {
+                  if (busy) return;
+                  if (!confirm("Remove this pack and archive its imported skills?")) return;
+                  busy = true;
+                  const r = await api("DELETE", "/api/skill-packs/" + encodeURIComponent(s.id));
+                  busy = false;
+                  if (r.ok) {
+                    dataCache.clear();
+                    renderData();
+                  }
+                },
               },
-            },
-            {
-              label: "Remove pack",
-              danger: true,
-              onClick: async () => {
-                if (busy) return;
-                if (!confirm("Remove this pack and archive its imported skills?")) return;
-                busy = true;
-                const r = await api("DELETE", "/api/skill-packs/" + encodeURIComponent(s.id));
-                busy = false;
-                if (r.ok) {
-                  dataCache.clear();
-                  renderData();
-                }
-              },
-            },
-          ]);
+            ].filter((item) => s.kind !== "upload" || item.label === "Browse skills…" || item.label === "Remove pack"),
+          );
           return [
             { node: packNode },
             { node: skillsNode, cls: "num" },
@@ -12863,7 +12944,7 @@
           "binary-asset": {
             label: "binary files",
             tone: "muted",
-            help: "Held back: contains binary files (import is text-only).",
+            help: "Held back: contains unreadable files or unsafe paths.",
           },
           malformed: {
             label: "malformed",

@@ -5,6 +5,46 @@ export type AppLocale = "en" | "zh-CN";
 export const LOCALE_KEY = "qm:locale";
 
 const ZH: Record<string, string> = {
+  "Import preserves instructions, scripts, references and binary assets inside each skill directory.":
+    "导入会保留每个技能目录中的指令、脚本、参考文件和图片等二进制资源。",
+  "No skills available to import": "没有可导入的技能",
+  "All skills are unavailable. Check the reasons below, choose another file or source, then preview again.":
+    "当前技能均不可导入。请查看下方原因，重新选择文件或来源后再次预览。",
+  "Select at least one available skill.": "请至少勾选一个可导入的技能。",
+  "This skill has unreadable files or unsafe paths.": "此技能包含无法读取的文件或不安全路径。",
+  "Preview again": "重新预览",
+
+  "Skill source": "技能来源",
+  "Project URL": "项目 URL",
+  "Upload file or archive": "上传文件或压缩包",
+  "Write manually": "手动编写",
+  "Skill file or archive": "技能文件或压缩包",
+  "Import reusable skills from a project or upload.": "从项目或上传文件导入可复用的技能。",
+  "Use an HTTPS Git repository containing one or more SKILL.md files.":
+    "填写包含一个或多个 SKILL.md 文件的 HTTPS Git 仓库地址。",
+  "Branch, tag or commit (optional)": "分支、标签或提交（可选）",
+  "ZIP, tar.gz, tgz, tar or Markdown · maximum 8 MiB": "ZIP、tar.gz、tgz、tar 或 Markdown，最大 8 MiB",
+  "Import preserves instructions, text scripts and reference files inside each skill directory. Binary assets are not supported.":
+    "导入会保留每个技能目录中的指令、文本脚本和参考文件，暂不支持二进制资源。",
+  "Review skills before importing": "导入前审阅技能",
+  "Selected skills will be published to the context above. Review the instructions and files before confirming.":
+    "选中的技能将发布到上方所选上下文。请在确认前审阅指令和文件。",
+  "No SKILL.md files found.": "未找到 SKILL.md 文件。",
+  "Instructions and files": "指令和文件",
+  "Confirm import": "确认导入",
+  "Preview skills": "预览技能",
+  "Choose a file of at most 8 MiB.": "请选择不超过 8 MiB 的文件。",
+  "Failed to import skills.": "导入技能失败。",
+  "A skill with this name already exists in this context.": "此上下文已存在同名技能。",
+  "Multiple skills in this source use the same name.": "此来源中有多个技能使用相同名称。",
+  "This skill contains unsupported binary files or unsafe paths.": "此技能包含暂不支持的二进制文件或不安全路径。",
+  "Invalid skill name or empty instructions.": "技能名称无效或指令为空。",
+  "Private skills cannot be imported into a shared context.": "私有技能不能导入共享上下文。",
+  "This skill declares a personal scope.": "此技能声明为个人范围。",
+  "Choose a skill file or archive.": "请选择技能文件或压缩包。",
+  "ZIP, tar.gz, tgz, tar or Markdown · maximum 8 MiB. Browse and select skills after uploading. Binary assets are not supported.":
+    "支持 ZIP、tar.gz、tgz、tar 或 Markdown，最大 8 MiB。上传后浏览并选择要导入的技能，暂不支持二进制资源。",
+
   "Access group": "访问组",
   "Access mode": "访问模式",
   "all active organization users": "组织内所有活跃用户",

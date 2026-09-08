@@ -10,6 +10,7 @@ type SkillStatus = "draft" | "reviewed" | "published" | "archived";
 export interface SkillFile {
   path: string;
   content: string;
+  encoding?: "base64";
   executable?: boolean;
 }
 
@@ -37,9 +38,13 @@ export function safeSkillFilePath(path: string): string {
   return parts.join("/");
 }
 
-function canonicalFiles(files: SkillFile[] | undefined): Array<[string, string, boolean]> {
+function canonicalFiles(files: SkillFile[] | undefined): Array<[string, string, boolean, "base64"?]> {
   return [...(files ?? [])]
-    .map((f): [string, string, boolean] => [f.path, f.content, f.executable === true])
+    .map((f): [string, string, boolean, "base64"?] =>
+      f.encoding === "base64"
+        ? [f.path, f.content, f.executable === true, "base64"]
+        : [f.path, f.content, f.executable === true],
+    )
     .sort((a, b) => {
       if (a[0] < b[0]) return -1;
       if (a[0] > b[0]) return 1;

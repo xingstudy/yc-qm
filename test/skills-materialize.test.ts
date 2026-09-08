@@ -483,3 +483,37 @@ test("materializeSkillTree uses extractFiles (one batch) when the backend offers
   assert.equal(files.get("skills/gamma/a.py"), "A");
   assert.equal(files.get("skills/gamma/b.py"), "B");
 });
+
+test("binary skill and shared bundle assets materialize as exact bytes with batch and fallback writers", async () => {
+  const png = Buffer.from([137, 80, 78, 71, 0, 255]);
+  const image: SkillFile = { path: "assets/icon.png", content: png.toString("base64"), encoding: "base64" };
+  for (const batch of [true, false]) {
+    const { sandbox } = fakeSandbox();
+    const bytes = new Map<string, Buffer>();
+    sandbox.writeFileBytes = async (_handle, path, data) => {
+      bytes.set(path, Buffer.from(data));
+    };
+    if (batch)
+      sandbox.extractFiles = async (_handle, entries) => {
+        for (const entry of entries) bytes.set(entry.path, Buffer.from(entry.data));
+      };
+    await materializeSkillTree(sandbox, handle, res("transcribe", "Instructions", [image], "pack1"), [
+      bundle("pack1", [image]),
+    ]);
+    assert.deepEqual(bytes.get("skills/transcribe/assets/icon.png"), png);
+    assert.deepEqual(bytes.get("skills/.packs/pack1/assets/icon.png"), png);
+  }
+});
+
+test("changing an asset's encoding invalidates a materialized tree even with identical stored text", async () => {
+  const { sandbox, files } = fakeSandbox();
+  const bytes = new Map<string, Buffer>();
+  sandbox.writeFileBytes = async (_handle, path, data) => {
+    bytes.set(path, Buffer.from(data));
+  };
+  const file: SkillFile = { path: "asset", content: "aGVsbG8=" };
+  await materializeSkillTree(sandbox, handle, res("demo", "Instructions", [file]));
+  assert.equal(files.get("skills/demo/asset"), "aGVsbG8=");
+  await materializeSkillTree(sandbox, handle, res("demo", "Instructions", [{ ...file, encoding: "base64" }]));
+  assert.equal(bytes.get("skills/demo/asset")?.toString(), "hello");
+});

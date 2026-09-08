@@ -37,6 +37,7 @@ const USER_SCOPED: Rule[] = [
   pat("GET", "/v1/skills", { in: "query", name: "principalId" }),
   pat("GET", "/v1/skills/:id", { in: "query", name: "principalId" }),
   pat("GET", "/v1/skills/:id/access"),
+  pat("POST", "/v1/skills/import", { in: "body", name: "principalId" }),
   pat("POST", "/v1/skills", { in: "body", name: "principalId" }),
   pat("PUT", "/v1/skills/:id", { in: "body", name: "principalId" }),
   pat("PUT", "/v1/skills/:id/access"),

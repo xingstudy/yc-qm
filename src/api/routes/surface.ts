@@ -1,3 +1,5 @@
+import { SkillImportError } from "../../skills/skill-import.ts";
+import type { SkillImportSource } from "../../../plugins/chassis/src/skill-import.ts";
 import type { Grant, ScopeId } from "../../types.ts";
 import { parseScopeId, scopeId as makeScopeId } from "../../types.ts";
 import type { Skill, SkillResolution } from "../../skills/skill-store.ts";
@@ -1028,11 +1030,14 @@ async function deleteSkill(ctx: ApiCtx): Promise<void> {
   return sendJson(res, 200, { ok: true });
 }
 
-async function createSkill(ctx: ApiCtx): Promise<void> {
+async function createSkill(ctx: ApiCtx, importing = false): Promise<void> {
   const { res, app, body, capability } = ctx;
   const b = (body ?? {}) as {
     principalId?: unknown;
     scopeId?: unknown;
+    source?: unknown;
+    selected?: unknown;
+    fingerprint?: unknown;
     name?: unknown;
     description?: unknown;
     body?: unknown;
@@ -1063,6 +1068,28 @@ async function createSkill(ctx: ApiCtx): Promise<void> {
       error: "forbidden",
       message: "a skill cannot be created in an org or team scope — promote a published skill instead",
     });
+  }
+  if (importing) {
+    if (
+      (b.selected !== undefined &&
+        (!Array.isArray(b.selected) || !b.selected.every((path) => typeof path === "string"))) ||
+      (b.fingerprint !== undefined && typeof b.fingerprint !== "string")
+    ) {
+      return sendJson(res, 400, { error: "bad_request", message: "Invalid import selection" });
+    }
+    try {
+      const result = await app.importOwnedSkills({
+        principalId,
+        homeScope,
+        source: b.source as SkillImportSource,
+        selected: b.selected as string[] | undefined,
+        fingerprint: b.fingerprint as string | undefined,
+      });
+      return sendJson(res, result.imported ? 201 : 200, result);
+    } catch (error) {
+      if (!(error instanceof SkillImportError)) throw error;
+      return sendJson(res, error.status, { error: "skill_import", message: error.message });
+    }
   }
   if (typeof b.name !== "string" || !b.name.trim()) {
     return sendJson(res, 400, { error: "bad_request", message: "name required" });
@@ -1600,6 +1627,7 @@ export const surfaceRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/skills/:id/access", auth: "either", handle: getSkillAccess },
   { method: "PUT", path: "/v1/skills/:id/access", auth: "either", handle: putSkillAccess },
   { method: "GET", path: "/v1/skills/:id", auth: "either", handle: getSkillDetail },
+  { method: "POST", path: "/v1/skills/import", auth: "either", handle: (ctx) => createSkill(ctx, true) },
   { method: "POST", path: "/v1/skills", auth: "either", handle: createSkill },
   { method: "PUT", path: "/v1/skills/:id", auth: "either", handle: updateSkill },
   { method: "DELETE", path: "/v1/skills/:id", auth: "either", handle: deleteSkill },

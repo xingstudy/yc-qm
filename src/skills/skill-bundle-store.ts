@@ -11,7 +11,7 @@ export interface SkillBundle {
 
 export function computeBundleHash(files: SkillFile[]): string {
   const h = createHash("sha256");
-  for (const e of [...files].map((f) => `${f.path}\0${f.content}`).sort()) {
+  for (const e of [...files].map((f) => `${f.path}\0${f.content}${f.encoding === "base64" ? "\0base64" : ""}`).sort()) {
     h.update(e);
     h.update("\n");
   }

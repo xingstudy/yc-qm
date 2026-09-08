@@ -57,6 +57,10 @@ test("fetches the tree at a pinned sha; flags binary; excludes .git", async () =
     assert.ok(paths.includes("skills/demo/scripts/foo.py"));
     assert.ok(!paths.some((p) => p === ".git" || p.startsWith(".git/")));
     assert.equal(repo.files.find((f) => f.path === "bin.dat")!.binary, true);
+    assert.deepEqual(
+      Buffer.from(repo.files.find((f) => f.path === "bin.dat")!.base64!, "base64"),
+      Buffer.from([0, 1, 2, 3, 0]),
+    );
     assert.equal(repo.files.find((f) => f.path === "skills/demo/SKILL.md")!.binary, false);
   } finally {
     rmSync(dir, { recursive: true, force: true });

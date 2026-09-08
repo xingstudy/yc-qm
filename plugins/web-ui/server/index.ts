@@ -1,3 +1,4 @@
+import { SKILL_IMPORT_BODY_MAX_BYTES } from "../../chassis/src/skill-import.ts";
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Readable } from "node:stream";
@@ -4874,6 +4875,32 @@ const apiRoutes: readonly WebRoute[] = [
       const value = c.url.searchParams.get("q");
       if (value !== null) query.set("q", value);
       return relayCore(c.res, "GET", `/v1/org/access-groups?${query.toString()}`);
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/skills/import",
+    handle: async (c) => {
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(await readBodyCapped(c.req, SKILL_IMPORT_BODY_MAX_BYTES));
+        if (!body || typeof body !== "object" || Array.isArray(body)) return json(c.res, 400, { error: "bad_request" });
+      } catch (error) {
+        if (error instanceof PayloadTooLargeError) throw error;
+        return json(c.res, 400, { error: "bad_request" });
+      }
+      return relayCore(
+        c.res,
+        "POST",
+        "/v1/skills/import",
+        JSON.stringify({
+          principalId: c.user,
+          scopeId: body.scopeId,
+          source: body.source,
+          selected: body.selected,
+          fingerprint: body.fingerprint,
+        }),
+      );
     },
   },
   {

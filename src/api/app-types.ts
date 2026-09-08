@@ -498,6 +498,13 @@ export interface App {
   importSkillPack(id: string, selected: "all" | string[], scopeIds?: ScopeId[]): Promise<ImportResult>;
   syncSkillPack(id: string): Promise<ImportResult>;
   removeSkillPack(id: string): Promise<{ removed: number }>;
+  importOwnedSkills(input: {
+    principalId: string;
+    homeScope?: ScopeId;
+    source: import("../../plugins/chassis/src/skill-import.ts").SkillImportSource;
+    selected?: string[];
+    fingerprint?: string;
+  }): Promise<import("../../plugins/chassis/src/skill-import.ts").SkillImportPreview>;
   createOwnedSkill(input: {
     principalId: string;
     homeScope?: ScopeId;
@@ -505,6 +512,7 @@ export interface App {
     description: string;
     body: string;
     requiredCapabilities?: string[];
+    files?: import("../skills/skill-store.ts").SkillFile[];
   }): Promise<Skill | null>;
   deleteOwnedSkill(input: {
     principalId: string;

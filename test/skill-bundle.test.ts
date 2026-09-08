@@ -112,3 +112,11 @@ test("SkillBundleStore get/put/delete/list round-trips by packId", async () => {
   await store.delete("s1");
   assert.equal(await store.get("s1"), null);
 });
+
+test("shared binary assets with source bytes are retained and hashed by encoding", () => {
+  const r = repo([["demo/SKILL.md", "instructions"]]);
+  r.files.push({ path: "assets/logo.png", text: "", binary: true, base64: "AAECAw==" });
+  const files = collectSharedBundle(r);
+  assert.deepEqual(files, [{ path: "assets/logo.png", content: "AAECAw==", encoding: "base64" }]);
+  assert.notEqual(computeBundleHash(files), computeBundleHash([{ path: "assets/logo.png", content: "AAECAw==" }]));
+});
