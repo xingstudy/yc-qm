@@ -314,10 +314,9 @@ test("Anthropic endpoint normalization preserves stored keys and hydrates legacy
   assert.equal((await store.statuses())[0]?.baseUrl, "https://gateway.example/anthropic");
   setCustomProviders([{ ...spec }]);
   assert.equal(resolveCustomModel("acme-large")?.baseUrl, "https://gateway.example/anthropic");
-  assert.equal(
-    (customModelsJson()?.providers[spec.id] as { baseUrl: string }).baseUrl,
-    "https://gateway.example/anthropic",
-  );
+  const modelsJson = customModelsJson();
+  assert.ok(modelsJson);
+  assert.equal((modelsJson.providers[spec.id] as { baseUrl: string }).baseUrl, "https://gateway.example/anthropic");
   await store.upsert({ ...spec, name: "Renamed" }, undefined, "admin@example.com");
   assert.equal((await backing.get(spec.id))?.apiKeyEnc, saved.apiKeyEnc);
   assert.equal(await store.resolveKey(spec.id), "sk-kept");

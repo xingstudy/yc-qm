@@ -122,7 +122,7 @@ export const MODEL_PROVIDER_KEYS: Readonly<Record<ModelProvider, string>> = {
 export const MODEL_PROVIDER_HARNESSES: Readonly<Record<ModelProvider, readonly string[]>> = {
   anthropic: ["pi", "opencode", "claude", "mock"],
   openai: ["pi", "opencode", "codex", "mock"],
-  openrouter: ["pi", "mock"],
+  openrouter: ["pi", "claude", "codex", "mock"],
 };
 
 export const isModelProvider = (value: unknown): value is ModelProvider =>

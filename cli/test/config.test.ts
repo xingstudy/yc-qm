@@ -1186,13 +1186,15 @@ test("aws.services logGroup and stopTimeout adopt live task-def values and valid
 });
 
 test("modelProvider must name a vendor the configured harness can bill", () => {
-  withConfig({ modelProvider: "openrouter", env: { core: { HARNESS: "pi" } } }, ({ path }) => {
-    assert.equal(loadConfigAt(path).config.modelProvider, "openrouter");
-  });
-  withConfig({ modelProvider: "openrouter", env: { core: { HARNESS: "codex" } } }, ({ path }) => {
+  for (const harness of ["pi", "claude", "codex"]) {
+    withConfig({ modelProvider: "openrouter", env: { core: { HARNESS: harness } } }, ({ path }) => {
+      assert.equal(loadConfigAt(path).config.modelProvider, "openrouter");
+    });
+  }
+  withConfig({ modelProvider: "openrouter", env: { core: { HARNESS: "opencode" } } }, ({ path }) => {
     assert.throws(
       () => loadConfigAt(path),
-      /model provider "openrouter" cannot serve a base model on env.core.HARNESS "codex"/,
+      /model provider "openrouter" cannot serve a base model on env.core.HARNESS "opencode"/,
     );
   });
   withConfig({ modelProvider: "anthropic", env: { core: { HARNESS: "codex" } } }, ({ path }) => {
@@ -1211,6 +1213,17 @@ test("modelProvider must name a vendor the configured harness can bill", () => {
 });
 
 test("env.core.MODEL_PROVIDER is validated as the provider core will actually use", () => {
+  for (const harness of ["claude", "codex"]) {
+    withConfig(
+      { modelProvider: "anthropic", env: { core: { HARNESS: harness, MODEL_PROVIDER: "openrouter" } } },
+      ({ path }) => {
+        assert.equal(loadConfigAt(path).config.modelProvider, "anthropic");
+      },
+    );
+  }
+  withConfig({ env: { core: { HARNESS: "opencode", MODEL_PROVIDER: "openrouter" } } }, ({ path }) => {
+    assert.throws(() => loadConfigAt(path), /model provider "openrouter" cannot serve a base model/);
+  });
   withConfig(
     { modelProvider: "openai", env: { core: { HARNESS: "codex", MODEL_PROVIDER: "anthropic" } } },
     ({ path }) => {

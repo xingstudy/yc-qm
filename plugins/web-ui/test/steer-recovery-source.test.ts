@@ -33,7 +33,7 @@ test("a message typed mid-turn is never dropped by the run-slot window — it qu
   assert.ok(at >= 0);
   const body = composer.slice(at, composer.indexOf("async function enqueueTurn", at));
   assert.doesNotMatch(body, /hasLiveRun\(\)/, "queueing must not depend on the run slot");
-  assert.match(body, /if \(!text \|\| !threadRef\) return;/);
+  assert.match(body, /if \(!text \|\| !threadRef \|\| !currentModelOption\(\)\.value\) return;/);
   assert.match(
     body,
     /if \(!\(await enqueueTurn\(agent, threadRef, text\)\)\) composerState\.draft = text;/,
