@@ -127,14 +127,11 @@ test("harness-only turn controls are exposed only where the adapter supports the
   assert.equal(harnessSupportsFastMode("opencode"), false);
 });
 
-test("an all-retired list falls back within the approved harness", () => {
+test("an all-retired runtime list remains empty", () => {
   applyRuntimeOptions(null, ["codex"], { codex: ["gpt-5.5"] }, { harnessId: "codex", modelId: "gpt-5.5" });
-  assert.deepEqual(getHarnessOptions(), [{ value: "codex", label: "Codex" }]);
-  assert.deepEqual(
-    getModelOptionsForHarness("codex").map((o) => o.label),
-    ["GPT-5.6 Sol", "GPT-5.6 Terra", "GPT-5.6 Luna"],
-  );
-  assert.equal(defaultModelValue(), "codex:gpt-5.6-sol");
+  assert.deepEqual(getHarnessOptions(), []);
+  assert.deepEqual(getModelOptionsForHarness("codex"), []);
+  assert.equal(defaultModelValue(), "");
 });
 
 test("unknown ids are dropped; an all-unknown list falls back to the built-in set", () => {
@@ -205,7 +202,7 @@ test("custom provider models from the runtime catalog stay in the picker", () =>
     scoped.map((o) => o.value),
     ["pi:qa-large"],
   );
-  assert.equal(scoped[0]!.label, "QA Large");
+  assert.equal(scoped[0]!.label, "QA Large · qa");
   assert.equal(scoped[0]!.model.provider, "qa");
   assert.equal(scoped[0]!.model.api, "openai-completions");
 });
@@ -218,6 +215,40 @@ test("runtime options include custom-provider models from the catalog", () => {
   );
   const acme = options.find((option) => option.value === "pi:acme-large");
   assert.ok(acme);
-  assert.equal(acme.label, "Acme Large");
+  assert.equal(acme.label, "Acme Large · acme-gateway");
   assert.equal(acme.model.provider, "acme-gateway");
+});
+
+test("empty and missing runtime catalogs never invent official models", () => {
+  for (const harness of ["pi", "codex", "claude", "opencode"]) {
+    assert.deepEqual(runtimeModelOptions([harness], { [harness]: [] }), []);
+    assert.deepEqual(runtimeModelOptions([harness], {}), []);
+  }
+  applyRuntimeOptions(
+    "personal:empty",
+    ["codex", "claude"],
+    { codex: [], claude: [] },
+    { harnessId: "codex", modelId: "gpt-5.6-sol" },
+  );
+  assert.deepEqual(getModelOptions("personal:empty"), []);
+  assert.equal(defaultModelValue("personal:empty"), "");
+});
+
+test("same-name models display their provider and preserve the selected identity", () => {
+  const options = runtimeModelOptions(
+    ["claude"],
+    { claude: ["alpha/claude-opus-5", "beta/claude-opus-5"] },
+    {
+      "alpha/claude-opus-5": { name: "Opus", provider: "alpha", api: "anthropic-messages" },
+      "beta/claude-opus-5": { name: "Opus", provider: "beta", api: "anthropic-messages" },
+    },
+  );
+  assert.deepEqual(
+    options.map((option) => option.label),
+    ["Opus · alpha", "Opus · beta"],
+  );
+  assert.deepEqual(
+    options.map((option) => option.value),
+    ["claude:alpha/claude-opus-5", "claude:beta/claude-opus-5"],
+  );
 });

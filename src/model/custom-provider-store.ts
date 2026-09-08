@@ -10,7 +10,12 @@
 import { randomUUID } from "node:crypto";
 import { decryptSecret, deriveConnectorKey, encryptSecret } from "../connectors/connector-client-store.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
-import { validateCustomProviderSpec, type CustomProviderSpec } from "./custom-providers.ts";
+import {
+  validateCustomProviderSpec,
+  type CustomProviderSpec,
+  type CustomProviderConnection,
+} from "./custom-providers.ts";
+import { normalizeProviderBaseUrl } from "./provider-endpoints.ts";
 
 export interface StoredCustomProvider extends CustomProviderSpec {
   apiKeyEnc?: string;
@@ -35,6 +40,7 @@ export interface CustomProviderStore {
   runtimeSnapshot(): Promise<{ providers: CustomProviderSpec[]; fingerprint: string }>;
   /** Plaintext key for one provider, or null when absent/disabled. */
   resolveKey(id: string): Promise<string | null>;
+  resolveConnection(id: string): Promise<CustomProviderConnection | null>;
   upsert(spec: CustomProviderSpec, apiKey: string | undefined, updatedBy: string): Promise<void>;
   delete(id: string, updatedBy: string): Promise<boolean>;
 }
@@ -44,7 +50,7 @@ function strip(saved: StoredCustomProvider): CustomProviderSpec {
     id: saved.id,
     name: saved.name,
     protocol: saved.protocol,
-    baseUrl: saved.baseUrl,
+    baseUrl: normalizeProviderBaseUrl(saved.protocol, saved.baseUrl),
     models: saved.models,
   };
 }
@@ -106,8 +112,15 @@ export function createCustomProviderStore(input: {
       return decryptSecret(saved.apiKeyEnc, key);
     },
 
+    async resolveConnection(id) {
+      const saved = await input.backing.get(id);
+      if (!saved || saved.disabled || !saved.apiKeyEnc) return null;
+      return { spec: strip(saved), apiKey: decryptSecret(saved.apiKeyEnc, key) };
+    },
+
     async upsert(spec, apiKey, updatedBy) {
       validateCustomProviderSpec(spec);
+      spec = { ...spec, baseUrl: normalizeProviderBaseUrl(spec.protocol, spec.baseUrl) };
       const actor = updatedBy.trim();
       if (!actor) throw new Error("updatedBy is required");
       const trimmedKey = apiKey?.trim();
@@ -127,7 +140,10 @@ export function createCustomProviderStore(input: {
       }
       const updated = await update(spec.id, (existing) => {
         const sameEndpoint =
-          existing && !existing.disabled && existing.protocol === spec.protocol && existing.baseUrl === spec.baseUrl;
+          existing &&
+          !existing.disabled &&
+          (existing.protocol === "anthropic") === (spec.protocol === "anthropic") &&
+          normalizeProviderBaseUrl(existing.protocol, existing.baseUrl) === spec.baseUrl;
         if (!sameEndpoint || !existing.apiKeyEnc) {
           throw new Error("API key is required when creating, restoring, or changing the provider endpoint");
         }

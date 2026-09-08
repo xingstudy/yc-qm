@@ -1,22 +1,17 @@
-/**
- * Custom model providers.
- *
- * An org admin can register additional model providers that speak one of
- * the two wire protocols we already run — OpenAI-compatible or
- * Anthropic-compatible — by giving a base URL, an API key, and the model
- * ids to expose. Registered models resolve like built-ins (the pi
- * harness reaches them through the same request path), surface in the
- * catalog, and are gated to harnesses that route through pi-ai.
- *
- * Secrets never live here: this module holds the runtime registry
- * (everything except the key). Keys stay in the encrypted store and are
- * resolved per-call by wiring alongside the built-in provider keys.
- */
+import { normalizeProviderBaseUrl, parseProviderBaseUrl, PROVIDER_IDS } from "./provider-endpoints.ts";
 
-import { parseProviderBaseUrl, PROVIDER_IDS } from "./provider-endpoints.ts";
-
-export const CUSTOM_PROVIDER_PROTOCOLS = ["openai", "anthropic"] as const;
+export const CUSTOM_PROVIDER_PROTOCOLS = ["openai", "openai-responses", "anthropic"] as const;
 export type CustomProviderProtocol = (typeof CUSTOM_PROVIDER_PROTOCOLS)[number];
+
+export function customProviderApi(protocol: CustomProviderProtocol): CustomRuntimeModel["api"] {
+  if (protocol === "anthropic") return "anthropic-messages";
+  return protocol === "openai-responses" ? "openai-responses" : "openai-completions";
+}
+
+export interface CustomProviderConnection {
+  spec: CustomProviderSpec;
+  apiKey: string;
+}
 
 interface CustomModelSpec {
   id: string;
@@ -85,7 +80,7 @@ export interface CustomRuntimeModel {
   id: string;
   name: string;
   provider: string;
-  api: "openai-completions" | "anthropic-messages";
+  api: "openai-completions" | "openai-responses" | "anthropic-messages";
   baseUrl: string;
   reasoning: boolean;
   input: ("text" | "image")[];
@@ -102,7 +97,7 @@ function toRuntimeModel(provider: CustomProviderSpec, m: CustomModelSpec): Custo
     id: m.id,
     name: m.name?.trim() || m.id,
     provider: provider.id,
-    api: provider.protocol === "anthropic" ? "anthropic-messages" : "openai-completions",
+    api: customProviderApi(provider.protocol),
     baseUrl: provider.baseUrl,
     reasoning: false,
     input: ["text"],
@@ -113,6 +108,7 @@ function toRuntimeModel(provider: CustomProviderSpec, m: CustomModelSpec): Custo
 }
 
 let registry = new Map<string, CustomRuntimeModel>();
+let qualifiedRegistry = new Map<string, CustomRuntimeModel>();
 let providers: CustomProviderSpec[] = [];
 let version = 0;
 
@@ -124,15 +120,23 @@ let version = 0;
  */
 export function setCustomProviders(specs: CustomProviderSpec[]): void {
   const normalized = specs
-    .map((spec) => ({ ...spec, models: spec.models.map((model) => ({ ...model })) }))
+    .map((spec) => ({
+      ...spec,
+      baseUrl: normalizeProviderBaseUrl(spec.protocol, spec.baseUrl),
+      models: spec.models.map((model) => ({ ...model })),
+    }))
     .sort((a, b) => a.id.localeCompare(b.id));
   const next = new Map<string, CustomRuntimeModel>();
+  const qualified = new Map<string, CustomRuntimeModel>();
   for (const spec of normalized) {
     for (const m of spec.models) {
-      next.set(m.id, toRuntimeModel(spec, m));
+      const model = toRuntimeModel(spec, m);
+      next.set(m.id, model);
+      qualified.set(`${spec.id}/${m.id}`, model);
     }
   }
   registry = next;
+  qualifiedRegistry = qualified;
   providers = normalized;
   version += 1;
 }
@@ -143,15 +147,15 @@ export function customProvidersVersion(): number {
 }
 
 export function resolveCustomModel(id: string): CustomRuntimeModel | undefined {
-  return registry.get(id);
+  return qualifiedRegistry.get(id) ?? registry.get(id);
 }
 
 export function isCustomModelId(id: string): boolean {
-  return registry.has(id);
+  return qualifiedRegistry.has(id) || registry.has(id);
 }
 
 export function customModelCatalog(): Array<{ id: string; name: string; provider: string }> {
-  return [...registry.values()].map((m) => ({ id: m.id, name: m.name, provider: m.provider }));
+  return [...qualifiedRegistry].map(([id, m]) => ({ id, name: m.name, provider: m.provider }));
 }
 
 /**
@@ -170,7 +174,7 @@ export function customModelsJson(): { providers: Record<string, unknown> } | und
         {
           name: spec.name,
           baseUrl: spec.baseUrl,
-          api: spec.protocol === "anthropic" ? "anthropic-messages" : "openai-completions",
+          api: customProviderApi(spec.protocol),
           models: spec.models.map((m) => ({
             id: m.id,
             name: m.name ?? m.id,

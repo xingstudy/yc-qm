@@ -426,7 +426,8 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
       if (typeof modelId !== "string" || !modelSupportedByHarness(modelId, harnessId))
         return { error: `model ${String(modelId)} is not supported by ${harnessId}` };
       const runtimeKeys = ctx.deps.providerKeys ?? ALL_PROVIDERS_AVAILABLE;
-      if (!modelServiceable(modelId, modelProviderAvailabilityFor(harnessId, runtimeKeys)))
+      const managedKeys = ctx.deps.modelCredentials ? await ctx.deps.modelCredentials.availability() : runtimeKeys;
+      if (!modelServiceable(modelId, modelProviderAvailabilityFor(harnessId, runtimeKeys, managedKeys)))
         return {
           error: `model ${modelId} isn't serviceable on this deployment: its provider key is not configured for the ${harnessId} harness`,
         };

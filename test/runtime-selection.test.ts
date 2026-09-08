@@ -135,3 +135,56 @@ test("a listener that throws cannot break the write that notified it", async () 
   await config.setRuntimeSelectionLatest(ORG, { harnessId: "pi", modelId: "claude-opus-4-8" });
   assert.equal((await config.getRuntimeSelectionDurable(ORG))?.modelId, "claude-opus-4-8");
 });
+
+test("native runtime choices accept only the matching custom protocol", () => {
+  const config = createMemoryConfigStore("default-org");
+  config.setApprovedHarnesses(["pi", "claude", "codex", "opencode"]);
+  setCustomProviders([
+    {
+      id: "messages",
+      name: "Messages",
+      protocol: "anthropic",
+      baseUrl: "https://example.test",
+      models: [{ id: "custom/model" }],
+    },
+    {
+      id: "responses",
+      name: "Responses",
+      protocol: "openai-responses",
+      baseUrl: "https://example.test/v1",
+      models: [{ id: "custom/model" }],
+    },
+    {
+      id: "chat",
+      name: "Chat",
+      protocol: "openai",
+      baseUrl: "https://example.test/v1",
+      models: [{ id: "custom/model" }],
+    },
+  ]);
+  const fallback = { harnessId: "pi" as const, modelId: "claude-opus-5" };
+  try {
+    for (const choice of [
+      { harnessId: "claude" as const, modelId: "messages/custom/model" },
+      { harnessId: "codex" as const, modelId: "responses/custom/model" },
+    ]) {
+      config.setRuntimeSelection(ORG, choice);
+      assert.deepEqual(resolveRuntimeChoice(config, ORG, PERSONAL, fallback), choice);
+      assert.deepEqual(resolveRuntimeChoice(config, ORG, PERSONAL, fallback, choice), choice);
+    }
+    assert.throws(
+      () => resolveRuntimeChoice(config, ORG, PERSONAL, fallback, { harnessId: "codex", modelId: "chat/custom/model" }),
+      /not approved/,
+    );
+    assert.throws(
+      () =>
+        resolveRuntimeChoice(config, ORG, PERSONAL, fallback, {
+          harnessId: "claude",
+          modelId: "responses/custom/model",
+        }),
+      /not approved/,
+    );
+  } finally {
+    setCustomProviders([]);
+  }
+});

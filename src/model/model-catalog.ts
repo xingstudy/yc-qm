@@ -1,5 +1,5 @@
 import { modelSupportedByHarness, resolveModel, SELECTABLE_BASE_MODELS } from "./pi-models.ts";
-import { customModelCatalog, customProvidersVersion } from "./custom-providers.ts";
+import { customModelCatalog, customProvidersVersion, resolveCustomModel } from "./custom-providers.ts";
 
 export interface ModelCatalogEntry {
   id: string;
@@ -31,8 +31,19 @@ export function builtInModelCatalog(): ModelCatalogEntry[] {
       ? [{ ...model, provider: provider as string }]
       : [];
   });
-  const known = new Set(builtIns.map((model) => model.id));
-  return [...builtIns, ...customModelCatalog().filter((model) => !known.has(model.id))];
+  const custom = customModelCatalog();
+  const counts = new Map<string, number>();
+  for (const model of custom) {
+    const id = resolveCustomModel(model.id)!.id;
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return [
+    ...builtIns,
+    ...custom.map((model) => {
+      const id = resolveCustomModel(model.id)!.id;
+      return counts.get(id) === 1 && resolveModel(id)?.provider === model.provider ? { ...model, id } : model;
+    }),
+  ];
 }
 
 async function boundedJson(response: Response): Promise<unknown> {
@@ -98,7 +109,12 @@ export async function selectableModelCatalog(fetcher: typeof fetch = fetch): Pro
       return entry.models;
     })
     .catch(() => {
-      entry.models = entry.models.length ? entry.models : builtInModelCatalog();
+      const models = builtInModelCatalog();
+      const known = new Set(models.map((model) => model.id));
+      entry.models = [
+        ...models,
+        ...entry.models.filter((model) => model.provider === "openrouter" && !known.has(model.id)),
+      ];
       entry.expiresAt = Date.now() + FAILURE_TTL_MS;
       entry.customVersion = customProvidersVersion();
       return entry.models;
@@ -116,7 +132,6 @@ export function selectableCatalogForHarness(
 ): ModelCatalogEntry[] {
   return catalog.filter(
     (model) =>
-      (model.provider !== "openrouter" || harness === "pi" || harness === "mock") &&
-      modelSupportedByHarness(model.id, harness),
+      (model.provider !== "openrouter" || harness !== "opencode") && modelSupportedByHarness(model.id, harness),
   );
 }

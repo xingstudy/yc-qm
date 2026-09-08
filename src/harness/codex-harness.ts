@@ -1,3 +1,11 @@
+import {
+  nativeUtilityModel,
+  nativeProviderEnv,
+  resolveNativeProvider,
+  type ResolveNativeProvider,
+  type ResolveNativeCredential,
+  type NativeProviderBinding,
+} from "./native-provider.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { sanitizeTitle, TITLE_GENERATION_PROMPT, titleUserPrompt } from "./pi-harness.ts";
 import { tmpdir } from "node:os";
@@ -25,6 +33,8 @@ export interface CodexHarnessOptions {
   judgeModelId?: string;
   binaryPath?: string;
   env?: NodeJS.ProcessEnv;
+  resolveCustomProvider?: ResolveNativeProvider;
+  resolveModelCredential?: ResolveNativeCredential;
   scratchExec?: boolean;
   ownerAuthExec?: boolean;
   reachExec?: boolean;
@@ -346,15 +356,21 @@ export function codexTurnInputText(
 }
 
 export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
+  return createCodexHarnessInstance(opts).harness;
+}
+
+function createCodexHarnessInstance(opts: CodexHarnessOptions, binding?: NativeProviderBinding) {
+  const children = new Set<Harness>();
   const active = new Map<string, ActiveTurn>();
+  let closed = false;
   const configuredModel = opts.modelId;
-  const judgeModelId = opts.judgeModelId ?? "gpt-5.4-mini";
   const resolveModelId = (scope?: ScopeId) =>
     [
       typeof configuredModel === "function" ? configuredModel(scope) : configuredModel,
       opts.defaultModelId,
       DEFAULT_CODEX_MODEL_ID,
     ].find((id): id is string => modelSupportedByHarness(id, "codex"))!;
+  const judgeModelId = () => opts.judgeModelId ?? nativeUtilityModel(resolveModelId(), "codex");
   const defaultTurnWallClockMs = opts.turnWallClockMs ?? CONFIG_DEFAULTS.turnWallClockSec * 1000;
   let runtime: Runtime | null = null;
   let starting: Promise<Runtime> | null = null;
@@ -426,8 +442,24 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
     if (starting) return await starting;
     starting = (async () => {
       const jail = mkdtempSync(join(tmpdir(), "qm-codex-"));
-      const sourceEnv = opts.env ?? {};
+      const sourceEnv = nativeProviderEnv("codex", opts.env ?? {}, binding);
       prepareCodexHome(sourceEnv, jail);
+      if (binding) {
+        writeFileSync(
+          join(jail, "codex-home", "config.toml"),
+          [
+            'model_provider = "qm_custom"',
+            `model_context_window = ${binding.model.contextWindow}`,
+            "[model_providers.qm_custom]",
+            'name = "QM custom provider"',
+            `base_url = ${JSON.stringify(binding.model.baseUrl)}`,
+            'env_key = "OPENAI_API_KEY"',
+            'wire_api = "responses"',
+            "requires_openai_auth = false",
+          ].join("\n") + "\n",
+          { mode: 0o600 },
+        );
+      }
       const binaryPath = opts.binaryPath ?? resolve("node_modules/.bin/codex");
       const server = new CodexAppServer({
         binaryPath,
@@ -558,7 +590,32 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
   };
 
   const runPrompt = async (turn: HarnessTurnInput, toolsEnabled = true): Promise<HarnessTurnResult> => {
+    if (closed) throw new NonRetryableTurnError("codex harness is closed");
     if (turn.cancel?.aborted) return { reply: "", stopped: true };
+    if (turn.model && !modelSupportedByHarness(turn.model, "codex")) {
+      throw new NonRetryableTurnError(`Model ${turn.model} is unavailable for codex`);
+    }
+    const model = turn.model ?? resolveModelId(turn.scopeLabel);
+    if (!binding) {
+      const selected = await resolveNativeProvider(
+        model,
+        "codex",
+        opts.resolveCustomProvider,
+        opts.resolveModelCredential,
+      );
+      if (closed) throw new NonRetryableTurnError("codex harness is closed");
+      if (turn.cancel?.aborted) return { reply: "", stopped: true };
+      if (selected) {
+        const child = createCodexHarnessInstance(opts, selected);
+        children.add(child.harness);
+        try {
+          return await child.runPrompt({ ...turn, model }, toolsEnabled);
+        } finally {
+          await child.harness.turns.close?.();
+          children.delete(child.harness);
+        }
+      }
+    }
     const wallMs = turn.turnWallClockMs ?? defaultTurnWallClockMs;
     const deadline = wallMs > 0 ? Date.now() + wallMs : 0;
     const setupCancelled = new Error("Codex setup cancelled");
@@ -597,9 +654,9 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
       description: tool.description,
       inputSchema: tool.parameters,
     }));
-    const model = modelSupportedByHarness(turn.model, "codex") ? turn.model! : resolveModelId(turn.scopeLabel);
+
     const threadStartRequest = {
-      ...(model ? { model } : {}),
+      model: binding?.model.id ?? model,
       cwd: rt.jail,
       approvalPolicy: "never",
       sandbox: "read-only",
@@ -682,7 +739,7 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
         url: `data:${image.mimeType};base64,${image.dataBase64}`,
       })),
     ];
-    const selectedModel = model ?? started.model ?? "codex-default";
+    const selectedModel = binding?.model.id ?? model ?? started.model ?? "codex-default";
     const state: ActiveTurn = {
       threadId,
       turn,
@@ -694,7 +751,7 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
       taskIds: new Map(),
       taskStatuses: new Map(),
       taskResults: new Set(),
-      model: selectedModel,
+      model,
       modelCalls: 0,
       usageInputTotals: new Map(),
       usageByThread: new Map(),
@@ -717,7 +774,7 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
         await turn.recordLlmRequest({
           turnSeq: userEntry.seq,
           step: 0,
-          model: selectedModel,
+          model,
           promptEnvelope,
           truncated: Boolean(turn.images?.length),
           transport: { modelId: selectedModel },
@@ -794,7 +851,7 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
     let timer: NodeJS.Timeout | undefined;
     try {
       const response = await rt.server
-        .request<{ turn: CodexTurn }>("turn/start", { threadId, input, ...(model ? { model } : {}) })
+        .request<{ turn: CodexTurn }>("turn/start", { threadId, input, model: selectedModel })
         .catch((error: unknown) => {
           throw error instanceof CodexRpcError ? codexProviderFailure(error.message) : error;
         });
@@ -816,7 +873,7 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
       if (state.modelCalls === 0) {
         state.modelCalls = 1;
         turn.recordModelCall({
-          model: selectedModel,
+          model,
           inputTokens: state.fallbackInputTokens,
           entryCount: turn.history.length,
         });
@@ -897,7 +954,7 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
     return result.reply || undefined;
   };
 
-  return defineHarness(
+  const harness = defineHarness(
     {
       id: "codex",
       controlTransport: "json-rpc",
@@ -908,6 +965,8 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
     {
       runTurn: runPrompt,
       close: async () => {
+        closed = true;
+        await Promise.all([...children].map((child) => child.turns.close?.()));
         await startingServer?.close().catch(() => undefined);
         await starting?.catch(() => undefined);
         const current = runtime;
@@ -921,7 +980,7 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
       },
       resetSession: () => {},
       oneShot: (system, prompt) => single(system, prompt),
-      judge: (system, prompt) => single(system, prompt, undefined, undefined, judgeModelId),
+      judge: (system, prompt) => single(system, prompt, undefined, undefined, judgeModelId()),
       screenSecurity: async ({ payload, signal, recordModelCall, recordLlmRequest }) =>
         parseSecurityScreenVerdict(
           await single(SECURITY_SCREEN_SYSTEM_PROMPT, payload, signal, {
@@ -938,4 +997,5 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
         ),
     },
   );
+  return { harness, runPrompt };
 }

@@ -17,7 +17,7 @@ const USER = { "content-type": "application/json", "x-admin-actor": "bob@default
 
 afterEach(() => setCustomProviders([]));
 
-function start(modelCredentialFetch: typeof fetch = async () => new Response(null, { status: 200 })): {
+function start(modelCredentialFetch: typeof fetch = async () => Response.json({ data: [] })): {
   base: string;
   built: BuiltApp;
   close: () => Promise<void>;
@@ -59,7 +59,7 @@ test("custom provider lifecycle: register, list, resolve, delete — admin only,
   const validated: string[] = [];
   const srv = start(async (input) => {
     validated.push(String(input));
-    return new Response(null, { status: 200 });
+    return Response.json({ data: [] });
   });
   try {
     // Register (validates against the endpoint's /models).
@@ -265,7 +265,7 @@ test("the model provider picker refreshes a registry changed outside the request
   }
 });
 
-test("a custom provider with only shadowed model ids does not satisfy the portal model gate", async () => {
+test("a custom provider with built-in model ids satisfies the portal model gate", async () => {
   const srv = start();
   try {
     const put = await fetch(`${srv.base}/v1/admin/custom-providers/shadow`, {
@@ -281,7 +281,7 @@ test("a custom provider with only shadowed model ids does not satisfy the portal
     assert.equal(put.status, 200);
     const surface = await fetch(`${srv.base}/v1/surface-config`);
     assert.equal(surface.status, 200);
-    assert.equal(((await surface.json()) as { modelProviderConfigured?: boolean }).modelProviderConfigured, false);
+    assert.equal(((await surface.json()) as { modelProviderConfigured?: boolean }).modelProviderConfigured, true);
   } finally {
     await srv.close();
   }
@@ -311,6 +311,164 @@ test("bad specs are refused with a reason", async () => {
     });
     assert.equal(reserved.status, 400);
     assert.match(((await reserved.json()) as { message: string }).message, /reserved/);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("onboarding exposes and saves each custom model when ids collide with built-ins", async () => {
+  const srv = start();
+  const ids = ["gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"];
+  try {
+    const put = await fetch(`${srv.base}/v1/admin/custom-providers/qfpay-cpa`, {
+      method: "PUT",
+      headers: ADMIN,
+      body: JSON.stringify({
+        ...BODY,
+        models: ids.map((id) => ({ id, contextWindow: 1_050_000, maxTokens: 128_000 })),
+      }),
+    });
+    assert.equal(put.status, 200);
+    const picker = await fetch(`${srv.base}/v1/admin/model-providers`, { headers: ADMIN });
+    const body = (await picker.json()) as { models: Array<{ id: string; provider: string }> };
+    const custom = body.models.filter((m) => m.provider === "qfpay-cpa");
+    assert.equal(custom.length, 3);
+    for (const entry of custom) {
+      const selected = await fetch(`${srv.base}/v1/admin/scopes/org%3Adefault-org/base-model`, {
+        method: "PUT",
+        headers: ADMIN,
+        body: JSON.stringify({ modelId: entry.id }),
+      });
+      assert.equal(selected.status, 200, await selected.text());
+      const scope = await fetch(`${srv.base}/v1/admin/scopes/org%3Adefault-org`, { headers: ADMIN });
+      assert.equal(((await scope.json()) as { baseModel: string }).baseModel, entry.id);
+      assert.equal(resolveModel(entry.id)?.provider, "qfpay-cpa");
+    }
+  } finally {
+    await srv.close();
+  }
+});
+
+test("Anthropic validation uses the messages protocol's model listing path and auth", async () => {
+  const srv = start(async (input, init) => {
+    assert.equal(String(input), "https://proxy.example/v1/models");
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get("x-api-key"), BODY.apiKey);
+    assert.equal(headers.get("anthropic-version"), "2023-06-01");
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  });
+  try {
+    for (const baseUrl of ["https://proxy.example/", "https://proxy.example/v1", "https://proxy.example/v1/"]) {
+      const put = await fetch(`${srv.base}/v1/admin/custom-providers/anthropic-proxy`, {
+        method: "PUT",
+        headers: ADMIN,
+        body: JSON.stringify({
+          ...BODY,
+          protocol: "anthropic",
+          baseUrl,
+          models: [{ id: "claude-sonnet-5" }, { id: "claude-opus-5" }, { id: "claude-fable-5-1" }],
+        }),
+      });
+      assert.equal(put.status, 200, await put.text());
+      assert.equal((await srv.built.customProviders.statuses())[0]?.baseUrl, "https://proxy.example");
+    }
+  } finally {
+    await srv.close();
+  }
+});
+
+test("endpoint validation distinguishes authentication, unsupported listing, HTTP errors and network failure", async () => {
+  for (const status of [401, 403, 404, 405, 501, 429, 500, 0]) {
+    const srv = start(async () => {
+      if (!status) throw new Error("network unavailable");
+      return new Response(null, { status });
+    });
+    try {
+      const put = await fetch(`${srv.base}/v1/admin/custom-providers/acme-gateway`, {
+        method: "PUT",
+        headers: ADMIN,
+        body: JSON.stringify(BODY),
+      });
+      assert.equal(put.status, 400);
+      const body = (await put.json()) as { error: string; message: string };
+      let expected = "endpoint_validation_failed";
+      if ([401, 403].includes(status)) expected = "invalid_api_key";
+      if ([404, 405, 501].includes(status)) expected = "models_listing_unavailable";
+      assert.equal(body.error, expected);
+      assert.ok(!body.message.includes(BODY.apiKey));
+      if (status) assert.ok(body.message.includes(`HTTP ${status}`));
+      else assert.match(body.message, /connectivity, TLS/);
+      assert.equal(await srv.built.customProviders.resolveKey("acme-gateway"), null);
+    } finally {
+      await srv.close();
+    }
+  }
+});
+
+test("invalid provider specs never send credentials to an endpoint", async () => {
+  let calls = 0;
+  const srv = start(async () => {
+    calls++;
+    return Response.json({ data: [] });
+  });
+  try {
+    const put = await fetch(`${srv.base}/v1/admin/custom-providers/acme-gateway`, {
+      method: "PUT",
+      headers: ADMIN,
+      body: JSON.stringify({ ...BODY, models: [] }),
+    });
+    assert.equal(put.status, 400);
+    assert.equal(calls, 0);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("successful website responses cannot validate a custom provider key or replace its configuration", async () => {
+  for (const body of ["<html>Proxy dashboard</html>", "not json", "{}", '{"data":{}}', "null"]) {
+    const srv = start(async () => new Response(body, { status: 200 }));
+    try {
+      const { apiKey, ...spec } = BODY;
+      await srv.built.customProviders.upsert({ id: "acme-gateway", ...spec }, apiKey, "admin-alice@default-org");
+      const put = await fetch(`${srv.base}/v1/admin/custom-providers/acme-gateway`, {
+        method: "PUT",
+        headers: ADMIN,
+        body: JSON.stringify({ ...BODY, baseUrl: "https://proxy.example", apiKey: "wrong-key" }),
+      });
+      assert.equal(put.status, 400);
+      const result = (await put.json()) as { error: string; message: string };
+      assert.equal(result.error, "invalid_models_response");
+      assert.match(result.message, /not a JSON model list/);
+      assert.match(result.message, /usually ending in \/v1/);
+      assert.equal(await srv.built.customProviders.resolveKey("acme-gateway"), BODY.apiKey);
+      assert.equal((await srv.built.customProviders.statuses())[0]?.baseUrl, BODY.baseUrl);
+    } finally {
+      await srv.close();
+    }
+  }
+});
+
+test("Responses providers validate with OpenAI authentication and can retain same-endpoint Chat Completions keys", async () => {
+  const requests: Array<{ url: string; authorization: string | null }> = [];
+  const srv = start(async (url, init) => {
+    requests.push({ url: String(url), authorization: new Headers(init?.headers).get("authorization") });
+    return Response.json({ data: [{ id: "native-model" }] });
+  });
+  try {
+    const put = (body: unknown) =>
+      fetch(`${srv.base}/v1/admin/custom-providers/responses`, {
+        method: "PUT",
+        headers: ADMIN,
+        body: JSON.stringify(body),
+      });
+    assert.equal((await put({ ...BODY, protocol: "openai-responses" })).status, 200);
+    assert.deepEqual(requests, [{ url: `${BODY.baseUrl}/models`, authorization: `Bearer ${BODY.apiKey}` }]);
+    assert.equal((await put({ ...BODY, protocol: "openai", apiKey: undefined })).status, 200);
+    assert.equal((await put({ ...BODY, protocol: "openai-responses", apiKey: undefined })).status, 200);
+    assert.equal(requests.length, 1);
+    const stored = await srv.built.customProviders.resolveConnection("responses");
+    assert.equal(stored?.spec.protocol, "openai-responses");
+    assert.equal(stored?.apiKey, BODY.apiKey);
   } finally {
     await srv.close();
   }

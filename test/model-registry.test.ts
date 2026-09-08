@@ -61,7 +61,7 @@ test("exposure is provider-key-aware: a model whose provider is unconfigured is 
   assert.deepEqual(serviceableModelIds(["claude-opus-4-8", "gpt-5.6-sol"], noOpenai), ["claude-opus-4-8"]);
 });
 
-test("provider-key gating applies only to key-authed harnesses (no over-hiding on CLI-auth harnesses)", () => {
+test("native harness availability follows managed credentials without assuming a CLI login", () => {
   const noKeys = { anthropic: false, openai: false, openrouter: false };
   assert.deepEqual(modelProviderAvailabilityFor("pi", noKeys), noKeys);
   assert.deepEqual(modelProviderAvailabilityFor("opencode", noKeys), noKeys);
@@ -84,7 +84,12 @@ test("provider-key gating applies only to key-authed harnesses (no over-hiding o
     openai: true,
     openrouter: false,
   });
-  assert.deepEqual(modelProviderAvailabilityFor("claude", noKeys), { anthropic: true, openai: true, openrouter: true });
+  assert.deepEqual(modelProviderAvailabilityFor("claude", noKeys), noKeys);
+  for (const harness of ["claude", "codex"]) {
+    const managed = { anthropic: true, openai: true, openrouter: true };
+    assert.deepEqual(modelProviderAvailabilityFor(harness, noKeys, managed), managed);
+    assert.deepEqual(modelProviderAvailabilityFor(harness, managed, noKeys), noKeys);
+  }
   assert.deepEqual(modelProviderAvailabilityFor("mock", noKeys), { anthropic: true, openai: true, openrouter: true });
 });
 

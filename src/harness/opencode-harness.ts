@@ -9,6 +9,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk";
 import { CONFIG_DEFAULTS, type Config } from "../config.ts";
 import { isCustomModelId } from "../model/custom-providers.ts";
+import { normalizeProviderBaseUrl } from "../model/provider-endpoints.ts";
 import type { CustomProviderSpec } from "../model/custom-providers.ts";
 import { DEFAULT_AGENT_MODEL_ID, resolveModel } from "../model/pi-models.ts";
 import { startSignalPoll, type RunSignalStore } from "../runs/run-signal-store.ts";
@@ -272,7 +273,7 @@ export function modelRef(id: string): { providerID: string; modelID: string } {
   // those must route to the registered provider, not a phantom "bedrock".
   if (isCustomModelId(id)) {
     const resolved = resolveModel(id);
-    if (resolved?.provider) return { providerID: String(resolved.provider), modelID: id };
+    if (resolved?.provider) return { providerID: String(resolved.provider), modelID: resolved.id };
   }
   const slash = id.indexOf("/");
   if (slash > 0) return { providerID: id.slice(0, slash), modelID: id.slice(slash + 1) };
@@ -801,9 +802,19 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
           custom.map(({ spec, apiKey }) => [
             spec.id,
             {
-              npm: spec.protocol === "anthropic" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible",
+              npm: {
+                anthropic: "@ai-sdk/anthropic",
+                "openai-responses": "@ai-sdk/openai",
+                openai: "@ai-sdk/openai-compatible",
+              }[spec.protocol],
               name: spec.name,
-              options: { baseURL: spec.baseUrl, ...(apiKey ? { apiKey } : {}) },
+              options: {
+                baseURL:
+                  spec.protocol === "anthropic"
+                    ? `${normalizeProviderBaseUrl(spec.protocol, spec.baseUrl)}/v1`
+                    : spec.baseUrl,
+                ...(apiKey ? { apiKey } : {}),
+              },
               models: Object.fromEntries(
                 spec.models.map((m) => [
                   m.id,

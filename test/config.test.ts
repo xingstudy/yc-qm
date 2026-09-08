@@ -402,10 +402,13 @@ test("MODEL_PROVIDER declares the vendor that bills the base model", () => {
 });
 
 test("MODEL_PROVIDER is refused when the harness can never run that vendor's models", () => {
-  assert.throws(
-    () => loadConfig({ MODEL_PROVIDER: "openrouter", HARNESS: "codex", OPENROUTER_API_KEY: "k", OPENAI_API_KEY: "k" }),
-    /cannot serve a base model on HARNESS=codex/,
-  );
+  for (const harness of ["pi", "claude", "codex"]) {
+    assert.equal(
+      loadConfig({ MODEL_PROVIDER: "openrouter", HARNESS: harness, OPENROUTER_API_KEY: "k", OPENAI_API_KEY: "k" })
+        .modelProvider,
+      "openrouter",
+    );
+  }
   assert.throws(
     () => loadConfig({ MODEL_PROVIDER: "anthropic", HARNESS: "codex", ANTHROPIC_API_KEY: "k", OPENAI_API_KEY: "k" }),
     /cannot serve a base model on HARNESS=codex/,
@@ -418,7 +421,7 @@ test("MODEL_PROVIDER is refused when the harness can never run that vendor's mod
   assert.equal(
     loadConfig({ MODEL_PROVIDER: "openai", HARNESS: "codex", OPENAI_API_KEY: "k" }).modelProvider,
     "openai",
-    "the one combination Codex can bill is accepted",
+    "Codex still accepts the official OpenAI provider",
   );
 });
 

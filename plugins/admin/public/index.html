@@ -4039,14 +4039,23 @@
                 <label
                   >Protocol
                   <select id="custom-provider-protocol">
-                    <option value="openai">OpenAI-compatible</option>
-                    <option value="anthropic">Anthropic-compatible</option>
+                    <option value="openai">OpenAI Chat Completions</option>
+                    <option value="openai-responses">OpenAI Responses (Pi / OpenCode / Codex)</option>
+                    <option value="anthropic">Anthropic Messages (Pi / OpenCode / Claude)</option>
                   </select></label
                 >
                 <label
                   >Base URL
-                  <input id="custom-provider-url" autocomplete="off" placeholder="https://gateway.internal/v1"
-                /></label>
+                  <input id="custom-provider-url" autocomplete="off" placeholder="https://gateway.internal/v1" /><small
+                    class="muted"
+                    >OpenAI-compatible: use the API base URL, usually ending in /v1. Anthropic-compatible: the base URL
+                    may include /v1.</small
+                  ></label
+                >
+                <p class="muted">
+                  OpenRouter supports Codex and Claude Code through its compatible APIs. DeepSeek supports Claude Code
+                  through its Anthropic API. Other endpoints require Responses for Codex or Messages for Claude Code.
+                </p>
                 <label
                   >API key
                   <input
@@ -5503,9 +5512,16 @@
         "No custom providers registered.": "尚未注册自定义提供商。",
         "Provider id (slug)": "提供商 ID（标识）",
         "Display name": "显示名称",
+        "OpenAI Chat Completions (Pi / OpenCode)": "OpenAI Chat Completions（Pi / OpenCode）",
+        "OpenAI Responses (Pi / OpenCode / Codex)": "OpenAI Responses（Pi / OpenCode / Codex）",
+        "Anthropic Messages (Pi / OpenCode / Claude)": "Anthropic Messages（Pi / OpenCode / Claude）",
+        "OpenRouter supports Codex and Claude Code through its compatible APIs. DeepSeek supports Claude Code through its Anthropic API. Other endpoints require Responses for Codex or Messages for Claude Code.":
+          "OpenRouter 可通过兼容接口用于 Codex 和 Claude Code；DeepSeek 可通过 Anthropic 接口用于 Claude Code。其他端点需支持 Responses 才能用于 Codex，支持 Messages 才能用于 Claude Code。",
         "OpenAI-compatible": "OpenAI 兼容",
         "Anthropic-compatible": "Anthropic 兼容",
         "Base URL": "基础 URL",
+        "OpenAI-compatible: use the API base URL, usually ending in /v1. Anthropic-compatible: the base URL may include /v1.":
+          "OpenAI 兼容：填写 API 基础地址，通常以 /v1 结尾。Anthropic 兼容：基础地址可带或不带 /v1。",
         "Models (one per line: id | name | context | maxTokens)": "模型（每行一个：ID | 名称 | 上下文 | 最大令牌数）",
         "Validate key against the endpoint (untick for gateways without a models listing)":
           "向端点验证密钥（无模型列表的网关请取消勾选）",
@@ -9641,7 +9657,11 @@
           const tr = document.createElement("tr");
           const cells = [
             provider.name + " (" + provider.id + ")",
-            provider.protocol === "anthropic" ? "Anthropic" : "OpenAI",
+            provider.protocol === "anthropic"
+              ? "Anthropic Messages"
+              : provider.protocol === "openai-responses"
+                ? "OpenAI Responses"
+                : "OpenAI Chat Completions",
             provider.baseUrl,
             provider.models.map((model) => model.id).join(", "),
             adminTr(provider.hasKey ? "set (write-only)" : "No key"),

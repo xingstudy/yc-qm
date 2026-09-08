@@ -82,7 +82,8 @@ test("a provider that cannot serve a harness has no default model for it", () =>
   assert.equal(defaultModelForProvider("codex", "openai"), "gpt-5.6-sol");
   assert.equal(defaultModelForProvider("claude", "anthropic"), "claude-opus-5");
   assert.equal(defaultModelForProvider("codex", "anthropic"), undefined, "the Codex CLI runs no Anthropic model");
-  assert.equal(defaultModelForProvider("claude", "openrouter"), undefined, "the Claude CLI runs no OpenRouter model");
+  assert.equal(defaultModelForProvider("claude", "openrouter"), "openrouter/auto");
+  assert.equal(defaultModelForProvider("codex", "openrouter"), "openrouter/auto");
   assert.equal(defaultModelForProvider("opencode", "openrouter"), undefined, "opencode has no OpenRouter route");
 });
 

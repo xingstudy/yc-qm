@@ -447,3 +447,49 @@ test("a stored scope override outside the configured picker refuses web turns; t
     await srv.close();
   }
 });
+
+test("native pickers and runtime writes follow managed keys through save and disable", async () => {
+  const srv = start();
+  try {
+    srv.built.config.setApprovedHarnesses(["claude", "codex"]);
+    const url = `${srv.base}/v1/runtime-config?principalId=alice&scopeId=personal%3Aalice`;
+    const read = async () => {
+      const response = await fetch(url);
+      assert.equal(response.status, 200);
+      return (await response.json()) as { modelsByHarness: Record<string, string[]> };
+    };
+    assert.deepEqual((await read()).modelsByHarness, { claude: [], codex: [] });
+    for (const [provider, harness, model] of [
+      ["anthropic", "claude", "claude-opus-5"],
+      ["openai", "codex", "gpt-5.6-sol"],
+    ] as const) {
+      const select = () =>
+        fetch(url, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ principalId: "alice", scopeId: "personal:alice", harnessId: harness, modelId: model }),
+        });
+      assert.equal((await select()).status, 400);
+      await srv.built.modelCredentials.set(provider, "managed-key", "admin-alice");
+      assert.ok((await read()).modelsByHarness[harness]!.includes(model));
+      assert.equal((await select()).status, 200);
+      const admin = await fetch(`${srv.base}/v1/admin/scopes/org:default-org/runtime`, {
+        method: "PUT",
+        headers: ADMIN,
+        body: JSON.stringify({ harnessId: harness, modelId: model }),
+      });
+      assert.equal(admin.status, 200);
+      await srv.built.modelCredentials.delete(provider, "admin-alice");
+      assert.deepEqual((await read()).modelsByHarness[harness], []);
+      assert.equal((await select()).status, 400);
+    }
+    await srv.built.modelCredentials.set("openrouter", "router-key", "admin-alice");
+    const available = (await read()).modelsByHarness;
+    for (const harness of ["claude", "codex"]) {
+      assert.ok(available[harness]!.includes("openrouter/auto"));
+      assert.ok(available[harness]!.every((id) => id === "openrouter/auto"));
+    }
+  } finally {
+    await srv.close();
+  }
+});

@@ -20,6 +20,18 @@ const PROVIDER_BASE_URL_ENV: Record<ProviderId, string> = {
 
 export type ProviderBaseUrls = Partial<Record<ProviderId, string>>;
 
+export function normalizeProviderBaseUrl(protocol: string, value: string): string {
+  const normalized = value.trim().replace(/\/+$/, "");
+  const url = URL.parse(normalized);
+  return protocol === "anthropic" &&
+    normalized.endsWith("/v1") &&
+    url?.pathname.endsWith("/v1") &&
+    !url.search &&
+    !url.hash
+    ? normalized.slice(0, -3)
+    : normalized;
+}
+
 /**
  * Validate and normalize a provider base URL. Returns the normalized
  * origin+path with trailing slashes removed. Throws on anything that
@@ -47,7 +59,7 @@ export function providerBaseUrlsFromEnv(env: NodeJS.ProcessEnv): ProviderBaseUrl
   for (const provider of PROVIDER_IDS) {
     const envName = PROVIDER_BASE_URL_ENV[provider];
     const raw = env[envName];
-    if (raw?.trim()) urls[provider] = parseProviderBaseUrl(envName, raw);
+    if (raw?.trim()) urls[provider] = normalizeProviderBaseUrl(provider, parseProviderBaseUrl(envName, raw));
   }
   return urls;
 }
@@ -61,5 +73,6 @@ export function setProviderBaseUrls(urls: ProviderBaseUrls): void {
 
 /** The override for a provider, if one is configured. */
 export function providerBaseUrl(provider: string): string | undefined {
-  return (PROVIDER_IDS as readonly string[]).includes(provider) ? configured[provider as ProviderId] : undefined;
+  const value = (PROVIDER_IDS as readonly string[]).includes(provider) ? configured[provider as ProviderId] : undefined;
+  return value === undefined ? undefined : normalizeProviderBaseUrl(provider, value);
 }
