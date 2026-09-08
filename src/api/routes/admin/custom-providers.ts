@@ -39,7 +39,7 @@ async function validateKey(
       const listing = (await response.json().catch(() => null)) as { data?: unknown } | null;
       if (listing && Array.isArray(listing.data)) return undefined;
       const hint =
-        protocol === "openai"
+        protocol !== "anthropic"
           ? "Use the API base URL, usually ending in /v1, rather than the website URL."
           : "Use the API base URL before /v1/messages.";
       return {

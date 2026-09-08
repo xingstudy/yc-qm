@@ -1021,8 +1021,28 @@ export function buildApp(
         },
       }),
     ],
-    ["codex", createCodexHarness({ ...codexHarnessConfigOptions(config), signals: runSignals, tasks, mcpTools })],
-    ["claude", createClaudeHarness({ ...claudeHarnessConfigOptions(config), signals: runSignals, tasks, mcpTools })],
+    [
+      "codex",
+      createCodexHarness({
+        ...codexHarnessConfigOptions(config),
+        modelId: orgBaseModelId,
+        resolveCustomProvider: (id) => customProviders.resolveConnection(id),
+        signals: runSignals,
+        tasks,
+        mcpTools,
+      }),
+    ],
+    [
+      "claude",
+      createClaudeHarness({
+        ...claudeHarnessConfigOptions(config),
+        modelId: orgBaseModelId,
+        resolveCustomProvider: (id) => customProviders.resolveConnection(id),
+        signals: runSignals,
+        tasks,
+        mcpTools,
+      }),
+    ],
     ["mock", createMockHarness()],
   ]);
   const fallbackHarness = config.harness as HarnessId;

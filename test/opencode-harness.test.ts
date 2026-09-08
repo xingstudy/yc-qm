@@ -863,6 +863,16 @@ test("custom providers materialize into the opencode config (enabled + provider 
           },
           apiKey: "sk-anthropic",
         },
+        {
+          spec: {
+            id: "responses-proxy",
+            name: "Responses",
+            protocol: "openai-responses" as const,
+            baseUrl: "https://responses.test/v1",
+            models: [{ id: "custom-responses" }],
+          },
+          apiKey: "sk-responses",
+        },
       ];
     },
   });
@@ -872,6 +882,10 @@ test("custom providers materialize into the opencode config (enabled + provider 
     await harness.turns.runTurn(turnInput(entries, llmRows));
     const config = JSON.parse(readFileSync(dump, "utf8"));
     assert.ok(config.enabled_providers.includes("litellm"));
+    assert.ok(config.enabled_providers.includes("responses-proxy"));
+    assert.equal(config.provider["responses-proxy"].npm, "@ai-sdk/openai");
+    assert.equal(config.provider["responses-proxy"].options.baseURL, "https://responses.test/v1");
+    assert.equal(config.provider["responses-proxy"].options.apiKey, "sk-responses");
     const litellm = config.provider.litellm;
     assert.equal(litellm.npm, "@ai-sdk/openai-compatible");
     assert.equal(litellm.options.baseURL, "http://litellm.internal:4000/v1");

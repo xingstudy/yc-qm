@@ -802,7 +802,11 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
           custom.map(({ spec, apiKey }) => [
             spec.id,
             {
-              npm: spec.protocol === "anthropic" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible",
+              npm: {
+                anthropic: "@ai-sdk/anthropic",
+                "openai-responses": "@ai-sdk/openai",
+                openai: "@ai-sdk/openai-compatible",
+              }[spec.protocol],
               name: spec.name,
               options: {
                 baseURL:

@@ -681,3 +681,118 @@ test(
     assert.deepEqual(requests, []);
   },
 );
+
+test("Codex custom providers isolate concurrent processes and refresh credentials for each call", async (t) => {
+  const { setCustomProviders } = await import("../src/model/custom-providers.ts");
+  const providers = ["alpha", "beta"].map((id) => ({
+    id,
+    name: id,
+    protocol: "openai-responses" as const,
+    baseUrl: `https://${id}.test/prefix/v1`,
+    models: [{ id: "custom/model", contextWindow: 200_000 }],
+  }));
+  setCustomProviders(providers);
+  const dir = mkdtempSync(join(tmpdir(), "qm-codex-custom-test-"));
+  const binary = fakeCodexBinary(dir);
+  const dump = join(dir, "connections.jsonl");
+  const source = readFileSync(binary, "utf8").replace(
+    '  if (msg.method === "thread/start") {',
+    `  if (msg.method === "thread/start") {
+    const fs = require("node:fs");
+    fs.appendFileSync(${JSON.stringify(dump)}, JSON.stringify({ home: process.env.HOME, token: process.env.CODEX_ACCESS_TOKEN, model: msg.params.model, key: process.env.OPENAI_API_KEY, baseUrl: process.env.OPENAI_BASE_URL, config: fs.readFileSync(process.env.CODEX_HOME + "/config.toml", "utf8"), auth: JSON.parse(fs.readFileSync(process.env.CODEX_HOME + "/auth.json", "utf8")) }) + "\\n");`,
+  );
+  writeFileSync(
+    binary,
+    source.replace(
+      '  if (msg.method === "turn/start") {',
+      '  if (msg.method === "turn/start") { if (msg.params.model !== "custom/model") return send({ id: msg.id, error: { code: -1, message: "qualified model leaked to turn/start" } });',
+    ),
+  );
+
+  let revision = 1;
+  const harness = createCodexHarness({
+    binaryPath: binary,
+    env: { PATH: process.env.PATH, OPENAI_API_KEY: "built-in-secret", CODEX_ACCESS_TOKEN: "built-in-token" },
+    modelId: "alpha/custom/model",
+    resolveCustomProvider: async (id) => ({
+      spec: providers.find((spec) => spec.id === id)!,
+      apiKey: `${id}-key-${revision}`,
+    }),
+  });
+  t.after(async () => {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+    setCustomProviders([]);
+  });
+  const recorded: unknown[] = [];
+  const run = (model: string) =>
+    harness.turns.runTurn({
+      session: { id: model } as Session,
+      input: "hello",
+      systemPrompt: "be brief",
+      model,
+      history: [],
+      readOnly: true,
+      tools: {} as HarnessTurnInput["tools"],
+      scopeLabel: "org:test" as ScopeId,
+      orgScopeId: "org:test" as ScopeId,
+      emit: async (entry) => ({ ...entry, sessionId: model, seq: 1, createdAt: Date.now() }) as SessionEntry,
+      recordModelCall: () => {},
+      recordLlmRequest: (request) => {
+        recorded.push(request);
+      },
+    });
+  const results = await Promise.all(providers.map((provider) => run(`${provider.id}/custom/model`)));
+  assert.deepEqual(
+    results.map((result) => result.reply),
+    ["hello", "hello"],
+  );
+  revision = 2;
+  await harness.models.judge?.("judge", "hello");
+  const connections = readFileSync(dump, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(connections.length, 3);
+  assert.equal(new Set(connections.map((connection) => connection.home)).size, 3);
+  assert.deepEqual(connections.map((connection) => connection.key).sort(), [
+    "alpha-key-1",
+    "alpha-key-2",
+    "beta-key-1",
+  ]);
+  for (const connection of connections) {
+    assert.equal(connection.model, "custom/model");
+    assert.equal(connection.token, undefined);
+    assert.equal(connection.auth.OPENAI_API_KEY, connection.key);
+    assert.ok(connection.config.includes(`base_url = "${connection.baseUrl}"`));
+    assert.match(connection.config, /wire_api = "responses"/);
+    assert.match(connection.config, /model_context_window = 200000/);
+    assert.equal(connection.config.includes(connection.key), false);
+    assert.equal(existsSync(connection.home), false);
+  }
+  assert.doesNotMatch(JSON.stringify(recorded), /alpha-key|beta-key|built-in-secret/);
+});
+
+test("Codex unavailable custom credentials do not fall back to built-in auth", async (t) => {
+  const { setCustomProviders } = await import("../src/model/custom-providers.ts");
+  setCustomProviders([
+    {
+      id: "unavailable",
+      name: "Unavailable",
+      protocol: "openai-responses",
+      baseUrl: "https://example.test/v1",
+      models: [{ id: "unavailable-model" }],
+    },
+  ]);
+  const harness = createCodexHarness({
+    modelId: "unavailable-model",
+    binaryPath: "/must-not-start",
+    env: { OPENAI_API_KEY: "must-not-leak" },
+    resolveCustomProvider: async () => null,
+  });
+  t.after(async () => {
+    await harness.turns.close?.();
+    setCustomProviders([]);
+  });
+  await assert.rejects(harness.models.oneShot!("hello", "test"), /unavailable/);
+});

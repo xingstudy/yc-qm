@@ -447,3 +447,29 @@ test("successful website responses cannot validate a custom provider key or repl
     }
   }
 });
+
+test("Responses providers validate with OpenAI authentication and can retain same-endpoint Chat Completions keys", async () => {
+  const requests: Array<{ url: string; authorization: string | null }> = [];
+  const srv = start(async (url, init) => {
+    requests.push({ url: String(url), authorization: new Headers(init?.headers).get("authorization") });
+    return Response.json({ data: [{ id: "native-model" }] });
+  });
+  try {
+    const put = (body: unknown) =>
+      fetch(`${srv.base}/v1/admin/custom-providers/responses`, {
+        method: "PUT",
+        headers: ADMIN,
+        body: JSON.stringify(body),
+      });
+    assert.equal((await put({ ...BODY, protocol: "openai-responses" })).status, 200);
+    assert.deepEqual(requests, [{ url: `${BODY.baseUrl}/models`, authorization: `Bearer ${BODY.apiKey}` }]);
+    assert.equal((await put({ ...BODY, protocol: "openai", apiKey: undefined })).status, 200);
+    assert.equal((await put({ ...BODY, protocol: "openai-responses", apiKey: undefined })).status, 200);
+    assert.equal(requests.length, 1);
+    const stored = await srv.built.customProviders.resolveConnection("responses");
+    assert.equal(stored?.spec.protocol, "openai-responses");
+    assert.equal(stored?.apiKey, BODY.apiKey);
+  } finally {
+    await srv.close();
+  }
+});

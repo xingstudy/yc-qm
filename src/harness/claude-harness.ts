@@ -1,3 +1,9 @@
+import {
+  nativeCustomModel,
+  nativeProviderEnv,
+  resolveNativeProvider,
+  type ResolveNativeProvider,
+} from "./native-provider.ts";
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { chownSync, mkdtempSync, rmSync } from "node:fs";
@@ -49,6 +55,7 @@ export interface ClaudeHarnessOptions {
   judgeModelId?: string;
   binaryPath?: string;
   env?: NodeJS.ProcessEnv;
+  resolveCustomProvider?: ResolveNativeProvider;
   scratchExec?: boolean;
   ownerAuthExec?: boolean;
   reachExec?: boolean;
@@ -321,18 +328,28 @@ function effort(level: string | undefined): "low" | "medium" | "high" | "xhigh" 
 }
 
 export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
+  let closed = false;
   const configuredModel = opts.modelId;
-  const judgeModelId = opts.judgeModelId ?? "claude-haiku-4-5";
   const resolveModelId = (scope?: ScopeId) =>
     [
       typeof configuredModel === "function" ? configuredModel(scope) : configuredModel,
       opts.defaultModelId,
       DEFAULT_AGENT_MODEL_ID,
     ].find((id): id is string => modelSupportedByHarness(id, "claude"))!;
+  const judgeModelId = () =>
+    opts.judgeModelId ?? (nativeCustomModel(resolveModelId()) ? resolveModelId() : "claude-haiku-4-5");
   const defaultTurnWallClockMs = opts.turnWallClockMs ?? CONFIG_DEFAULTS.turnWallClockSec * 1000;
   const active = new Set<Query>();
 
   const runPrompt = async (turn: HarnessTurnInput, toolsEnabled = true): Promise<HarnessTurnResult> => {
+    if (closed) throw new NonRetryableTurnError("claude harness is closed");
+    if (turn.cancel?.aborted) return { reply: "", stopped: true };
+    if (turn.model && !modelSupportedByHarness(turn.model, "claude")) {
+      throw new NonRetryableTurnError(`Model ${turn.model} is unavailable for claude`);
+    }
+    const model = turn.model ?? resolveModelId(turn.scopeLabel);
+    const binding = await resolveNativeProvider(model, "claude", opts.resolveCustomProvider);
+    if (closed) throw new NonRetryableTurnError("claude harness is closed");
     if (turn.cancel?.aborted) return { reply: "", stopped: true };
     const jail = mkdtempSync(join(tmpdir(), "qm-claude-"));
     const processIdentity = claudeProcessIdentity();
@@ -389,7 +406,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
       },
       scopeLabel: turn.scopeLabel,
     });
-    const model = modelSupportedByHarness(turn.model, "claude") ? turn.model! : resolveModelId(turn.scopeLabel);
+
     const text = promptText(turn);
     const initial = userMessage(text, turn.images);
     let pendingPrompts = 1;
@@ -438,7 +455,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
       options: {
         abortController: controller,
         cwd: jail,
-        env: claudeChildEnv(opts.env ?? {}, jail),
+        env: claudeChildEnv(nativeProviderEnv("claude", opts.env ?? {}, binding), jail),
         tools: allowSubagents ? ["Agent"] : [],
         skills: [],
         settingSources: [],
@@ -478,7 +495,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
           ? { spawnClaudeCodeProcess: (options: SpawnOptions) => spawnClaudeProcess(options, processIdentity) }
           : {}),
         systemPrompt: turn.systemPrompt,
-        model,
+        model: binding?.model.id ?? model,
         ...(opts.binaryPath ? { pathToClaudeCodeExecutable: opts.binaryPath } : {}),
         ...(effort(turn.thinkingLevel) ? { effort: effort(turn.thinkingLevel) } : {}),
         ...(turn.fastMode && modelSupportsFastMode(model)
@@ -878,6 +895,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
     {
       runTurn: runPrompt,
       close: () => {
+        closed = true;
         for (const sdkQuery of active) sdkQuery.close();
         active.clear();
       },
@@ -889,7 +907,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
             renderDetectPrompt(detect),
             undefined,
             { recordModelCall: detect.recordModelCall },
-            judgeModelId,
+            judgeModelId(),
           );
           return parseDetectVerdict((out ?? "").trim(), Boolean(detect.reactionGuidance?.trim()));
         } catch (error) {
@@ -915,7 +933,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
         return contextTokenBudgetForModel(id);
       },
       oneShot: (system, prompt) => single(system, prompt),
-      judge: (system, prompt) => single(system, prompt, undefined, undefined, judgeModelId),
+      judge: (system, prompt) => single(system, prompt, undefined, undefined, judgeModelId()),
       screenSecurity: async ({ payload, signal, recordModelCall, recordLlmRequest }) =>
         parseSecurityScreenVerdict(
           await single(SECURITY_SCREEN_SYSTEM_PROMPT, payload, signal, {

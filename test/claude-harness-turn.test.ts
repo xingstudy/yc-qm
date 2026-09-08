@@ -1,3 +1,4 @@
+import { setCustomProviders, type CustomProviderSpec } from "../src/model/custom-providers.ts";
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { createMemoryRunSignalStore } from "../src/runs/run-signal-store.ts";
@@ -8,11 +9,20 @@ import type { ScopeId, SessionEntry } from "../src/types.ts";
 type FakeSdkMessage = Record<string, unknown>;
 type Script = (prompts: AsyncIterable<{ message: { content: unknown } }>) => AsyncGenerator<FakeSdkMessage>;
 
+const capturedOptions: Array<{ model: string; env: NodeJS.ProcessEnv }> = [];
+
 let currentScript: Script = async function* () {};
 
 mock.module("@anthropic-ai/claude-agent-sdk", {
   namedExports: {
-    query: ({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) => {
+    query: ({
+      prompt,
+      options,
+    }: {
+      prompt: AsyncIterable<{ message: { content: unknown } }>;
+      options: { model: string; env: NodeJS.ProcessEnv };
+    }) => {
+      capturedOptions.push(options);
       const generator = currentScript(prompt);
       return {
         async initializationResult() {
@@ -304,4 +314,77 @@ test("the claude harness offers compaction and detection so a utility role canno
     recordModelCall: () => {},
   });
   assert.equal(verdict.respond, true);
+});
+
+test("Claude native routes custom models and utilities with isolated, refreshed credentials", async () => {
+  const spec: CustomProviderSpec = {
+    id: "claude-proxy",
+    name: "Claude proxy",
+    protocol: "anthropic",
+    baseUrl: "https://example.test/gateway/v1/",
+    models: [{ id: "custom/model[1M]" }],
+  };
+  const qualified = `${spec.id}/${spec.models[0]!.id}`;
+  setCustomProviders([spec]);
+  let apiKey = "custom-first";
+  currentScript = async function* (prompts) {
+    await prompts[Symbol.asyncIterator]().next();
+    yield resultMessage("OK");
+  };
+  const harness = createClaudeHarness({
+    modelId: qualified,
+    env: { ANTHROPIC_API_KEY: "built-in", ANTHROPIC_AUTH_TOKEN: "oauth", CLAUDE_CODE_OAUTH_TOKEN: "another-oauth" },
+    resolveCustomProvider: async () => ({ spec, apiKey }),
+  });
+  capturedOptions.length = 0;
+  try {
+    const { turn, llmRequests } = harnessTurn({ model: qualified });
+    assert.equal((await harness.turns.runTurn(turn)).reply, "OK");
+    apiKey = "custom-rotated";
+    await harness.models.judge?.("judge", "answer");
+    await harness.models.generateTitle?.("title");
+    assert.equal(capturedOptions.length, 3);
+    assert.deepEqual(
+      capturedOptions.map((option) => option.env.ANTHROPIC_API_KEY),
+      ["custom-first", "custom-rotated", "custom-rotated"],
+    );
+    for (const option of capturedOptions) {
+      assert.equal(option.model, "custom/model[1M]");
+      assert.equal(option.env.ANTHROPIC_BASE_URL, "https://example.test/gateway");
+      assert.equal(option.env.ANTHROPIC_AUTH_TOKEN, undefined);
+      assert.equal(option.env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+    }
+    assert.equal(new Set(capturedOptions.map((option) => option.env.HOME)).size, 3);
+    assert.equal(JSON.stringify(llmRequests).includes("custom-first"), false);
+    await harness.turns.runTurn(harnessTurn({ model: "claude-opus-5" }).turn);
+    assert.equal(capturedOptions.at(-1)?.env.ANTHROPIC_API_KEY, "built-in");
+    assert.equal(capturedOptions.at(-1)?.env.ANTHROPIC_AUTH_TOKEN, "oauth");
+  } finally {
+    await harness.turns.close?.();
+    setCustomProviders([]);
+  }
+});
+
+test("Claude native refuses unavailable custom credentials without launching the SDK", async () => {
+  setCustomProviders([
+    {
+      id: "missing-claude",
+      name: "Missing",
+      protocol: "anthropic",
+      baseUrl: "https://example.test",
+      models: [{ id: "missing-model" }],
+    },
+  ]);
+  const harness = createClaudeHarness({
+    env: { ANTHROPIC_API_KEY: "must-not-leak" },
+    resolveCustomProvider: async () => null,
+  });
+  capturedOptions.length = 0;
+  try {
+    await assert.rejects(harness.turns.runTurn(harnessTurn({ model: "missing-model" }).turn), /unavailable/);
+    assert.equal(capturedOptions.length, 0);
+  } finally {
+    await harness.turns.close?.();
+    setCustomProviders([]);
+  }
 });

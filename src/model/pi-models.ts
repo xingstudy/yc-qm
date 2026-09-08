@@ -176,8 +176,13 @@ export function contextTokenBudgetForModel(id: string): number | undefined {
 
 export function modelSupportedByHarness(id: string | undefined, harness: string): boolean {
   if (!id) return false;
-  if (isCustomModelId(id) && !REGISTRY_BY_ID.has(id))
-    return harness === "pi" || harness === "opencode" || harness === "mock";
+  if (isCustomModelId(id) && !REGISTRY_BY_ID.has(id)) {
+    if (harness === "pi" || harness === "opencode" || harness === "mock") return true;
+    const api = resolveCustomModel(id)?.api;
+    return (
+      (harness === "claude" && api === "anthropic-messages") || (harness === "codex" && api === "openai-responses")
+    );
+  }
   if (harness === "pi" || harness === "opencode" || harness === "mock") return Boolean(resolveModel(id));
   const provider = resolveModel(id)?.provider;
   if (harness === "claude") return provider === "anthropic" || /^claude-/i.test(id);
