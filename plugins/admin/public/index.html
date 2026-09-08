@@ -4039,7 +4039,7 @@
                 <label
                   >Protocol
                   <select id="custom-provider-protocol">
-                    <option value="openai">OpenAI Chat Completions (Pi / OpenCode)</option>
+                    <option value="openai">OpenAI Chat Completions</option>
                     <option value="openai-responses">OpenAI Responses (Pi / OpenCode / Codex)</option>
                     <option value="anthropic">Anthropic Messages (Pi / OpenCode / Claude)</option>
                   </select></label
@@ -4052,6 +4052,10 @@
                     may include /v1.</small
                   ></label
                 >
+                <p class="muted">
+                  OpenRouter supports Codex and Claude Code through its compatible APIs. DeepSeek supports Claude Code
+                  through its Anthropic API. Other endpoints require Responses for Codex or Messages for Claude Code.
+                </p>
                 <label
                   >API key
                   <input
@@ -5511,6 +5515,8 @@
         "OpenAI Chat Completions (Pi / OpenCode)": "OpenAI Chat Completions（Pi / OpenCode）",
         "OpenAI Responses (Pi / OpenCode / Codex)": "OpenAI Responses（Pi / OpenCode / Codex）",
         "Anthropic Messages (Pi / OpenCode / Claude)": "Anthropic Messages（Pi / OpenCode / Claude）",
+        "OpenRouter supports Codex and Claude Code through its compatible APIs. DeepSeek supports Claude Code through its Anthropic API. Other endpoints require Responses for Codex or Messages for Claude Code.":
+          "OpenRouter 可通过兼容接口用于 Codex 和 Claude Code；DeepSeek 可通过 Anthropic 接口用于 Claude Code。其他端点需支持 Responses 才能用于 Codex，支持 Messages 才能用于 Claude Code。",
         "OpenAI-compatible": "OpenAI 兼容",
         "Anthropic-compatible": "Anthropic 兼容",
         "Base URL": "基础 URL",

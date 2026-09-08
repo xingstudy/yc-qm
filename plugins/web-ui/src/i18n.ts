@@ -266,6 +266,9 @@ const ZH: Record<string, string> = {
     "无法送达消息——正在运行的任务在发送途中结束。消息已返回编辑器。",
   "Could not deliver the message — the running task never settled. It is back in the composer.":
     "无法送达消息——正在运行的任务始终未完成。消息已返回编辑器。",
+  "No available models": "暂无可用模型",
+  "No compatible model is configured. Ask an administrator to configure a model provider.":
+    "尚未配置兼容模型，请联系管理员配置模型供应商。",
   "Could not load runtime settings.": "无法加载运行时设置。",
   "Could not send message.": "无法发送消息。",
   "Could not start the conversation.": "无法开始对话。",

@@ -59,14 +59,6 @@ const DEFAULT_PICKER_MODEL_IDS: readonly string[] = [
   "claude-sonnet-5",
   "claude-haiku-4-5",
 ];
-const DEFAULT_CODEX_MODEL_IDS: readonly string[] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
-
-function defaultModelIdsForHarness(harnessId: string): readonly string[] {
-  if (harnessId === "codex") return DEFAULT_CODEX_MODEL_IDS;
-  if (harnessId === "claude") return DEFAULT_PICKER_MODEL_IDS;
-  return [...DEFAULT_PICKER_MODEL_IDS, ...DEFAULT_CODEX_MODEL_IDS];
-}
-
 const HARNESS_LABELS: Record<string, string> = {
   pi: "Pi",
   opencode: "OpenCode",
@@ -86,12 +78,15 @@ function buildOption(
     const meta = MODEL_CATALOG[id] ?? (dynamic ? { label: dynamic.name, buttonLabel: dynamic.name } : null);
     if (!meta) return null;
     const model = getBaseModel(id, dynamic);
+    const providerLabel = dynamic ? ` · ${dynamic.provider}` : "";
     return {
       value: qualified ? `${harnessId}:${id}` : id,
       harnessId,
       harnessLabel: HARNESS_LABELS[harnessId] ?? harnessId,
       model,
       ...meta,
+      label: `${meta.label}${providerLabel}`,
+      buttonLabel: `${meta.buttonLabel}${providerLabel}`,
     };
   } catch {
     return null;
@@ -112,8 +107,7 @@ function buildOptions(
     const opt = buildOption(id, harnessId, qualified, catalog);
     if (opt) out.push(opt);
   }
-  if (out.length) return out;
-  return harnessId === "pi" ? buildOptions(DEFAULT_PICKER_MODEL_IDS, "pi", qualified, catalog) : [];
+  return out;
 }
 
 interface RuntimeOptions {
@@ -121,7 +115,7 @@ interface RuntimeOptions {
   defaultValue: string | null;
 }
 
-const FALLBACK: RuntimeOptions = { options: buildOptions(DEFAULT_PICKER_MODEL_IDS), defaultValue: null };
+const FALLBACK: RuntimeOptions = { options: [], defaultValue: null };
 const byScope = new Map<string, RuntimeOptions>();
 let lastApplied: RuntimeOptions = FALLBACK;
 
@@ -146,8 +140,9 @@ export function getModelOptionsForHarness(harnessId: string, scopeKey?: string |
 }
 
 export function applyPickerModelIds(ids: readonly string[] | null | undefined, baseModelId?: string | null): void {
+  const options = buildOptions(ids && ids.length ? ids : DEFAULT_PICKER_MODEL_IDS);
   lastApplied = {
-    options: buildOptions(ids && ids.length ? ids : DEFAULT_PICKER_MODEL_IDS),
+    options: options.length ? options : buildOptions(DEFAULT_PICKER_MODEL_IDS),
     defaultValue: baseModelId ?? null,
   };
 }
@@ -157,13 +152,9 @@ export function runtimeModelOptions(
   modelsByHarness: Readonly<Record<string, readonly string[]>>,
   catalog: Readonly<Record<string, CatalogModelInfo>> = {},
 ): ModelOption[] {
-  const options = approvedHarnesses.flatMap((harnessId) => {
-    const configured = buildOptions(modelsByHarness[harnessId] ?? [], harnessId, true, catalog);
-    return configured.length
-      ? configured
-      : buildOptions(defaultModelIdsForHarness(harnessId), harnessId, true, catalog);
-  });
-  return options.length ? options : buildOptions(DEFAULT_PICKER_MODEL_IDS);
+  return approvedHarnesses.flatMap((harnessId) =>
+    buildOptions(modelsByHarness[harnessId] ?? [], harnessId, true, catalog),
+  );
 }
 
 export function applyRuntimeOptions(
@@ -181,12 +172,25 @@ export function applyRuntimeOptions(
 
 export function defaultModelValue(scopeKey?: string | null): ModelOptionValue {
   const { options, defaultValue } = runtimeFor(scopeKey);
-  return options.find((o) => o.value === defaultValue)?.value ?? options[0]!.value;
+  return options.find((o) => o.value === defaultValue)?.value ?? options[0]?.value ?? "";
 }
 
 export function transcriptModel(scopeKey?: string | null): Model<Api> {
   const { options, defaultValue } = runtimeFor(scopeKey);
-  return (options.find((o) => o.value === defaultValue) ?? options[0]!).model;
+  return (
+    (options.find((o) => o.value === defaultValue) ?? options[0])?.model ?? getBaseModel(DEFAULT_PICKER_MODEL_IDS[0]!)
+  );
+}
+
+export function unavailableModelOption(): ModelOption {
+  return {
+    value: "",
+    harnessId: "",
+    harnessLabel: "—",
+    model: transcriptModel(),
+    label: "No available models",
+    buttonLabel: "No available models",
+  };
 }
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "ultracode" | "auto";

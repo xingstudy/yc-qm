@@ -2,6 +2,7 @@ import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { providerBaseUrl } from "./provider-endpoints.ts";
 import { isCustomModelId, resolveCustomModel } from "./custom-providers.ts";
+import { nativeProviderTarget } from "./native-provider-target.ts";
 
 const getModel = getBuiltinModel as unknown as (provider: string, id: string) => Model<Api> | undefined;
 
@@ -176,17 +177,12 @@ export function contextTokenBudgetForModel(id: string): number | undefined {
 
 export function modelSupportedByHarness(id: string | undefined, harness: string): boolean {
   if (!id) return false;
-  if (isCustomModelId(id) && !REGISTRY_BY_ID.has(id)) {
-    if (harness === "pi" || harness === "opencode" || harness === "mock") return true;
-    const api = resolveCustomModel(id)?.api;
-    return (
-      (harness === "claude" && api === "anthropic-messages") || (harness === "codex" && api === "openai-responses")
-    );
+  const model = resolveModel(id);
+  if (harness === "pi" || harness === "opencode" || harness === "mock") return Boolean(model);
+  if (harness === "claude" || harness === "codex") {
+    if (model) return Boolean(nativeProviderTarget(model, harness));
+    return harness === "claude" ? /^claude-/i.test(id) : /^(?:gpt-|o\d|codex|openai\/)/i.test(id);
   }
-  if (harness === "pi" || harness === "opencode" || harness === "mock") return Boolean(resolveModel(id));
-  const provider = resolveModel(id)?.provider;
-  if (harness === "claude") return provider === "anthropic" || /^claude-/i.test(id);
-  if (harness === "codex") return provider === "openai" || /^(?:gpt-|o\d|codex|openai\/)/i.test(id);
   return false;
 }
 
@@ -233,7 +229,7 @@ export function modelProviderAvailabilityFor(
 ): ModelProviderAvailability {
   if (harness === "pi") return managedKeys;
   if (harness === "opencode") return { ...configKeys, openrouter: false };
-  if (harness === "codex") return configKeys;
+  if (harness === "codex" || harness === "claude") return managedKeys;
   return ALL_PROVIDERS_AVAILABLE;
 }
 

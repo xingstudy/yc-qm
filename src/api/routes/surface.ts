@@ -1470,6 +1470,10 @@ async function putRuntimeConfig(ctx: ApiCtx): Promise<void> {
       return sendJson(ctx.res, 400, { error: "harness_not_approved" });
     if (typeof modelId !== "string" || !modelSupportedByHarness(modelId, harnessId))
       return sendJson(ctx.res, 400, { error: "model_not_supported" });
+    const configuredKeys = ctx.deps.providerKeys ?? ALL_PROVIDERS_AVAILABLE;
+    const managedKeys = ctx.deps.modelCredentials ? await ctx.deps.modelCredentials.availability() : configuredKeys;
+    if (!serviceableModelIds([modelId], modelProviderAvailabilityFor(harnessId, configuredKeys, managedKeys)).length)
+      return sendJson(ctx.res, 400, { error: "model_provider_not_configured" });
     if (!(await webuiModelEnabled(ctx, modelId))) return sendJson(ctx.res, 400, { error: "model_not_enabled" });
     const effortLevel = ctx.body.effortLevel ?? "auto";
     if (typeof effortLevel !== "string" || !(THINKING_LEVELS as readonly string[]).includes(effortLevel))

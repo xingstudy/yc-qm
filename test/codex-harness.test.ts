@@ -755,6 +755,10 @@ test("Codex custom providers isolate concurrent processes and refresh credential
     .map((line) => JSON.parse(line));
   assert.equal(connections.length, 3);
   assert.equal(new Set(connections.map((connection) => connection.home)).size, 3);
+  assert.deepEqual(recorded.map((request) => (request as HarnessLlmRequestRecord).model).sort(), [
+    "alpha/custom/model",
+    "beta/custom/model",
+  ]);
   assert.deepEqual(connections.map((connection) => connection.key).sort(), [
     "alpha-key-1",
     "alpha-key-2",
@@ -795,4 +799,69 @@ test("Codex unavailable custom credentials do not fall back to built-in auth", a
     setCustomProviders([]);
   });
   await assert.rejects(harness.models.oneShot!("hello", "test"), /unavailable/);
+});
+
+test("Codex uses live managed credentials for official and OpenRouter turns", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-codex-managed-test-"));
+  const binary = fakeCodexBinary(dir);
+  const dump = join(dir, "connections.jsonl");
+  writeFileSync(
+    binary,
+    readFileSync(binary, "utf8").replace(
+      '  if (msg.method === "thread/start") {',
+      `  if (msg.method === "thread/start") {
+    require("node:fs").appendFileSync(${JSON.stringify(dump)}, JSON.stringify({ model: msg.params.model, key: process.env.OPENAI_API_KEY, baseUrl: process.env.OPENAI_BASE_URL, token: process.env.CODEX_ACCESS_TOKEN }) + "\\n");`,
+    ),
+  );
+  let key: string | null = "managed-first";
+  const providers: string[] = [];
+  const harness = createCodexHarness({
+    binaryPath: binary,
+    modelId: "openrouter/auto",
+    env: { PATH: process.env.PATH, OPENAI_API_KEY: "ambient-key", CODEX_ACCESS_TOKEN: "ambient-token" },
+    resolveModelCredential: async (provider) => {
+      providers.push(provider);
+      return key;
+    },
+  });
+  t.after(async () => {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const run = (model: string) =>
+    harness.turns.runTurn({
+      session: { id: model } as Session,
+      input: "hello",
+      systemPrompt: "be brief",
+      model,
+      history: [],
+      readOnly: true,
+      tools: {} as HarnessTurnInput["tools"],
+      scopeLabel: "org:test" as ScopeId,
+      orgScopeId: "org:test" as ScopeId,
+      emit: async (entry) => ({ ...entry, sessionId: model, seq: 1, createdAt: Date.now() }) as SessionEntry,
+      recordModelCall: () => {},
+      recordLlmRequest: () => {},
+    });
+  assert.equal((await run("gpt-5.6-sol")).reply, "hello");
+  key = "router-rotated";
+  assert.equal((await run("openrouter/auto")).reply, "hello");
+  await harness.models.judge?.("judge", "answer");
+  const connections = readFileSync(dump, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(providers, ["openai", "openrouter", "openrouter"]);
+  assert.deepEqual(
+    connections.map((connection) => connection.key),
+    ["managed-first", "router-rotated", "router-rotated"],
+  );
+  for (const connection of connections.slice(1)) {
+    assert.equal(connection.model, "openrouter/auto");
+    assert.equal(connection.baseUrl, "https://openrouter.ai/api/v1");
+    assert.equal(connection.token, undefined);
+  }
+  key = null;
+  await assert.rejects(run("gpt-5.6-sol"), /not configured/);
+  assert.equal(readFileSync(dump, "utf8").trim().split("\n").length, 3);
 });

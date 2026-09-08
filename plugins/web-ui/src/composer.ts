@@ -37,6 +37,7 @@ import {
   applyRuntimeOptions,
   defaultEffortForModel,
   defaultModelValue,
+  unavailableModelOption,
   effortLabel,
   getHarnessOptions,
   getModelOptions,
@@ -117,8 +118,9 @@ function modelOptionFor(value: ModelOptionValue, scopeKey?: string | null): Mode
   const options = getModelOptions(scopeKey);
   return (
     options.find((option) => option.value === value) ??
-    options.find((option) => option.value === defaultModelValue()) ??
-    options[0]
+    options.find((option) => option.value === defaultModelValue(scopeKey)) ??
+    options[0] ??
+    unavailableModelOption()
   );
 }
 
@@ -371,13 +373,20 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
       (selectedModel.value !== defaultModelValue(scopeKey()) ||
         composerState.effortLevel !== effectiveEffort ||
         fastOn !== effectiveFast);
-    const inputBlocked = runtimePending || ctx.chat.state.resolvingApprovals.size > 0 || approvalPauses.length > 0;
+    const modelUnavailable = !selectedModel.value;
+    const inputBlocked =
+      modelUnavailable || runtimePending || ctx.chat.state.resolvingApprovals.size > 0 || approvalPauses.length > 0;
     const attachingDisabled = inputBlocked;
     let placeholder = t("Ask anything");
-    if (inputBlocked) placeholder = runtimePending ? t("Loading runtime…") : t("Approve or deny to continue");
+    if (modelUnavailable && !runtimePending) placeholder = t("No available models");
+    else if (inputBlocked) placeholder = runtimePending ? t("Loading runtime…") : t("Approve or deny to continue");
     else if (agent.state.isStreaming) placeholder = t("Queue a message for after this turn…");
     let composerNotice: TemplateResult | typeof nothing = nothing;
-    if (composerState.processingFiles) {
+    if (modelUnavailable && !runtimePending) {
+      composerNotice = html`<div class="composer-note">
+        ${t("No compatible model is configured. Ask an administrator to configure a model provider.")}
+      </div>`;
+    } else if (composerState.processingFiles) {
       composerNotice = html`<div class="composer-note">${t("Preparing files...")}</div>`;
     } else if (!approvalPauses.length && runtimePending) {
       composerNotice = composerState.error
@@ -565,7 +574,10 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
                     }
                     ${menuControl({
                       kind: "model",
-                      label: selectedModel.value === "auto" ? t(selectedModel.buttonLabel) : selectedModel.buttonLabel,
+                      label:
+                        !selectedModel.value || selectedModel.value === "auto"
+                          ? t(selectedModel.buttonLabel)
+                          : selectedModel.buttonLabel,
                       title: "Model",
                       selected: selectedModel.value,
                       align: "right",
@@ -678,7 +690,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
         ${icon(ArrowUp, 17)}
       </button>`;
     }
-    const canQueue = Boolean(composerState.draft.trim());
+    const canQueue = Boolean(composerState.draft.trim() && currentModelOption().value);
     return html`
       <button
         class="stop-btn"
@@ -1118,6 +1130,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
       Boolean(composerState.draft.trim() || composerState.attachments.length) &&
       !composerState.processingFiles &&
       activeRuntimeConfig !== null &&
+      Boolean(currentModelOption().value) &&
       ctx.chat.state.resolvingApprovals.size === 0 &&
       !ctx.chat.hasUnresolvedApproval()
     );
@@ -1184,7 +1197,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
   async function queueDraft(agent: Agent): Promise<void> {
     const threadRef = ctx.chat.state.threadRef;
     const text = composerState.draft.trim();
-    if (!text || !threadRef) return;
+    if (!text || !threadRef || !currentModelOption().value) return;
     clearActiveDraft();
     composerState.draft = "";
     composerState.error = "";
@@ -1311,6 +1324,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
   }
 
   async function sendPrompt(agent: Agent): Promise<void> {
+    if (!currentModelOption().value) return;
     if (composerState.processingFiles) return;
     if (!activeRuntimeConfig && !agent.state.isStreaming) return;
     if (composerState.pasteView) closePasteView(agent);

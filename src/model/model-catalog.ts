@@ -132,7 +132,6 @@ export function selectableCatalogForHarness(
 ): ModelCatalogEntry[] {
   return catalog.filter(
     (model) =>
-      (model.provider !== "openrouter" || harness === "pi" || harness === "mock") &&
-      modelSupportedByHarness(model.id, harness),
+      (model.provider !== "openrouter" || harness !== "opencode") && modelSupportedByHarness(model.id, harness),
   );
 }

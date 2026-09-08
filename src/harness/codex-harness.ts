@@ -1,8 +1,9 @@
 import {
-  nativeCustomModel,
+  nativeUtilityModel,
   nativeProviderEnv,
   resolveNativeProvider,
   type ResolveNativeProvider,
+  type ResolveNativeCredential,
   type NativeProviderBinding,
 } from "./native-provider.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -33,6 +34,7 @@ export interface CodexHarnessOptions {
   binaryPath?: string;
   env?: NodeJS.ProcessEnv;
   resolveCustomProvider?: ResolveNativeProvider;
+  resolveModelCredential?: ResolveNativeCredential;
   scratchExec?: boolean;
   ownerAuthExec?: boolean;
   reachExec?: boolean;
@@ -368,8 +370,7 @@ function createCodexHarnessInstance(opts: CodexHarnessOptions, binding?: NativeP
       opts.defaultModelId,
       DEFAULT_CODEX_MODEL_ID,
     ].find((id): id is string => modelSupportedByHarness(id, "codex"))!;
-  const judgeModelId = () =>
-    opts.judgeModelId ?? (nativeCustomModel(resolveModelId()) ? resolveModelId() : "gpt-5.4-mini");
+  const judgeModelId = () => opts.judgeModelId ?? nativeUtilityModel(resolveModelId(), "codex");
   const defaultTurnWallClockMs = opts.turnWallClockMs ?? CONFIG_DEFAULTS.turnWallClockSec * 1000;
   let runtime: Runtime | null = null;
   let starting: Promise<Runtime> | null = null;
@@ -596,7 +597,12 @@ function createCodexHarnessInstance(opts: CodexHarnessOptions, binding?: NativeP
     }
     const model = turn.model ?? resolveModelId(turn.scopeLabel);
     if (!binding) {
-      const selected = await resolveNativeProvider(model, "codex", opts.resolveCustomProvider);
+      const selected = await resolveNativeProvider(
+        model,
+        "codex",
+        opts.resolveCustomProvider,
+        opts.resolveModelCredential,
+      );
       if (closed) throw new NonRetryableTurnError("codex harness is closed");
       if (turn.cancel?.aborted) return { reply: "", stopped: true };
       if (selected) {
@@ -745,7 +751,7 @@ function createCodexHarnessInstance(opts: CodexHarnessOptions, binding?: NativeP
       taskIds: new Map(),
       taskStatuses: new Map(),
       taskResults: new Set(),
-      model: selectedModel,
+      model,
       modelCalls: 0,
       usageInputTotals: new Map(),
       usageByThread: new Map(),
@@ -768,7 +774,7 @@ function createCodexHarnessInstance(opts: CodexHarnessOptions, binding?: NativeP
         await turn.recordLlmRequest({
           turnSeq: userEntry.seq,
           step: 0,
-          model: selectedModel,
+          model,
           promptEnvelope,
           truncated: Boolean(turn.images?.length),
           transport: { modelId: selectedModel },
@@ -867,7 +873,7 @@ function createCodexHarnessInstance(opts: CodexHarnessOptions, binding?: NativeP
       if (state.modelCalls === 0) {
         state.modelCalls = 1;
         turn.recordModelCall({
-          model: selectedModel,
+          model,
           inputTokens: state.fallbackInputTokens,
           entryCount: turn.history.length,
         });

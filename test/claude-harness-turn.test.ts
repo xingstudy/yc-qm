@@ -388,3 +388,41 @@ test("Claude native refuses unavailable custom credentials without launching the
     setCustomProviders([]);
   }
 });
+
+test("Claude managed keys rotate per turn and OpenRouter utilities retain their provider", async () => {
+  currentScript = async function* (prompts) {
+    await prompts[Symbol.asyncIterator]().next();
+    yield resultMessage("OK");
+  };
+  let key: string | null = "managed-first";
+  const providers: string[] = [];
+  const harness = createClaudeHarness({
+    modelId: "openrouter/auto",
+    env: { ANTHROPIC_API_KEY: "ambient-key", ANTHROPIC_AUTH_TOKEN: "ambient-token" },
+    resolveModelCredential: async (provider) => {
+      providers.push(provider);
+      return key;
+    },
+  });
+  capturedOptions.length = 0;
+  try {
+    await harness.turns.runTurn(harnessTurn({ model: "claude-opus-5" }).turn);
+    assert.equal(capturedOptions.at(-1)?.env.ANTHROPIC_API_KEY, "managed-first");
+    assert.equal(capturedOptions.at(-1)?.env.ANTHROPIC_AUTH_TOKEN, undefined);
+    key = "router-rotated";
+    await harness.turns.runTurn(harnessTurn({ model: "openrouter/auto" }).turn);
+    await harness.models.judge?.("judge", "answer");
+    for (const option of capturedOptions.slice(1)) {
+      assert.equal(option.model, "openrouter/auto");
+      assert.equal(option.env.ANTHROPIC_BASE_URL, "https://openrouter.ai/api");
+      assert.equal(option.env.ANTHROPIC_AUTH_TOKEN, "router-rotated");
+      assert.equal(option.env.ANTHROPIC_API_KEY, "");
+    }
+    assert.deepEqual(providers, ["anthropic", "openrouter", "openrouter"]);
+    key = null;
+    await assert.rejects(harness.turns.runTurn(harnessTurn({ model: "openrouter/auto" }).turn), /not configured/);
+    assert.equal(capturedOptions.length, 3);
+  } finally {
+    await harness.turns.close?.();
+  }
+});

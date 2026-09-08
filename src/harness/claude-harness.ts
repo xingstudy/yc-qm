@@ -1,8 +1,9 @@
 import {
-  nativeCustomModel,
+  nativeUtilityModel,
   nativeProviderEnv,
   resolveNativeProvider,
   type ResolveNativeProvider,
+  type ResolveNativeCredential,
 } from "./native-provider.ts";
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -56,6 +57,7 @@ export interface ClaudeHarnessOptions {
   binaryPath?: string;
   env?: NodeJS.ProcessEnv;
   resolveCustomProvider?: ResolveNativeProvider;
+  resolveModelCredential?: ResolveNativeCredential;
   scratchExec?: boolean;
   ownerAuthExec?: boolean;
   reachExec?: boolean;
@@ -336,8 +338,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
       opts.defaultModelId,
       DEFAULT_AGENT_MODEL_ID,
     ].find((id): id is string => modelSupportedByHarness(id, "claude"))!;
-  const judgeModelId = () =>
-    opts.judgeModelId ?? (nativeCustomModel(resolveModelId()) ? resolveModelId() : "claude-haiku-4-5");
+  const judgeModelId = () => opts.judgeModelId ?? nativeUtilityModel(resolveModelId(), "claude");
   const defaultTurnWallClockMs = opts.turnWallClockMs ?? CONFIG_DEFAULTS.turnWallClockSec * 1000;
   const active = new Set<Query>();
 
@@ -348,7 +349,12 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
       throw new NonRetryableTurnError(`Model ${turn.model} is unavailable for claude`);
     }
     const model = turn.model ?? resolveModelId(turn.scopeLabel);
-    const binding = await resolveNativeProvider(model, "claude", opts.resolveCustomProvider);
+    const binding = await resolveNativeProvider(
+      model,
+      "claude",
+      opts.resolveCustomProvider,
+      opts.resolveModelCredential,
+    );
     if (closed) throw new NonRetryableTurnError("claude harness is closed");
     if (turn.cancel?.aborted) return { reply: "", stopped: true };
     const jail = mkdtempSync(join(tmpdir(), "qm-claude-"));

@@ -131,3 +131,59 @@ test("switching OpenAI wire APIs preserves encrypted credentials only at the sam
   const corruptReader = createCustomProviderStore({ backing, keyMaterial: "other-material" });
   await assert.rejects(corruptReader.resolveConnection(spec.id));
 });
+
+test("known provider endpoints select native protocols without trusting lookalike hosts", async () => {
+  for (const [baseUrl, claudeUrl, codexUrl] of [
+    ["https://openrouter.ai/api/v1", "https://openrouter.ai/api", "https://openrouter.ai/api/v1"],
+    ["https://api.deepseek.com/v1", "https://api.deepseek.com/anthropic", null],
+    ["https://openrouter.ai.example.test/api/v1", null, null],
+    ["https://openrouter.ai/custom/v1", null, null],
+  ] as const) {
+    const provider = { ...spec, protocol: "openai" as const, baseUrl };
+    setCustomProviders([provider]);
+    for (const harness of ["claude", "codex"] as const) {
+      const expected = harness === "claude" ? claudeUrl : codexUrl;
+      assert.equal(modelSupportedByHarness(modelId, harness), Boolean(expected));
+      const resolve = () => Promise.resolve({ spec: provider, apiKey: "vendor-key" });
+      if (!expected) {
+        await assert.rejects(resolveNativeProvider(modelId, harness, resolve), /does not support/);
+        continue;
+      }
+      const binding = await resolveNativeProvider(modelId, harness, resolve);
+      assert.equal(binding?.model.baseUrl, expected);
+      const env = nativeProviderEnv(harness, { CLAUDE_CODE_OAUTH_TOKEN: "ambient" }, binding);
+      if (harness === "claude") {
+        assert.equal(env.ANTHROPIC_AUTH_TOKEN, "vendor-key");
+        assert.equal(env.ANTHROPIC_API_KEY, "");
+        assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+      }
+    }
+  }
+});
+
+test("native official and OpenRouter models use live managed credentials and fail closed", async () => {
+  let key: string | null = "first";
+  for (const [model, harness, provider] of [
+    ["claude-opus-5", "claude", "anthropic"],
+    ["gpt-5.6-sol", "codex", "openai"],
+    ["openrouter/auto", "claude", "openrouter"],
+    ["openrouter/auto", "codex", "openrouter"],
+  ] as const) {
+    const resolve = async (id: string) => {
+      assert.equal(id, provider);
+      return key;
+    };
+    key = "first";
+    assert.equal((await resolveNativeProvider(model, harness, undefined, resolve))?.apiKey, "first");
+    key = "rotated";
+    assert.equal((await resolveNativeProvider(model, harness, undefined, resolve))?.apiKey, "rotated");
+    key = null;
+    await assert.rejects(resolveNativeProvider(model, harness, undefined, resolve), /not configured/);
+    await assert.rejects(
+      resolveNativeProvider(model, harness, undefined, async () => {
+        throw new Error("secret details");
+      }),
+      { message: `Model provider ${provider} credentials are unavailable` },
+    );
+  }
+});
