@@ -533,3 +533,65 @@ test("relay sink: a batch is only dequeued once core acknowledges it", async () 
   await sink.flush();
   assert.equal(calls.length, 2, "acknowledged records are not re-sent");
 });
+
+test("private network exceptions allow only approved DNS answers and preserve all other proxy checks", async () => {
+  const { records, sink } = recordingSink();
+  let ips = ["10.1.37.205"];
+  const server = buildEgressAuthzServer({
+    capabilitySecret: CAPABILITY_SECRET,
+    audit: sink,
+    authorizeActor: async () => true,
+    lookup: async () => ips,
+  });
+  const port = await listen(server);
+  const policy: EgressPolicy = {
+    allowedHosts: ["kibana.example.com"],
+    denyPrivateNetworks: true,
+    privateNetworkAllowedHosts: ["10.1.37.200-10.1.37.210", "fd00::/64"],
+  };
+  try {
+    const token = await egressToken(policy);
+    assert.equal(await check(port, "kibana.example.com:443", token), 200);
+    assert.equal(records.at(-1)?.verdict, "ok");
+    assert.equal(await check(port, "outside.example.com:443", token), 403);
+    assert.equal(
+      await check(
+        port,
+        "kibana.example.com:443",
+        await egressToken({ ...policy, deniedHosts: ["kibana.example.com"] }),
+      ),
+      403,
+    );
+    assert.equal(
+      await check(port, "kibana.example.com:443", await egressToken({ ...policy, deniedHosts: ["10.1.37.205"] })),
+      403,
+    );
+    ips = ["10.1.37.205", "10.1.38.1"];
+    assert.equal(await check(port, "kibana.example.com:443", token), 403);
+    ips = ["fd00::10"];
+    assert.equal(await check(port, "kibana.example.com:443", token), 200);
+    ips = ["fd00:0:0:1::1"];
+    assert.equal(await check(port, "kibana.example.com:443", token), 403);
+    const broad = await egressToken({
+      allowedHosts: [],
+      denyPrivateNetworks: true,
+      privateNetworkAllowedHosts: ["0.0.0.0/0", "::/0", "metadata.google.internal"],
+    });
+    for (const ip of [
+      "127.0.0.1",
+      "169.254.169.254",
+      "::1",
+      "fd00:ec2::254",
+      "::ffff:127.0.0.1",
+      "64:ff9b::7f00:1",
+      "64:ff9b::169.254.169.254",
+      "0064:ff9b::a9fe:a9fe",
+    ]) {
+      ips = [ip];
+      assert.equal(await check(port, "kibana.example.com:443", broad), 403, ip);
+    }
+    assert.equal(await check(port, "metadata.google.internal:443", broad), 403);
+  } finally {
+    await close(server);
+  }
+});

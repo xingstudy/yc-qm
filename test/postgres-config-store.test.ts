@@ -327,7 +327,11 @@ test(
     a.setCommandPolicy(ch, policy);
     await a.setSecurityPosture(ch, "strict");
     await a.setApprovalGrantModes(ch, { session: false, always: true });
-    a.setEgress(ch, { allowedHosts: ["api.example.com"], deniedHosts: ["evil.example"] });
+    a.setEgress(ch, {
+      allowedHosts: ["api.example.com"],
+      deniedHosts: ["evil.example"],
+      privateNetworkAllowedHosts: ["kibana.example.com", "10.1.37.0/24", "fd00::10-fd00::20"],
+    });
     a.setBaseModel(ch, "claude-opus-4-8");
     a.setPeopleDirectoryUrl(ch, "https://www.example.com/people");
     a.setBrowseMaxSteps(ch, 120);
@@ -358,7 +362,11 @@ test(
     assert.equal(await b.getSecurityPostureDurable(ch), "strict", "the security posture survived");
     assert.deepEqual(
       b.getEgress(ch),
-      { allowedHosts: ["api.example.com"], deniedHosts: ["evil.example"] },
+      {
+        allowedHosts: ["api.example.com"],
+        deniedHosts: ["evil.example"],
+        privateNetworkAllowedHosts: ["kibana.example.com", "10.1.37.0/24", "fd00::10-fd00::20"],
+      },
       "the egress policy survived",
     );
     assert.equal(b.getBaseModel(ch), "claude-opus-4-8", "the base model survived");

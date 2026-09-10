@@ -27,6 +27,38 @@ services:
       - SETGID
       - SETUID
 
+  egress-proxy:
+    profiles: [egress]
+    image: qm-egress-proxy:latest
+    build:
+      context: .
+      dockerfile: deploy/egress-proxy/Dockerfile
+      args:
+        NPM_INSTALL_REGISTRY: ${NPM_INSTALL_REGISTRY:-https://registry.npmjs.org}
+    restart: unless-stopped
+    environment:
+      CAPABILITY_SECRET: ${CAPABILITY_SECRET:?Set CAPABILITY_SECRET}
+      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET}
+      CORE_API_URL: http://host.docker.internal:8080
+      EGRESS_TOKENLESS: deny
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - ${QM_EGRESS_BIND_ADDRESS:-127.0.0.1}:48080:48080
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "Promise.all([fetch('http://127.0.0.1:48080'),fetch('http://127.0.0.1:48081/check')]).then(rs=>process.exit(rs.every(r=>r.status===403)?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   core:
     build:
       context: .
@@ -54,6 +86,8 @@ services:
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET:?Set PORTAL_IDENTITY_SECRET in .env}
       REQUIRE_SIGNED_PORTAL_IDENTITY: "1"
       SANDBOX_BACKEND: local
+      LOCAL_SANDBOX_EGRESS_PROXY_URL: ${LOCAL_SANDBOX_EGRESS_PROXY_URL:-}
+      LOCAL_SANDBOX_EGRESS_IMAGE: qm-egress-proxy:latest
       AGENT_API_URL: http://host.docker.internal:8080
       PUBLIC_WEB_URL: ${PORTAL_PUBLIC_URL:-http://localhost:8088}
       AUTH_ISSUER: ${AUTH_ISSUER:-http://localhost:8088/idp}

@@ -130,6 +130,7 @@ export interface CommandEvaluation {
   reason?: string;
   matched?: string;
   approvalKey?: string;
+  scopeId?: string;
 }
 
 interface ShellScan {
@@ -874,6 +875,9 @@ function firstMatch(scannable: string, rules: readonly CommandRule[]): CommandEv
 }
 
 export function evaluateCommand(command: string, policy: CommandPolicy): CommandEvaluation {
+  if (policy.constraints?.length) {
+    return evaluateConstraints(command, policy, evaluateCommand(command, { mode: policy.mode, rules: policy.rules }));
+  }
   const matched = firstMatch(scannableCommand(command), policy.rules);
   if (matched) return matched;
   if (policy.mode === "allowlist") {
@@ -882,11 +886,28 @@ export function evaluateCommand(command: string, policy: CommandPolicy): Command
   return { decision: "allow" };
 }
 
+function evaluateConstraints(command: string, policy: CommandPolicy, base: CommandEvaluation): CommandEvaluation {
+  const rank = { allow: 0, require_approval: 1, deny: 2 };
+  let result = base;
+  for (const constraint of policy.constraints ?? []) {
+    const candidate = evaluateCommand(command, constraint.policy);
+    if (rank[candidate.decision] > rank[result.decision]) result = { ...candidate, scopeId: constraint.scopeId };
+  }
+  return result;
+}
+
 export function evaluateCommandWithLayer(
   command: string,
   policy: CommandPolicy,
   layerRules: readonly CommandRule[],
 ): CommandEvaluation {
+  if (policy.constraints?.length) {
+    return evaluateConstraints(
+      command,
+      policy,
+      evaluateCommandWithLayer(command, { mode: policy.mode, rules: policy.rules }, layerRules),
+    );
+  }
   const scannable = scannableCommand(command);
   const scopeMatch = firstMatch(scannable, policy.rules);
   if (scopeMatch) return scopeMatch;

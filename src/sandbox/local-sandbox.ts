@@ -6,7 +6,8 @@ import type { WorkspaceStore } from "../workspace/workspace-store.ts";
 import { createKeyedQueue, sleep } from "../util/async.ts";
 import { swallowAs, errMessage } from "../util/errors.ts";
 import { shq } from "../util/shell.ts";
-import { nonInteractiveShellPrefix } from "./sandbox-env.ts";
+import { createLocalEgress, DEFAULT_LOCAL_EGRESS_IMAGE, localGuardName } from "./local-egress.ts";
+import { nonInteractiveShellPrefix, forceThroughProxyEnv } from "./sandbox-env.ts";
 import { createExecProcessSessions, type ExecProcessIo } from "./exec-process-session.ts";
 import { materializeRoLayers } from "./ro-layers.ts";
 import { createExecBackup, createExecFileOps, posixJoin } from "./exec-file-ops.ts";
@@ -40,6 +41,8 @@ export type { DockerExec };
 export interface LocalSandboxOptions {
   image?: string;
   dockerBin?: string;
+  egressProxyUrl?: string;
+  egressImage?: string;
   cpus?: number;
   memoryMb?: number;
   defaultTimeoutSec?: number;
@@ -69,6 +72,9 @@ function localSlug(id: string): string {
 export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandboxOptions = {}): Sandbox {
   const image = opts.image ?? DEFAULT_LOCAL_SANDBOX_IMAGE;
   const dexec = opts.dockerExec ?? spawnDockerExec(opts.dockerBin ?? "docker");
+  const egress = opts.egressProxyUrl
+    ? createLocalEgress(dexec, opts.egressProxyUrl, opts.egressImage ?? DEFAULT_LOCAL_EGRESS_IMAGE, configOrgId())
+    : undefined;
   const fetchImpl = opts.fetchImpl ?? fetch;
   const defaultTimeoutSec = opts.defaultTimeoutSec ?? 600;
   const homeDir = opts.homeDir ?? HOME_DIR;
@@ -116,17 +122,24 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     return preflightDone;
   }
 
-  async function containerState(name: string): Promise<{ running: boolean; imageId: string } | null> {
-    const r = await dexec(["inspect", "-f", "{{.State.Running}} {{.Image}}", name]);
+  async function containerState(
+    name: string,
+  ): Promise<{ running: boolean; imageId: string; egressLabel: string } | null> {
+    const r = await dexec([
+      "inspect",
+      "-f",
+      '{{.State.Running}} {{.Image}} {{if .Config.Labels}}{{index .Config.Labels "qm.egress"}}{{end}}',
+      name,
+    ]);
     if (r.code !== 0) return null;
-    const [running = "", imageId = ""] = r.stdout.trim().split(/\s+/);
-    return { running: running === "true", imageId };
+    const [running = "", imageId = "", rawLabel = ""] = r.stdout.trim().split(/\s+/);
+    return { running: running === "true", imageId, egressLabel: rawLabel === "<no value>" ? "" : rawLabel };
   }
 
   async function resolvePort(name: string): Promise<number> {
     const cached = portByName.get(name);
     if (cached) return cached;
-    const r = await dexec(["port", name, `${AGENT_PORT}/tcp`]);
+    const r = await dexec(["port", egress ? localGuardName(name) : name, `${AGENT_PORT}/tcp`]);
     const m = r.stdout
       .split("\n")[0]
       ?.trim()
@@ -173,9 +186,14 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
 
   async function startContainer(name: string): Promise<void> {
     portByName.delete(name);
-    await releaseNetwork(name);
-    const net = await ensureNetwork(name);
-    await checkedDocker(["network", "connect", net, name]);
+    if (egress) {
+      if (!(await egress.ready(name)))
+        throw new Error("Local network guard is unavailable; provision the sandbox again before running commands");
+    } else {
+      await releaseNetwork(name);
+      const net = await ensureNetwork(name);
+      await checkedDocker(["network", "connect", net, name]);
+    }
     const r = await dexec(["start", name]);
     if (r.code !== 0) throw new Error(`docker start ${name} failed: ${r.stderr.trim()}`);
     await waitDaemon(name);
@@ -185,6 +203,8 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     await provisionQueue(name, async () => {
       const state = await containerState(name);
       if (!state) throw new Error(`local sandbox container ${name} is gone`);
+      if (state.egressLabel !== (egress?.label ?? "") || (egress && !(await egress.ready(name))))
+        throw new Error("Local sandbox network configuration changed; provision it again before running commands");
       if (!state.running) await startContainer(name);
     });
   }
@@ -193,6 +213,10 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     const r = await dexec(args);
     if (r.code !== 0 && !missing?.test(r.stderr))
       throw new Error(`docker ${args.join(" ")} failed: ${r.stderr.trim()}`);
+  }
+
+  async function removeGuard(name: string): Promise<void> {
+    await checkedDocker(["rm", "-f", localGuardName(name)], /No such container/i);
   }
 
   async function releaseNetwork(name: string): Promise<void> {
@@ -244,6 +268,14 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
 
   async function runContainer(name: string, scope: string | undefined, withVolume: boolean): Promise<void> {
     const net = await ensureNetwork(name);
+    if (egress) {
+      try {
+        await egress.create(name, net);
+      } catch (error) {
+        await checkedDocker(["network", "rm", net], /not found|No such network/i);
+        throw error;
+      }
+    }
     const args = [
       "run",
       "-d",
@@ -256,18 +288,28 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
       `qm.org=${configOrgId()}`,
       "--label",
       "agent_env=dev",
+      ...(egress
+        ? [
+            "--label",
+            `qm.egress=${egress.label}`,
+            "--cap-drop=NET_RAW",
+            "--cap-drop=NET_ADMIN",
+            "--security-opt=no-new-privileges:true",
+          ]
+        : []),
       "--network",
-      net,
+      egress ? `container:${localGuardName(name)}` : net,
       ...(withVolume && scope ? ["-v", `${localVolumeName(scope)}:${homeDir}`] : []),
-      "-p",
-      `127.0.0.1:0:${AGENT_PORT}`,
-      "--add-host=host.docker.internal:host-gateway",
+      ...(!egress ? ["-p", `127.0.0.1:0:${AGENT_PORT}`, "--add-host=host.docker.internal:host-gateway"] : []),
       ...(opts.cpus ? ["--cpus", String(opts.cpus)] : []),
       ...(opts.memoryMb ? ["--memory", `${opts.memoryMb}m`] : []),
       image,
     ];
     const r = await dexec(args, 120_000);
-    if (r.code !== 0) throw new Error(`docker run ${name} failed: ${r.stderr.trim()}`);
+    if (r.code !== 0) {
+      await egress?.remove(name);
+      throw new Error(`docker run ${name} failed: ${r.stderr.trim()}`);
+    }
     portByName.delete(name);
     await waitDaemon(name);
   }
@@ -278,12 +320,18 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
       const name = localContainerName(scope);
       scopeByContainer.set(name, scope);
       const state = await containerState(name);
-      if (state && state.imageId === imageId) {
+      const networkMatches = state?.egressLabel === (egress?.label ?? "") && (!egress || !!(await egress.ready(name)));
+      if (state && !networkMatches && state.running)
+        throw new Error(
+          `Local sandbox ${name} needs a network configuration change. Drain active turns and stop this container, then retry; its home volume is preserved.`,
+        );
+      if (state && state.imageId === imageId && networkMatches) {
         if (!state.running) await startContainer(name);
         activeByContainer.set(name, (activeByContainer.get(name) ?? 0) + 1);
         return { name, coldStart: false };
       }
       if (state) await checkedDocker(["rm", "-f", name]);
+      await removeGuard(name);
       const volume = localVolumeName(scope);
       const hadVolume = (await dexec(["volume", "inspect", volume])).code === 0;
       if (!hadVolume) {
@@ -302,11 +350,18 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
       const name = localScratchName(key);
       scratchByKey.set(key, name);
       const state = await containerState(name);
-      if (state) {
+      const networkMatches = state?.egressLabel === (egress?.label ?? "") && (!egress || !!(await egress.ready(name)));
+      if (state && !networkMatches && state.running)
+        throw new Error(
+          `Local scratch sandbox ${name} needs a network configuration change; stop it after active turns finish and retry`,
+        );
+      if (state && networkMatches) {
         if (!state.running) await startContainer(name);
         activeByContainer.set(name, (activeByContainer.get(name) ?? 0) + 1);
         return { name, coldStart: false };
       }
+      if (state) await checkedDocker(["rm", "-f", name]);
+      await removeGuard(name);
       await runContainer(name, undefined, false);
       activeByContainer.set(name, (activeByContainer.get(name) ?? 0) + 1);
       return { name, coldStart: true };
@@ -317,7 +372,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     backend: "local-docker",
     writablePersistence: "resident_disk",
     processSessions: true,
-    egressEnforcement: "none",
+    egressEnforcement: egress ? "domain" : "none",
     spec: {
       os: `Ubuntu 26.04 LTS, glibc — local Docker container on a ${arch()} host (dev only)`,
       runtimes: ["Node 24", "Python 3 (venv on PATH — `pip install` just works)"],
@@ -369,7 +424,22 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
       const body = scratch ? await ensureScratch(scratch.key) : await ensureContainer(scope);
       const name = body.name;
 
-      const env = provOpts?.env && Object.keys(provOpts.env).length ? provOpts.env : undefined;
+      const proxyUrl = egress ? await egress.ready(name) : undefined;
+      if (egress && !proxyUrl) {
+        await sandbox.teardown({ id: name, rootDir: workspaceDir });
+        throw new Error("Local network guard became unavailable during provision");
+      }
+      const env = {
+        ...provOpts?.env,
+        ...(proxyUrl
+          ? {
+              ...forceThroughProxyEnv(proxyUrl, provOpts?.egressToken ?? "unavailable"),
+              NODE_USE_ENV_PROXY: "1",
+              ALL_PROXY: "",
+              all_proxy: "",
+            }
+          : {}),
+      };
       const handle: SandboxHandle = {
         id: name,
         rootDir: workspaceDir,
@@ -453,6 +523,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
         if (handle.scratch) {
           for (const [k, name] of scratchByKey) if (name === handle.id) scratchByKey.delete(k);
           await checkedDocker(["rm", "-f", handle.id], /No such container/i);
+          await removeGuard(handle.id);
           await checkedDocker(["network", "rm", localNetworkName(handle.id)], /not found|No such network/i);
           portByName.delete(handle.id);
           return;
@@ -462,6 +533,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
 
         if (tdOpts?.destroy) {
           await checkedDocker(["rm", "-f", handle.id], /No such container/i);
+          await removeGuard(handle.id);
           await checkedDocker(["network", "rm", localNetworkName(handle.id)], /not found|No such network/i);
           const scope = scopeByContainer.get(handle.id);
           if (scope) await checkedDocker(["volume", "rm", localVolumeName(scope)], /no such volume/i);
@@ -478,7 +550,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
             message: r.stderr.trim(),
             ...(scopeByContainer.get(handle.id) ? { scopeLabel: scopeByContainer.get(handle.id)! } : {}),
           });
-        if (r.code === 0) await releaseNetwork(handle.id);
+        if (r.code === 0 && !egress) await releaseNetwork(handle.id);
         portByName.delete(handle.id);
       });
     },
@@ -507,7 +579,12 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
           if (running !== "false" || !Number.isFinite(stoppedAt) || stoppedAt <= 0 || stoppedAt > Date.now() - idleMs)
             return;
           if ((await dexec(["network", "inspect", localNetworkName(name)])).code !== 0) return;
-          await releaseNetwork(name);
+          const container = await containerState(name);
+          if (container?.egressLabel) {
+            await checkedDocker(["rm", "-f", name]);
+            await removeGuard(name);
+            await checkedDocker(["network", "rm", localNetworkName(name)], /not found|No such network/i);
+          } else await releaseNetwork(name);
           reaped++;
         });
       }

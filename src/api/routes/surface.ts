@@ -30,6 +30,8 @@ import { renderAgentApis } from "../agent-api-catalog.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS } from "../../auth/capability-token.ts";
 import { contentTypeWithUtf8Charset, pipeToResponse, sendJson } from "../http.ts";
 import { resolveBranding } from "../../resolution/branding.ts";
+import { NonRetryableTurnError } from "../../core/turn-error.ts";
+import { resolveRuntimeChoiceDurable } from "../../harness/harness-router.ts";
 import { audit, isObj, orgScope } from "./shared.ts";
 import {
   deleteUiState,
@@ -1296,12 +1298,14 @@ async function runtimeTarget(ctx: ApiCtx): Promise<{ actorId: string; scope: Sco
   return null;
 }
 
-async function runtimeConfigBody(ctx: ApiCtx, scope: ScopeId): Promise<Record<string, unknown>> {
+async function runtimeConfigBody(ctx: ApiCtx, scope: ScopeId, principalId?: string): Promise<Record<string, unknown>> {
   await ctx.deps.refreshCustomProviders?.();
   const config = ctx.deps.config!;
   const fallback = runtimeFallback(ctx);
   const org = orgScope(ctx.deps);
-  const approvedHarnesses = ((await config.getApprovedHarnessesDurable()) ?? [fallback.harnessId]).filter(isHarnessId);
+  const approvedHarnesses = (
+    (await config.getApprovedHarnessesDurable(scope, principalId)) ?? [fallback.harnessId]
+  ).filter(isHarnessId);
   const firstApproved = approvedHarnesses[0] ?? fallback.harnessId;
   const safeFallback =
     approvedHarnesses.includes(fallback.harnessId) && modelSupportedByHarness(fallback.modelId, fallback.harnessId)
@@ -1343,8 +1347,9 @@ async function runtimeConfigBody(ctx: ApiCtx, scope: ScopeId): Promise<Record<st
   ) {
     orgDefault = { harnessId: fallback.harnessId, modelId: orgLegacyModel, revision: 0 };
   }
-  const stored = scope === org ? orgStored : await config.getRuntimeSelectionDurable(scope);
-  const legacyModel = scope === org ? null : await config.getBaseModelOwnDurable(scope);
+  const runtimeScope = await config.getRuntimeConfigScopeDurable(scope, principalId);
+  const stored = scope === org ? orgStored : await config.getRuntimeSelectionDurable(runtimeScope);
+  const legacyModel = scope === org ? null : await config.getBaseModelOwnDurable(runtimeScope);
   let scopeOverride: {
     harnessId: HarnessId;
     modelId: string;
@@ -1372,16 +1377,23 @@ async function runtimeConfigBody(ctx: ApiCtx, scope: ScopeId): Promise<Record<st
   ) {
     scopeOverride = { harnessId: fallback.harnessId, modelId: legacyModel, orgRevision: 0 };
   }
-  const effective = scopeOverride ?? orgDefault;
-  const selected = [orgDefault, scopeOverride, effective].filter((choice) => choice !== null);
-  const allowlist = await config.getWebuiModelsDurable(org);
+  const effectiveChoice = await resolveRuntimeChoiceDurable(config, org, scope, fallback, undefined, principalId);
+  const effective = { ...(scopeOverride ?? orgDefault), ...effectiveChoice };
+  const inheritedScope = await config.getRuntimeConfigScopeDurable(scope, principalId, true);
+  const inheritedDefault = await resolveRuntimeChoiceDurable(config, org, inheritedScope, fallback);
+  const selected = [orgDefault, scopeOverride, effective, inheritedDefault].filter((choice) => choice !== null);
+  const allowlist = await config.getWebuiModelsDurable(scope, principalId);
+  const scopedAllowlist = await config.getScopedWebuiModelsDurable(scope, principalId);
   const modelsByHarness = Object.fromEntries(
     approvedHarnesses.map((harnessId) => {
-      const ids = allowlist?.length
-        ? allowlist.filter((id) => modelSupportedByHarness(id, harnessId))
-        : selectableCatalogForHarness(catalog, harnessId).map((model) => model.id);
+      const ids =
+        allowlist !== null
+          ? allowlist.filter((id) => modelSupportedByHarness(id, harnessId))
+          : selectableCatalogForHarness(catalog, harnessId).map((model) => model.id);
       for (const choice of selected) {
         if (
+          (allowlist === null || allowlist.includes(choice.modelId) || choice.modelId === orgDefault.modelId) &&
+          (scopedAllowlist === null || scopedAllowlist.includes(choice.modelId)) &&
           choice.harnessId === harnessId &&
           modelSupportedByHarness(choice.modelId, harnessId) &&
           !ids.includes(choice.modelId)
@@ -1406,16 +1418,20 @@ async function runtimeConfigBody(ctx: ApiCtx, scope: ScopeId): Promise<Record<st
     modelsByHarness,
     modelCatalog,
     orgDefault,
-    scopeOverride,
+    scopeOverride: runtimeScope === scope ? scopeOverride : null,
+    inheritedFrom: inheritedScope,
+    inheritedDefault,
     effective: {
       harnessId: effective.harnessId,
       modelId: effective.modelId,
       ...(effective.effortLevel ? { effortLevel: effective.effortLevel } : {}),
       ...(typeof effective.fastMode === "boolean" ? { fastMode: effective.fastMode } : {}),
     },
-    upgradeAvailable: Boolean(scopeOverride && scopeOverride.orgRevision !== orgDefault.revision),
+    upgradeAvailable: Boolean(
+      runtimeScope === scope && scopeOverride && scopeOverride.orgRevision !== orgDefault.revision,
+    ),
     fastModeModelIds: FAST_MODE_MODEL_IDS,
-    interactiveFastMode: await config.getInteractiveFastModeDurable(),
+    interactiveFastMode: await config.getInteractiveFastModeDurable(scope, principalId),
   };
 }
 
@@ -1423,13 +1439,20 @@ async function getRuntimeConfig(ctx: ApiCtx): Promise<void> {
   if (!ctx.deps.config) return sendJson(ctx.res, 404, { error: "not_found" });
   const target = await runtimeTarget(ctx);
   if (!target) return sendJson(ctx.res, 403, { error: "forbidden" });
-  return sendJson(ctx.res, 200, await runtimeConfigBody(ctx, target.scope));
+  try {
+    return sendJson(ctx.res, 200, await runtimeConfigBody(ctx, target.scope, target.actorId));
+  } catch (error) {
+    if (!(error instanceof NonRetryableTurnError)) throw error;
+    return sendJson(ctx.res, 403, { error: "runtime_restricted", message: error.message });
+  }
 }
 
-async function webuiModelEnabled(ctx: ApiCtx, modelId: string): Promise<boolean> {
+async function webuiModelEnabled(ctx: ApiCtx, modelId: string, scope: ScopeId, principalId: string): Promise<boolean> {
   const config = ctx.deps.config!;
-  const picker = await config.getWebuiModelsDurable(orgScope(ctx.deps));
-  if (!picker?.length || picker.includes(modelId)) return true;
+  const picker = await config.getWebuiModelsDurable(scope, principalId);
+  const scoped = await config.getScopedWebuiModelsDurable(scope, principalId);
+  if (scoped !== null && !scoped.includes(modelId)) return false;
+  if (picker === null || picker.includes(modelId)) return true;
   const org = orgScope(ctx.deps);
   const stored = await config.getRuntimeSelectionDurable(org);
   const orgModel = stored?.modelId ?? (await config.getBaseModelOwnDurable(org)) ?? runtimeFallback(ctx).modelId;
@@ -1451,12 +1474,12 @@ async function putRuntimeConfig(ctx: ApiCtx): Promise<void> {
     else {
       const legacyModel = await config.getBaseModelOwnDurable(target.scope);
       const fallback = runtimeFallback(ctx);
-      const approved = (await config.getApprovedHarnessesDurable()) ?? [fallback.harnessId];
+      const approved = (await config.getApprovedHarnessesDurable(target.scope, target.actorId)) ?? [fallback.harnessId];
       if (
         legacyModel &&
         approved.includes(fallback.harnessId) &&
         modelSupportedByHarness(legacyModel, fallback.harnessId) &&
-        (await webuiModelEnabled(ctx, legacyModel))
+        (await webuiModelEnabled(ctx, legacyModel, target.scope, target.actorId))
       ) {
         await config.setRuntimeSelectionLatest(target.scope, { harnessId: fallback.harnessId, modelId: legacyModel });
       }
@@ -1465,7 +1488,7 @@ async function putRuntimeConfig(ctx: ApiCtx): Promise<void> {
     const harnessId = ctx.body.harnessId;
     const modelId = ctx.body.modelId;
     const fallback = runtimeFallback(ctx);
-    const approved = (await config.getApprovedHarnessesDurable()) ?? [fallback.harnessId];
+    const approved = (await config.getApprovedHarnessesDurable(target.scope, target.actorId)) ?? [fallback.harnessId];
     if (!isHarnessId(harnessId) || !approved.includes(harnessId))
       return sendJson(ctx.res, 400, { error: "harness_not_approved" });
     if (typeof modelId !== "string" || !modelSupportedByHarness(modelId, harnessId))
@@ -1474,7 +1497,8 @@ async function putRuntimeConfig(ctx: ApiCtx): Promise<void> {
     const managedKeys = ctx.deps.modelCredentials ? await ctx.deps.modelCredentials.availability() : configuredKeys;
     if (!serviceableModelIds([modelId], modelProviderAvailabilityFor(harnessId, configuredKeys, managedKeys)).length)
       return sendJson(ctx.res, 400, { error: "model_provider_not_configured" });
-    if (!(await webuiModelEnabled(ctx, modelId))) return sendJson(ctx.res, 400, { error: "model_not_enabled" });
+    if (!(await webuiModelEnabled(ctx, modelId, target.scope, target.actorId)))
+      return sendJson(ctx.res, 400, { error: "model_not_enabled" });
     const effortLevel = ctx.body.effortLevel ?? "auto";
     if (typeof effortLevel !== "string" || !(THINKING_LEVELS as readonly string[]).includes(effortLevel))
       return sendJson(ctx.res, 400, { error: "effort_not_supported" });
@@ -1493,7 +1517,12 @@ async function putRuntimeConfig(ctx: ApiCtx): Promise<void> {
     resource: "runtime-config",
     scopeLabel: target.scope,
   });
-  return sendJson(ctx.res, 200, await runtimeConfigBody(ctx, target.scope));
+  try {
+    return sendJson(ctx.res, 200, await runtimeConfigBody(ctx, target.scope, target.actorId));
+  } catch (error) {
+    if (!(error instanceof NonRetryableTurnError)) throw error;
+    return sendJson(ctx.res, 403, { error: "runtime_restricted", message: error.message });
+  }
 }
 
 async function getChannelHeaderPin(ctx: ApiCtx): Promise<void> {

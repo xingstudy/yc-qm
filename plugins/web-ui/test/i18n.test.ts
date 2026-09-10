@@ -194,7 +194,7 @@ test("conditional interface labels pass through the translator", () => {
   );
   assert.match(source("session-list.ts"), /name: t\("Personal"\)/);
   assert.match(source("sessions.ts"), /\?\? t\("Personal"\)/);
-  assert.match(source("context-model.ts"), /\$\{t\("Org default"\)\}/);
+  assert.match(source("context-model.ts"), /\$\{t\(inheritsGroup \? "Inherited default" : "Org default"\)\}/);
   assert.match(source("connectors.ts"), /\$\{t\(meta\.hosts\)\}/);
   assert.match(source("connectors.ts"), /\$\{t\(meta\.desc\)\}/);
   assert.match(source("connectors.ts"), /\$\{t\(ask\.requestedMode \?\? "one-time"\)\}/);

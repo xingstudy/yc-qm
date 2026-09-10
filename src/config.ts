@@ -255,6 +255,8 @@ function awsSandboxEnv(env: NodeJS.ProcessEnv): AwsSandboxEnv {
 }
 
 interface LocalSandboxEnv {
+  egressProxyUrl?: string;
+  egressImage?: string;
   image?: string;
   dockerBin?: string;
   cpus?: number;
@@ -264,6 +266,8 @@ interface LocalSandboxEnv {
 
 function localSandboxEnv(env: NodeJS.ProcessEnv): LocalSandboxEnv {
   return {
+    ...(env.LOCAL_SANDBOX_EGRESS_PROXY_URL ? { egressProxyUrl: env.LOCAL_SANDBOX_EGRESS_PROXY_URL } : {}),
+    ...(env.LOCAL_SANDBOX_EGRESS_IMAGE ? { egressImage: env.LOCAL_SANDBOX_EGRESS_IMAGE } : {}),
     ...(env.LOCAL_SANDBOX_IMAGE ? { image: env.LOCAL_SANDBOX_IMAGE } : {}),
     ...(env.LOCAL_SANDBOX_DOCKER_BIN ? { dockerBin: env.LOCAL_SANDBOX_DOCKER_BIN } : {}),
     ...(numEnvStrict("LOCAL_SANDBOX_CPUS", env.LOCAL_SANDBOX_CPUS) !== undefined

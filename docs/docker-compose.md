@@ -393,3 +393,7 @@ does not provide database rollback, high availability, or zero-downtime rollout.
 A production installation additionally needs tested database backups, external secret
 management, monitoring, resource limits, and a supported isolated sandbox. Fly and AWS
 deployments already provide their own managed edge and do not need this Nginx service.
+
+## 沙箱出站域名限制
+
+“治理 → 数据边界”显示草案时，需要启用代理和沙箱网络守卫。配置、生产发布要求和验证步骤见 [Local Docker 出站策略](local-docker-egress.md)。

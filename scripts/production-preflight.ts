@@ -1,6 +1,7 @@
 import { createECDH, createPrivateKey, randomBytes, type JsonWebKey } from "node:crypto";
 import { statSync } from "node:fs";
 import { isIP } from "node:net";
+import { localEgressProxyUrl } from "../src/sandbox/local-network-guard.ts";
 import { pathToFileURL } from "node:url";
 import {
   isExampleDomain,
@@ -20,6 +21,7 @@ const imageNames = [
   "QM_AUTH_IMAGE",
   "QM_EDGE_IMAGE",
   "QM_SANDBOX_IMAGE",
+  "QM_EGRESS_PROXY_IMAGE",
 ] as const;
 
 export function productionPreflightProblems(
@@ -59,6 +61,16 @@ export function productionPreflightProblems(
   if (env.NODE_ENV !== "production") problems.push("NODE_ENV must be production");
   if (env.PORTAL_LOCAL_AUTH_BYPASS !== "0") problems.push("PORTAL_LOCAL_AUTH_BYPASS must be 0");
   if (env.SANDBOX_BACKEND !== "local") problems.push("SANDBOX_BACKEND must be local for this Compose stack");
+  if (env.LOCAL_SANDBOX_EGRESS_PROXY_URL?.trim()) {
+    try {
+      localEgressProxyUrl(env.LOCAL_SANDBOX_EGRESS_PROXY_URL);
+    } catch {
+      problems.push("LOCAL_SANDBOX_EGRESS_PROXY_URL must be a valid HTTP proxy URL");
+    }
+    const bind = env.QM_EGRESS_BIND_ADDRESS ?? "127.0.0.1";
+    if (isIP(bind) !== 4 || bind.startsWith("127.") || bind === "0.0.0.0")
+      problems.push("QM_EGRESS_BIND_ADDRESS must be the Docker host gateway IPv4, not loopback or all interfaces");
+  }
   const edgeProxyMode = required("QM_EDGE_PROXY_MODE") || "same-host";
   const bindAddress = required("QM_BIND_ADDRESS") || "127.0.0.1";
   if (edgeProxyMode !== "same-host" && edgeProxyMode !== "remote-proxy") {

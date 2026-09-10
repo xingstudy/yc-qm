@@ -1,5 +1,7 @@
 import { existsSync, openSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { localGuardName } from "../../../src/sandbox/local-egress.ts";
+import { localNetworkName } from "../../../src/sandbox/local-sandbox.ts";
 import { join } from "node:path";
 import { writePidFile } from "./lease.ts";
 import { run } from "./proc.ts";
@@ -155,7 +157,9 @@ export async function destroyLocalDevSandboxes(log: (msg: string) => void): Prom
     "docker",
     [
       "ps",
-      "-aq",
+      "-a",
+      "--format",
+      "{{.Names}}",
       "--filter",
       "label=qm.sandbox=1",
       "--filter",
@@ -173,5 +177,11 @@ export async function destroyLocalDevSandboxes(log: (msg: string) => void): Prom
     .filter(Boolean);
   if (!ids.length) return;
   log(`sandbox: removing ${ids.length} parked local dev sandbox container(s) (volumes kept; running boxes untouched)`);
-  await run("docker", ["rm", "-f", ...ids], { timeoutMs: 60_000 });
+  const removed = await run("docker", ["rm", "-f", ...ids], { timeoutMs: 60_000 });
+  if (removed.code !== 0) return;
+  for (const name of ids) {
+    if (!/^qm-(sbx|scratch)-[a-z0-9-]+$/.test(name)) continue;
+    await run("docker", ["rm", "-f", localGuardName(name)], { timeoutMs: 30_000 });
+    await run("docker", ["network", "rm", localNetworkName(name)], { timeoutMs: 30_000 });
+  }
 }

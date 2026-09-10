@@ -49,8 +49,9 @@ function normalizedIp(raw: string): string | null {
   return isIP(value) ? value : null;
 }
 
-function wellKnownNat64Ipv4(value: string): string | null {
+export function wellKnownNat64Ipv4(value: string): string | null {
   if (isIP(value) !== 6) return null;
+  value = new URL(`http://[${value.replace(/%.*$/, "")}]`).hostname.slice(1, -1);
   const compressed = value.includes("::");
   const [before = "", after = "", extra] = value.split("::");
   if (extra !== undefined) return null;
@@ -58,6 +59,7 @@ function wellKnownNat64Ipv4(value: string): string | null {
   const right = after ? after.split(":") : [];
   const groups = compressed ? [...left, ...Array(8 - left.length - right.length).fill("0"), ...right] : left;
   if (groups.length !== 8 || groups[0] !== "64" || groups[1] !== "ff9b") return null;
+  if (groups.slice(2, 6).some((group) => Number.parseInt(group, 16) !== 0)) return null;
   const tail = groups.slice(6);
   if (tail.some((group) => !/^[0-9a-f]{1,4}$/.test(group))) return null;
   const bytes = tail.flatMap((group) => [

@@ -255,9 +255,9 @@ test("admin locale also controls date and number formatting", () => {
   );
   assert.equal(
     translatePattern(
-      "Firecracker supports domain fidelity, which cannot enforce outbound host policy. Agents still have open outbound access.",
+      "Local Docker is not configured to enforce outbound host policy. Saved rules remain drafts and agents can access external networks.",
     ),
-    "Firecracker 支持domain级执行精度，但无法执行出站主机策略。智能体仍可自由访问外部网络。",
+    "Local Docker 尚未配置出站域名强制执行。已保存的规则仍为草案，智能体可以访问外部网络。",
   );
 });
 

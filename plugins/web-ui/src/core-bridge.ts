@@ -499,6 +499,8 @@ export interface RuntimeConfig {
   modelsByHarness: Record<string, string[]>;
   modelCatalog: Record<string, CatalogModelInfo>;
   orgDefault: { harnessId: string; modelId: string; effortLevel?: string; fastMode?: boolean; revision: number };
+  inheritedFrom?: string;
+  inheritedDefault?: { harnessId: string; modelId: string };
   scopeOverride: {
     harnessId: string;
     modelId: string;

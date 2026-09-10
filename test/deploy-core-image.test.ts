@@ -19,6 +19,13 @@ test("core deploy image includes git", () => {
     /npm audit --omit=dev --audit-level=moderate/,
     "the production dependency threshold is a build gate",
   );
+  assert.match(dockerfile, /npm ci[\s\S]*--libc=musl/);
+  assert.match(
+    dockerfile,
+    /rm -rf node_modules\/@anthropic-ai\/claude-agent-sdk-linux-x64 node_modules\/opencode-linux-\*/,
+  );
+  assert.match(dockerfile, /test -x node_modules\/@anthropic-ai\/claude-agent-sdk-linux-x64-musl\/claude/);
+  assert.match(dockerfile, /node_modules\/\.bin\/opencode --version/);
   assert.doesNotMatch(dockerfile, /patch-pi-shrinkwrap/, "the dependency layer should be lockfile-only");
   assert.match(
     dockerfile,
@@ -31,6 +38,36 @@ test("core deploy image includes git", () => {
       assert.equal(existsSync(join(repoRoot, source)), true, `core Dockerfile COPY source does not exist: ${source}`);
     }
   }
+});
+
+test("scheduled OS refreshes cannot invalidate production payload layers", () => {
+  const productionDockerfiles = [
+    "deploy/portal/Dockerfile",
+    "deploy/auth/Dockerfile",
+    "deploy/web-ui/Dockerfile",
+    "deploy/admin/Dockerfile",
+    "deploy/edge/Dockerfile",
+  ];
+  for (const path of productionDockerfiles) {
+    const dockerfile = readFileSync(join(repoRoot, path), "utf8");
+    const refresh = dockerfile.lastIndexOf("ARG PKG_REFRESH_WEEK");
+    assert.notEqual(refresh, -1, `${path} must schedule OS refreshes`);
+    assert.ok(dockerfile.lastIndexOf("COPY ") < refresh, `${path} must refresh after its final payload copy`);
+    const productionInstall = dockerfile.lastIndexOf("npm ci --omit=dev");
+    if (productionInstall !== -1) {
+      assert.ok(productionInstall < refresh, `${path} must install production dependencies before its refresh layer`);
+    }
+  }
+
+  const core = readFileSync(join(repoRoot, "deploy/core/Dockerfile"), "utf8");
+  const baseStage = core.indexOf(" AS core-base");
+  const runtimeStage = core.indexOf("FROM core-base AS core");
+  const refresh = core.indexOf("ARG PKG_REFRESH_WEEK");
+  assert.notEqual(baseStage, -1);
+  assert.ok(baseStage < refresh);
+  assert.ok(refresh < runtimeStage);
+  assert.ok(runtimeStage < core.indexOf("COPY src ./src"));
+  assert.ok(core.indexOf("npm audit --omit=dev --audit-level=moderate") > refresh);
 });
 
 test("deploy image package installs reuse BuildKit caches", () => {
@@ -63,6 +100,6 @@ test("deploy image package installs reuse BuildKit caches", () => {
   ];
   for (const path of apkDockerfiles) {
     const dockerfile = readFileSync(join(repoRoot, path), "utf8");
-    assert.match(dockerfile, /--mount=type=cache,target=\/var\/cache\/apk,sharing=locked apk upgrade/);
+    assert.match(dockerfile, /--mount=type=cache,target=\/var\/cache\/apk,sharing=locked[\s\S]*?apk upgrade/);
   }
 });

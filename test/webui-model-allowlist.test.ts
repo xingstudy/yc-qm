@@ -48,6 +48,10 @@ test("the org allowed-models list restricts the runtime-config picker and cleari
     assert.ok(unrestricted.includes("anthropic/claude-sonnet-4.5"));
     assert.ok(unrestricted.includes("deepseek/deepseek-chat-v3.1"));
 
+    await built.config.setRuntimeSelectionLatest("personal:alice", {
+      harnessId: "pi",
+      modelId: "anthropic/claude-sonnet-4.5",
+    });
     const saved = await fetch(`${base}/v1/admin/scopes/org%3Adefault-org/webui-models`, {
       method: "PUT",
       headers: ADMIN,
@@ -56,6 +60,19 @@ test("the org allowed-models list restricts the runtime-config picker and cleari
     assert.equal(saved.status, 200);
 
     assert.deepEqual(await runtimeModels(), ["deepseek/deepseek-chat-v3.1", "openrouter/auto"]);
+
+    const rejected = await fetch(`${base}/v1/runtime-config`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        principalId: "alice",
+        scopeId: "personal:alice",
+        harnessId: "pi",
+        modelId: "anthropic/claude-sonnet-4.5",
+      }),
+    });
+    assert.equal(rejected.status, 400);
+    assert.deepEqual(await rejected.json(), { error: "model_not_enabled" });
 
     const cleared = await fetch(`${base}/v1/admin/scopes/org%3Adefault-org/webui-models`, {
       method: "PUT",

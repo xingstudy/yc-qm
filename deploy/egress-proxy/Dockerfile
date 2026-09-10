@@ -21,7 +21,7 @@ RUN apt-get update \
   && ln -s xtables-nft-multi /runtime/usr/bin/iptables \
   && ln -s xtables-nft-multi /runtime/usr/bin/ip6tables \
   && cp -a "$lib_dir"/libxtables.so.12* "$lib_dir"/libmnl.so.0* "$lib_dir"/libnftnl.so.11* "$runtime_lib/" \
-  && cp "$lib_dir/xtables/libipt_REJECT.so" "$lib_dir/xtables/libip6t_REJECT.so" "$runtime_lib/xtables/" \
+  && cp "$lib_dir/xtables/libipt_REJECT.so" "$lib_dir/xtables/libip6t_REJECT.so" "$lib_dir/xtables/libxt_conntrack.so" "$lib_dir/xtables/libxt_tcp.so" "$lib_dir/xtables/libxt_standard.so" "$runtime_lib/xtables/" \
   && for package in coreutils dash iptables libmnl0 libnftnl11 libxtables12; do \
        dpkg-query -s "$package" > "/runtime/var/lib/dpkg/status.d/$package"; \
      done

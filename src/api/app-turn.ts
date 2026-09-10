@@ -145,13 +145,20 @@ export function createTurnMethods(
           configuredRuntime =
             targetScope === org
               ? orgRuntime
-              : await resolveRuntimeChoiceDurable(deps.config, org, targetScope, runtimeFallback);
+              : await resolveRuntimeChoiceDurable(deps.config, org, targetScope, runtimeFallback, undefined, actor.id);
           runtime =
             req.harness || req.model
-              ? await resolveRuntimeChoiceDurable(deps.config, org, targetScope, runtimeFallback, {
-                  ...(req.harness && isHarnessId(req.harness) ? { harnessId: req.harness } : {}),
-                  ...(req.model ? { modelId: req.model } : {}),
-                })
+              ? await resolveRuntimeChoiceDurable(
+                  deps.config,
+                  org,
+                  targetScope,
+                  runtimeFallback,
+                  {
+                    ...(req.harness && isHarnessId(req.harness) ? { harnessId: req.harness } : {}),
+                    ...(req.model ? { modelId: req.model } : {}),
+                  },
+                  actor.id,
+                )
               : configuredRuntime;
         } catch (error) {
           return { status: "refused", reason: errMessage(error) };
@@ -177,7 +184,7 @@ export function createTurnMethods(
             reason: "that model isn't available on this deployment (its provider isn't configured)",
           };
         }
-        const configuredWebuiModels = await deps.config.getWebuiModelsDurable(org);
+        const configuredWebuiModels = await deps.config.getWebuiModelsDurable(targetScope, actor.id);
         let enabledWebuiModels: string[];
         if (configuredWebuiModels?.length) {
           enabledWebuiModels = [...new Set([...configuredWebuiModels, orgRuntime.modelId])];

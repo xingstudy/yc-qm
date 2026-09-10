@@ -1138,6 +1138,19 @@ test("the egress claim keeps the control-plane host reachable under an allowlist
   assert.deepEqual(withoutControlPlane, { allowedHosts: [], denyPrivateNetworks: true });
 });
 
+test("egress claims preserve governed private destinations alongside the control-plane exception", () => {
+  const policy = { allowedHosts: [], privateNetworkAllowedHosts: ["kibana.example.com", "10.1.37.0/24"] };
+  const claim = egressClaimAllowingControlPlane(policy, "http://core.example.com:8080", true)!;
+  assert.deepEqual(claim.privateNetworkAllowedHosts, [...policy.privateNetworkAllowedHosts, "core.example.com"]);
+  assert.equal(claim.denyPrivateNetworks, true);
+  assert.deepEqual(
+    egressClaimAllowingControlPlane(policy, "", true)?.privateNetworkAllowedHosts,
+    policy.privateNetworkAllowedHosts,
+  );
+  assert.deepEqual(egressClaimAllowingControlPlane(policy, "", false), policy);
+  assert.deepEqual(policy.privateNetworkAllowedHosts, ["kibana.example.com", "10.1.37.0/24"]);
+});
+
 test("identity grounding: the roster lists this conversation's participants by their canonical directory name", async () => {
   const { app, directory } = freshApp();
   await directory.replace([

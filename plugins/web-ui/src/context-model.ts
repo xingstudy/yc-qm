@@ -115,6 +115,10 @@ export function contextModelSection(scopeId: string): TemplateResult | typeof no
   const selected = selectedValue(config);
   const stalePin = selected !== INHERIT && !options.some((o) => o.value === selected);
   const isSlack = scopeId.startsWith("channel:");
+  const inheritsGroup = !!config.inheritedFrom && !config.inheritedFrom.startsWith("org:");
+  const inheritedHint = inheritsGroup
+    ? t("Following organization unit and access group defaults.")
+    : t("Following the org default — it changes when the org's does.");
   return html`
     <section class="context-panel context-model" aria-labelledby="context-model-title">
       <div class="context-panel-heading">
@@ -132,7 +136,10 @@ export function contextModelSection(scopeId: string): TemplateResult | typeof no
         value: selected,
         onChange: (value) => void choose(scopeId, value),
         options: [
-          html`<option value=${INHERIT}>${t("Org default")} (${labelForRuntime(config, config.orgDefault)})</option>`,
+          html`<option value=${INHERIT}>
+            ${t(inheritsGroup ? "Inherited default" : "Org default")}
+            (${labelForRuntime(config, config.inheritedDefault ?? config.orgDefault)})
+          </option>`,
           ...options.map((o) => html`<option value=${o.value}>${optionLabel(o, multiHarness)}</option>`),
           ...(stalePin
             ? [
@@ -146,7 +153,7 @@ export function contextModelSection(scopeId: string): TemplateResult | typeof no
       <p class="context-model-hint">
         ${
           selected === INHERIT
-            ? t("Following the org default — it changes when the org's does.")
+            ? inheritedHint
             : t("Pinned for this project. Anyone in a chat can still pick a different model for that conversation.")
         }
         ${isSlack ? ` ${t("The pinned Slack header (when enabled below) names this model.")}` : ""}

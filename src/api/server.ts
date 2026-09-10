@@ -270,7 +270,7 @@ async function gate(
     method !== "GET" &&
     !strictPostAllowed(pathname, body) &&
     deps.config &&
-    (await deps.config.getSecurityPostureDurable(capability.scopeId)) === "strict"
+    (await deps.config.getSecurityPostureDurable(capability.scopeId, [capability.actorId])) === "strict"
   ) {
     sendJson(res, 403, { error: "forbidden", message: "Strict posture blocks direct control-plane mutations" });
     return null;
