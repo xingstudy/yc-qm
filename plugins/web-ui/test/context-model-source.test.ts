@@ -13,8 +13,9 @@ test("the scope's model panel writes through the same endpoint the composer's de
   assert.doesNotMatch(panel, /applyRuntimeOptions/);
 });
 
-test("the panel offers inheriting the org default and names what is serving now", () => {
-  assert.match(panel, /\$\{t\("Org default"\)\} \(\$\{labelForRuntime\(config, config\.orgDefault\)\}\)/);
+test("the panel offers the inherited group or org default and names what is serving now", () => {
+  assert.match(panel, /t\(inheritsGroup \? "Inherited default" : "Org default"\)/);
+  assert.match(panel, /labelForRuntime\(config, config\.inheritedDefault \?\? config\.orgDefault\)/);
   assert.match(panel, /!options\.some\(\(o\) => o\.value === selected\)/);
   assert.match(panel, /\$\{t\("no longer offered"\)\}/);
   assert.match(panel, /Saved — new conversations here run on/);

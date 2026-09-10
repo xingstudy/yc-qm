@@ -162,8 +162,84 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  images:
+  core-base:
     needs: preflight
+    if: inputs.resume_run_id == ''
+    runs-on: ubuntu-latest
+    environment: production-images
+    outputs:
+      image: ${{ steps.reference.outputs.image }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: docker.io
+          username: lijixing
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - id: refresh
+        run: echo "week=$(date +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: deploy/core/Dockerfile
+          target: core-base
+          platforms: linux/amd64
+          provenance: mode=max
+          sbom: true
+          push: true
+          build-args: PKG_REFRESH_WEEK=${{ steps.refresh.outputs.week }}
+          tags: docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}:core-base-${{ github.sha }}-${{ github.run_id }}
+          cache-from: type=gha,scope=production-qm-core-base
+          cache-to: type=gha,mode=max,scope=production-qm-core-base
+      - name: Scan exact image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}@${{ steps.build.outputs.digest }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: 1
+      - id: reference
+        name: Sign and verify exact image
+        run: |
+          verify_with_retry() {
+            local attempt=0 delay=2 max_attempts=6 output status
+            while :; do
+              if output=$(cosign verify "$@" 2>&1); then
+                printf '%s\n' "$output"
+                return 0
+              else
+                status=$?
+              fi
+              if [[ "$output" != *"no signatures found"* ]]; then
+                printf '%s\n' "$output" >&2
+                return "$status"
+              fi
+              printf '%s\n' "$output" >&2
+              attempt=$((attempt + 1))
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                return "$status"
+              fi
+              sleep "$delay"
+              delay=$((delay * 2))
+            done
+          }
+          image='docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}@${{ steps.build.outputs.digest }}'
+          cosign sign --yes "$image"
+          verify_with_retry "$image" \
+            --certificate-identity='https://github.com/${{ github.repository }}/.github/workflows/release-production-images.yml@refs/heads/main' \
+            --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+          printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
+
+  images:
+    needs:
+      - preflight
+      - core-base
     if: inputs.resume_run_id == ''
     runs-on: ubuntu-latest
     environment: production-images
@@ -184,6 +260,8 @@ jobs:
             dockerfile: deploy/portal/Dockerfile
           - name: auth
             dockerfile: deploy/auth/Dockerfile
+          - name: egress-proxy
+            dockerfile: deploy/egress-proxy/Dockerfile
           - name: edge
             dockerfile: deploy/edge/Dockerfile
     steps:
@@ -206,6 +284,7 @@ jobs:
           provenance: mode=max
           sbom: true
           push: true
+          build-contexts: core-base=docker-image://${{ needs.core-base.outputs.image }}
           build-args: PKG_REFRESH_WEEK=${{ steps.refresh.outputs.week }}
           tags: docker.io/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DOCKERHUB_STAGING_REPOSITORY }}:${{ matrix.name }}-${{ github.sha }}-${{ github.run_id }}
           cache-from: type=gha,scope=production-qm-${{ matrix.name }}
@@ -427,7 +506,7 @@ jobs:
               delay=$((delay * 2))
             done
           }
-          for name in core web-ui admin portal auth edge sandbox-base sandbox-local; do
+          for name in core web-ui admin portal auth edge egress-proxy sandbox-base sandbox-local; do
             test -s "qm-${name}.image"
             image=$(cat "qm-${name}.image")
             verify_with_retry "$image" \
@@ -439,7 +518,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          for name in core web-ui admin portal auth edge sandbox-base sandbox-local; do
+          for name in core web-ui admin portal auth edge egress-proxy sandbox-base sandbox-local; do
             image=$(cat "qm-${name}.image")
             expected=${image##*@}
             tag="docker.io/${DOCKERHUB_NAMESPACE}/qm-${name}:${RELEASE_TAG}"
@@ -495,7 +574,7 @@ jobs:
               delay=$((delay * 2))
             done
           }
-          for name in core web-ui admin portal auth edge sandbox-base sandbox-local; do
+          for name in core web-ui admin portal auth edge egress-proxy sandbox-base sandbox-local; do
             image=$(cat "qm-${name}.image")
             expected=${image##*@}
             tag="docker.io/${DOCKERHUB_NAMESPACE}/qm-${name}:${RELEASE_TAG}"
@@ -525,6 +604,7 @@ jobs:
             printf 'QM_AUTH_IMAGE=%s\n' "$(cat qm-auth.image)"
             printf 'QM_EDGE_IMAGE=%s\n' "$(cat qm-edge.image)"
             printf 'QM_SANDBOX_IMAGE=%s\n' "$(cat qm-sandbox-local.image)"
+            printf 'QM_EGRESS_PROXY_IMAGE=%s\n' "$(cat qm-egress-proxy.image)"
           } > images.production.env
           jq -Rn '[inputs | select(length > 0) | split("=") | {(.[0]): .[1]}] | add' < images.production.env > images.production.json
           printf '%s\n' "$RELEASE_TAG" > release.production.tag

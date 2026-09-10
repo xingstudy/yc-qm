@@ -471,6 +471,44 @@ describe("capability-token control plane (crons + SOUL)", () => {
     assert.match(((await create.json()) as { message: string }).message, /direct control-plane mutations/i);
   });
 
+  it("group Strict posture also blocks a member's channel capability mutations", async () => {
+    const principalId = "U-group-strict";
+    await built.organizationStore.putUser({
+      orgId: "default-org",
+      principalId,
+      email: null,
+      displayName: principalId,
+      jobTitle: null,
+      mobile: null,
+      employeeNumber: null,
+      status: "active",
+      sessionVersion: 1,
+      profileRevision: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      lastLoginAt: null,
+      createdBy: "admin",
+      updatedBy: "admin",
+    });
+    const group = await built.organization.createGroup({ name: "Strict group", actor: "admin-alice" });
+    await built.organizationStore.putGroupMember({
+      orgId: "default-org",
+      groupId: group.id,
+      principalId,
+      role: "member",
+      createdAt: 1,
+      createdBy: "admin-alice",
+    });
+    await built.config.setSecurityPosture(`access-group:${group.id}`, "strict");
+    const response = await post(
+      "/v1/crons",
+      { schedule: { everyMs: 60_000 }, action: "must not run" },
+      { "x-agent-capability": await capChannel(principalId) },
+    );
+    assert.equal(response.status, 403);
+    assert.match(((await response.json()) as { message: string }).message, /direct control-plane mutations/i);
+  });
+
   it("a capability cannot cancel another user's cron", async () => {
     const created = (await (
       await post(

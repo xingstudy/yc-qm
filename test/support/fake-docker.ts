@@ -70,9 +70,10 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
         const name = rest[rest.length - 1]!;
         const c = containers.get(name);
         if (!c) return fail(`Error: No such object: ${name}`);
+        if (rest.includes("{{.State.Running}}")) return ok(String(c.running));
         if (rest.includes("{{.State.Running}} {{.State.FinishedAt}}"))
           return ok(`${c.running} ${c.finishedAt ?? "0001-01-01T00:00:00Z"}`);
-        return ok(`${c.running} ${c.imageId}`);
+        return ok(`${c.running} ${c.imageId} ${c.labels["qm.egress"] ?? ""}`);
       }
       case "network": {
         const sub = rest[0];
@@ -121,10 +122,13 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
       case "start": {
         const c = containers.get(rest[0]!);
         if (!c) return fail("Error: No such container");
-        if (!c.network || !networks.has(c.network)) return fail(`network ${c.network} not found`);
+        if (!c.network || (!networks.has(c.network) && !containers.get(c.network.replace(/^container:/, ""))?.running))
+          return fail(`network ${c.network} not found`);
         c.running = true;
         return ok(rest[0]!);
       }
+      case "exec":
+        return containers.get(rest[0]!)?.running ? ok("http://172.17.0.1:48080") : fail("No such running container");
       case "stop": {
         const c = containers.get(rest[rest.length - 1]!);
         if (!c) return fail("Error: No such container");

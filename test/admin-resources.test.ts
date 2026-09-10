@@ -103,7 +103,7 @@ test("turn wall-clock governance validates, round-trips, clears, and is org-admi
           body: JSON.stringify({ sec: 60 }),
         })
       ).status,
-      400,
+      200,
     );
     for (const sec of [59, 86_401, 60.5, "nope"]) {
       assert.equal((await fetch(url, { method: "PUT", headers: ADMIN, body: JSON.stringify({ sec }) })).status, 400);
@@ -610,7 +610,7 @@ test("ambient-policy edits a channel's standing order and bot ledger through the
   }
 });
 
-test("webui-models is an org-wide string-list read back via admin GET and surface-config", async () => {
+test("webui-models supports scoped restrictions and organization surface defaults", async () => {
   const srv = start();
   try {
     const bad = await fetch(`${srv.base}/v1/admin/scopes/personal:U1/webui-models`, {
@@ -618,8 +618,9 @@ test("webui-models is an org-wide string-list read back via admin GET and surfac
       headers: ADMIN,
       body: JSON.stringify({ ids: ["claude-opus-4-8"] }),
     });
-    assert.equal(bad.status, 400);
-    assert.match(((await bad.json()) as { message: string }).message, /org-wide/);
+    assert.equal(bad.status, 200);
+    const scoped = await fetch(`${srv.base}/v1/admin/scopes/personal:U1`, { headers: ADMIN });
+    assert.deepEqual(((await scoped.json()) as { webuiModels: string[] }).webuiModels, ["claude-opus-4-8"]);
 
     const unknown = await fetch(`${srv.base}/v1/admin/scopes/org:default-org/webui-models`, {
       method: "PUT",
@@ -665,6 +666,39 @@ test("webui-models is an org-wide string-list read back via admin GET and surfac
     assert.equal(clear.status, 200);
     const afterClear = await fetch(`${srv.base}/v1/admin/scopes/org:default-org`, { headers: ADMIN });
     assert.equal(((await afterClear.json()) as { webuiModels: string[] | null }).webuiModels, null);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("private egress exceptions round-trip through admin API, inherit, reject invalid input, and require authority", async () => {
+  const srv = start();
+  const path = "/v1/admin/scopes/org:default-org";
+  const policy = {
+    allowedHosts: [],
+    deniedHosts: [],
+    privateNetworkAllowedHosts: ["kibana.example.com", "10.1.37.0/24", "10.1.37.200-10.1.37.210", "fd00::/64"],
+  };
+  const put = (body: unknown, headers = ADMIN) =>
+    fetch(srv.base + path + "/egress", { method: "PUT", headers, body: JSON.stringify(body) });
+  try {
+    assert.equal((await put(policy)).status, 200);
+    const read = await fetch(srv.base + path, { headers: ADMIN });
+    assert.equal(read.status, 200);
+    assert.deepEqual(((await read.json()) as any).egress, policy);
+    const child = await fetch(srv.base + "/v1/admin/scopes/personal:U1", { headers: ADMIN });
+    assert.equal(child.status, 200);
+    assert.deepEqual(
+      ((await child.json()) as any).egressEffective.privateNetworkAllowedHosts,
+      policy.privateNetworkAllowedHosts,
+    );
+    for (const entries of [["10.0.0.0/33"], ["10.0.0.20-10.0.0.10"], ["fd00::/129"], "10.0.0.0/8"]) {
+      assert.equal((await put({ ...policy, privateNetworkAllowedHosts: entries })).status, 400);
+      assert.deepEqual(srv.built.config.getEgress("org:default-org"), policy);
+    }
+    assert.equal((await put(policy, { ...ADMIN, "x-admin-actor": "nobody@default-org" })).status, 403);
+    assert.equal((await put({ ...policy, privateNetworkAllowedHosts: [] })).status, 200);
+    assert.deepEqual(srv.built.config.getEgress("org:default-org"), { allowedHosts: [], deniedHosts: [] });
   } finally {
     await srv.close();
   }

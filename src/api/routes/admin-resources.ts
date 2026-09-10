@@ -60,11 +60,14 @@ function generic<V>(
   parse: (
     body: unknown,
     ctx: { scope: string; deps: ServerDeps },
-  ) => { value: V } | { error: string; code?: string; status?: number },
+  ) =>
+    | { value: V }
+    | { error: string; code?: string; status?: number }
+    | Promise<{ value: V } | { error: string; code?: string; status?: number }>,
   set: (deps: ServerDeps, scope: string, value: V) => unknown,
 ): AdminResource["apply"] {
   return async (ctx, _actor, scope) => {
-    const parsed = parse(ctx.body, { scope, deps: ctx.deps });
+    const parsed = await parse(ctx.body, { scope, deps: ctx.deps });
     if ("error" in parsed) return parsed;
     await Promise.resolve(set(ctx.deps, scope, parsed.value));
     return { ok: true };
@@ -347,18 +350,18 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
   {
     id: "interactive-fast-mode",
     kind: "boolean",
-    target: "org",
+    clearable: true,
+    target: "any",
     label:
-      "Fast mode for interactive turns org-wide: on means human turns run in fast mode on fast-capable models unless the turn asks otherwise. Requires fast-mode quota with the provider.",
+      "Fast mode for interactive turns for this scope: on means human turns run in fast mode on fast-capable models unless the turn asks otherwise. Requires fast-mode quota with the provider.",
     readKey: "interactiveFastMode",
-    get: (deps, scope) => (parseScopeId(scope).kind === "org" ? deps.config!.getInteractiveFastMode() : undefined),
-    apply: generic<boolean>(
-      (body, { scope }) => {
-        const bad = orgOnly(scope, "the interactive fast-mode switch is org-wide");
-        if (bad) return bad;
+    get: (deps, scope) => deps.config!.getInteractiveFastModeDurable(scope),
+    apply: generic<boolean | null>(
+      (body) => {
+        if ((body as { inherit?: unknown }).inherit === true) return { value: null };
         return boolBody(body);
       },
-      (deps, _scope, on) => deps.config!.setInteractiveFastMode(on),
+      (deps, scope, on) => deps.config!.setInteractiveFastMode(on, scope),
     ),
   },
   {
@@ -421,7 +424,7 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
       const harnessId = (ctx.body as { harnessId?: unknown }).harnessId;
       const modelId = (ctx.body as { modelId?: unknown }).modelId;
       if (!isHarnessId(harnessId)) return { error: `runtime requires harnessId (${HARNESS_IDS.join(" | ")})` };
-      const approved = (await ctx.deps.config!.getApprovedHarnessesDurable()) ?? [ctx.deps.harnessId ?? "pi"];
+      const approved = (await ctx.deps.config!.getApprovedHarnessesDurable(scope)) ?? [ctx.deps.harnessId ?? "pi"];
       if (!approved.includes(harnessId)) return { error: `harness ${harnessId} is not approved` };
       if (typeof modelId !== "string" || !modelSupportedByHarness(modelId, harnessId))
         return { error: `model ${String(modelId)} is not supported by ${harnessId}` };
@@ -431,6 +434,20 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
         return {
           error: `model ${modelId} isn't serviceable on this deployment: its provider key is not configured for the ${harnessId} harness`,
         };
+      try {
+        await resolveRuntimeChoiceDurable(
+          ctx.deps.config!,
+          scopeId("org", configOrgId()),
+          scope,
+          {
+            harnessId: isHarnessId(ctx.deps.harnessId) ? ctx.deps.harnessId : "pi",
+            modelId: ctx.deps.baseModelDefault ?? defaultModelForHarness(ctx.deps.harnessId ?? "pi"),
+          },
+          { harnessId, modelId },
+        );
+      } catch (error) {
+        return { error: errMessage(error) };
+      }
       await ctx.deps.config!.setRuntimeSelectionLatest(scope, { harnessId, modelId });
       return { ok: true };
     },
@@ -438,15 +455,14 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
   {
     id: "approved-harnesses",
     kind: "string-list",
-    target: "org",
+    target: "any",
     clearable: true,
     readKey: "approvedHarnesses",
     enumValues: HARNESS_IDS,
-    get: (deps) => deps.config!.getApprovedHarnesses(),
-    apply: generic(
-      (body, { scope }) => {
-        const bad = orgOnly(scope, "approved harnesses are org-wide");
-        if (bad) return bad;
+    get: (deps, scope) => deps.config!.getApprovedHarnessesDurable(scope),
+    apply: generic<string[] | null>(
+      (body) => {
+        if ((body as { inherit?: unknown }).inherit === true) return { value: null };
         const raw = (body as { ids?: unknown }).ids;
         if (!Array.isArray(raw)) return { error: "approved-harnesses requires { ids: string[] }" };
         if (raw.some((id) => !isHarnessId(id)))
@@ -454,29 +470,43 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
         const ids = [...new Set(raw.filter(isHarnessId))];
         return { value: ids.length ? ids : null };
       },
-      (deps, _scope, ids) => deps.config!.setApprovedHarnesses(ids),
+      (deps, scope, ids) => deps.config!.setApprovedHarnesses(ids, scope),
     ),
   },
   {
     id: "webui-models",
     kind: "string-list",
-    target: "org",
+    target: "any",
     clearable: true,
     label:
-      "Web UI model picker (ordered list of model ids; the org base model is the default selection, else the first). Empty restores the built-in set.",
+      "Models available in the Web UI. Configure the default separately with the runtime resource. Empty restores inheritance.",
     readKey: "webuiModels",
     enumValues: SELECTABLE_BASE_MODELS,
-    get: (deps, scope) => deps.config!.getWebuiModels(scope),
+    get: (deps, scope) => deps.config!.getWebuiModelsDurable(scope),
     apply: generic<string[] | null>(
-      (body, { scope }) => {
-        const bad = orgOnly(scope, "the web UI model picker is org-wide");
-        if (bad) return bad;
+      async (body, { deps }) => {
+        if ((body as { inherit?: unknown }).inherit === true) return { value: null };
         const raw = (body as { ids?: unknown }).ids;
         if (raw !== undefined && raw !== null && !Array.isArray(raw)) {
           return { error: "webui-models requires { ids: string[] } (empty list restores the default picker)" };
         }
         const ids = Array.isArray(raw) ? raw.map((v) => (typeof v === "string" ? v.trim() : "")).filter(Boolean) : [];
         for (const id of ids) if (!resolveModel(id)) return { error: `unknown model id: ${id}` };
+        const configuredKeys = deps.providerKeys ?? ALL_PROVIDERS_AVAILABLE;
+        const managedKeys = deps.modelCredentials ? await deps.modelCredentials.availability() : configuredKeys;
+        for (const id of ids) {
+          const available = HARNESS_IDS.some(
+            (harness) =>
+              harness !== "mock" &&
+              modelSupportedByHarness(id, harness) &&
+              modelServiceable(id, modelProviderAvailabilityFor(harness, configuredKeys, managedKeys)),
+          );
+          if (!available)
+            return {
+              error: `model ${id} is not available on this deployment; select an available provider-qualified model from the catalog`,
+              code: "model_provider_not_configured",
+            };
+        }
         const seen = new Set<string>();
         const unique = ids.filter((id) => (seen.has(id) ? false : (seen.add(id), true)));
         return { value: unique.length ? unique : null };
@@ -530,16 +560,15 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
   {
     id: "turn-wall-clock",
     kind: "string",
-    target: "org",
+    target: "any",
     clearable: true,
     label:
       "Maximum wall-clock time for a turn in seconds. Zero leaves turns uncapped; empty restores the deployment default.",
     readKey: "turnWallClockSec",
     get: (deps, scope) => deps.config!.getTurnWallClockSecDurable(scope),
     apply: generic<number | null>(
-      (body, { scope }) => {
-        const bad = orgOnly(scope, "the turn wall-clock limit is org-wide");
-        if (bad) return bad;
+      (body) => {
+        if ((body as { inherit?: unknown }).inherit === true) return { value: null };
         const raw = (body as { sec?: unknown }).sec;
         const trimmed = typeof raw === "string" ? raw.trim() : raw;
         if (trimmed === undefined || trimmed === null || trimmed === "") return { value: null };
@@ -555,17 +584,16 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
   {
     id: "browse-model",
     kind: "enum",
-    target: "org",
+    target: "any",
     clearable: true,
     label:
-      "The model driving the browser agent in the browse skill, org-wide (empty follows the deployment's base model; fast mode applies only on Opus models).",
+      "The model driving the browser agent in the browse skill, for this scope (empty follows the deployment's base model; fast mode applies only on Opus models).",
     readKey: "browseModel",
     enumValues: SELECTABLE_BASE_MODELS,
-    get: (deps, scope) => deps.config!.getBrowseModel(scope),
+    get: (deps, scope) => deps.config!.getBrowseModelDurable(scope),
     apply: async (ctx, _actor, scope) => {
-      const bad = orgOnly(scope, "the browse model is org-wide");
-      if (bad) return bad;
-      const raw = (ctx.body as { modelId?: unknown }).modelId;
+      const raw =
+        (ctx.body as { inherit?: unknown }).inherit === true ? "" : (ctx.body as { modelId?: unknown }).modelId;
       if (raw !== undefined && raw !== null && typeof raw !== "string") {
         return { error: "browse-model requires { modelId: string } (empty string clears the override)" };
       }
@@ -584,15 +612,14 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
   {
     id: "browse-max-steps",
     kind: "string",
-    target: "org",
+    target: "any",
     clearable: true,
     label: "Max browser steps per browse task (empty restores the default of 50).",
     readKey: "browseMaxSteps",
-    get: (deps, scope) => deps.config!.getBrowseMaxSteps(scope),
+    get: (deps, scope) => deps.config!.getBrowseMaxStepsDurable(scope),
     apply: generic<number | null>(
-      (body, { scope }) => {
-        const bad = orgOnly(scope, "the browse step limit is org-wide");
-        if (bad) return bad;
+      (body) => {
+        if ((body as { inherit?: unknown }).inherit === true) return { value: null };
         const raw = (body as { steps?: unknown }).steps;
         if (raw === undefined || raw === null || raw === "") return { value: null };
         let steps = NaN;

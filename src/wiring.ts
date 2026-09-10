@@ -68,6 +68,7 @@ import {
   type PersistedDeploymentIdentity,
 } from "./resolution/config-store.ts";
 import { createResolutionService } from "./resolution/resolution-service.ts";
+import { organizationGovernanceAncestors } from "./resolution/governance-scopes.ts";
 import { createAclStore, type AclStore } from "./acl/acl-store.ts";
 import { createPostgresGrantStore } from "./acl/postgres-grant-store.ts";
 import { createSkillStore, type SkillStore, type Skill } from "./skills/skill-store.ts";
@@ -524,6 +525,10 @@ export function buildApp(
     ? createPostgresAdvisoryLock(pgArtifactMap.pool)
     : createMemoryAdvisoryLock();
   const configStore = createMemoryConfigStore(config.orgId, {
+    governanceAncestors: async (scope) => {
+      await organizationReady;
+      return organizationGovernanceAncestors(organizationStore, config.orgId, scope);
+    },
     connectorClients: artifactMap<StoredConnectorClient>("connector_clients"),
     souls: artifactMap<PersistedSoul>("soul_configs"),
     soulHistory: artifactMap<PersistedSoulRevision>("soul_history"),
@@ -1061,10 +1066,17 @@ export function buildApp(
   const judgeModelId = (): string => config.judgeModelId ?? auxiliaryModelFor(orgBaseModelId() ?? fallback.modelId);
   const harness = createHarnessRouter(adapters, adapters.get(fallbackHarness)!, async (input) => {
     await refreshCustomProviders();
-    return resolveRuntimeChoiceDurable(configStore, runtimeOrgScope, input.scopeLabel, fallback, {
-      ...(input.harness ? { harnessId: input.harness as HarnessId } : {}),
-      ...(input.model ? { modelId: input.model } : {}),
-    });
+    return resolveRuntimeChoiceDurable(
+      configStore,
+      runtimeOrgScope,
+      input.scopeLabel,
+      fallback,
+      {
+        ...(input.harness ? { harnessId: input.harness as HarnessId } : {}),
+        ...(input.model ? { modelId: input.model } : {}),
+      },
+      input.governancePrincipalId,
+    );
   });
 
   const leaseTtlMs = config.leaseTtlMs;

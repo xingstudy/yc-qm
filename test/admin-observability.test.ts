@@ -1216,7 +1216,7 @@ test("admin governance: people-directory URL round-trips, validates scheme, and 
   }
 });
 
-test("admin governance: browse step limit round-trips, validates, and is org-scoped", async () => {
+test("admin governance: browse step limit round-trips, validates, and supports scoped overrides", async () => {
   const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "admin-browsesteps-")) }));
   const server = createInsecureTestServer(built.app, {
     admin: built.admin,
@@ -1239,13 +1239,17 @@ test("admin governance: browse step limit round-trips, validates, and is org-sco
       403,
       "admin-gated",
     );
-    assert.equal((await putSteps("channel:C1", 80, ALICE)).status, 400, "org-wide only — a channel scope is rejected");
+    assert.equal((await putSteps("channel:C1", 80, ALICE)).status, 200);
+    assert.equal((await getJson(base, "/v1/admin/scopes/channel:C1")).browseMaxSteps, 80);
     assert.equal((await putSteps("org:default-org", 0, ALICE)).status, 400, "zero is rejected");
     assert.equal((await putSteps("org:default-org", 2.5, ALICE)).status, 400, "a non-integer is rejected");
     assert.equal((await putSteps("org:default-org", 501, ALICE)).status, 400, "values past the cap are rejected");
 
     assert.equal((await putSteps("org:default-org", 120, ALICE)).status, 200);
     assert.equal((await getJson(base, "/v1/admin/scopes/org:default-org")).browseMaxSteps, 120);
+    assert.equal((await getJson(base, "/v1/admin/scopes/channel:C1")).browseMaxSteps, 80);
+    assert.equal((await putSteps("channel:C1", "", ALICE)).status, 200);
+    assert.equal((await getJson(base, "/v1/admin/scopes/channel:C1")).browseMaxSteps, 120);
     assert.equal(
       built.config.getBrowseMaxSteps("org:default-org"),
       120,
@@ -1309,7 +1313,7 @@ test("an OpenAI-only deployment still gets a browse model picker, and Anthropic 
   }
 });
 
-test("admin governance: browse model round-trips, validates, and is org-scoped", async () => {
+test("admin governance: browse model round-trips, validates, and supports scoped overrides", async () => {
   const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "admin-browsemodel-")) }));
   const server = createInsecureTestServer(built.app, {
     admin: built.admin,
@@ -1332,11 +1336,7 @@ test("admin governance: browse model round-trips, validates, and is org-scoped",
       403,
       "admin-gated",
     );
-    assert.equal(
-      (await putModel("channel:C1", "claude-sonnet-4-6", ALICE)).status,
-      400,
-      "org-wide only — a channel scope is rejected",
-    );
+    assert.equal((await putModel("channel:C1", "claude-sonnet-4-6", ALICE)).status, 200);
     assert.equal(
       (await putModel("org:default-org", "not-a-model", ALICE)).status,
       400,
@@ -1347,6 +1347,9 @@ test("admin governance: browse model round-trips, validates, and is org-scoped",
       200,
       "a non-Anthropic model is accepted — the browse runner follows the model's provider",
     );
+    assert.equal((await getJson(base, "/v1/admin/scopes/channel:C1")).browseModel, "claude-sonnet-4-6");
+    assert.equal((await putModel("channel:C1", "", ALICE)).status, 200);
+    assert.equal((await getJson(base, "/v1/admin/scopes/channel:C1")).browseModel, "gpt-5.6-luna");
     assert.equal(
       (await putModel("org:default-org", 42, ALICE)).status,
       400,

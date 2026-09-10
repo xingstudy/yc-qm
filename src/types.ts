@@ -311,6 +311,7 @@ type CommandPolicyMode = "denylist" | "allowlist";
 export interface CommandPolicy {
   mode: CommandPolicyMode;
   rules: CommandRule[];
+  constraints?: { scopeId: ScopeId; policy: CommandPolicy }[];
 }
 
 interface BlobAttachment {

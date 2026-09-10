@@ -197,7 +197,7 @@ test("governance makes unenforced egress a draft instead of an effective control
 
 test("governance keeps effective-state summaries synchronized after focused saves", () => {
   assert.match(html, /renderGovernanceOverview\(fresh\.data\)/);
-  assert.match(html, /renderGovernanceOverview\(\{ \.\.\.governanceOverviewData, egress: body \}\)/);
+  assert.match(html, /populateEgress\(fresh\.data\.egress\)/);
   assert.match(html, /btn\.dataset\.saveRequest === saveRequest/);
   assert.match(html, /setStatus\(SAVE_ST\[key\], "", ""\)/);
 });
@@ -222,7 +222,10 @@ test("effective egress summary preserves deny-before-allow semantics", () => {
 test("egress validation follows programmatic reloads and successful saves", () => {
   assert.match(html, /populateEgress\(r\.data\.egress\)/);
   assert.match(html, /function populateEgress\(policy\)[\s\S]*renderEgressValidation\(\)/);
-  assert.match(html, /if \(key === "egress"\)[\s\S]*renderGovernanceOverview[\s\S]*renderEgressValidation\(\)/);
+  assert.match(
+    html,
+    /if \(key === "egress"\)[\s\S]*renderGovernanceOverview[\s\S]*populateEgress\(fresh\.data\.egress\)/,
+  );
 });
 
 test("the removed config-transfer surface stays gone", () => {

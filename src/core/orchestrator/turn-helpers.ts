@@ -135,7 +135,9 @@ export function egressClaimAllowingControlPlane(
 ): EgressPolicy | undefined {
   const allowedHosts = egress.allowedHosts ?? [];
   const deniedHosts = egress.deniedHosts ?? [];
-  if (allowedHosts.length === 0 && deniedHosts.length === 0 && !denyPrivateNetworks) return undefined;
+  const privateHosts = egress.privateNetworkAllowedHosts ?? [];
+  if (allowedHosts.length === 0 && deniedHosts.length === 0 && privateHosts.length === 0 && !denyPrivateNetworks)
+    return undefined;
   let coreHost = "";
   if (apiBaseUrl) {
     try {
@@ -152,10 +154,21 @@ export function egressClaimAllowingControlPlane(
   const claim: EgressPolicy = {
     allowedHosts: allowedWithCore,
     ...(denyPrivateNetworks ? { denyPrivateNetworks: true } : {}),
-    ...(denyPrivateNetworks && coreHost ? { privateNetworkAllowedHosts: [coreHost] } : {}),
+    ...(privateHosts.length || (denyPrivateNetworks && coreHost)
+      ? {
+          privateNetworkAllowedHosts: [
+            ...new Set([...privateHosts, ...(denyPrivateNetworks && coreHost ? [coreHost] : [])]),
+          ],
+        }
+      : {}),
     ...(safeDenied.length ? { deniedHosts: safeDenied } : {}),
   };
-  return claim.allowedHosts.length || claim.deniedHosts?.length || claim.denyPrivateNetworks ? claim : undefined;
+  return claim.allowedHosts.length ||
+    claim.deniedHosts?.length ||
+    claim.privateNetworkAllowedHosts?.length ||
+    claim.denyPrivateNetworks
+    ? claim
+    : undefined;
 }
 
 export function stripTurnBoilerplate(text: string): string {

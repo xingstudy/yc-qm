@@ -62,6 +62,7 @@ function validEnv(): NodeJS.ProcessEnv {
     QM_AUTH_IMAGE: digest("auth"),
     QM_EDGE_IMAGE: digest("edge"),
     QM_SANDBOX_IMAGE: digest("sandbox-local"),
+    QM_EGRESS_PROXY_IMAGE: digest("egress-proxy"),
   };
 }
 
@@ -284,4 +285,23 @@ test("the central preflight rejects mismatched JWK public coordinates", () => {
   const text = productionPreflightProblems(env, 989).join(" | ");
 
   assert.match(text, /AUTH_SIGNING_JWK public coordinates must match its private key/);
+});
+
+test("local egress deployment rejects unreachable and exposed proxy bindings", () => {
+  const env = {
+    ...validEnv(),
+    LOCAL_SANDBOX_EGRESS_PROXY_URL: "http://host.docker.internal:48080",
+    QM_EGRESS_BIND_ADDRESS: "172.17.0.1",
+  };
+  assert.deepEqual(productionPreflightProblems(env, 989), []);
+  for (const bind of ["127.0.0.1", "0.0.0.0", "::1"]) {
+    assert.match(
+      productionPreflightProblems({ ...env, QM_EGRESS_BIND_ADDRESS: bind }, 989).join("\n"),
+      /QM_EGRESS_BIND_ADDRESS/,
+    );
+  }
+  assert.match(
+    productionPreflightProblems({ ...env, LOCAL_SANDBOX_EGRESS_PROXY_URL: "http://localhost:48080" }, 989).join("\n"),
+    /LOCAL_SANDBOX_EGRESS_PROXY_URL/,
+  );
 });

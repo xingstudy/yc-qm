@@ -11,6 +11,7 @@ import { buildApp, type BuiltApp } from "./support/test-app.ts";
 import { testConfig } from "./support/test-config.ts";
 import { createModelCredentialStore, type StoredModelCredential } from "../src/model/model-credential-store.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { resolveRuntimeChoiceDurable } from "../src/harness/harness-router.ts";
 
 const ADMIN = { "content-type": "application/json", "x-admin-actor": "admin-alice@default-org" };
 
@@ -138,7 +139,7 @@ test("OpenRouter validation uses an authenticated endpoint", async () => {
 test("OpenRouter catalog exposes runtime-supported tool models as selectable base models", async () => {
   let requested = "";
   let catalogRequests = 0;
-  const srv = start({ openrouterApiKey: "deployment-openrouter-key" }, async (input) => {
+  const srv = start({ harness: "pi", openrouterApiKey: "deployment-openrouter-key" }, async (input) => {
     requested = String(input);
     catalogRequests++;
     return Response.json({
@@ -223,7 +224,7 @@ test("OpenRouter catalog exposes runtime-supported tool models as selectable bas
       model: "anthropic/claude-sonnet-4.5",
       async: true,
     });
-    assert.equal(turn.status, "queued");
+    assert.equal(turn.status, "queued", JSON.stringify(turn));
     assert.equal(catalogRequests, 1);
   } finally {
     await srv.close();
@@ -413,7 +414,7 @@ test("admin model credentials survive a second app instance on the same durable 
   assert.doesNotMatch(JSON.stringify(await second.statuses()), /durable-openrouter-key/);
 });
 
-test("a stored scope override outside the configured picker refuses web turns; the org default stays exempt", async () => {
+test("a stored scope override falls back to an allowed model; explicit disallowed choices are refused", async () => {
   const srv = start({ anthropicApiKey: "deployment-anthropic-key" });
   try {
     srv.built.config.setRuntimeSelection("org:default-org", { harnessId: "mock", modelId: "claude-opus-4-8" });
@@ -434,8 +435,17 @@ test("a stored scope override outside the configured picker refuses web turns; t
       });
 
     const stale = await turn("web:alice:stale-override");
-    assert.equal(stale.status, "refused");
-    assert.match(stale.reason ?? "", /not enabled for the web UI/);
+    assert.equal(stale.status, "queued");
+    assert.deepEqual(
+      await resolveRuntimeChoiceDurable(srv.built.config, "org:default-org", "personal:alice", {
+        harnessId: "mock",
+        modelId: "claude-opus-4-8",
+      }),
+      { harnessId: "mock", modelId: "claude-sonnet-4-6" },
+    );
+    const disallowed = await turn("web:alice:explicit-disallowed", "claude-haiku-4-5");
+    assert.equal(disallowed.status, "refused");
+    assert.match(disallowed.reason ?? "", /not allowed for this scope/);
 
     const explicitOrgDefault = await turn("web:alice:org-default", "claude-opus-4-8");
     assert.equal(explicitOrgDefault.status, "queued");

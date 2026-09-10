@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hostMatches, isHostDenied, egressDecision } from "../src/resolution/egress-policy.ts";
+import {
+  hostMatches,
+  isHostDenied,
+  egressDecision,
+  parseEgressPolicy,
+  privateNetworkAllowed,
+} from "../src/resolution/egress-policy.ts";
 import type { EgressPolicy } from "../src/types.ts";
 
 test("hostMatches: exact + subdomain, not siblings or superstrings", () => {
@@ -64,4 +70,86 @@ test("egressDecision: a non-empty allowlist requires a match", () => {
   const policy: EgressPolicy = { allowedHosts: ["api.internal"], deniedHosts: [] };
   assert.equal(egressDecision("api.internal", policy).allow, true);
   assert.deepEqual(egressDecision("example.com", policy), { allow: false, verdict: "not_allowlisted" });
+});
+
+test("private network exceptions parse domains, IPv4/IPv6 addresses, subnets and inclusive ranges", () => {
+  const entries = [
+    "KIBANA.Example.COM.",
+    "10.1.37.205",
+    "10.1.37.0/24",
+    "10.1.37.200 - 10.1.37.210",
+    "[FD00:0::1]",
+    "fd00::/64",
+    "fd00::10-fd00::20",
+  ];
+  assert.deepEqual(
+    parseEgressPolicy({ allowedHosts: [], privateNetworkAllowedHosts: entries, denyPrivateNetworks: false }),
+    {
+      policy: {
+        allowedHosts: [],
+        deniedHosts: [],
+        privateNetworkAllowedHosts: [
+          "kibana.example.com",
+          "10.1.37.205",
+          "10.1.37.0/24",
+          "10.1.37.200-10.1.37.210",
+          "fd00::1",
+          "fd00::/64",
+          "fd00::10-fd00::20",
+        ],
+      },
+    },
+  );
+  assert.deepEqual(parseEgressPolicy({ privateNetworkAllowedHosts: [] }), {
+    policy: { allowedHosts: [], deniedHosts: [] },
+  });
+});
+
+test("invalid private network entries fail validation without broadening their meaning", () => {
+  for (const entry of [
+    "10.0.0.0/33",
+    "fd00::/129",
+    "10.0.0.0/-1",
+    "10.0.0.0/1.5",
+    "10.0.0.0/24/path",
+    "10.0.0.20-10.0.0.10",
+    "10.0.0.1-fd00::1",
+    "999.1.1.1",
+    "10.1",
+    "0x0a0125cd",
+    "[fd00::1]:443",
+    "fd00::1%eth0",
+    "https://kibana.example.com",
+    "example.com/24",
+    "*.example.com",
+  ]) {
+    assert.ok("error" in parseEgressPolicy({ privateNetworkAllowedHosts: [entry] }), entry);
+  }
+  for (const entries of ["10.0.0.0/8", [null], ["fd00::1", "[fd00:0::1]"], ["EXAMPLE.com", "example.com."]]) {
+    assert.ok("error" in parseEgressPolicy({ privateNetworkAllowedHosts: entries }), JSON.stringify(entries));
+  }
+});
+
+test("private IP rules match resolved addresses and boundaries without becoming hostname suffix grants", () => {
+  const host = "kibana.example.com";
+  for (const rule of ["10.1.37.205", "10.1.37.0/24", "10.1.37.200-10.1.37.210"]) {
+    assert.equal(privateNetworkAllowed(host, "10.1.37.205", [rule]), true, rule);
+    assert.equal(privateNetworkAllowed(host, "10.1.38.205", [rule]), false, rule);
+    assert.equal(privateNetworkAllowed("evil.10.1.37.205", "10.9.9.9", [rule]), false, rule);
+    assert.equal(privateNetworkAllowed(host, "::ffff:10.1.37.205", [rule]), true, rule);
+  }
+  for (const [address, allowed] of [
+    ["10.1.37.199", false],
+    ["10.1.37.200", true],
+    ["10.1.37.210", true],
+    ["10.1.37.211", false],
+  ] as const) {
+    assert.equal(privateNetworkAllowed(host, address, ["10.1.37.200-10.1.37.210"]), allowed, address);
+  }
+  assert.equal(privateNetworkAllowed(host, "fd00::1", ["fd00::/64"]), true);
+  assert.equal(privateNetworkAllowed(host, "fd00:0:0:1::1", ["fd00::/64"]), false);
+  assert.equal(privateNetworkAllowed(host, "fd00::20", ["fd00::10-fd00::20"]), true);
+  assert.equal(privateNetworkAllowed(host, "fd00::21", ["fd00::10-fd00::20"]), false);
+  assert.equal(privateNetworkAllowed("api.kibana.example.com", "10.1.37.205", [host]), true);
+  assert.equal(privateNetworkAllowed("kibana.example.com.evil.test", "10.1.37.205", [host]), false);
 });

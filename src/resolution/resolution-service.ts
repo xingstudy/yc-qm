@@ -1,9 +1,9 @@
 import type { Conversation, Principal, Resolution, ScopeId, WorkspaceLayer } from "../types.ts";
 import { scopeId } from "../types.ts";
-import { composePolicy, defaultOrgPolicy } from "../policy/command-policy.ts";
+import { governanceCommandPolicy } from "./governance-policy.ts";
 import type { ScopedConfigStore } from "./config-store.ts";
 import type { AclStore } from "../acl/acl-store.ts";
-import { audienceEgressFloor, audienceDeniedFloor } from "./audience-floor.ts";
+import { audienceEgressFloor, audienceDeniedFloor, audiencePrivateNetworkFloor } from "./audience-floor.ts";
 import { principalEntitledToScope } from "./context-filter.ts";
 import { resolveSecurityPolicy } from "../security/security-posture.ts";
 
@@ -27,7 +27,15 @@ export function createResolutionService(orgId: string, config: ScopedConfigStore
     async resolve(conversation, actor): Promise<Resolution> {
       const scope = scopeFor(conversation, actor);
       const isDm = conversation.kind === "dm";
+      const principalIds = [...new Set([actor.id, ...conversation.audience.map((principal) => principal.id)])];
+      const inherited = new Map(
+        await Promise.all(
+          principalIds.map(async (id) => [id, await config.governanceScopes(scopeId("personal", id))] as const),
+        ),
+      );
+      const governanceScopes = [...new Set([orgScope, ...[...inherited.values()].flat(), scope])];
       const liveConfigScopes = new Set<ScopeId>([orgScope, scope, scopeId("personal", actor.id)]);
+      for (const id of governanceScopes) liveConfigScopes.add(id);
       for (const principal of conversation.audience) {
         liveConfigScopes.add(scopeId("personal", principal.id));
         for (const team of principal.teamIds ?? []) liveConfigScopes.add(scopeId("team", team));
@@ -48,6 +56,15 @@ export function createResolutionService(orgId: string, config: ScopedConfigStore
       const scopeSoul = config.getSoul(scope);
       const soulParts: string[] = [];
       if (orgSoul) soulParts.push(orgSoul);
+      for (const id of governanceScopes) {
+        if (!id.startsWith("org-unit:") && !id.startsWith("access-group:")) continue;
+        if (conversation.audience.some((principal) => !inherited.get(principal.id)?.includes(id))) continue;
+        const instructions = config.getSoul(id);
+        if (instructions)
+          soulParts.push(
+            `--- Organization group instructions (subordinate to organization policy) ---\n${instructions}`,
+          );
+      }
       const scopeSoulIsDistinct = scopeSoul != null && scopeSoul.trim() !== orgSoul.trim();
       if (scopeSoulIsDistinct) {
         soulParts.push(
@@ -67,15 +84,22 @@ export function createResolutionService(orgId: string, config: ScopedConfigStore
       }
       const systemPrompt = soulParts.join("\n\n");
 
-      const orgPolicy = config.getCommandPolicy(orgScope) ?? defaultOrgPolicy();
-      const scopePolicy = config.getCommandPolicy(scope) ?? undefined;
-      const commandPolicy = composePolicy(orgPolicy, scopePolicy);
-      const securityPolicy = resolveSecurityPolicy(await config.getSecurityPostureDurable(scope));
-      const approvalGrantModes = await config.getApprovalGrantModesDurable(scope);
+      const groupScopes = governanceScopes.filter((id) => id.startsWith("org-unit:") || id.startsWith("access-group:"));
+      const commandPolicy = governanceCommandPolicy(config, orgScope, scope, groupScopes);
+      const securityPolicy = resolveSecurityPolicy(await config.getSecurityPostureDurable(scope, principalIds));
+      const approvalGrantModes = await config.getApprovalGrantModesDurable(scope, principalIds);
 
+      const privateNetworkAllowedHosts = audiencePrivateNetworkFloor(
+        conversation.audience,
+        config,
+        orgScope,
+        scope,
+        inherited,
+      );
       const egress = {
-        allowedHosts: audienceEgressFloor(conversation.audience, config, orgScope, scope),
-        deniedHosts: audienceDeniedFloor(conversation.audience, config, orgScope, scope),
+        ...(privateNetworkAllowedHosts.length ? { privateNetworkAllowedHosts } : {}),
+        allowedHosts: audienceEgressFloor(conversation.audience, config, orgScope, scope, inherited),
+        deniedHosts: audienceDeniedFloor(conversation.audience, config, orgScope, scope, inherited),
       };
 
       const grantedHandles = await acl.handlesForAudience(

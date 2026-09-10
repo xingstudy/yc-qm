@@ -437,3 +437,13 @@ test("baseModelProviders constrains the base model only when a provider is decla
     "with no declaration the shipped default stands, so upgrading never moves a deployment's model or its billing",
   );
 });
+
+test("local sandbox egress settings are opt-in and read the configured image", () => {
+  assert.equal(loadConfig({}).localSandbox.egressProxyUrl, undefined);
+  const config = loadConfig({
+    LOCAL_SANDBOX_EGRESS_PROXY_URL: "http://host.docker.internal:48080",
+    LOCAL_SANDBOX_EGRESS_IMAGE: "qm-egress-proxy:verified",
+  });
+  assert.equal(config.localSandbox.egressProxyUrl, "http://host.docker.internal:48080");
+  assert.equal(config.localSandbox.egressImage, "qm-egress-proxy:verified");
+});

@@ -14,7 +14,7 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
 
-const imageNames = ["CORE", "WEB_UI", "ADMIN", "PORTAL", "AUTH", "EDGE", "SANDBOX"] as const;
+const imageNames = ["CORE", "WEB_UI", "ADMIN", "PORTAL", "AUTH", "EDGE", "SANDBOX", "EGRESS_PROXY"] as const;
 const imageRepositories: Record<(typeof imageNames)[number], string> = {
   CORE: "core",
   WEB_UI: "web-ui",
@@ -23,6 +23,7 @@ const imageRepositories: Record<(typeof imageNames)[number], string> = {
   AUTH: "auth",
   EDGE: "edge",
   SANDBOX: "sandbox-local",
+  EGRESS_PROXY: "egress-proxy",
 };
 const requiredProductionValues = [
   "QM_COMPOSE_PROJECT",

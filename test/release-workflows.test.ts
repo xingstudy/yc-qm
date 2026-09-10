@@ -225,7 +225,7 @@ test("production images publish through a separate Docker Hub workflow", () => {
   );
   assert.doesNotMatch(workflow, /:latest/);
   assert.doesNotMatch(workflow, /ghcr\.io/);
-  assert.equal(workflow.match(/^ {4}environment: production-images$/gm)?.length, 4);
+  assert.equal(workflow.match(/^ {4}environment: production-images$/gm)?.length, 5);
 });
 
 test("production release covers every pull-only image and explicitly targets x86_64", () => {
@@ -238,12 +238,24 @@ test("production release covers every pull-only image and explicitly targets x86
     ["portal", "deploy/portal/Dockerfile"],
     ["auth", "deploy/auth/Dockerfile"],
     ["edge", "deploy/edge/Dockerfile"],
+    ["egress-proxy", "deploy/egress-proxy/Dockerfile"],
   ] as const) {
     assert.match(workflow, new RegExp(`- name: ${name}\\n\\s+dockerfile: ${dockerfile.replace("/", "\\/")}`));
   }
   assert.match(workflow, /^ {2}sandbox-base:$/m);
+  assert.match(workflow, /^ {2}core-base:$/m);
   assert.match(workflow, /^ {2}sandbox-local:$/m);
-  assert.equal(workflow.match(/platforms: linux\/amd64/g)?.length, 3);
+  assert.equal(workflow.match(/platforms: linux\/amd64/g)?.length, 4);
+});
+
+test("production core uses the signed base image by digest", () => {
+  const workflow = readFileSync(".github/workflows/release-production-images.yml", "utf8");
+
+  assert.match(workflow, /^ {2}core-base:\n[\s\S]*?target: core-base$/m);
+  assert.match(workflow, /image: \$\{\{ steps\.reference\.outputs\.image \}\}/);
+  assert.match(workflow, /printf 'image=%s\\n' "\$image" >> "\$GITHUB_OUTPUT"/);
+  assert.match(workflow, /^ {2}images:\n {4}needs:\n {6}- preflight\n {6}- core-base$/m);
+  assert.match(workflow, /build-contexts: core-base=docker-image:\/\/\$\{\{ needs\.core-base\.outputs\.image \}\}/);
 });
 
 test("production version tags are promoted only after scan, signature, and complete digest verification", () => {
@@ -254,7 +266,7 @@ test("production version tags are promoted only after scan, signature, and compl
   assert.match(workflow, /cosign sign --yes "\$image"/);
   assert.match(
     workflow,
-    /for name in core web-ui admin portal auth edge sandbox-base sandbox-local; do\s+test -s "qm-\$\{name\}\.image"/,
+    /for name in core web-ui admin portal auth edge egress-proxy sandbox-base sandbox-local; do\s+test -s "qm-\$\{name\}\.image"/,
   );
   assert.match(workflow, formalTag);
   assert.ok(
@@ -414,11 +426,11 @@ test("every signed registry image uses the bounded verification helper", () => {
   const production = readFileSync(".github/workflows/release-production-images.yml", "utf8");
   const packageWorkflow = readFileSync(".github/workflows/release-package.yml", "utf8");
 
-  assert.equal(production.match(/cosign sign --yes/g)?.length, 4);
-  assert.equal(production.match(/verify_with_retry\(\) \{/g)?.length, 5);
-  assert.equal(production.match(/verify_with_retry "\$(?:image|final)"/g)?.length, 5);
-  assert.equal(production.match(/max_attempts=6/g)?.length, 5);
-  assert.equal(production.match(/\[\[ "\$output" != \*"no signatures found"\* \]\]/g)?.length, 5);
+  assert.equal(production.match(/cosign sign --yes/g)?.length, 5);
+  assert.equal(production.match(/verify_with_retry\(\) \{/g)?.length, 6);
+  assert.equal(production.match(/verify_with_retry "\$(?:image|final)"/g)?.length, 6);
+  assert.equal(production.match(/max_attempts=6/g)?.length, 6);
+  assert.equal(production.match(/\[\[ "\$output" != \*"no signatures found"\* \]\]/g)?.length, 6);
   assert.equal(packageWorkflow.match(/cosign sign --yes/g)?.length, 1);
   assert.equal(packageWorkflow.match(/verify_with_retry\(\) \{/g)?.length, 1);
   assert.equal(packageWorkflow.match(/verify_with_retry "\$image"/g)?.length, 1);

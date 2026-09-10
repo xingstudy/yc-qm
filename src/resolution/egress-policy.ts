@@ -1,4 +1,5 @@
 import type { EgressPolicy } from "../types.ts";
+import { ipMatchesRule, normalizeIpRule } from "../util/ip-rule.ts";
 
 function normalizeHost(host: string): string {
   const s = host
@@ -19,8 +20,11 @@ function normalizeHost(host: string): string {
 export function parseEgressPolicy(input: unknown): { policy: EgressPolicy } | { error: string } {
   if (typeof input !== "object" || input === null || Array.isArray(input))
     return { error: "egress requires { allowedHosts, deniedHosts }" };
-  const value = input as { allowedHosts?: unknown; deniedHosts?: unknown };
-  const parseList = (name: "allowedHosts" | "deniedHosts", raw: unknown): string[] | { error: string } => {
+  const value = input as { allowedHosts?: unknown; deniedHosts?: unknown; privateNetworkAllowedHosts?: unknown };
+  const parseList = (
+    name: "allowedHosts" | "deniedHosts" | "privateNetworkAllowedHosts",
+    raw: unknown,
+  ): string[] | { error: string } => {
     if (!Array.isArray(raw)) return { error: `${name} must be an array of host names` };
     const hosts: string[] = [];
     const seen = new Set<string>();
@@ -28,6 +32,22 @@ export function parseEgressPolicy(input: unknown): { policy: EgressPolicy } | { 
       if (typeof item !== "string") return { error: `${name} must contain only host names` };
       const candidate = item.trim();
       if (!candidate) continue;
+      if (name === "privateNetworkAllowedHosts") {
+        const network = normalizeIpRule(candidate);
+        if (network) {
+          if (seen.has(network)) return { error: `${name} contains duplicate entry ${network}` };
+          seen.add(network);
+          hosts.push(network);
+          continue;
+        }
+        if (
+          candidate.includes("/") ||
+          /\s|:|\[|\]/.test(candidate) ||
+          /^[\d.]+$|^\d+(?:\.\d+){3}-/.test(candidate) ||
+          normalizeIpRule(normalizeHost(candidate))
+        )
+          return { error: `${candidate} is not a valid IP, CIDR subnet, or IP range` };
+      }
       if (/\s|\*|:\/\/|[/?#@]/.test(candidate))
         return { error: `${candidate} is not a host name; omit schemes, wildcards, ports, paths, and credentials` };
       const colonCount = (candidate.match(/:/g) ?? []).length;
@@ -50,10 +70,18 @@ export function parseEgressPolicy(input: unknown): { policy: EgressPolicy } | { 
   if ("error" in allowedHosts) return allowedHosts;
   const deniedHosts = parseList("deniedHosts", value.deniedHosts ?? []);
   if ("error" in deniedHosts) return deniedHosts;
+  const privateNetworkAllowedHosts = parseList("privateNetworkAllowedHosts", value.privateNetworkAllowedHosts ?? []);
+  if ("error" in privateNetworkAllowedHosts) return privateNetworkAllowedHosts;
   const denied = new Set(deniedHosts);
   const overlap = allowedHosts.find((host) => denied.has(host));
   if (overlap) return { error: `${overlap} cannot appear in both allowedHosts and deniedHosts` };
-  return { policy: { allowedHosts, deniedHosts } };
+  return {
+    policy: { allowedHosts, deniedHosts, ...(privateNetworkAllowedHosts.length ? { privateNetworkAllowedHosts } : {}) },
+  };
+}
+
+export function privateNetworkAllowed(host: string, ip: string, rules: readonly string[] | undefined): boolean {
+  return rules?.some((rule) => (normalizeIpRule(rule) ? ipMatchesRule(ip, rule) : hostMatches(host, rule))) ?? false;
 }
 
 export function hostMatches(requestHost: string, ruleHost: string): boolean {

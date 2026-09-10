@@ -2970,8 +2970,15 @@
         letter-spacing: 0.04em;
         text-transform: uppercase;
       }
-      .governance-scope strong {
+      .governance-scope select {
         max-width: 260px;
+        min-width: 150px;
+        width: auto;
+        margin: 0;
+        padding: 2px 22px 2px 4px;
+        border: 0;
+        border-radius: 4px;
+        background-color: transparent;
         overflow: hidden;
         font-size: 12px;
         text-overflow: ellipsis;
@@ -2987,6 +2994,13 @@
         border: 1px solid color-mix(in srgb, var(--warn) 42%, var(--border));
         border-radius: 10px;
         background: color-mix(in srgb, var(--warn) 8%, var(--surface));
+      }
+      .environment-notice.hidden {
+        display: none;
+      }
+      #governance-overview.hidden,
+      #governance-settings.hidden {
+        display: none;
       }
       .environment-notice strong,
       .environment-notice p {
@@ -4094,10 +4108,24 @@
                   them.
                 </p>
               </div>
-              <div class="governance-scope" aria-label="Selected governance scope">
-                <span>Scope</span><strong id="governance-scope-label">Organization</strong>
-              </div>
+              <label class="governance-scope">
+                <span>Scope</span>
+                <select id="governance-scope-select" aria-label="Selected governance scope"></select>
+              </label>
             </div>
+            <p id="st-governance-load" class="status" role="status"></p>
+            <details id="governance-inheritance" class="field-hint hidden">
+              <summary id="governance-inheritance-summary"></summary>
+              <p>
+                Unit rules include descendant members. Safety and approval restrictions combine across memberships; any
+                command denial wins. Network host grants combine and denials take precedence. Group instructions are
+                included only when every conversation participant belongs to that group.
+              </p>
+              <p>
+                Runtime defaults prefer the current scope, then access groups, then the deepest organization unit, then
+                the organization. Ties use the last scope ID in alphabetical order.
+              </p>
+            </details>
             <aside class="environment-notice hidden" id="environment-notice" role="status">
               <div>
                 <strong id="environment-notice-title"></strong>
@@ -4129,7 +4157,7 @@
                 </div>
               </div>
             </section>
-            <div class="governance-layout">
+            <div class="governance-layout" id="governance-settings">
               <nav class="governance-sections" aria-label="Governance sections">
                 <a href="#governance-autonomy" aria-current="true">Autonomy</a>
                 <a href="#governance-boundaries">Data boundaries</a>
@@ -4376,6 +4404,22 @@
                       ></label
                     >
                     <textarea id="egress" placeholder="example.com&#10;api.internal"></textarea>
+                    <label for="egress-private" style="display: block; margin: 12px 0 4px"
+                      >Allowed private network domains / IPs</label
+                    >
+                    <p class="hint">
+                      One domain, IP, CIDR subnet, or IP range per line. Domains include subdomains; IP rules also match
+                      resolved addresses. Examples: kibana.example.com, 10.1.37.205, 10.1.37.0/24,
+                      10.1.37.200-10.1.37.210, fd00::/64.
+                    </p>
+                    <textarea
+                      id="egress-private"
+                      placeholder="kibana.example.com&#10;10.1.37.0/24&#10;10.1.37.200-10.1.37.210"
+                    ></textarea>
+                    <p class="hint">
+                      Allows private destinations in Auto mode. Host allowlists and denylists still apply; loopback and
+                      cloud metadata remain blocked. Changes apply to new connections in subsequent turns.
+                    </p>
                     <div class="policy-warnings" id="egress-warnings" aria-live="polite"></div>
                   </div>
                   <div class="foot">
@@ -4465,13 +4509,17 @@
                 <div class="governance-group" id="governance-intelligence">
                   <h2>Models &amp; browsing</h2>
                   <p>The models, browser runtime, and organization context available on future turns.</p>
+                  <p id="model-scope-note" class="hidden">
+                    These settings apply to this scope and its members. Defaults inherit from parent scopes; allowed
+                    lists intersect and limits use the strictest value. Restore inheritance to remove a local override.
+                  </p>
                 </div>
                 <section class="card setting-row hidden" id="card-interactive-fast-mode">
                   <div class="head">
                     <h2>Fast mode for interactive turns</h2>
                     <p>
-                      Org-wide, default off. When on, human turns run in fast mode on fast-capable models unless the
-                      turn asks otherwise. Requires fast-mode quota with the provider.
+                      Default fast mode for human turns in this scope. An explicit turn setting takes precedence.
+                      Requires provider fast-mode quota.
                     </p>
                   </div>
                   <div class="body">
@@ -4488,6 +4536,9 @@
                     </label>
                   </div>
                   <div class="foot">
+                    <button type="button" data-inherit="interactive-fast-mode" class="hidden">
+                      Restore inheritance
+                    </button>
                     <button class="primary" data-save="interactive-fast-mode">Apply</button
                     ><span class="status" id="st-interactive-fast-mode"></span>
                   </div>
@@ -4504,6 +4555,7 @@
                     <select id="base-model" style="max-width: 360px"></select>
                   </div>
                   <div class="foot">
+                    <button type="button" data-inherit="runtime" class="hidden">Restore inheritance</button>
                     <button class="primary" data-save="runtime">Apply</button
                     ><span class="status" id="st-runtime"></span>
                   </div>
@@ -4511,12 +4563,16 @@
                 <section class="card setting-row hidden" id="card-approved-harnesses">
                   <div class="head">
                     <h2>Approved harnesses</h2>
-                    <p>Harnesses people may choose in the web UI or ask the agent to use.</p>
+                    <p>
+                      Harnesses allowed for this scope. Parent and membership restrictions still apply. Clear all
+                      selections to inherit.
+                    </p>
                   </div>
                   <div class="body">
                     <div id="approved-harnesses-list" style="display: flex; flex-direction: column; gap: 6px"></div>
                   </div>
                   <div class="foot">
+                    <button type="button" data-inherit="approved-harnesses" class="hidden">Restore inheritance</button>
                     <button class="primary" data-save="approved-harnesses">Apply</button
                     ><span class="status" id="st-approved-harnesses"></span>
                   </div>
@@ -4525,8 +4581,8 @@
                   <div class="head">
                     <h2>Allowed models</h2>
                     <p>
-                      Restrict which models the web UI offers and accepts, org-wide. Add the models to allow and pick
-                      which is pre-selected by default. Remove every chip to allow the deployment's full model set.
+                      Models allowed for this scope. Parent and membership restrictions still apply. Remove every model
+                      to inherit.
                     </p>
                   </div>
                   <div class="body">
@@ -4539,10 +4595,13 @@
                       />
                       <datalist id="webui-models-catalog"></datalist>
                     </div>
-                    <label for="webui-models-default" style="margin-top: 10px">Default</label>
-                    <select id="webui-models-default" style="max-width: 360px"></select>
+                    <p>
+                      Set the default in Default harness and model above. This list only controls which models are
+                      allowed.
+                    </p>
                   </div>
                   <div class="foot">
+                    <button type="button" data-inherit="webui-models" class="hidden">Restore inheritance</button>
                     <button class="primary" data-save="webui-models">Save</button
                     ><span class="status" id="st-webui-models"></span>
                   </div>
@@ -4610,9 +4669,7 @@
                   <div class="head">
                     <h2>Browse model</h2>
                     <p>
-                      The model driving the browser agent in the browse skill, org-wide. Leave on the default to follow
-                      the deployment's base model. Fast mode applies only on Opus models; other models run at standard
-                      speed.
+                      The browser agent model for this scope. Leave on default to inherit the model from parent scopes.
                     </p>
                   </div>
                   <div class="body">
@@ -4620,6 +4677,7 @@
                     <select id="browse-model" style="max-width: 360px"></select>
                   </div>
                   <div class="foot">
+                    <button type="button" data-inherit="browse-model" class="hidden">Restore inheritance</button>
                     <button class="primary" data-save="browse-model">Apply</button
                     ><span class="status" id="st-browse-model"></span>
                   </div>
@@ -4628,8 +4686,8 @@
                   <div class="head">
                     <h2>Browse step limit</h2>
                     <p>
-                      Max browser steps a single browse task may take, org-wide. Each step is one action (click, type,
-                      navigate) by the browser agent. Leave blank for the default of 50.
+                      Maximum browser steps per task. Parent and membership limits cannot be exceeded. Leave blank to
+                      inherit; the deployment default is 50.
                     </p>
                   </div>
                   <div class="body">
@@ -4645,6 +4703,7 @@
                     />
                   </div>
                   <div class="foot">
+                    <button type="button" data-inherit="browse-max-steps" class="hidden">Restore inheritance</button>
                     <button class="primary" data-save="browse-max-steps">Apply</button
                     ><span class="status" id="st-browse-max-steps"></span>
                   </div>
@@ -4653,8 +4712,8 @@
                   <div class="head">
                     <h2>Turn time limit</h2>
                     <p>
-                      Maximum wall-clock time for a turn, org-wide. Use 60–86400 seconds, 0 for no limit, or leave blank
-                      to use the deployment default.
+                      Maximum turn duration in seconds. Use 60–86400, 0 for no local limit, or leave blank to inherit.
+                      Parent and membership limits still apply.
                     </p>
                   </div>
                   <div class="body">
@@ -4670,6 +4729,7 @@
                     />
                   </div>
                   <div class="foot">
+                    <button type="button" data-inherit="turn-wall-clock" class="hidden">Restore inheritance</button>
                     <button class="primary" data-save="turn-wall-clock">Apply</button
                     ><span class="status" id="st-turn-wall-clock"></span>
                   </div>
@@ -4980,6 +5040,21 @@
       const $ = (id) => document.getElementById(id);
       const ADMIN_LOCALE_KEY = "qm:locale";
       const ADMIN_ZH = {
+        "No model is available under the current restrictions.": "当前限制下没有可运行的模型，请调整允许名单。",
+        "Restore inheritance": "恢复继承",
+        "Default fast mode for human turns in this scope. An explicit turn setting takes precedence. Requires provider fast-mode quota.":
+          "当前范围人工轮次的默认快速模式；轮次自身的设置优先。需要提供商的快速模式配额。",
+        "Harnesses allowed for this scope. Parent and membership restrictions still apply. Clear all selections to inherit.":
+          "当前范围允许使用的调度器，仍受上级和所属组的限制。清空选择可恢复继承。",
+        "Models allowed for this scope. Parent and membership restrictions still apply. Remove every model to inherit.":
+          "当前范围允许使用的模型，仍受上级和所属组的限制。移除全部模型可恢复继承。",
+        "The browser agent model for this scope. Leave on default to inherit the model from parent scopes.":
+          "当前范围的浏览器智能体模型。选择默认可继承上级范围的配置。",
+        "Maximum browser steps per task. Parent and membership limits cannot be exceeded. Leave blank to inherit; the deployment default is 50.":
+          "单次浏览任务的最大步数，不能超过上级及所属组的限制。留空恢复继承；部署默认值为 50。",
+        "Maximum turn duration in seconds. Use 60–86400, 0 for no local limit, or leave blank to inherit. Parent and membership limits still apply.":
+          "轮次最长运行秒数：60–86400，0 表示不设置本地上限，留空恢复继承。仍受上级及所属组的限制。",
+
         "Identity sources": "身份源",
         Provider: "平台",
         "Corp Id": "企业 CorpID",
@@ -5608,6 +5683,10 @@
           "管理哪些内容可以离开当前范围、哪些受众可见，以及如何传递部署权限。",
         "Outbound host controls for this scope. Enforcement depends on the active sandbox backend; this page reports that capability instead of implying every saved rule is live.":
           "此范围的出站主机控制。执行能力取决于当前沙箱后端；此页会如实报告该能力，不会暗示所有已保存规则均已生效。",
+        "Outbound blocked": "出站访问已阻止",
+        "Configure the control plane to authorize proxy traffic": "配置控制平面以授权代理流量",
+        "The Local Docker network guard blocks outbound access until CORE_SIGNING_SECRET and AGENT_API_URL are configured. The proxy must share the signing secrets and reach core.":
+          "Local Docker 网络守卫已阻止出站访问，请配置 CORE_SIGNING_SECRET 和 AGENT_API_URL。代理必须使用相同的签名密钥并能访问 core。",
         "Policy is draft only": "策略仅为草案",
         "The current sandbox backend does not enforce outbound host policy. Agents still have open outbound access.":
           "当前沙箱后端不执行出站主机策略。智能体仍可自由访问外部网络。",
@@ -5638,6 +5717,8 @@
         "Default interactive turns to fast mode": "交互轮次默认使用快速模式",
         "A turn that picks its own fast-mode setting (for example the web UI toggle) still wins.":
           "轮次自身选择的快速模式设置（例如 Web UI 开关）仍优先生效。",
+        "These settings apply to this scope and its members. Defaults inherit from parent scopes; allowed lists intersect and limits use the strictest value. Restore inheritance to remove a local override.":
+          "这些设置适用于当前范围及其成员。默认值继承上级；允许名单取交集，限制取最严格的值。点击“恢复继承”可移除当前范围的覆盖。",
         "Default harness and model": "默认调度器和模型",
         "The runtime inherited by scopes without an override. Takes effect from the next turn.":
           "未设置覆盖值的范围所继承的运行时，从下一轮开始生效。",
@@ -5647,6 +5728,13 @@
         "Harnesses people may choose in the web UI or ask the agent to use.":
           "用户可在 Web UI 中选择或请求智能体使用的调度器。",
         "Allowed models": "允许的模型",
+        "Set the default in Default harness and model above. This list only controls which models are allowed.":
+          "请在上方“默认调度器和模型”中设置默认值，此名单只控制允许使用的模型。",
+        "Unavailable on this deployment": "当前部署不可用",
+        "Choose an available model from the suggestions using its full provider/model ID.":
+          "请从建议中选择可用模型，使用完整的提供商/模型 ID。",
+        "No allowed, available models": "没有符合名单且可用的模型",
+        "Codex requires an OpenAI Responses model.": "Codex 需要 OpenAI Responses 协议的模型。",
         Branding: "品牌",
         "Accent color": "强调色",
         "Brand mark (1–2 chars)": "品牌标记（1–2 个字符）",
@@ -6166,7 +6254,7 @@
         Deleted: "已删除",
         Removed: "已移除",
         "Saving...": "正在保存…",
-        "None — rules are drafts": "无——规则仅为草稿",
+        "None — rules are drafts": "未启用——规则仅为草案",
         "Domain-aware firewall": "域名感知防火墙",
         "IP and port firewall": "IP 和端口防火墙",
         "Open outbound access": "开放出站访问",
@@ -6248,6 +6336,12 @@
         Dangerous: "危险",
         Auto: "自动",
         Strict: "严格",
+        "Allowed private network domains / IPs": "允许访问内网的域名/IP",
+        "Private network exceptions": "内网访问例外",
+        "One domain, IP, CIDR subnet, or IP range per line. Domains include subdomains; IP rules also match resolved addresses. Examples: kibana.example.com, 10.1.37.205, 10.1.37.0/24, 10.1.37.200-10.1.37.210, fd00::/64.":
+          "每行填写一个域名、IP、CIDR 网段或起止 IP 范围。域名包含子域名；IP 规则也匹配域名解析后的地址。例如：kibana.example.com、10.1.37.205、10.1.37.0/24、10.1.37.200-10.1.37.210、fd00::/64。",
+        "Allows private destinations in Auto mode. Host allowlists and denylists still apply; loopback and cloud metadata remain blocked. Changes apply to new connections in subsequent turns.":
+          "允许在 Auto 模式下访问指定内网目标。域名允许名单和禁止名单仍然生效；回环地址和云元数据仍被阻止。修改在后续轮次的新连接上生效。",
         "Open egress": "开放出站访问",
         "External enabled": "允许外部参与者",
         "Internal only": "仅限内部成员",
@@ -6745,6 +6839,14 @@
         "Couldn't restore the unit.": "无法恢复节点。",
         "Couldn't remove the member.": "无法移除成员。",
         "Access groups": "访问组",
+        "Group conversations": "群聊",
+        Teams: "团队",
+        "Inherited governance": "继承的治理规则",
+        "Organization group is missing or archived.": "组织架构组或访问组不存在，或已归档。",
+        "Unit rules include descendant members. Safety and approval restrictions combine across memberships; any command denial wins. Network host grants combine and denials take precedence. Group instructions are included only when every conversation participant belongs to that group.":
+          "组织架构组规则包含下级成员。安全与审批限制按所有成员关系合并；命令拒绝优先。网络允许主机合并，拒绝优先。组内常驻指令仅在会话参与者均属于该组时加入。",
+        "Runtime defaults prefer the current scope, then access groups, then the deepest organization unit, then the organization. Ties use the last scope ID in alphabetical order.":
+          "模型默认值优先使用当前范围，其次访问组、最深层组织架构组，最后为组织；同级按范围 ID 字母序取最后一项。",
         "Active groups": "活跃访问组",
         "Archived groups": "已归档访问组",
         "Active and archived groups. Select one to load its members.":
@@ -6915,9 +7017,9 @@
         match = value.match(/^Policy enforced by (.+)$/);
         if (match) return `策略由 ${match[1]} 强制执行`;
         match = value.match(
-          /^(.+) supports (.+) fidelity, which cannot enforce outbound host policy\. Agents still have open outbound access\.$/,
+          /^(.+) is not configured to enforce outbound host policy\. Saved rules remain drafts and agents can access external networks\.$/,
         );
-        if (match) return `${match[1]} 支持${match[2]}级执行精度，但无法执行出站主机策略。智能体仍可自由访问外部网络。`;
+        if (match) return `${match[1]} 尚未配置出站域名强制执行。已保存的规则仍为草案，智能体可以访问外部网络。`;
         match = value.match(/^(.+) enforces this policy at (.+) fidelity\.$/);
         if (match) return `${match[1]} 以${match[2]}级执行精度强制执行此策略。`;
         match = value.match(
@@ -7881,7 +7983,10 @@
           view === "onboarding" || view === "governance" || view === "connectors",
         );
         if (view === "onboarding") return void loadOnboarding();
-        if (view === "governance") return void loadScope();
+        if (view === "governance") {
+          if (scopeDir) void loadScopeDirectory();
+          return void loadScope();
+        }
         if (view === "connectors") return void loadConnectors();
         if (view === "user") return void showUserDetail(st.principal);
         if (view === "slack") return void renderSlackMirror(st);
@@ -7900,16 +8005,77 @@
         renderData();
       }
       function hasGovernanceDraft() {
-        return view === "governance" && !!$("view-governance").querySelector(".card.dirty");
+        return (
+          view === "governance" &&
+          loadedGovernanceScope === scope &&
+          !!$("view-governance").querySelector(".card.dirty")
+        );
       }
       function governanceSaveInFlight() {
         return view === "governance" && !!$("view-governance").querySelector(".status.saving");
       }
       function governanceScopeName(scopeId = scope) {
-        return scopeKind(scopeId) === "org"
-          ? adminTr("Organization") + " · " + scopeId.split(":").slice(1).join(":")
-          : shortName(scopeId);
+        if (scopeKind(scopeId) === "org")
+          return adminTr("Organization") + " · " + scopeId.split(":").slice(1).join(":");
+        const names = [];
+        const seen = new Set();
+        let current = scopeId;
+        while (current && scopeKind(current) !== "org" && !seen.has(current)) {
+          seen.add(current);
+          names.unshift(shortName(current));
+          current = (scopeDir || []).find((row) => row.scopeId === current)?.parentScopeId;
+        }
+        return names.join(" / ");
       }
+      function renderGovernanceScopePicker() {
+        const select = $("governance-scope-select");
+        select.textContent = "";
+        const rows = new Map((scopeDir || []).map((row) => [row.scopeId, row]));
+        rows.set("org:" + orgId, { scopeId: "org:" + orgId });
+        if (!rows.has(scope)) rows.set(scope, { scopeId: scope });
+        const categories = [
+          ["org", "Organization"],
+          ["org-unit", "Org tree"],
+          ["access-group", "Access groups"],
+          ["personal", "People"],
+          ["channel", "Channels"],
+          ["group", "Group conversations"],
+          ["team", "Teams"],
+        ];
+        const addOption = (parent, row) => {
+          const option = document.createElement("option");
+          option.value = row.scopeId;
+          option.textContent = governanceScopeName(row.scopeId);
+          parent.appendChild(option);
+        };
+        for (const [kind, label] of categories) {
+          const members = [...rows.values()]
+            .filter((row) => scopeKind(row.scopeId) === kind)
+            .sort((a, b) => governanceScopeName(a.scopeId).localeCompare(governanceScopeName(b.scopeId)));
+          if (!members.length) continue;
+          const group = document.createElement("optgroup");
+          group.label = adminTr(label);
+          members.forEach((row) => addOption(group, row));
+          select.appendChild(group);
+        }
+        for (const row of rows.values()) {
+          if (!categories.some(([kind]) => scopeKind(row.scopeId) === kind)) addOption(select, row);
+        }
+        if (!scopeDir) {
+          const note = document.createElement("option");
+          note.disabled = true;
+          note.textContent = scopeDirNote;
+          select.appendChild(note);
+        }
+        select.value = scope;
+        select.title = scopeDir ? governanceScopeName() : scopeDirNote;
+        if (governanceOverviewData?.scopeId === scope) renderGovernanceInheritance(governanceOverviewData);
+      }
+      $("governance-scope-select").onchange = (event) => {
+        const selected = event.target.value;
+        event.target.value = scope;
+        selectScope(selected);
+      };
       function commitGo(st) {
         history.pushState(st, "", stateToUrl(st));
         render(st);
@@ -8015,18 +8181,20 @@
       let environmentDir = [];
       let scopeDirNote = adminTr("Loading scopes…");
       async function loadScopeDirectory() {
-        const r = await api("GET", "/api/scopes");
+        const r = await api("GET", "/api/scopes").catch(() => ({ ok: false, status: 0, data: null }));
         if (!r.ok) {
           scopeDirNote =
             r.status === 403
               ? adminTr("Only an org admin can list scopes.")
               : r.data?.message || adminTr("Failed to load scopes.");
           if (historyIsIndex()) renderScopeIndex();
+          if (view === "governance") renderGovernanceScopePicker();
           return;
         }
         viewLoadedAt.history = Date.now();
         scopeDir = r.data.scopes || [];
         environmentDir = r.data.environments || [];
+        if (view === "governance") renderGovernanceScopePicker();
 
         if (SCOPED.has(view) && !urlToState().session) {
           const memoryEditor = view === "memory" && !(orgWideView() && urlToState().mem !== "edit");
@@ -8464,7 +8632,7 @@
       }
       function renderGovernanceOverview(data) {
         governanceOverviewData = { ...data };
-        $("governance-scope-label").textContent = governanceScopeName();
+        renderGovernanceScopePicker();
         const posture = data.securityPosture || "auto";
         let postureTone = "ok";
         if (posture === "dangerous") postureTone = "danger";
@@ -8483,7 +8651,7 @@
           backend: "unknown",
           reason: "backend_unsupported",
         };
-        const policyCount = allowCount + denyCount;
+        const policyCount = allowCount + denyCount + (data.egress?.privateNetworkAllowedHosts || []).length;
         const inactiveEgressDetail =
           enforcement.reason === "control_plane_unconfigured"
             ? "Backend supports policy; control plane inactive"
@@ -8502,6 +8670,15 @@
           egressDetail,
           enforcement.active ? "ok" : "warn",
         );
+        const localGuardBlocked =
+          enforcement.backend === "local-docker" && enforcement.reason === "control_plane_unconfigured";
+        if (localGuardBlocked)
+          setGovernanceStatus(
+            "governance-status-egress",
+            adminTr("Outbound blocked"),
+            "Configure the control plane to authorize proxy traffic",
+            "warn",
+          );
         const capability = $("egress-capability");
         capability.classList.toggle("enforced", !!enforcement.active);
         let enforcementTitle = "Policy is draft only";
@@ -8510,9 +8687,7 @@
         capability.querySelector("strong").textContent = adminTr(enforcementTitle);
         let enforcementSummary =
           titleCase(enforcement.backend) +
-          " supports " +
-          adminTr((enforcement.declaredFidelity || enforcement.fidelity).replace("_", "-")) +
-          " fidelity, which cannot enforce outbound host policy. Agents still have open outbound access.";
+          " is not configured to enforce outbound host policy. Saved rules remain drafts and agents can access external networks.";
         if (enforcement.active) {
           enforcementSummary =
             titleCase(enforcement.backend) +
@@ -8524,8 +8699,46 @@
             titleCase(enforcement.backend) +
             " supports domain policy, but the control plane cannot mint a reachable proxy token. Agents still have open outbound access.";
         }
+        if (localGuardBlocked)
+          enforcementSummary =
+            "The Local Docker network guard blocks outbound access until CORE_SIGNING_SECRET and AGENT_API_URL are configured. The proxy must share the signing secrets and reach core.";
         capability.querySelector("span").textContent = adminTr(enforcementSummary);
-        sectionButton("egress").textContent = adminTr(enforcement.active ? "Save policy" : "Save draft");
+        $("egress-backend").textContent = titleCase(enforcement.backend);
+        let enforcementLabel = "None — rules are drafts";
+        if (enforcement.active) {
+          enforcementLabel = enforcement.fidelity === "domain" ? "Domain-aware firewall" : "IP and port firewall";
+        }
+        if (localGuardBlocked) enforcementLabel = "Outbound blocked";
+        $("egress-enforcement").textContent = adminTr(enforcementLabel);
+        const effectiveEgress = data.egressEffective || data.egress || {};
+        const effectiveAllowCount = (effectiveEgress.allowedHosts || []).length;
+        const effectiveDenyCount = (effectiveEgress.deniedHosts || []).length;
+        let effectiveEgressLabel = adminTr("Open outbound access");
+        if (effectiveAllowCount) {
+          effectiveEgressLabel =
+            plural(effectiveAllowCount, "allowed host") +
+            " · " +
+            plural(effectiveDenyCount, "explicitly denied host") +
+            " · " +
+            adminTr("deny rules first") +
+            " · " +
+            adminTr("all other hosts denied");
+        } else if (effectiveDenyCount) {
+          effectiveEgressLabel = plural(effectiveDenyCount, "denied host") + " · " + adminTr("all other hosts allowed");
+        }
+        if (!enforcement.active)
+          effectiveEgressLabel = adminTr(localGuardBlocked ? "Outbound blocked" : "Open outbound access");
+        if (enforcement.active) {
+          effectiveEgressLabel +=
+            " · " +
+            adminTr("Private network exceptions") +
+            ": " +
+            (effectiveEgress.privateNetworkAllowedHosts || []).length;
+        }
+        $("egress-effective").textContent = effectiveEgressLabel;
+        const egressSave = sectionButton("egress");
+        if (egressSave) egressSave.textContent = adminTr(enforcement.active ? "Save policy" : "Save draft");
+
         if ("externalSlackParticipants" in data) {
           const external = !!data.externalSlackParticipants;
           setGovernanceStatus(
@@ -8580,15 +8793,32 @@
           go({ view: "governance", scope: attachment.environmentId, session: null, page: 1 });
       }
       let governanceReq = 0;
+      function renderGovernanceInheritance(data) {
+        const inheritedScopes = (data.governanceScopes || []).filter((id) => id !== scope);
+        $("governance-inheritance-summary").textContent = inheritedScopes.length
+          ? adminTr("Inherited governance") + ": " + inheritedScopes.map((id) => governanceScopeName(id)).join(" · ")
+          : "";
+        $("governance-inheritance").classList.toggle("hidden", !inheritedScopes.length);
+      }
       async function loadScope() {
         const requestedScope = scope;
         const requestId = ++governanceReq;
         const scopeChanged = scope !== loadedGovernanceScope;
-        const r = await api("GET", "/api/scopes/" + encodeURIComponent(scope));
+        renderGovernanceScopePicker();
+        renderEnvironmentNotice(null);
+        $("governance-inheritance").classList.add("hidden");
+        $("governance-overview").classList.add("hidden");
+        $("governance-settings").classList.add("hidden");
+        setStatus("st-governance-load", "Loading…", "");
+        const r = await api("GET", "/api/scopes/" + encodeURIComponent(scope)).catch(() => ({
+          ok: false,
+          status: 0,
+          data: null,
+        }));
         if (requestId !== governanceReq || requestedScope !== scope) return;
         if (!r.ok) {
           setApiStatus(
-            "st-policy",
+            "st-governance-load",
             r.status === 403 ? null : r.data?.message,
             r.status === 403 ? "You don't administer this scope." : "Failed to load.",
             "err",
@@ -8620,32 +8850,6 @@
         $("card-ambient-policy").classList.toggle("hidden", !("ambientPolicy" in r.data));
         renderAmbientPolicy(r.data.ambientPolicy);
         populateEgress(r.data.egress);
-        const enforcement = r.data.egressEnforcement || { backend: "unknown", fidelity: "none", active: false };
-        $("egress-backend").textContent = enforcement.backend;
-        let enforcementLabel = "None — rules are drafts";
-        if (enforcement.active) {
-          enforcementLabel = enforcement.fidelity === "domain" ? "Domain-aware firewall" : "IP and port firewall";
-        }
-        $("egress-enforcement").textContent = adminTr(enforcementLabel);
-        const effectiveEgress = r.data.egressEffective || r.data.egress || {};
-        const effectiveAllowCount = (effectiveEgress.allowedHosts || []).length;
-        const effectiveDenyCount = (effectiveEgress.deniedHosts || []).length;
-        let effectiveEgressLabel = adminTr("Open outbound access");
-        if (effectiveAllowCount) {
-          effectiveEgressLabel =
-            plural(effectiveAllowCount, "allowed host") +
-            " · " +
-            plural(effectiveDenyCount, "explicitly denied host") +
-            " · " +
-            adminTr("deny rules first") +
-            " · " +
-            adminTr("all other hosts denied");
-        } else if (effectiveDenyCount) {
-          effectiveEgressLabel = plural(effectiveDenyCount, "denied host") + " · " + adminTr("all other hosts allowed");
-        }
-        $("egress-effective").textContent = effectiveEgressLabel;
-        const egressSave = sectionButton("egress");
-        if (egressSave) egressSave.textContent = adminTr(enforcement.active ? "Save policy" : "Save draft");
 
         const showExternalSlack = scope.startsWith("org:") && "externalSlackParticipants" in r.data;
         $("card-external-slack").classList.toggle("hidden", !showExternalSlack);
@@ -8653,7 +8857,7 @@
         const showOrgAmbient = scope.startsWith("org:") && "orgAmbient" in r.data;
         $("card-org-ambient").classList.toggle("hidden", !showOrgAmbient);
         if (showOrgAmbient) $("org-ambient").checked = r.data.orgAmbient !== false;
-        const showInteractiveFastMode = scope.startsWith("org:") && "interactiveFastMode" in r.data;
+        const showInteractiveFastMode = "interactiveFastMode" in r.data;
         $("card-interactive-fast-mode").classList.toggle("hidden", !showInteractiveFastMode);
         if (showInteractiveFastMode) $("interactive-fast-mode").checked = r.data.interactiveFastMode === true;
         const showHeaderPinDefault = scope.startsWith("org:") && "channelHeaderPinDefault" in r.data;
@@ -8665,14 +8869,13 @@
         const harnessDefault = r.data.harnessDefault || "pi";
         const harnessOptions = r.data.harnessOptions || [harnessDefault];
         const modelsByHarness = r.data.modelsByHarness || {};
-        const approvedHarnesses =
-          Array.isArray(r.data.approvedHarnesses) && r.data.approvedHarnesses.length
-            ? r.data.approvedHarnesses
-            : [harnessDefault];
-        const showBaseModel = scope.startsWith("org:") && opts.length > 0 && dflt && "runtime" in r.data;
+        const approvedHarnesses = Array.isArray(r.data.approvedHarnesses) ? r.data.approvedHarnesses : [harnessDefault];
+        const showBaseModel = opts.length > 0 && dflt && "runtime" in r.data;
         $("card-base-model").classList.toggle("hidden", !showBaseModel);
+        $("model-scope-note").classList.toggle("hidden", scope.startsWith("org:"));
         if (showBaseModel) {
-          const current = r.data.runtime || { harnessId: harnessDefault, modelId: r.data.baseModel || dflt };
+          const current = r.data.runtimeEffective ||
+            r.data.runtime || { harnessId: harnessDefault, modelId: r.data.baseModel || dflt };
           const harness = $("base-harness");
           harness.textContent = "";
           approvedHarnesses.forEach((id) => {
@@ -8682,11 +8885,11 @@
             harness.appendChild(o);
           });
           harness.value = approvedHarnesses.includes(current.harnessId) ? current.harnessId : approvedHarnesses[0];
-          const syncModels = () => {
+          const syncModels = (preserveSelection = false) => {
             const selectedHarness = harness.value;
             const compatible = modelsByHarness[selectedHarness] || opts;
             const sel = $("base-model");
-            const prior = sel.value || current.modelId;
+            const prior = preserveSelection ? sel.value : current.modelId;
             sel.textContent = "";
             compatible.forEach((m) => {
               const o = document.createElement("option");
@@ -8696,10 +8899,10 @@
             });
             sel.value = compatible.some((m) => m.id === prior) ? prior : (compatible[0] || {}).id || "";
           };
-          harness.oninput = syncModels;
+          harness.oninput = () => syncModels(true);
           syncModels();
         }
-        const showApprovedHarnesses = scope.startsWith("org:") && "approvedHarnesses" in r.data;
+        const showApprovedHarnesses = "approvedHarnesses" in r.data;
         $("card-approved-harnesses").classList.toggle("hidden", !showApprovedHarnesses);
         if (showApprovedHarnesses) {
           const list = $("approved-harnesses-list");
@@ -8715,12 +8918,20 @@
             cb.checked = approvedHarnesses.includes(id);
             const span = document.createElement("span");
             span.textContent = { pi: "Pi", opencode: "OpenCode", codex: "Codex", claude: "Claude Code" }[id] || id;
+            const allowed = r.data.webuiModels;
+            const available = (modelsByHarness[id] || []).some(
+              (model) => !Array.isArray(allowed) || allowed.includes(model.id),
+            );
+            if (cb.checked && !available) {
+              span.textContent += " · " + adminTr("No allowed, available models");
+              if (id === "codex") span.textContent += " · " + adminTr("Codex requires an OpenAI Responses model.");
+            }
             row.appendChild(cb);
             row.appendChild(span);
             list.appendChild(row);
           });
         }
-        const showWebuiModels = scope.startsWith("org:") && opts.length > 0;
+        const showWebuiModels = opts.length > 0;
         $("card-webui-models").classList.toggle("hidden", !showWebuiModels);
         if (showWebuiModels) {
           const catalogModels = Object.values(modelsByHarness)
@@ -8735,19 +8946,6 @@
           webuiModelIds = [...configured];
           const chips = $("webui-models-chips");
           const addInput = $("webui-models-add");
-          const syncDefault = () => {
-            const dsel = $("webui-models-default");
-            const prev = dsel.value;
-            dsel.textContent = "";
-            webuiModelIds.forEach((id) => {
-              const o = document.createElement("option");
-              o.value = id;
-              o.textContent = modelLabel(id);
-              dsel.appendChild(o);
-            });
-            dsel.value = webuiModelIds.includes(prev) ? prev : webuiModelIds[0] || "";
-            dsel.disabled = !webuiModelIds.length;
-          };
           const renderChips = () => {
             chips.querySelectorAll("[data-chip]").forEach((n) => n.remove());
             webuiModelIds.forEach((id) => {
@@ -8756,7 +8954,11 @@
               chip.style.cssText =
                 "display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid var(--border, #d4d4d4);border-radius:999px;font-size:13px";
               const label = document.createElement("span");
-              label.textContent = modelLabel(id);
+              label.textContent =
+                modelLabel(id) +
+                (catalogModels.some((model) => model.id === id)
+                  ? ""
+                  : " · " + adminTr("Unavailable on this deployment"));
               const x = document.createElement("button");
               x.type = "button";
               x.textContent = "×";
@@ -8765,7 +8967,7 @@
               x.onclick = () => {
                 webuiModelIds = webuiModelIds.filter((v) => v !== id);
                 renderChips();
-                syncDefault();
+                updateSectionDirty("webui-models");
               };
               chip.appendChild(label);
               chip.appendChild(x);
@@ -8785,13 +8987,22 @@
           const addModel = () => {
             const raw = addInput.value.trim();
             if (!raw) return;
-            const byName = catalogModels.find((m) => m.name === raw || m.name + " (" + m.id + ")" === raw);
-            const id = catalogModels.some((m) => m.id === raw) ? raw : byName ? byName.id : raw;
+            const matches = catalogModels.filter((m) => m.name === raw || m.name + " (" + m.id + ")" === raw);
+            const id = catalogModels.some((m) => m.id === raw) ? raw : matches.length === 1 ? matches[0].id : null;
+            if (!id) {
+              addInput.setCustomValidity(
+                adminTr("Choose an available model from the suggestions using its full provider/model ID."),
+              );
+              addInput.reportValidity();
+              return;
+            }
+            addInput.setCustomValidity("");
             if (!webuiModelIds.includes(id)) webuiModelIds.push(id);
             addInput.value = "";
             renderChips();
-            syncDefault();
+            updateSectionDirty("webui-models");
           };
+          addInput.oninput = () => addInput.setCustomValidity("");
           addInput.onchange = addModel;
           addInput.onkeydown = (e) => {
             if (e.key === "Enter") {
@@ -8800,7 +9011,6 @@
             }
           };
           renderChips();
-          syncDefault();
         }
         const showPeopleDirectory = scope.startsWith("org:");
         $("card-people-directory").classList.toggle("hidden", !showPeopleDirectory);
@@ -8815,14 +9025,14 @@
           $("branding-org-name").value = b.orgName || "";
         }
 
-        const showBrowseSteps = scope.startsWith("org:") && "browseMaxSteps" in r.data;
+        const showBrowseSteps = "browseMaxSteps" in r.data;
         $("card-browse-max-steps").classList.toggle("hidden", !showBrowseSteps);
         if (showBrowseSteps) $("browse-max-steps").value = r.data.browseMaxSteps ?? "";
-        const showTurnWallClock = scope.startsWith("org:") && "turnWallClockSec" in r.data;
+        const showTurnWallClock = "turnWallClockSec" in r.data;
         $("card-turn-wall-clock").classList.toggle("hidden", !showTurnWallClock);
         if (showTurnWallClock) $("turn-wall-clock").value = r.data.turnWallClockSec ?? "";
         const browseOpts = r.data.browseModelOptions || [];
-        const showBrowseModel = scope.startsWith("org:") && "browseModel" in r.data && browseOpts.length > 0;
+        const showBrowseModel = "browseModel" in r.data && browseOpts.length > 0;
         $("card-browse-model").classList.toggle("hidden", !showBrowseModel);
         if (showBrowseModel) {
           const sel = $("browse-model");
@@ -8848,8 +9058,20 @@
         loadServiceCredentialSubjects(r.data.organizationAccessSubjects || {});
         renderServiceCreds(r.data.serviceCredentials || []);
         if (scopeChanged) resetScForm();
+        document.querySelectorAll("[data-inherit]").forEach((button) => {
+          button.classList.toggle("hidden", scope.startsWith("org:"));
+          button.disabled = false;
+        });
         loadedGovernanceScope = scope;
         captureGovernanceSnapshots();
+        $("base-harness").disabled = !!r.data.runtimeUnavailable;
+        $("base-model").disabled = !!r.data.runtimeUnavailable;
+        if (r.data.runtimeUnavailable)
+          setStatus("st-runtime", "No model is available under the current restrictions.", "err", true);
+        setStatus("st-governance-load", "", "");
+        $("governance-overview").classList.remove("hidden");
+        $("governance-settings").classList.remove("hidden");
+        syncGovernanceSectionNav();
       }
       async function refreshSoulConflict() {
         const draft = $("soul").value;
@@ -10367,6 +10589,9 @@
           ruleLabel = adminTr("Organization rule") + " " + (response.data.ruleIndex + 1);
         } else if (response.data.ruleSource === "scope") {
           ruleLabel = adminTr("This scope’s rule") + " " + (response.data.ruleIndex + 1);
+        } else if (response.data.ruleSource === "inherited") {
+          ruleLabel = governanceScopeName(response.data.ruleScopeId);
+          if (response.data.ruleIndex != null) ruleLabel += " · " + (response.data.ruleIndex + 1);
         }
         const deploymentCaveat =
           decision === "allow" && response.data.ruleSource == null && response.data.deploymentRulesEvaluated === false
@@ -10459,11 +10684,16 @@
               '" ' +
               adminTr("appears in both lists. Remove it from one list before saving."),
           );
-        return { allowedHosts, deniedHosts };
+        const privateNetworkAllowedHosts = $("egress-private")
+          .value.split("\n")
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+        return { allowedHosts, deniedHosts, privateNetworkAllowedHosts };
       }
       function populateEgress(policy) {
         $("egress").value = (policy?.allowedHosts || []).join("\n");
         $("egress-deny").value = (policy?.deniedHosts || []).join("\n");
+        $("egress-private").value = (policy?.privateNetworkAllowedHosts || []).join("\n");
         renderEgressValidation();
       }
       function renderEgressValidation() {
@@ -10479,6 +10709,7 @@
       }
       $("egress").addEventListener("input", renderEgressValidation);
       $("egress-deny").addEventListener("input", renderEgressValidation);
+      $("egress-private").addEventListener("input", renderEgressValidation);
       const SAVE = {
         "security-posture": () => ({ posture: $("security-posture").value }),
         "approval-grant-modes": () => ({
@@ -10499,12 +10730,7 @@
             (c) => c.value,
           ),
         }),
-        "webui-models": () => {
-          const dflt = $("webui-models-default").value;
-          const ids =
-            dflt && webuiModelIds.includes(dflt) ? [dflt, ...webuiModelIds.filter((id) => id !== dflt)] : webuiModelIds;
-          return { ids };
-        },
+        "webui-models": () => ({ ids: webuiModelIds }),
         "people-directory-url": () => ({ url: $("people-directory-url").value.trim() }),
         branding: () => ({
           accent: $("branding-accent").value.trim(),
@@ -10625,6 +10851,30 @@
         }
         return Promise.resolve(true);
       }
+      document.querySelectorAll("[data-inherit]").forEach((button) => {
+        button.onclick = async () => {
+          const key = button.dataset.inherit;
+          const requestedScope = scope;
+          button.disabled = true;
+          setStatus(SAVE_ST[key], "Saving...", "saving", true);
+          try {
+            const response = await api("PUT", "/api/scopes/" + encodeURIComponent(requestedScope) + "/" + key, {
+              inherit: true,
+            });
+            if (requestedScope !== scope) return;
+            if (!response.ok) {
+              setApiStatus(SAVE_ST[key], response.data?.message, "Save failed.", "err", true);
+              return;
+            }
+            await loadScope();
+            setStatus(SAVE_ST[key], "Saved", "ok", true);
+          } catch {
+            if (requestedScope === scope) setStatus(SAVE_ST[key], "Save failed.", "err", true);
+          } finally {
+            button.disabled = false;
+          }
+        };
+      });
       let governanceSaveSeq = 0;
       document.querySelectorAll("[data-save]").forEach((btn) => {
         btn.onclick = async () => {
@@ -10670,8 +10920,15 @@
             } else if (SAVE_RELOADS.has(key)) await loadScope();
             else {
               if (key === "egress") {
-                renderGovernanceOverview({ ...governanceOverviewData, egress: body });
-                renderEgressValidation();
+                const fresh = await api("GET", "/api/scopes/" + encodeURIComponent(requestedScope));
+                if (requestedScope !== scope) return;
+                if (!fresh.ok) {
+                  updateSectionDirty(key);
+                  setStatus(SAVE_ST[key], "Saved, but could not refresh the applied value.", "err");
+                  return;
+                }
+                renderGovernanceOverview(fresh.data);
+                populateEgress(fresh.data.egress);
               }
               if (key === "command-policy") loadedCommandPolicyPresent = true;
               captureSection(key);

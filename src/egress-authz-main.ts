@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { BlockList, isIP } from "node:net";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { EGRESS_PROXY_AUD, verifyCapabilityToken, type CapabilityClaims } from "./auth/capability-token.ts";
-import { egressDecision, hostMatches, isHostDenied, type EgressVerdict } from "./resolution/egress-policy.ts";
+import { egressDecision, privateNetworkAllowed, isHostDenied, type EgressVerdict } from "./resolution/egress-policy.ts";
 import { createEgressAuditSink, type EgressAuditRecord, type EgressAuditSink } from "./admin/egress-audit-sink.ts";
 import { createPostgresEgressAuditSink } from "./admin/postgres-egress-audit-sink.ts";
 import { signedRequestHeaders } from "./auth/source-auth-sign.ts";
@@ -11,7 +11,7 @@ import { errMessage } from "./util/errors.ts";
 import { numEnv } from "./config.ts";
 import { configurePgCaTrustFromEnv } from "./persistence/pg-pool.ts";
 import type { EgressPolicy, ScopeId } from "./types.ts";
-import { isPrivateNetworkIp } from "./util/network.ts";
+import { isPrivateNetworkIp, wellKnownNat64Ipv4 } from "./util/network.ts";
 
 const OPEN: EgressPolicy = { allowedHosts: [], deniedHosts: [] };
 
@@ -36,7 +36,8 @@ export function isBlockedDestinationIp(ip: string): boolean {
     .replace(/%.*$/, "");
   const fam = isIP(s);
   if (!fam) return false;
-  return BLOCKED.check(s, fam === 4 ? "ipv4" : "ipv6");
+  const nat64 = wellKnownNat64Ipv4(s);
+  return BLOCKED.check(s, fam === 4 ? "ipv4" : "ipv6") || (nat64 !== null && BLOCKED.check(nat64, "ipv4"));
 }
 
 function isAlwaysBlockedHost(host: string): boolean {
@@ -136,13 +137,14 @@ async function decide(
     return { allow: false, verdict: "denied" };
   }
   if (!ips.length) return { allow: false, verdict: "denied" };
-  const privateAllowed = policy?.privateNetworkAllowedHosts?.some((rule) => hostMatches(host, rule)) === true;
   if (
     ips.some(
       (ip) =>
         isBlockedDestinationIp(ip) ||
         isHostDenied(ip, policy?.deniedHosts) ||
-        (policy?.denyPrivateNetworks === true && !privateAllowed && isPrivateNetworkIp(ip)),
+        (policy?.denyPrivateNetworks === true &&
+          isPrivateNetworkIp(ip) &&
+          !privateNetworkAllowed(host, ip, policy.privateNetworkAllowedHosts)),
     )
   ) {
     return { allow: false, verdict: "denied" };

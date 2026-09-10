@@ -155,7 +155,7 @@ test("custom provider lifecycle: register, list, resolve, delete — admin only,
       async: true,
     });
     assert.equal(blockedWebTurn.status, "refused");
-    assert.match(blockedWebTurn.reason ?? "", /not enabled for the web UI/);
+    assert.match(blockedWebTurn.reason ?? "", /not allowed for this scope/);
 
     // Non-admin gets refused.
     const denied = await fetch(`${srv.base}/v1/admin/custom-providers`, { headers: USER });

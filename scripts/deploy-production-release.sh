@@ -193,6 +193,11 @@ validate_release() {
   local expected_prefix
   local digest
   declare -A seen_images=()
+  if grep -q '\${QM_EGRESS_PROXY_IMAGE' "$directory/compose.production.yaml"; then
+    expected_images[QM_EGRESS_PROXY_IMAGE]=docker.io/lijixing/qm-egress-proxy
+  else
+    unset 'expected_images[QM_EGRESS_PROXY_IMAGE]'
+  fi
   required_sums="$(mktemp "$release_root/.required-sums.XXXXXX")"
   for asset in "${runtime_assets[@]}"; do
     match_count="$(awk -v file="$asset" '$2 == file { count++ } END { print count + 0 }' "$directory/SHA256SUMS")"
@@ -289,6 +294,24 @@ compose=(
   --env-file "$release_dir/images.production.env"
   -f "$release_dir/compose.production.yaml"
 )
+configured_profiles="$(env_value_or_default COMPOSE_PROFILES "")"
+if [[ "$configured_profiles" == \"*\" || "$configured_profiles" == \'*\' ]]; then
+  configured_profiles="${configured_profiles:1:${#configured_profiles}-2}"
+fi
+IFS=',' read -r -a profile_names <<< "$configured_profiles"
+for profile in "${profile_names[@]}"; do
+  profile="${profile#"${profile%%[![:space:]]*}"}"
+  profile="${profile%"${profile##*[![:space:]]}"}"
+  [[ -z "$profile" ]] && continue
+  if [[ "$profile" != "*" && ! "$profile" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+    echo "COMPOSE_PROFILES must be a comma-separated list of profile names" >&2
+    exit 1
+  fi
+  compose+=(--profile "$profile")
+done
+if [[ -n "$(env_value_or_default LOCAL_SANDBOX_EGRESS_PROXY_URL "")" ]]; then
+  compose+=(--profile egress)
+fi
 bundled_compose=("${compose[@]}" --profile bundled-postgres)
 if [[ "$database_mode" == "bundled" ]]; then
   compose=("${bundled_compose[@]}")

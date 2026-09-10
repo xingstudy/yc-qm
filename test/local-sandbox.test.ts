@@ -5,12 +5,8 @@ import { mkdtempSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  createLocalSandbox,
-  localContainerName,
-  localNetworkName,
-  localVolumeName,
-} from "../src/sandbox/local-sandbox.ts";
+import { createLocalSandbox, localContainerName, localVolumeName } from "../src/sandbox/local-sandbox.ts";
+import { localNetworkName } from "../src/sandbox/local-resource-names.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { supportsProcessSessions } from "../src/sandbox/sandbox.ts";
 import { sleep } from "../src/util/async.ts";
@@ -360,4 +356,102 @@ test("concurrent teardown and provision for one scope serialize (no stop of a fr
   assert.equal(r.stdout.trim(), "alive");
   await sb.teardown(h2);
   assert.equal(fake.containers.get(h2.id)!.running, false);
+});
+
+test("enforced sandboxes join a ready guard and pass signed proxy settings to commands", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const calls: string[][] = [];
+  const sb = makeSandbox(fake, {
+    egressProxyUrl: "http://host.docker.internal:48080",
+    dockerExec: async (args: string[]) => {
+      calls.push(args);
+      return fake.dockerExec(args);
+    },
+  });
+  assert.equal(sb.profile.egressEnforcement, "domain");
+  const handle = await sb.provision(rw(scopeId("personal", "guarded")), {
+    egressToken: "signed-token",
+    env: { HTTPS_PROXY: "http://untrusted", ALL_PROXY: "socks5://untrusted" },
+  });
+  const guard = fake.containers.get(`${handle.id}-egress`)!;
+  assert.ok(guard.running);
+  assert.equal(fake.containers.get(handle.id)!.network, `container:${guard.name}`);
+  const launches = calls.filter((call) => call[0] === "run");
+  assert.ok(launches[0]!.includes(guard.name));
+  assert.ok(launches[1]!.includes("--cap-drop=NET_RAW"));
+  assert.ok(launches[1]!.includes("--cap-drop=NET_ADMIN"));
+  assert.ok(!launches[1]!.includes("-p"));
+  assert.equal(handle.env?.HTTPS_PROXY, "http://x:signed-token@172.17.0.1:48080");
+  assert.equal(handle.env?.ALL_PROXY, "");
+  assert.equal(handle.env?.NODE_USE_ENV_PROXY, "1");
+  const output = await sb.run(handle, 'printf "%s" "$https_proxy"');
+  assert.equal(output.stdout, handle.env?.https_proxy);
+  await sb.teardown(handle);
+  assert.ok(guard.running);
+  const resumed = await sb.provision(rw(scopeId("personal", "guarded")), { egressToken: "next-token" });
+  assert.equal(fake.runCount, 2);
+  assert.equal(resumed.env?.HTTP_PROXY, "http://x:next-token@172.17.0.1:48080");
+  await sb.teardown(resumed, { destroy: true });
+  assert.equal(fake.containers.size, 0);
+  assert.equal(fake.networks.size, 0);
+  assert.equal(fake.volumes.size, 0);
+});
+
+test("maintenance provisions without a token retain isolation and cannot receive open proxy credentials", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const sb = makeSandbox(fake, { egressProxyUrl: "http://host.docker.internal:48080" });
+  const handle = await sb.provision(rw(scopeId("personal", "guard-maintenance")));
+  assert.equal(handle.env?.HTTP_PROXY, "http://x:unavailable@172.17.0.1:48080");
+  assert.equal((await sb.run(handle, "echo local-maintenance")).stdout.trim(), "local-maintenance");
+  await sb.teardown(handle, { destroy: true });
+});
+
+test("enabling enforcement requires stopping an old running sandbox, preserves its home and supports disabling later", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const layers = rw(scopeId("personal", "guard-migration"));
+  const open = makeSandbox(fake);
+  const original = await open.provision(layers);
+  await open.writeFile(original, "guard-preserved.txt", "keep");
+  const guarded = makeSandbox(fake, { egressProxyUrl: "http://host.docker.internal:48080" });
+  await assert.rejects(guarded.provision(layers), /Drain active turns/);
+  await open.teardown(original);
+  const migrated = await guarded.provision(layers, { egressToken: "token" });
+  assert.equal(migrated.coldStart, false);
+  assert.equal(await guarded.readFile(migrated, "guard-preserved.txt"), "keep");
+  await guarded.teardown(migrated);
+  const restored = await open.provision(layers);
+  assert.equal(restored.coldStart, false);
+  assert.ok(!fake.containers.has(`${restored.id}-egress`));
+  assert.equal(await open.readFile(restored, "guard-preserved.txt"), "keep");
+  await open.teardown(restored, { destroy: true });
+});
+
+test("guard loss fails closed for existing handles and recovers stopped sandboxes without deleting data", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const sb = makeSandbox(fake, { egressProxyUrl: "http://host.docker.internal:48080" });
+  const layers = rw(scopeId("personal", "guard-loss"));
+  const handle = await sb.provision(layers, { egressToken: "token" });
+  fake.containers.get(`${handle.id}-egress`)!.running = false;
+  await assert.rejects(sb.run(handle, "echo unsafe"), /network configuration changed/);
+  await sb.teardown(handle);
+  const recovered = await sb.provision(layers, { egressToken: "token" });
+  assert.equal(recovered.coldStart, false);
+  assert.ok(fake.containers.get(`${handle.id}-egress`)!.running);
+  await sb.teardown(recovered, { destroy: true });
+});
+
+test("guarded scratch teardown and deep idle reap remove guards while retaining resident home volumes", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const sb = makeSandbox(fake, { egressProxyUrl: "http://host.docker.internal:48080" });
+  const scratch = await sb.provision([], { scratch: { key: "guard-scratch" }, egressToken: "token" });
+  await sb.teardown(scratch);
+  assert.equal(fake.containers.size, 0);
+  const handle = await sb.provision(rw(scopeId("personal", "guard-idle")), { egressToken: "token" });
+  await sb.teardown(handle);
+  fake.containers.get(handle.id)!.finishedAt = new Date(Date.now() - 100_000).toISOString();
+  const fresh = makeSandbox(fake, { egressProxyUrl: "http://host.docker.internal:48080" });
+  assert.deepEqual(await fresh.reapDeepIdle!(1000), { reaped: 1 });
+  assert.equal(fake.containers.size, 0);
+  assert.equal(fake.networks.size, 0);
+  assert.equal(fake.volumes.size, 1);
 });

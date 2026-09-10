@@ -17,6 +17,7 @@ export function resolveRuntimeChoice(
   requested?: Partial<RuntimeChoice>,
 ): RuntimeChoice {
   const approved = config.getApprovedHarnesses() ?? [fallback.harnessId];
+  if (!approved.length) throw new NonRetryableTurnError("no harness is approved for this scope");
   const orgStored = config.getRuntimeSelection(orgScopeId);
   const orgLegacy = config.getBaseModel(orgScopeId);
   const configuredOrg =
@@ -59,13 +60,15 @@ export async function resolveRuntimeChoiceDurable(
   scope: ScopeId,
   fallback: RuntimeChoice,
   requested?: Partial<RuntimeChoice>,
+  principalId?: string,
 ): Promise<RuntimeChoice> {
-  const approved = (await config.getApprovedHarnessesDurable()) ?? [fallback.harnessId];
+  const approved = (await config.getApprovedHarnessesDurable(scope, principalId)) ?? [fallback.harnessId];
+  const runtimeScope = await config.getRuntimeConfigScopeDurable(scope, principalId);
   const [orgStored, scopedStored, orgLegacy, scopedLegacy] = await Promise.all([
     config.getRuntimeSelectionDurable(orgScopeId),
-    scope === orgScopeId ? null : config.getRuntimeSelectionDurable(scope),
+    scope === orgScopeId ? null : config.getRuntimeSelectionDurable(runtimeScope),
     config.getBaseModelOwnDurable(orgScopeId),
-    scope === orgScopeId ? null : config.getBaseModelOwnDurable(scope),
+    scope === orgScopeId ? null : config.getBaseModelOwnDurable(runtimeScope),
   ]);
   const view: Pick<ScopedConfigStore, "getApprovedHarnesses" | "getRuntimeSelection" | "getBaseModel"> = {
     getApprovedHarnesses: () => approved,
@@ -78,7 +81,24 @@ export async function resolveRuntimeChoiceDurable(
       return id === scope ? scopedLegacy : null;
     },
   };
-  return resolveRuntimeChoice(view, orgScopeId, scope, fallback, requested);
+  const choice = resolveRuntimeChoice(view, orgScopeId, scope, fallback, requested);
+  const [allowed, scopedAllowed] = await Promise.all([
+    config.getWebuiModelsDurable(scope, principalId),
+    config.getScopedWebuiModelsDurable(scope, principalId),
+  ]);
+  const orgChoice = resolveRuntimeChoice(view, orgScopeId, orgScopeId, fallback);
+  const permitted = (modelId: string) =>
+    (allowed === null || allowed.includes(modelId) || modelId === orgChoice.modelId) &&
+    (scopedAllowed === null || scopedAllowed.includes(modelId));
+  if (permitted(choice.modelId)) return choice;
+  if (requested?.modelId || requested?.harnessId)
+    throw new NonRetryableTurnError(`model ${choice.modelId} is not allowed for this scope`);
+  const candidates = [...new Set([...(allowed ?? []), orgChoice.modelId])].filter(permitted);
+  for (const harnessId of [choice.harnessId, ...approved.filter(isHarnessId)]) {
+    const modelId = candidates.find((id) => modelSupportedByHarness(id, harnessId));
+    if (modelId) return { harnessId, modelId };
+  }
+  throw new NonRetryableTurnError("no model is allowed for this scope");
 }
 
 export function createHarnessRouter(

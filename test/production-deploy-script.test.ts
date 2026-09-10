@@ -213,6 +213,24 @@ fi
     assert.match(externalApplyCalls, /--profile bundled-postgres rm -f postgres$/m);
     assert.ok(externalApplyCalls.indexOf(" up -d ") < externalApplyCalls.indexOf(" stop postgres"));
 
+    const egressEnv = join(deployment, ".env.egress.production");
+    writeFileSync(
+      egressEnv,
+      readFileSync(externalEnv, "utf8") +
+        'COMPOSE_PROFILES="auth,egress"\nLOCAL_SANDBOX_EGRESS_PROXY_URL=http://host.docker.internal:48080\n',
+    );
+    chmodSync(egressEnv, 0o600);
+    const beforeEgressApply = readFileSync(dockerLog, "utf8").length;
+    execFileSync("bash", [join(scripts, "deploy-production-release.sh"), egressEnv, "apply"], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, QM_TEST_DOCKER_LOG: dockerLog },
+      stdio: "pipe",
+    });
+    assert.match(readFileSync(dockerLog, "utf8").slice(beforeEgressApply), /--profile egress[^\n]* up -d/);
+    assert.match(
+      readFileSync(dockerLog, "utf8").slice(beforeEgressApply),
+      /--profile auth --profile egress[^\n]* up -d/,
+    );
+
     const beforeFailedExternalApply = readFileSync(dockerLog, "utf8").length;
     assert.throws(() =>
       execFileSync("bash", [join(scripts, "deploy-production-release.sh"), externalEnv, "apply"], {

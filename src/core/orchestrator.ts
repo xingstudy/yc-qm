@@ -1165,11 +1165,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           if (rec?.secret && rec.delivery === "env" && rec.enabled && rec.envKey === cred.envKey)
             connectorEnv[cred.envKey] = rec.secret;
         }
-        const browseSteps = deps.config?.getBrowseMaxSteps(toScopeId("org", orgId()));
+        const browseSteps = await deps.config?.getBrowseMaxStepsDurable(scopeId, actor.id);
         if (browseSteps && !("BROWSE_LAB_MAX_STEPS" in connectorEnv))
           connectorEnv.BROWSE_LAB_MAX_STEPS = String(browseSteps);
         const browseChoice =
-          (await resolveBrowseChoice(deps.config?.getBrowseModel(toScopeId("org", orgId())))) ??
+          (await resolveBrowseChoice(await deps.config?.getBrowseModelDurable(scopeId, actor.id))) ??
           (await resolveBrowseChoice(deps.resolveBaseModelId?.()));
         if (browseChoice) {
           if (!("BROWSE_LAB_MODEL" in connectorEnv)) {
@@ -2322,7 +2322,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             : undefined;
         const requestedTurnWallClockMs =
           typeof input.turnWallClockMs === "number" && input.turnWallClockMs > 0 ? input.turnWallClockMs : undefined;
-        const configuredTurnWallClockSec = await deps.config?.getTurnWallClockSecDurable(resolution.orgScopeId);
+        const configuredTurnWallClockSec = await deps.config?.getTurnWallClockSecDurable(scopeId, actor.id);
         const configuredTurnWallClockMs =
           configuredTurnWallClockSec === null || configuredTurnWallClockSec === undefined
             ? undefined
@@ -2335,7 +2335,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               : requestedTurnWallClockMs;
         }
         const wantsOrgFastMode =
-          typeof input.fastMode !== "boolean" && humanTurn && (await deps.config?.getInteractiveFastModeDurable());
+          typeof input.fastMode !== "boolean" &&
+          humanTurn &&
+          (await deps.config?.getInteractiveFastModeDurable(scopeId, actor.id));
         const effectiveFastMode = resolveTurnFastMode(input.fastMode, humanTurn, wantsOrgFastMode === true);
         const runHarnessTurn = (
           harnessInput: string,
@@ -2360,6 +2362,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             };
           }
           return deps.harness.turns.runTurn({
+            governancePrincipalId: actor.id,
             session,
             ...(input.runId ? { runId: input.runId } : {}),
             ...(input.cancel ? { cancel: input.cancel } : {}),

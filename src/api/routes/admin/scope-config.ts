@@ -1,9 +1,11 @@
 import { parseScopeId } from "../../../types.ts";
 import { organizationAccessSubjectFromScope } from "../../../authorization/organization-access-subject.ts";
+import { governanceCommandPolicy } from "../../../resolution/governance-policy.ts";
 import { encodeRef, serviceCredRef } from "../../../acl/resource-ref.ts";
 import { computeRetention } from "../../../admin/retention.ts";
 import {
   HARNESS_IDS,
+  isHarnessId,
   SELECTABLE_BASE_MODELS,
   defaultModelForHarness,
   modelProviderAvailabilityFor,
@@ -17,16 +19,13 @@ import {
   selectableModelCatalog,
   type ModelCatalogEntry,
 } from "../../../model/model-catalog.ts";
+import { resolveRuntimeChoiceDurable } from "../../../harness/harness-router.ts";
+import { NonRetryableTurnError } from "../../../core/turn-error.ts";
 import { sendJson } from "../../http.ts";
 import { adminActorFrom, audit, authorizeAdmin, orgScope } from "../shared.ts";
 import { ADMIN_RESOURCES, ADMIN_RESOURCE_BY_ID, adminResourceManifest } from "../admin-resources.ts";
 import { type ApiCtx } from "../route.ts";
-import {
-  composePolicy,
-  defaultOrgPolicy,
-  evaluateCommand,
-  parseCommandPolicy,
-} from "../../../policy/command-policy.ts";
+import { defaultOrgPolicy, evaluateCommand, parseCommandPolicy } from "../../../policy/command-policy.ts";
 import { isHostDenied } from "../../../resolution/egress-policy.ts";
 import { discoverScopes } from "./common.ts";
 import { sessionCategory } from "./origins.ts";
@@ -39,6 +38,9 @@ export async function putScopeConfig(ctx: ApiCtx): Promise<void> {
 
   const actor = await authorizeAdmin(ctx, targetScope);
   if (!actor) return;
+  const subject = organizationAccessSubjectFromScope(targetScope);
+  if (subject && subject.kind !== "user" && !(await deps.organization?.resolveAccessSubject(targetScope)))
+    return sendJson(res, 404, { error: "not_found", message: "Organization group is missing or archived." });
   const withScopeMutationLock = async <T>(fn: () => Promise<T>): Promise<T> =>
     deps.advisoryLock ? deps.advisoryLock.withLock(`admin-governance:${targetScope}`, fn) : fn();
 
@@ -50,20 +52,29 @@ export async function putScopeConfig(ctx: ApiCtx): Promise<void> {
     const parsed = supplied === undefined ? null : parseCommandPolicy(supplied);
     if (parsed && "error" in parsed) return sendJson(res, 400, { error: "bad_request", message: parsed.error });
     const targetKind = parseScopeId(targetScope).kind;
+    const governanceScopes = await deps.config.governanceScopes(targetScope);
+    await deps.config.refreshSecurity(governanceScopes);
     const target =
       parsed?.policy ??
       deps.config.getCommandPolicy(targetScope) ??
       (targetKind === "org" ? defaultOrgPolicy() : { mode: "denylist" as const, rules: [] });
     const orgPolicy = deps.config.getCommandPolicy(orgScope(deps)) ?? defaultOrgPolicy();
-    const effective = targetKind === "org" ? target : composePolicy(orgPolicy, target);
+    const effective = governanceCommandPolicy(deps.config, orgScope(deps), targetScope, governanceScopes, target);
     const result = evaluateCommand(command, effective);
     const effectiveRuleIndex = result.approvalKey
       ? effective.rules.findIndex((rule) => rule.pattern === result.approvalKey)
       : -1;
     const orgRuleCount = targetKind === "org" ? 0 : orgPolicy.rules.length;
-    let ruleSource: "organization" | "scope" | null = null;
+    let ruleSource: "organization" | "scope" | "inherited" | null = null;
     if (effectiveRuleIndex >= 0) ruleSource = effectiveRuleIndex < orgRuleCount ? "organization" : "scope";
-    const ruleIndex = effectiveRuleIndex < 0 ? null : effectiveRuleIndex - (ruleSource === "scope" ? orgRuleCount : 0);
+    let ruleIndex = effectiveRuleIndex < 0 ? null : effectiveRuleIndex - (ruleSource === "scope" ? orgRuleCount : 0);
+    if (result.scopeId) {
+      const inheritedPolicy = result.scopeId === targetScope ? target : deps.config.getCommandPolicy(result.scopeId);
+      const index = inheritedPolicy?.rules.findIndex((rule) => rule.pattern === result.approvalKey) ?? -1;
+      ruleIndex = index < 0 ? null : index;
+      ruleSource = "inherited";
+      if (result.scopeId === targetScope) ruleSource = index < 0 ? null : "scope";
+    }
     audit(deps, {
       principalId: actor.id,
       action: "command-policy.simulate",
@@ -76,6 +87,7 @@ export async function putScopeConfig(ctx: ApiCtx): Promise<void> {
       reason: result.reason ?? null,
       matched: result.matched ?? null,
       ruleSource,
+      ruleScopeId: result.scopeId ?? (ruleSource === "organization" ? orgScope(deps) : targetScope),
       ruleIndex,
       deploymentRulesEvaluated: false,
     });
@@ -165,6 +177,20 @@ export async function listAdminScopes(ctx: ApiCtx): Promise<void> {
     ...environments.flatMap((environment) => environment.attachedScopes),
   ];
   const labels = await discoverScopes(app, deps, owners);
+  const [units, groups] = await Promise.all([
+    deps.organization?.listUnits() ?? [],
+    deps.organization?.listGroups() ?? [],
+  ]);
+  const scopeParents = new Map<string, string>();
+  for (const unit of units) {
+    if (unit.status !== "active") continue;
+    const id = `org-unit:${unit.id}`;
+    labels.set(id, unit.name);
+    scopeParents.set(id, unit.parentId ? `org-unit:${unit.parentId}` : scope);
+  }
+  for (const group of groups) {
+    if (group.status === "active") labels.set(`access-group:${group.id}`, group.name);
+  }
   const countBy = (ids: string[]): Map<string, number> => {
     const m = new Map<string, number>();
     for (const id of ids) m.set(id, (m.get(id) ?? 0) + 1);
@@ -204,6 +230,7 @@ export async function listAdminScopes(ctx: ApiCtx): Promise<void> {
     return {
       scopeId: id,
       ...(label ? { label } : {}),
+      ...(scopeParents.has(id) ? { parentScopeId: scopeParents.get(id) } : {}),
       ...(environment?.name ? { environmentName: environment.name } : {}),
       ...(attachment
         ? {
@@ -268,6 +295,11 @@ export async function getScopeConfig(ctx: ApiCtx): Promise<void> {
   if (!targetScope || targetScope.includes("/")) return sendJson(res, 404, { error: "not_found" });
   const actor = await authorizeAdmin(ctx, targetScope);
   if (!actor) return;
+  const subject = organizationAccessSubjectFromScope(targetScope);
+  if (subject && subject.kind !== "user" && !(await deps.organization?.resolveAccessSubject(targetScope)))
+    return sendJson(res, 404, { error: "not_found", message: "Organization group is missing or archived." });
+  const governanceScopes = await deps.config.governanceScopes(targetScope);
+  await deps.config.refreshSecurity(governanceScopes);
   await deps.config.refreshScope(targetScope);
   await deps.refreshCustomProviders?.();
   audit(deps, { principalId: actor.id, action: "config.read", resource: "config", scopeLabel: targetScope });
@@ -336,23 +368,46 @@ export async function getScopeConfig(ctx: ApiCtx): Promise<void> {
   let egressReason = "ready";
   if (declaredEgress !== "domain") egressReason = "backend_unsupported";
   else if (effectiveEgressFidelity !== "domain") egressReason = "control_plane_unconfigured";
-  const orgEgress = deps.config.getEgress(orgScope(deps));
-  const targetEgress = deps.config.getEgress(targetScope);
+  const egressPolicies = governanceScopes.map((id) => deps.config!.getEgress(id));
   const effectiveEgressPolicy = {
-    deniedHosts: [...new Set([...(orgEgress?.deniedHosts ?? []), ...(targetEgress?.deniedHosts ?? [])])],
+    deniedHosts: [...new Set(egressPolicies.flatMap((policy) => policy?.deniedHosts ?? []))],
     allowedHosts: [] as string[],
+    privateNetworkAllowedHosts: [
+      ...new Set(egressPolicies.flatMap((policy) => policy?.privateNetworkAllowedHosts ?? [])),
+    ],
   };
   effectiveEgressPolicy.allowedHosts = [
-    ...new Set([...(orgEgress?.allowedHosts ?? []), ...(targetEgress?.allowedHosts ?? [])]),
+    ...new Set(egressPolicies.flatMap((policy) => policy?.allowedHosts ?? [])),
   ].filter((host) => !isHostDenied(host, effectiveEgressPolicy.deniedHosts));
   const configuredKeys = deps.providerKeys ?? ALL_PROVIDERS_AVAILABLE;
   const managedKeys = deps.modelCredentials ? await deps.modelCredentials.availability() : configuredKeys;
-  const providersFor = (harnessId: string) => modelProviderAvailabilityFor(harnessId, configuredKeys, managedKeys);
+  const providersFor = (harnessId: string) =>
+    modelProviderAvailabilityFor(harnessId === "mock" ? "pi" : harnessId, configuredKeys, managedKeys);
   const catalog =
     deps.modelCredentials && managedKeys.openrouter
       ? await selectableModelCatalog(deps.modelCredentialFetch)
       : builtInModelCatalog();
-  const runtime = values.runtime as { harnessId?: unknown; modelId?: unknown } | null | undefined;
+  const runtimeScope = await deps.config.getRuntimeConfigScopeDurable(targetScope);
+  const effectiveRuntime = await deps.config.getRuntimeSelectionDurable(runtimeScope);
+  const effectiveModel = await deps.config.getBaseModelOwnDurable(runtimeScope);
+  let runtimeEffective = null;
+  let runtimeUnavailable = false;
+  try {
+    const harnessId = isHarnessId(deps.harnessId) ? deps.harnessId : "pi";
+    runtimeEffective = await resolveRuntimeChoiceDurable(deps.config, orgScope(deps), targetScope, {
+      harnessId,
+      modelId: defaultModelForHarness(harnessId, deps.baseModelDefault),
+    });
+  } catch (error) {
+    if (!(error instanceof NonRetryableTurnError)) throw error;
+    runtimeUnavailable = true;
+  }
+  const runtime = (runtimeEffective ??
+    values.runtime ??
+    effectiveRuntime ?? {
+      harnessId: deps.harnessId ?? "pi",
+      modelId: effectiveModel ?? deps.baseModelDefault,
+    }) as { harnessId?: unknown; modelId?: unknown };
   const resolvedCurrent = runtime && typeof runtime.modelId === "string" ? resolveModel(runtime.modelId) : null;
   const currentProvider = resolvedCurrent?.provider;
   const currentModel =
@@ -374,11 +429,15 @@ export async function getScopeConfig(ctx: ApiCtx): Promise<void> {
     soulVersion: deps.config.soulVersion(targetScope),
     soulHistory: deps.config.soulHistory(targetScope),
     organizationAccessSubjects,
-    baseModelDefault: defaultModelForHarness(deps.harnessId ?? "pi", deps.baseModelDefault),
+    governanceScopes,
+    runtimeScope,
+    runtimeEffective,
+    runtimeUnavailable,
+    baseModelDefault: effectiveModel ?? defaultModelForHarness(deps.harnessId ?? "pi", deps.baseModelDefault),
     baseModelOptions: modelsFor(deps.harnessId ?? "pi"),
-    harnessDefault: deps.harnessId ?? "pi",
+    harnessDefault: effectiveRuntime?.harnessId ?? deps.harnessId ?? "pi",
     harnessOptions: HARNESS_IDS.filter((id) => id !== "mock"),
-    modelsByHarness: Object.fromEntries(HARNESS_IDS.map((id) => [id, modelsFor(id)])),
+    modelsByHarness: Object.fromEntries(HARNESS_IDS.filter((id) => id !== "mock").map((id) => [id, modelsFor(id)])),
     browseModelOptions: SELECTABLE_BASE_MODELS.filter((m) =>
       modelServiceable(m.id, providersFor(deps.harnessId ?? "pi")),
     ),

@@ -128,6 +128,8 @@ export interface PersistedDeploymentIdentity {
   orgId: string;
 }
 export interface ScopedConfigStore {
+  governanceScopes(id: ScopeId, principalIds?: readonly string[]): Promise<ScopeId[]>;
+  getRuntimeConfigScopeDurable(id: ScopeId, principalId?: string, inherit?: boolean): Promise<ScopeId>;
   refreshSecurity(ids: ScopeId[]): Promise<void>;
   getSoul(id: ScopeId): string | null;
   setSoul(id: ScopeId, content: string, updatedBy?: string): number;
@@ -143,11 +145,11 @@ export interface ScopedConfigStore {
   setCommandPolicy(id: ScopeId, policy: CommandPolicy): void;
   clearCommandPolicy(id: ScopeId): void;
   getSecurityPosture(id: ScopeId): SecurityPosture;
-  getSecurityPostureDurable(id: ScopeId): Promise<SecurityPosture>;
+  getSecurityPostureDurable(id: ScopeId, principalIds?: readonly string[]): Promise<SecurityPosture>;
   setSecurityPosture(id: ScopeId, posture: SecurityPosture): Promise<void>;
   clearSecurityPosture(id: ScopeId): void;
   getApprovalGrantModes(id: ScopeId): ApprovalGrantModes;
-  getApprovalGrantModesDurable(id: ScopeId): Promise<ApprovalGrantModes>;
+  getApprovalGrantModesDurable(id: ScopeId, principalIds?: readonly string[]): Promise<ApprovalGrantModes>;
   setApprovalGrantModes(id: ScopeId, modes: ApprovalGrantModes): Promise<void>;
   clearApprovalGrantModes(id: ScopeId): void;
   getEgress(id: ScopeId): EgressPolicy | null;
@@ -175,30 +177,33 @@ export interface ScopedConfigStore {
   acknowledgeRuntimeSelectionLatest(id: ScopeId): Promise<void>;
   getRuntimeSelectionDurable(id: ScopeId): Promise<ScopedRuntimeSelection | null>;
   onRuntimeSelectionChanged(listener: (id: ScopeId) => void): void;
-  getApprovedHarnesses(): string[] | null;
-  setApprovedHarnesses(ids: string[] | null): void;
-  getApprovedHarnessesDurable(): Promise<string[] | null>;
+  getApprovedHarnesses(id?: ScopeId): string[] | null;
+  setApprovedHarnesses(ids: string[] | null, id?: ScopeId): void;
+  getApprovedHarnessesDurable(id?: ScopeId, principalId?: string): Promise<string[] | null>;
   getOrgAmbient(): boolean;
   setOrgAmbient(on: boolean): void;
   getOrgAmbientDurable(): Promise<boolean>;
-  getInteractiveFastMode(): boolean;
-  setInteractiveFastMode(on: boolean): void;
-  getInteractiveFastModeDurable(): Promise<boolean>;
+  getInteractiveFastMode(id?: ScopeId): boolean;
+  setInteractiveFastMode(on: boolean | null, id?: ScopeId): void;
+  getInteractiveFastModeDurable(id?: ScopeId, principalId?: string): Promise<boolean>;
   getBaseModelOwnDurable(id: ScopeId): Promise<string | null>;
   getWebuiModels(id: ScopeId): string[] | null;
   setWebuiModels(id: ScopeId, ids: string[] | null): void;
   getBaseModelDurable(id: ScopeId): Promise<string | null>;
-  getWebuiModelsDurable(id: ScopeId): Promise<string[] | null>;
+  getWebuiModelsDurable(id: ScopeId, principalId?: string): Promise<string[] | null>;
+  getScopedWebuiModelsDurable(id: ScopeId, principalId?: string): Promise<string[] | null>;
   getPeopleDirectoryUrl(id: ScopeId): string | null;
   setPeopleDirectoryUrl(id: ScopeId, url: string | null): void;
   getBranding(id: ScopeId): OrgBranding | null;
   setBranding(id: ScopeId, branding: OrgBranding | null): void;
   getBrandingDurable(id: ScopeId): Promise<OrgBranding | null>;
   getBrowseMaxSteps(id: ScopeId): number | null;
+  getBrowseMaxStepsDurable(id: ScopeId, principalId?: string): Promise<number | null>;
   setBrowseMaxSteps(id: ScopeId, steps: number | null): void;
   getBrowseModel(id: ScopeId): string | null;
+  getBrowseModelDurable(id: ScopeId, principalId?: string): Promise<string | null>;
   setBrowseModel(id: ScopeId, modelId: string | null): void;
-  getTurnWallClockSecDurable(id: ScopeId): Promise<number | null>;
+  getTurnWallClockSecDurable(id: ScopeId, principalId?: string): Promise<number | null>;
   setTurnWallClockSec(id: ScopeId, sec: number | null): Promise<void>;
   setConnectorClient(id: ScopeId, provider: string, input: ConnectorClientInput): Promise<void>;
   listConnectorClients(id: ScopeId): Promise<PublicConnectorClient[]>;
@@ -236,6 +241,7 @@ export function createMemoryConfigStore(
     deploymentIdentity?: DurableMap<PersistedDeploymentIdentity>;
     connectorSecretKey?: Buffer | string;
     defaultSecurityPosture?: SecurityPosture;
+    governanceAncestors?: (id: ScopeId) => Promise<ScopeId[]>;
   } = {},
 ): ScopedConfigStore {
   const souls = new Map<ScopeId, { content: string; version: number }>();
@@ -249,9 +255,9 @@ export function createMemoryConfigStore(
   const externalSlackParticipants = new Map<ScopeId, boolean>();
   const channelHeaderPin = new Map<ScopeId, boolean>();
   const baseModels = new Map<ScopeId, PersistedBaseModel>();
-  let approvedHarnesses: string[] | null = null;
+  const approvedHarnesses = new Map<ScopeId, string[]>();
   let orgAmbient = true;
-  let interactiveFastMode = false;
+  const interactiveFastMode = new Map<ScopeId, boolean>();
   const webuiModels = new Map<ScopeId, string[]>();
   const peopleDirectoryUrls = new Map<ScopeId, string>();
   const branding = new Map<ScopeId, OrgBranding>();
@@ -316,6 +322,26 @@ export function createMemoryConfigStore(
   const connectorMapKey = (id: ScopeId, provider: string) => `${id}|${provider}`;
 
   const org = scopeId("org", orgId);
+  const governanceScopes = async (id: ScopeId, principalIds: readonly string[] = []): Promise<ScopeId[]> => {
+    const subjects = [...new Set([...principalIds.map((principal) => scopeId("personal", principal)), id])];
+    const ancestors = await Promise.all(subjects.map((subject) => opts.governanceAncestors?.(subject) ?? []));
+    return [...new Set([org, ...ancestors.flat(), id])];
+  };
+  const governanceRows = async <T>(store: DurableMap<T>, id: ScopeId, principalId?: string) => {
+    const scopes = await governanceScopes(id, principalId ? [principalId] : []);
+    return Promise.all(scopes.map(async (scope) => ({ scope, row: await store.get(scope) })));
+  };
+  const intersectLists = (lists: (string[] | undefined)[]): string[] | null => {
+    const present = lists.filter((list): list is string[] => list !== undefined);
+    return present.length ? present[0]!.filter((id) => present.every((list) => list.includes(id))) : null;
+  };
+  const nearestValue = <T>(values: (T | undefined)[]): T | null =>
+    values.findLast((value) => value !== undefined) ?? null;
+  const strictestLimit = (values: (number | undefined)[]): number | null => {
+    const configured = values.filter((value): value is number => value !== undefined);
+    const positive = configured.filter((value) => value > 0);
+    return positive.length ? Math.min(...positive) : (configured[0] ?? null);
+  };
   const defaultSecurityPosture = opts.defaultSecurityPosture ?? "auto";
   const DEFAULT_APPROVAL_GRANT_MODES: ApprovalGrantModes = { session: true, always: true };
   const composeApprovalGrantModes = (orgModes: ApprovalGrantModes, scope?: ApprovalGrantModes): ApprovalGrantModes => ({
@@ -369,6 +395,15 @@ export function createMemoryConfigStore(
   };
 
   return {
+    governanceScopes,
+    async getRuntimeConfigScopeDurable(id, principalId, inherit = false) {
+      const scopes = await governanceScopes(id, principalId ? [principalId] : []);
+      for (const candidate of scopes.toReversed()) {
+        if (inherit && candidate === id) continue;
+        if (await baseModelStore.get(candidate)) return candidate;
+      }
+      return org;
+    },
     async refreshSecurity(ids) {
       await Promise.all(
         ids.map(async (id) => {
@@ -379,15 +414,18 @@ export function createMemoryConfigStore(
           ]);
           if (!pendingWrites.has(`soul:${id}`)) {
             if (soul) souls.set(id, { content: soul.content, version: soul.version });
-            else if (id !== org) souls.delete(id);
+            else if (id === org) souls.set(org, defaultOrgSoul);
+            else souls.delete(id);
           }
           if (!pendingWrites.has(`policy:${id}`)) {
             if (policy) policies.set(id, policy.policy);
-            else if (id !== org) policies.delete(id);
+            else if (id === org) policies.set(org, defaultOrgPolicy());
+            else policies.delete(id);
           }
           if (!pendingWrites.has(`egress:${id}`)) {
             if (egressPolicy) egress.set(id, egressPolicy.policy);
-            else if (id !== org) egress.delete(id);
+            else if (id === org) egress.set(org, { allowedHosts: [], deniedHosts: [] });
+            else egress.delete(id);
           }
         }),
       );
@@ -419,9 +457,9 @@ export function createMemoryConfigStore(
           for (const r of await externalSlackParticipantsStore.all()) externalSlackParticipants.set(r.scopeId, r.on);
           for (const r of await channelHeaderPinStore.all()) channelHeaderPin.set(r.scopeId, r.on);
           for (const r of await baseModelStore.all()) baseModels.set(r.scopeId, r);
-          approvedHarnesses = (await approvedHarnessStore.get(org))?.ids ?? null;
+          for (const row of await approvedHarnessStore.all()) approvedHarnesses.set(row.scopeId, row.ids);
           orgAmbient = (await orgAmbientStore.get(org))?.on ?? true;
-          interactiveFastMode = (await interactiveFastModeStore.get(org))?.on ?? false;
+          for (const row of await interactiveFastModeStore.all()) interactiveFastMode.set(row.scopeId, row.on);
           for (const r of await webuiModelStore.all()) webuiModels.set(r.scopeId, r.ids);
           for (const r of await peopleDirectoryUrlStore.all()) peopleDirectoryUrls.set(r.scopeId, r.url);
           for (const r of await brandingStore.all()) branding.set(r.scopeId, r.branding);
@@ -578,10 +616,15 @@ export function createMemoryConfigStore(
       const orgPosture = securityPostures.get(org) ?? defaultSecurityPosture;
       return id === org ? orgPosture : composeSecurityPosture(orgPosture, securityPostures.get(id));
     },
-    async getSecurityPostureDurable(id) {
-      const orgPosture = (await securityPostureStore.get(org))?.posture ?? defaultSecurityPosture;
-      if (id === org) return orgPosture;
-      return composeSecurityPosture(orgPosture, (await securityPostureStore.get(id))?.posture);
+    async getSecurityPostureDurable(id, principalIds) {
+      const scopes = await governanceScopes(id, principalIds);
+      const rows = await Promise.all(scopes.map((candidate) => securityPostureStore.get(candidate)));
+      return rows
+        .slice(1)
+        .reduce(
+          (posture, row) => composeSecurityPosture(posture, row?.posture),
+          rows[0]?.posture ?? defaultSecurityPosture,
+        );
     },
     async setSecurityPosture(id, posture) {
       const effective =
@@ -602,10 +645,10 @@ export function createMemoryConfigStore(
       if (id === org) return { ...orgModes };
       return composeApprovalGrantModes(orgModes, approvalGrantModesCache.get(id));
     },
-    async getApprovalGrantModesDurable(id) {
-      const orgModes = (await approvalGrantModesStore.get(org))?.modes ?? DEFAULT_APPROVAL_GRANT_MODES;
-      if (id === org) return { ...orgModes };
-      return composeApprovalGrantModes(orgModes, (await approvalGrantModesStore.get(id))?.modes);
+    async getApprovalGrantModesDurable(id, principalIds) {
+      const scopes = await governanceScopes(id, principalIds);
+      const rows = await Promise.all(scopes.map((candidate) => approvalGrantModesStore.get(candidate)));
+      return rows.reduce((modes, row) => composeApprovalGrantModes(modes, row?.modes), DEFAULT_APPROVAL_GRANT_MODES);
     },
     async setApprovalGrantModes(id, modes) {
       const value = { session: !!modes.session, always: !!modes.always };
@@ -769,31 +812,33 @@ export function createMemoryConfigStore(
         ...(row.fastMode !== undefined ? { fastMode: row.fastMode } : {}),
       };
     },
-    getApprovedHarnesses: () => (approvedHarnesses ? [...approvedHarnesses] : null),
-    setApprovedHarnesses(ids) {
-      const next = ids ? [...ids] : null;
-      approvedHarnesses = next;
-      if (next)
-        persist(`approvedHarnesses:${org}`, "approved harnesses", () =>
-          approvedHarnessStore.put(org, { scopeId: org, ids: next }),
-        );
-      else persist(`approvedHarnesses:${org}`, "approved harnesses", () => approvedHarnessStore.delete(org));
+    getApprovedHarnesses: (id = org) => approvedHarnesses.get(id)?.slice() ?? null,
+    setApprovedHarnesses(ids, id = org) {
+      if (ids?.length) approvedHarnesses.set(id, [...ids]);
+      else approvedHarnesses.delete(id);
+      persist(`approvedHarnesses:${id}`, "approved harnesses", () =>
+        ids?.length ? approvedHarnessStore.put(id, { scopeId: id, ids: [...ids] }) : approvedHarnessStore.delete(id),
+      );
     },
-    getApprovedHarnessesDurable: async () => (await approvedHarnessStore.get(org))?.ids ?? null,
+    getApprovedHarnessesDurable: async (id = org, principalId) =>
+      intersectLists((await governanceRows(approvedHarnessStore, id, principalId)).map(({ row }) => row?.ids)),
     getOrgAmbient: () => orgAmbient,
     setOrgAmbient(on) {
       orgAmbient = on;
       persist(`orgAmbient:${org}`, "org ambient switch", () => orgAmbientStore.put(org, { scopeId: org, on }));
     },
     getOrgAmbientDurable: async () => (await orgAmbientStore.get(org))?.on ?? true,
-    getInteractiveFastMode: () => interactiveFastMode,
-    setInteractiveFastMode(on) {
-      interactiveFastMode = on;
-      persist(`interactiveFastMode:${org}`, "interactive fast mode switch", () =>
-        interactiveFastModeStore.put(org, { scopeId: org, on }),
+    getInteractiveFastMode: (id = org) => interactiveFastMode.get(id) ?? false,
+    setInteractiveFastMode(on, id = org) {
+      if (on === null) interactiveFastMode.delete(id);
+      else interactiveFastMode.set(id, on);
+      persist(`interactiveFastMode:${id}`, "interactive fast mode switch", () =>
+        on === null ? interactiveFastModeStore.delete(id) : interactiveFastModeStore.put(id, { scopeId: id, on }),
       );
     },
-    getInteractiveFastModeDurable: async () => (await interactiveFastModeStore.get(org))?.on ?? false,
+    getInteractiveFastModeDurable: async (id = org, principalId) =>
+      nearestValue((await governanceRows(interactiveFastModeStore, id, principalId)).map(({ row }) => row?.on)) ??
+      false,
     getBaseModelOwnDurable: async (id) => (await baseModelStore.get(id))?.modelId ?? null,
     getBaseModelDurable: async (id) =>
       (await baseModelStore.get(id))?.modelId ??
@@ -808,8 +853,14 @@ export function createMemoryConfigStore(
         persist(`webuiModels:${id}`, "web-ui models", () => webuiModelStore.put(id, { scopeId: id, ids }));
       }
     },
-    getWebuiModelsDurable: async (id) =>
-      (await webuiModelStore.get(id))?.ids ?? (await webuiModelStore.get(org))?.ids ?? null,
+    getWebuiModelsDurable: async (id, principalId) =>
+      intersectLists((await governanceRows(webuiModelStore, id, principalId)).map(({ row }) => row?.ids)),
+    getScopedWebuiModelsDurable: async (id, principalId) =>
+      intersectLists(
+        (await governanceRows(webuiModelStore, id, principalId))
+          .filter(({ scope }) => scope !== org)
+          .map(({ row }) => row?.ids),
+      ),
     getPeopleDirectoryUrl: (id) => peopleDirectoryUrls.get(id) ?? null,
     setPeopleDirectoryUrl(id, url) {
       if (url === null) {
@@ -831,6 +882,8 @@ export function createMemoryConfigStore(
       }
     },
     getBrandingDurable: async (id) => (await brandingStore.get(id))?.branding ?? null,
+    getBrowseMaxStepsDurable: async (id, principalId) =>
+      strictestLimit((await governanceRows(browseMaxStepsStore, id, principalId)).map(({ row }) => row?.steps)),
     getBrowseMaxSteps: (id) => browseMaxSteps.get(id) ?? null,
     setBrowseMaxSteps(id, steps) {
       if (steps === null) {
@@ -841,6 +894,8 @@ export function createMemoryConfigStore(
         persist(`browseSteps:${id}`, "browse max steps", () => browseMaxStepsStore.put(id, { scopeId: id, steps }));
       }
     },
+    getBrowseModelDurable: async (id, principalId) =>
+      nearestValue((await governanceRows(browseModelStore, id, principalId)).map(({ row }) => row?.modelId)),
     getBrowseModel: (id) => browseModels.get(id) ?? null,
     setBrowseModel(id, modelId) {
       if (modelId === null) {
@@ -851,7 +906,8 @@ export function createMemoryConfigStore(
         persist(`browseModel:${id}`, "browse model", () => browseModelStore.put(id, { scopeId: id, modelId }));
       }
     },
-    getTurnWallClockSecDurable: async (id) => (await turnWallClockStore.get(id))?.sec ?? null,
+    getTurnWallClockSecDurable: async (id, principalId) =>
+      strictestLimit((await governanceRows(turnWallClockStore, id, principalId)).map(({ row }) => row?.sec)),
     async setTurnWallClockSec(id, sec) {
       await writeQueue(`turnWallClock:${id}`, () =>
         sec === null ? turnWallClockStore.delete(id) : turnWallClockStore.put(id, { scopeId: id, sec }),
@@ -912,7 +968,7 @@ export function createMemoryConfigStore(
         unfulfilledInsightsStore.get(id),
         externalSlackParticipantsStore.get(id),
         baseModelStore.get(id),
-        id === org ? approvedHarnessStore.get(org) : null,
+        approvedHarnessStore.get(id),
         brandingStore.get(id),
       ]);
       return {
@@ -952,10 +1008,10 @@ export function createMemoryConfigStore(
         unfulfilledInsightsStore.get(id),
         externalSlackParticipantsStore.get(id),
         baseModelStore.get(id),
-        id === org ? approvedHarnessStore.get(org) : null,
+        approvedHarnessStore.get(id),
         brandingStore.get(id),
         id === org ? orgAmbientStore.get(org) : null,
-        id === org ? interactiveFastModeStore.get(org) : null,
+        interactiveFastModeStore.get(id),
         channelHeaderPinStore.get(id),
       ]);
       let refreshedSoul = soul;
@@ -992,9 +1048,11 @@ export function createMemoryConfigStore(
       else externalSlackParticipants.delete(id);
       if (baseModel) baseModels.set(id, baseModel);
       else baseModels.delete(id);
-      if (id === org) approvedHarnesses = approved?.ids ?? null;
+      if (approved) approvedHarnesses.set(id, approved.ids);
+      else approvedHarnesses.delete(id);
       if (id === org) orgAmbient = orgAmbientRow?.on ?? true;
-      if (id === org) interactiveFastMode = interactiveFastModeRow?.on ?? false;
+      if (interactiveFastModeRow) interactiveFastMode.set(id, interactiveFastModeRow.on);
+      else interactiveFastMode.delete(id);
       if (brandingRow) branding.set(id, brandingRow.branding);
       else branding.delete(id);
       if (channelHeaderPinRow) channelHeaderPin.set(id, channelHeaderPinRow.on);
@@ -1011,7 +1069,11 @@ export function createMemoryConfigStore(
         `model:${id}`,
         `turnWallClock:${id}`,
         `branding:${id}`,
-        ...(id === org ? [`approvedHarnesses:${org}`, `orgAmbient:${org}`, `interactiveFastMode:${org}`] : []),
+        `approvedHarnesses:${id}`,
+        `interactiveFastMode:${id}`,
+        `webuiModels:${id}`,
+        `browseSteps:${id}`,
+        `browseModel:${id}`,
         `channelHeaderPin:${id}`,
         ...(id === org ? [`approvedHarnesses:${org}`, `orgAmbient:${org}`] : []),
       ];

@@ -442,6 +442,8 @@ const ZH: Record<string, string> = {
   "Open in Slack": "在 Slack 中打开",
   Organization: "组织",
   "Org default": "组织默认值",
+  "Inherited default": "继承的默认值",
+  "Following organization unit and access group defaults.": "跟随组织架构组和访问组的默认值。",
   Other: "其他",
   Ownership: "所有权",
   "Pages & databases": "页面和数据库",

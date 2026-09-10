@@ -47,6 +47,7 @@ interface HarnessSecurityScreenInput {
 }
 
 export interface HarnessTurnInput {
+  governancePrincipalId?: string;
   session: Session;
   runId?: string;
   cancel?: AbortSignal;

@@ -4,12 +4,8 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  createLocalSandbox,
-  localContainerName,
-  localNetworkName,
-  localVolumeName,
-} from "../src/sandbox/local-sandbox.ts";
+import { createLocalSandbox, localContainerName, localVolumeName } from "../src/sandbox/local-sandbox.ts";
+import { localNetworkName } from "../src/sandbox/local-resource-names.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { scopeId } from "../src/types.ts";
 
