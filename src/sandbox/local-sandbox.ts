@@ -6,7 +6,8 @@ import type { WorkspaceStore } from "../workspace/workspace-store.ts";
 import { createKeyedQueue, sleep } from "../util/async.ts";
 import { swallowAs, errMessage } from "../util/errors.ts";
 import { shq } from "../util/shell.ts";
-import { createLocalEgress, DEFAULT_LOCAL_EGRESS_IMAGE, localGuardName } from "./local-egress.ts";
+import { createLocalEgress, DEFAULT_LOCAL_EGRESS_IMAGE } from "./local-egress.ts";
+import { localGuardName, localNetworkName } from "./local-resource-names.ts";
 import { nonInteractiveShellPrefix, forceThroughProxyEnv } from "./sandbox-env.ts";
 import { createExecProcessSessions, type ExecProcessIo } from "./exec-process-session.ts";
 import { materializeRoLayers } from "./ro-layers.ts";
@@ -57,8 +58,6 @@ export { computeSandboxImageFingerprint } from "./sandbox-fingerprint.ts";
 
 export const localContainerName = (scopeId: string): string => `qm-sbx-${localSlug(scopeId)}`;
 export const localVolumeName = (scopeId: string): string => `qm-home-${localSlug(scopeId)}`;
-export const localNetworkName = (containerName: string): string =>
-  `qm-net-${containerName.replace(/^qm-(sbx|scratch)-/, "")}`;
 const localScratchName = (key: string): string => `qm-scratch-${localSlug(key)}`;
 
 function localSlug(id: string): string {

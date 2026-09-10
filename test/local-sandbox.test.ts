@@ -5,12 +5,8 @@ import { mkdtempSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  createLocalSandbox,
-  localContainerName,
-  localNetworkName,
-  localVolumeName,
-} from "../src/sandbox/local-sandbox.ts";
+import { createLocalSandbox, localContainerName, localVolumeName } from "../src/sandbox/local-sandbox.ts";
+import { localNetworkName } from "../src/sandbox/local-resource-names.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { supportsProcessSessions } from "../src/sandbox/sandbox.ts";
 import { sleep } from "../src/util/async.ts";

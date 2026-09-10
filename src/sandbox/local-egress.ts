@@ -2,8 +2,8 @@ import type { DockerExec } from "./docker-exec.ts";
 import { localEgressProxyUrl } from "./local-network-guard.ts";
 import { sleep } from "../util/async.ts";
 import { shortHash } from "../util/crypto.ts";
+import { localGuardName } from "./local-resource-names.ts";
 
-export const localGuardName = (name: string): string => `${name}-egress`;
 export const DEFAULT_LOCAL_EGRESS_IMAGE = "qm-egress-proxy:latest";
 
 export function createLocalEgress(dexec: DockerExec, proxyUrl: string, image: string, org: string) {
