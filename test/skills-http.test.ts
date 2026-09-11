@@ -1178,6 +1178,37 @@ test("skill upload preview and selected import preserve ownership and attachment
   }
 });
 
+test("skill import replaces an archived skill of the same name", async () => {
+  const s = await start();
+  try {
+    await publish(s.skills, scopeId("personal", "author"), "import-demo", "archived version");
+    const archived = (await s.skills.list()).find((skill) => skill.manifest.name === "import-demo")!;
+    await s.skills.archive(archived.id, "author");
+    const source = {
+      kind: "upload",
+      upload: { name: "import-demo.md", base64: Buffer.from(skillMarkdown("import-demo")).toString("base64") },
+    };
+    const request = (extra: Record<string, unknown> = {}) =>
+      fetch(`${s.base}/v1/skills/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ principalId: "author", source, ...extra }),
+      });
+
+    const preview = (await (await request()).json()) as SkillImportPreview;
+    assert.equal(preview.candidates[0]?.eligible, true);
+    assert.equal(preview.candidates[0]?.reason, undefined);
+    const imported = await request({ fingerprint: preview.fingerprint, selected: ["SKILL.md"] });
+    assert.equal(imported.status, 201);
+    assert.equal(await s.skills.get(archived.id), null);
+    const replacement = (await s.skills.list()).find((skill) => skill.manifest.name === "import-demo")!;
+    assert.notEqual(replacement.id, archived.id);
+    assert.equal(replacement.status, "published");
+  } finally {
+    await s.close();
+  }
+});
+
 test("skill import enforces creation scopes before reading the source and validates input", async () => {
   const s = await start();
   try {

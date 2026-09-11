@@ -18,10 +18,17 @@ function requireRegistry(deps: AppDeps): { packs: SkillPackStore; fetcher: Skill
   return { packs: deps.skillPacks, fetcher: deps.skillFetcher };
 }
 
-async function nativeNamesFor(deps: AppDeps, packId: string, scope: ScopeId): Promise<Set<string>> {
+async function occupiedSkillNamesFor(deps: AppDeps, scope: ScopeId, exceptCreatedBy?: string): Promise<Set<string>> {
   const all = await deps.skills.list();
   return new Set(
-    all.filter((s) => s.scopeId === scope && s.createdBy !== `pack:${packId}`).map((s) => s.manifest.name),
+    all
+      .filter(
+        (skill) =>
+          skill.scopeId === scope &&
+          skill.status !== "archived" &&
+          (exceptCreatedBy === undefined || skill.createdBy !== exceptCreatedBy),
+      )
+      .map((skill) => skill.manifest.name),
   );
 }
 
@@ -125,14 +132,14 @@ async function reconcilePack(
       const bundleFiles = collectSharedBundle(repo, pack.config);
       const canonPlan = planIngest(repo, {
         ...(pack.config ? { config: pack.config } : {}),
-        nativeNames: await nativeNamesFor(deps, id, pack.targetScopeId),
+        nativeNames: await occupiedSkillNamesFor(deps, pack.targetScopeId, `pack:${id}`),
       });
       const imported: string[] = [];
       const updated: string[] = [];
       const skipped: string[] = [];
       const archived: string[] = [];
       for (const target of targets) {
-        const nativeNames = await nativeNamesFor(deps, id, target.scopeId);
+        const nativeNames = await occupiedSkillNamesFor(deps, target.scopeId, `pack:${id}`);
         const claimedPaths = await buildClaimedPaths(deps, id, target.scopeId);
         const claimedBundlePaths = await buildClaimedBundlePaths(deps);
         const { kept, ...base } = await importPack(repo, deps.skills, {
@@ -377,7 +384,7 @@ export function createSkillMethods(
       const pack = await packs.create(input);
       try {
         const repo = await fetcher.fetch(pack);
-        const nativeNames = await nativeNamesFor(deps, pack.id, pack.targetScopeId);
+        const nativeNames = await occupiedSkillNamesFor(deps, pack.targetScopeId, `pack:${pack.id}`);
         const plan = planIngest(repo, { ...(pack.config ? { config: pack.config } : {}), nativeNames });
         return await packs.update(pack.id, { available: plan.counts.eligible });
       } catch (e) {
@@ -399,7 +406,7 @@ export function createSkillMethods(
       const pack = await packs.get(id);
       if (!pack) throw new Error(`unknown skill pack: ${id}`);
       const repo = await fetcher.fetch(pack);
-      const nativeNames = await nativeNamesFor(deps, id, pack.targetScopeId);
+      const nativeNames = await occupiedSkillNamesFor(deps, pack.targetScopeId, `pack:${id}`);
       const plan = planIngest(repo, { ...(pack.config ? { config: pack.config } : {}), nativeNames });
       const bundlePaths = collectSharedBundle(repo, pack.config).map((file) => file.path);
       const importedScopesByUpstream = new Map<string, ScopeId[]>();
@@ -477,9 +484,7 @@ export function createSkillMethods(
         if (!(await h.principalCanManageScope(input.principalId, homeScope))) {
           throw new SkillImportError("You cannot import skills into that context", 403);
         }
-        const names = new Set(
-          (await deps.skills.list()).filter((skill) => skill.scopeId === homeScope).map((skill) => skill.manifest.name),
-        );
+        const names = await occupiedSkillNamesFor(deps, homeScope);
         const { preview, manifests } = previewSkillImport(repo, names, kind === "personal");
         if (input.selected === undefined) return preview;
         if (input.fingerprint !== preview.fingerprint)

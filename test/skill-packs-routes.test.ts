@@ -218,6 +218,47 @@ test("register works with only a url (defaults to the repo's default branch)", a
   }
 });
 
+test("an archived native skill does not block a same-name pack import", async () => {
+  const repo = makeFixtureRepo();
+  const s = start();
+  try {
+    const archived = await s.built.skills.create({
+      scopeId: "org:default-org",
+      manifest: { name: "reg-alpha", description: "archived", requiredCapabilities: [], body: "archived" },
+      createdBy: "admin-alice@default-org",
+    });
+    await s.built.skills.review(archived.id, "reviewer", []);
+    await s.built.skills.publish(archived.id);
+    await s.built.skills.archive(archived.id);
+
+    const reg = await json(
+      await fetch(`${s.base}/v1/admin/skill-packs`, {
+        method: "POST",
+        headers: ADMIN,
+        body: JSON.stringify({ url: repo.dir, ref: repo.sha }),
+      }),
+    );
+    const catalog = await json(
+      await fetch(`${s.base}/v1/admin/skill-packs/${reg.pack.id}/catalog`, { headers: ADMIN }),
+    );
+    assert.equal(catalog.candidates.find((candidate: any) => candidate.upstreamName === "reg-alpha")?.eligible, true);
+
+    const imported = await fetch(`${s.base}/v1/admin/skill-packs/${reg.pack.id}/import`, {
+      method: "POST",
+      headers: ADMIN,
+      body: JSON.stringify({ selected: ["reg-alpha"] }),
+    });
+    assert.equal(imported.status, 200);
+    assert.deepEqual((await json(imported)).imported, ["reg-alpha"]);
+    const sameName = (await s.built.skills.list()).filter((skill) => skill.manifest.name === "reg-alpha");
+    assert.equal(sameName.find((skill) => skill.id === archived.id)?.status, "archived");
+    assert.equal(sameName.find((skill) => skill.createdBy === `pack:${reg.pack.id}`)?.status, "published");
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+    await s.close();
+  }
+});
+
 test("a legacy published skill with an unsafe name does not block unrelated pack reconciliation", async () => {
   const repo = makeFixtureRepo();
   const s = start();
