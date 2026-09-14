@@ -1,9 +1,10 @@
+import { isolatedPgTestDatabase } from "./support/isolated-pg-test-database.ts";
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { createPostgresMapFactory } from "../src/persistence/durable-map.ts";
 import { createPostgresInstanceRegistry } from "../src/runs/instance-registry.ts";
 
-const URL = process.env.DATABASE_URL;
+const URL = await isolatedPgTestDatabase(process.env.DATABASE_URL);
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the instance-registry tests";
 
 before(async () => {

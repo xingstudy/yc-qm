@@ -1,3 +1,4 @@
+import { isolatedPgTestDatabase } from "./support/isolated-pg-test-database.ts";
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -26,7 +27,7 @@ import {
 import { defaultOrgPolicy } from "../src/policy/command-policy.ts";
 import { scopeId } from "../src/types.ts";
 
-const URL = process.env.DATABASE_URL;
+const URL = await isolatedPgTestDatabase(process.env.DATABASE_URL);
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the Postgres config-store tests";
 
 const TABLES = [

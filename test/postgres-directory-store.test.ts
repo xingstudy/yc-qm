@@ -1,8 +1,9 @@
+import { isolatedPgTestDatabase } from "./support/isolated-pg-test-database.ts";
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
 
-const URL = process.env.DATABASE_URL;
+const URL = await isolatedPgTestDatabase(process.env.DATABASE_URL);
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the Postgres directory-store tests";
 
 before(async () => {
@@ -311,8 +312,16 @@ test(
 
 async function freshPg(url: string) {
   const pg = (await import("pg")).default;
-  const p = new pg.Pool({ connectionString: url });
-  return { query: (text: string, params?: unknown[]) => p.query(text, params) };
+  return {
+    query: async (text: string, params?: unknown[]) => {
+      const p = new pg.Pool({ connectionString: url });
+      try {
+        return await p.query(text, params);
+      } finally {
+        await p.end();
+      }
+    },
+  };
 }
 
 test("pg directory: concurrent pushes for one org serialize instead of 500ing on the PK", { skip }, async () => {

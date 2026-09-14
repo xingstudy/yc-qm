@@ -1,10 +1,11 @@
+import { isolatedPgTestDatabase } from "./support/isolated-pg-test-database.ts";
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createPostgresAdminGrantStore } from "../src/admin/postgres-admin-grant-store.ts";
 import { createAdminGrantStore, type AdminGrant } from "../src/admin/admin-grant-store.ts";
 import { scopeId } from "../src/types.ts";
 
-const URL = process.env.DATABASE_URL;
+const URL = await isolatedPgTestDatabase(process.env.DATABASE_URL);
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the Postgres admin-grant tests";
 
 beforeEach(async () => {

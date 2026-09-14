@@ -1,9 +1,10 @@
+import { isolatedPgTestDatabase } from "./support/isolated-pg-test-database.ts";
 import { resetPgMigrations } from "./support/reset-pg-migrations.ts";
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { createPostgresPortalLoginTransactionStore } from "../src/auth/portal-login-transactions.ts";
 
-const URL = process.env.DATABASE_URL;
+const URL = await isolatedPgTestDatabase(process.env.DATABASE_URL);
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the portal login transaction tests";
 const state = (n: string): string => n.padStart(64, "0");
 const client = "c".repeat(43);

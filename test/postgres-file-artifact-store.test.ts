@@ -1,3 +1,4 @@
+import { isolatedPgTestDatabase } from "./support/isolated-pg-test-database.ts";
 import { assertDocumentListing } from "./support/file-document-listing.ts";
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -6,7 +7,7 @@ import { createPostgresFileArtifactStore } from "../src/files/postgres-file-arti
 import { fileArtifactId, type PutFileInput } from "../src/files/file-artifact-store.ts";
 import { scopeId } from "../src/types.ts";
 
-const URL = process.env.DATABASE_URL;
+const URL = await isolatedPgTestDatabase(process.env.DATABASE_URL);
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the Postgres file-artifact-store tests";
 
 const owner = scopeId("channel", "C1");

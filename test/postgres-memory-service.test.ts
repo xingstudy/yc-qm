@@ -1,9 +1,10 @@
+import { isolatedPgTestDatabase } from "./support/isolated-pg-test-database.ts";
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createPostgresMemoryService } from "../src/memory/postgres-memory-service.ts";
 import { scopeId } from "../src/types.ts";
 
-const URL = process.env.DATABASE_URL;
+const URL = await isolatedPgTestDatabase(process.env.DATABASE_URL);
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the Postgres memory tests";
 
 const at = Date.UTC(2026, 4, 31);

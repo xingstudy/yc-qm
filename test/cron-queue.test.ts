@@ -1,3 +1,4 @@
+import { isolatedPgTestDatabase } from "./support/isolated-pg-test-database.ts";
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { createScheduler, type Scheduler } from "../src/cron/scheduler.ts";
@@ -10,7 +11,7 @@ import { createIdentityService } from "../src/identity/identity-service.ts";
 import { createPostgresMapFactory } from "../src/persistence/durable-map.ts";
 import { scopeId, type Cron, type TurnRequest, type TurnResult } from "../src/types.ts";
 
-const URL = process.env.DATABASE_URL;
+const URL = await isolatedPgTestDatabase(process.env.DATABASE_URL);
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the cron queue tests";
 
 const SCHEMA = "pgboss_cron_queue_test";

@@ -1,3 +1,4 @@
+import { isolatedPgTestDatabase } from "./support/isolated-pg-test-database.ts";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -7,7 +8,7 @@ import { createPostgresMapFactory, type PostgresArtifactMaps } from "../src/pers
 import { createDeployStore, type Deployment, type DeployStore } from "../src/deploy/deploy-store.ts";
 import { scopeId } from "../src/types.ts";
 
-const URL = process.env.DATABASE_URL;
+const URL = await isolatedPgTestDatabase(process.env.DATABASE_URL);
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the deploy access tests";
 
 async function raw(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {

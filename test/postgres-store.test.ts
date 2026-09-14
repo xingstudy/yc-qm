@@ -1,3 +1,4 @@
+import { isolatedPgTestDatabase } from "./support/isolated-pg-test-database.ts";
 import { test, before } from "node:test";
 import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
@@ -15,7 +16,7 @@ import type { OrchestratorInput } from "../src/core/orchestrator.ts";
 import { assertParticipantSessionParity } from "./support/participant-session-parity.ts";
 import { byScopeId, rollupsFromSummaries } from "./support/scope-rollup-oracle.ts";
 
-const URL = process.env.DATABASE_URL;
+const URL = await isolatedPgTestDatabase(process.env.DATABASE_URL);
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the Postgres store tests";
 
 before(async () => {

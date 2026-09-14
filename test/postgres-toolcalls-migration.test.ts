@@ -1,9 +1,10 @@
-import { test, before, after } from "node:test";
+import { isolatedPgTestDatabase } from "./support/isolated-pg-test-database.ts";
+import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { createPostgresRunStore } from "../src/runs/postgres-run-store.ts";
 import { migrateRegisteredPgSchemas } from "../src/persistence/pg-pool.ts";
 
-const URL = process.env.DATABASE_URL;
+const URL = await isolatedPgTestDatabase(process.env.DATABASE_URL);
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the tool_calls migration tests";
 
 type Pg = {
@@ -35,14 +36,6 @@ async function bootAndClose(): Promise<void> {
 }
 
 before(async () => {
-  if (!URL) return;
-  const p = await pool();
-  await p.query("DROP TABLE IF EXISTS runs, tool_calls CASCADE");
-  await p.query("DELETE FROM qm_schema_migrations WHERE id LIKE 'runs/store/%'").catch(() => undefined);
-  await p.end();
-});
-
-after(async () => {
   if (!URL) return;
   const p = await pool();
   await p.query("DROP TABLE IF EXISTS runs, tool_calls CASCADE");

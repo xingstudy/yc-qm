@@ -1,8 +1,9 @@
+import { isolatedPgTestDatabase } from "./support/isolated-pg-test-database.ts";
 import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { createPostgresRateLimiter } from "../src/ratelimit/postgres-rate-limiter.ts";
 
-const URL = process.env.DATABASE_URL;
+const URL = await isolatedPgTestDatabase(process.env.DATABASE_URL);
 const skip = URL ? false : "set DATABASE_URL to run the Postgres rate-limiter test";
 
 beforeEach(async () => {

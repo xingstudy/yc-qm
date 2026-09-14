@@ -1,3 +1,4 @@
+import { isolatedPgTestDatabase } from "./support/isolated-pg-test-database.ts";
 import { resetPgMigrations } from "./support/reset-pg-migrations.ts";
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
@@ -11,7 +12,7 @@ import type {
 } from "../src/directory-sources/types.ts";
 import type { ScopeId } from "../src/types.ts";
 
-const URL = process.env.DATABASE_URL;
+const URL = await isolatedPgTestDatabase(process.env.DATABASE_URL);
 const skip = URL ? false : "set DATABASE_URL to run the Postgres directory-source tests";
 
 beforeEach(async () => {
