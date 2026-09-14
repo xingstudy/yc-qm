@@ -109,3 +109,29 @@ test("MCP Streamable HTTP works through the patched Hono major", async (t) => {
   assert.equal(response.status, 400);
   assert.equal(body.error?.code, -32700);
 });
+
+test("package lockfiles use portable public tarball URLs without private registry credentials", () => {
+  for (const path of [
+    "package-lock.json",
+    "cli/package-lock.json",
+    "plugins/admin/package-lock.json",
+    "plugins/auth/package-lock.json",
+    "plugins/portal/package-lock.json",
+    "plugins/web-ui/package-lock.json",
+  ]) {
+    const lock = JSON.parse(readFileSync(new URL(`../${path}`, import.meta.url), "utf8")) as {
+      packages: Record<string, { resolved?: string }>;
+    };
+    for (const [name, entry] of Object.entries(lock.packages)) {
+      if (!entry.resolved?.startsWith("http")) continue;
+      const url = new URL(entry.resolved);
+      const origin =
+        path === "plugins/web-ui/package-lock.json" && name === "node_modules/xlsx"
+          ? "https://cdn.sheetjs.com"
+          : "https://registry.npmjs.org";
+      assert.equal(url.origin, origin, `${path}: ${name}`);
+      assert.equal(url.username, "");
+      assert.equal(url.password, "");
+    }
+  }
+});

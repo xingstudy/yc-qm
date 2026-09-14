@@ -91,3 +91,5 @@
 - 使用实际 LocalSandbox 的批量和逐文件写入，验证 Skill 与共享 bundle 的 755 → 644 → 755、可执行脚本真实执行、二进制原样保留。日志 `logs/docker-skill-live.log`。复用本机现有 sandbox 镜像，镜像曾提示旧版本；该证据证明候选 Core 与现有 sandbox 的这些路径兼容，不代替新 sandbox 镜像完整验收。
 - 初次远端 CI 发现 Portal 生产镜像内嵌 Auth 缺少 Auth 包依赖；按 Auth 自己的 lockfile 安装 `/auth/node_modules`，保留独立 Portal 依赖和镜像启动检查。
 - 署名检查原先将整个导入上游历史视为新下游提交。现在仅排除固定 v0.1.11 SHA 及其祖先，下游普通提交、其他合并支线和该 SHA 之后的新上游提交仍检查；Git 引用错误必须失败。实际临时 Git 图回归与镜像相关测试合计 27/27，检查策略修改经过独立审查。
+
+- CI 安装阶段暴露本机 registry 地址进入根 lockfile：95 个 tarball URL 已恢复公共 npm。逐包核对公共 registry 的版本和 integrity 与 lockfile 一致，仅替换 URL；跨六个包 lockfile 的回归防止内网地址再次进入，保留 SheetJS 既有官方 CDN 来源。
