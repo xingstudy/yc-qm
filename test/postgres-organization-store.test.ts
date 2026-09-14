@@ -1,3 +1,4 @@
+import { resetPgMigrations } from "./support/reset-pg-migrations.ts";
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createPostgresOrganizationStore } from "../src/organization/postgres-organization-store.ts";
@@ -26,6 +27,7 @@ beforeEach(async () => {
   await p.query(
     "DROP TABLE IF EXISTS directory_view_roots, directory_view_policies, skill_access_policies, acl_grants, acl_grants_version, skills, durable_map_versions, org_unit_members, org_unit_closure, org_units, access_group_members, access_groups, organization_authz_state, auth_identities, organization_users, organization_identity_status, deactivated_principals, organization_operation_results, organization_legacy_runtime_eligible, organization_schema_migrations, organization_database_owner, participants CASCADE",
   );
+  await resetPgMigrations(p, "fork/organization");
   await p.end();
 });
 

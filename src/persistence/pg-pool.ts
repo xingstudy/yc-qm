@@ -1,8 +1,19 @@
 import { readFileSync } from "node:fs";
 import type { ClientConfig, Pool, PoolClient } from "pg";
 import { parse, toClientConfig, type ConnectionOptions } from "pg-connection-string";
-import { sleep } from "../util/async.ts";
 import { errMessage, swallowAs } from "../util/errors.ts";
+
+import {
+  applyPgMigrations,
+  applyPgStatements,
+  assertOneStatement,
+  definePgMigration,
+  withPgSchemaLock,
+  type PgMaintenanceDefinition,
+  type PgMigrationDefinition,
+} from "./pg-schema-migrations.ts";
+
+export { assertOneStatement, concurrentIndexName, pgSchemaMigrations } from "./pg-schema-migrations.ts";
 
 export type { Pool, PoolClient };
 
@@ -31,57 +42,9 @@ export async function withPgTransaction<T>(pool: Pool, fn: (client: PoolClient) 
   }
 }
 
-export function assertOneStatement(stmt: string): void {
-  const bare = stmt
-    .replace(/--[^\n]*/g, "")
-    .replace(/\$([A-Za-z0-9_]*)\$[\s\S]*?\$\1\$/g, "")
-    .replace(/'(?:[^']|'')*'/g, "")
-    .replace(/;\s*$/, "");
-  if (bare.includes(";")) {
-    throw new Error(`pg-pool: each schema element must be a single statement (found ';' in: ${stmt.slice(0, 80)}…)`);
-  }
-}
-
-export function concurrentIndexName(stmt: string): string | undefined {
-  return /^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\s+IF\s+NOT\s+EXISTS\s+([a-z_][a-z0-9_$]*)\b/i.exec(stmt)?.[1];
-}
-
-async function applyDdl(pool: Pool, statements: string[]): Promise<void> {
-  const ddl = await pool.connect();
-  const deadline = Date.now() + 5 * 60_000;
-  let locked = false;
-  let discard = false;
-  try {
-    for (;;) {
-      const lock = await ddl.query("SELECT pg_try_advisory_lock(hashtext('agent-platform:schema-init')) AS acquired");
-      if (lock.rows[0]?.acquired === true) {
-        locked = true;
-        break;
-      }
-      if (Date.now() >= deadline) throw new Error("timeout acquiring schema initialization lock");
-      await sleep(25);
-    }
-    for (const stmt of statements) {
-      const indexName = concurrentIndexName(stmt);
-      if (indexName) {
-        const existing = await ddl.query(
-          "SELECT NOT indisvalid OR NOT indisready AS invalid FROM pg_index WHERE indexrelid = to_regclass($1)",
-          [indexName],
-        );
-        if (existing.rows[0]?.invalid) await ddl.query(`DROP INDEX CONCURRENTLY ${indexName}`);
-      }
-      await ddl.query(stmt);
-    }
-  } finally {
-    if (locked) {
-      try {
-        await ddl.query("SELECT pg_advisory_unlock(hashtext('agent-platform:schema-init'))");
-      } catch {
-        discard = true;
-      }
-    }
-    ddl.release(discard);
-  }
+async function applyDdl(pool: Pool, statements: readonly string[]): Promise<void> {
+  if (!statements.length) return;
+  await withPgSchemaLock(pool, (client) => applyPgStatements(client, statements));
 }
 
 export function resolvePgCaTrust(opts: { cert?: string; certFile?: string }): { ssl?: { ca: string } } {
@@ -147,9 +110,43 @@ export function pgConnectionOptionsFromEnv(
   );
 }
 
-export function createPgPool(connectionString: string, statements: string[]): PgPool {
-  const schema = statements.map((s) => s.trim()).filter((s) => s.length > 0);
+interface ConcretePgPool extends PgPool {
+  sessionPool(): Promise<Pool>;
+}
+
+export function createPgPool(connectionString: string, statements: readonly string[]): ConcretePgPool;
+export function createPgPool(
+  connectionString: string,
+  definitions: readonly PgMigrationDefinition[],
+  maintenance?: readonly PgMaintenanceDefinition[],
+): ConcretePgPool;
+export function createPgPool(
+  connectionString: string,
+  migrationId: string,
+  statements: readonly string[],
+  maintenance?: readonly PgMaintenanceDefinition[],
+): ConcretePgPool;
+export function createPgPool(
+  connectionString: string,
+  input: string | readonly string[] | readonly PgMigrationDefinition[],
+  statementsOrMaintenance: readonly string[] | readonly PgMaintenanceDefinition[] = [],
+  maintenanceDefinitions: readonly PgMaintenanceDefinition[] = [],
+): ConcretePgPool {
+  const legacy =
+    Array.isArray(input) && (input.length === 0 ? statementsOrMaintenance.length === 0 : typeof input[0] === "string");
+  const schema = legacy ? (input as readonly string[]).map((s) => s.trim()).filter(Boolean) : [];
   for (const stmt of schema) assertOneStatement(stmt);
+  let definitions: readonly PgMigrationDefinition[] = [];
+  if (!legacy) {
+    if (typeof input === "string")
+      definitions = [{ id: input, statements: statementsOrMaintenance as readonly string[] }];
+    else definitions = input as readonly PgMigrationDefinition[];
+  }
+  const migrations = definitions.map(definePgMigration);
+  const maintenance =
+    typeof input === "string"
+      ? maintenanceDefinitions
+      : (statementsOrMaintenance as readonly PgMaintenanceDefinition[]);
   let poolP: Promise<Pool> | null = null;
   function pool(): Promise<Pool> {
     if (!poolP) {
@@ -158,7 +155,8 @@ export function createPgPool(connectionString: string, statements: string[]): Pg
         const p = new pg.Pool(pgConnectionOptions(connectionString));
         p.on("error", (err) => console.error("[pg] idle client error:", errMessage(err)));
         try {
-          await applyDdl(p, schema);
+          if (legacy) await applyDdl(p, schema);
+          else await applyPgMigrations(p, migrations, { maintenance });
         } catch (e) {
           await p.end().catch(swallowAs("pg-pool: close after schema failure", undefined));
           throw e;
@@ -186,5 +184,5 @@ export function createPgPool(connectionString: string, statements: string[]): Pg
     assertOneStatement(stmt);
     await applyDdl(await pool(), [stmt]);
   }
-  return { pool, q, query, schema: applySchema, close };
+  return { pool, sessionPool: pool, q, query, schema: applySchema, close };
 }

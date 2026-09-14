@@ -1,3 +1,4 @@
+import { definePgMigration } from "../persistence/pg-schema-migrations.ts";
 import { createPgPool, withPgTransaction, type PoolClient } from "../persistence/pg-pool.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { PostgresAuditLog } from "../admin/postgres-audit-log.ts";
@@ -27,7 +28,7 @@ import type {
   StoredDirectorySource,
 } from "./types.ts";
 
-const SCHEMA = [
+const PROD_V1_3_0_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS directory_sources(
     org_id TEXT NOT NULL,
     id TEXT NOT NULL,
@@ -270,6 +271,14 @@ const SCHEMA = [
   `ALTER TABLE directory_sync_runs ADD COLUMN IF NOT EXISTS source_revision BIGINT NOT NULL DEFAULT 1`,
   `CREATE UNIQUE INDEX IF NOT EXISTS directory_sync_runs_one_running
    ON directory_sync_runs(org_id, source_id) WHERE status = 'running'`,
+];
+
+const MIGRATIONS = [
+  definePgMigration({
+    id: "fork/directory-sources/0001",
+    statements: PROD_V1_3_0_SCHEMA,
+    expectedChecksum: "fecd768539f1b5beafafd49828eb2fa6bb08b4cf95821f85443272d68bec9422",
+  }),
 ];
 
 const SOURCE_COLUMNS = `source.org_id, source.id, source.provider, source.name, source.external_tenant_id,
@@ -699,7 +708,7 @@ export function createPostgresDirectorySourceStore(
   connectionString: string,
   options: { exclusiveOrgId?: string; auditLog?: PostgresAuditLog } = {},
 ): DirectorySourceStore {
-  const pg = createPgPool(connectionString, SCHEMA);
+  const pg = createPgPool(connectionString, MIGRATIONS);
   const sourceLocks = createPgPool(connectionString, []);
   const sourceLockContext = new AsyncLocalStorage<Set<string>>();
   const assertOrg = (orgId: string): void => {
@@ -709,7 +718,7 @@ export function createPostgresDirectorySourceStore(
     const key = sourceLockKey(orgId, sourceId);
     const held = sourceLockContext.getStore();
     if (held?.has(key)) return fn();
-    const client = await (await sourceLocks.pool()).connect();
+    const client = await (await sourceLocks.sessionPool()).connect();
     let discard = false;
     try {
       await client.query(`SELECT pg_advisory_lock(hashtext($1))`, [key]);

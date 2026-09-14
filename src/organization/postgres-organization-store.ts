@@ -1,4 +1,10 @@
-import { createPgPool, type Pool, type PoolClient, withPgTransaction } from "../persistence/pg-pool.ts";
+import {
+  createPgPool,
+  pgSchemaMigrations,
+  type Pool,
+  type PoolClient,
+  withPgTransaction,
+} from "../persistence/pg-pool.ts";
 import { sleep } from "../util/async.ts";
 import type { PostgresAuditLog } from "../admin/postgres-audit-log.ts";
 import type {
@@ -216,7 +222,7 @@ SELECT $1, up.ancestor_id, sub.descendant_id, up.depth + sub.depth + 1
   JOIN org_unit_closure sub ON sub.org_id = $1
  WHERE up.org_id = $1 AND up.descendant_id = $3 AND sub.ancestor_id = $2`;
 
-const SCHEMA_SQL = [
+const PROD_V1_3_0_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS organization_users(
     org_id TEXT NOT NULL,
     principal_id TEXT NOT NULL,
@@ -1263,6 +1269,24 @@ const SCHEMA_SQL = [
    $do$`,
 ];
 
+const MIGRATIONS = [
+  ...pgSchemaMigrations("fork/organization/0001", PROD_V1_3_0_SCHEMA, [
+    "3f4c9818d8f498024cc127e33e87cf722861498419e64f4d6e454e5e4184bc31",
+    "732ec06407d0230d6f33d8fbec908ba3555ea0208147cf4f3cdfcf93a2f08eff",
+    "a4932291481c9c730f8629b0aa0fbe5fd331dbe46d3fe0feec22538bae508911",
+    "972b7754ca533e9a8ee4dd3c6f8a3743031894da74ebcba6d712b86b2cb85abb",
+    "0a9a88f00d1bc8889c0a4971475c5471f27cbba9a6a2ea9b773dc4162c33d166",
+    "1d4405762012a2d8a1509190b216193fffd6054a8f1e164dfd7362663557d4b8",
+    "0ab9cbf8e221b0102d3ddcfbdb16e18eea67a4fc4a07452e890ef704e834e382",
+    "91e9f774abd86b42edf074c031293ef3a7846b3a7b2dc6de538b26215d4ce265",
+    "594b0676c9425bea44964180f0496ef80df8779e96791403a59c4f2dca971a6f",
+    "291f1553877c7bae88cdf64c262bb03a356dfb13b12a0b3e12b1e287b408eabe",
+    "aebfa4924a2ad6cfc51af30a471eb33494466bc0f4e74d3de25c320361b57b22",
+    "68c9811d18216f1403f6a63224e5d4c2ced7d2b0380f68983dc046db206bffe7",
+    "53c18bed98a0eb484e63a16f3639e95f9b80c5ec62b900d7d9664a475bf58ba0",
+  ]),
+];
+
 const ORGANIZATION_CLOSURE_MIGRATION_SQL = `DO $do$
    DECLARE scope_org_id TEXT;
    BEGIN
@@ -2184,13 +2208,17 @@ export function createPostgresOrganizationStore(
   connectionString: string,
   opts: { auditLog?: PostgresAuditLog; exclusiveOrgId?: string } = {},
 ): OrganizationStore {
-  const pg = createPgPool(connectionString, [
-    ...SCHEMA_SQL,
-    ...(opts.exclusiveOrgId ? [organizationDatabaseOwnerBindingSql(opts.exclusiveOrgId)] : []),
-    ...(opts.exclusiveOrgId ? [skillAccessColumnMigrationSql(opts.exclusiveOrgId)] : []),
-    ORGANIZATION_CLOSURE_MIGRATION_SQL,
-    ORGANIZATION_LEGACY_RUNTIME_ELIGIBILITY_SQL,
-    ORGANIZATION_IDENTITY_PROJECTION_MIGRATION_SQL,
+  const pg = createPgPool(connectionString, MIGRATIONS, [
+    {
+      id: "fork/organization/runtime-maintenance",
+      statements: [
+        ...(opts.exclusiveOrgId ? [organizationDatabaseOwnerBindingSql(opts.exclusiveOrgId)] : []),
+        ...(opts.exclusiveOrgId ? [skillAccessColumnMigrationSql(opts.exclusiveOrgId)] : []),
+        ORGANIZATION_CLOSURE_MIGRATION_SQL,
+        ORGANIZATION_LEGACY_RUNTIME_ELIGIBILITY_SQL,
+        ORGANIZATION_IDENTITY_PROJECTION_MIGRATION_SQL,
+      ],
+    },
   ]);
   function assertExclusiveOrg(orgId: string): void {
     if (opts.exclusiveOrgId && orgId !== opts.exclusiveOrgId) {

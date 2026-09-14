@@ -1,3 +1,4 @@
+import { resetPgMigrations } from "./support/reset-pg-migrations.ts";
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 import type { OrganizationMemberJob, OrganizationMemberJobItem } from "../src/organization/member-job-store.ts";
@@ -11,6 +12,7 @@ beforeEach(async () => {
   const pg = (await import("pg")).default;
   const pool = new pg.Pool({ connectionString: URL });
   await pool.query("DROP TABLE IF EXISTS organization_member_job_items, organization_member_jobs CASCADE");
+  await resetPgMigrations(pool, "fork/member-jobs");
   await pool.end();
 });
 

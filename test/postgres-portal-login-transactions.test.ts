@@ -1,3 +1,4 @@
+import { resetPgMigrations } from "./support/reset-pg-migrations.ts";
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { createPostgresPortalLoginTransactionStore } from "../src/auth/portal-login-transactions.ts";
@@ -14,6 +15,7 @@ before(async () => {
   const pool = new pg.Pool({ connectionString: URL });
   await pool.query("DROP TABLE IF EXISTS portal_login_transactions CASCADE");
   await pool.query("DROP TABLE IF EXISTS portal_login_rate_limits CASCADE");
+  await resetPgMigrations(pool, "fork/portal-login");
   await pool.end();
 });
 

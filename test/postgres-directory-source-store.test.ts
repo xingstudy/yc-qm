@@ -1,3 +1,4 @@
+import { resetPgMigrations } from "./support/reset-pg-migrations.ts";
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 import { createPostgresAuditLog } from "../src/admin/postgres-audit-log.ts";
@@ -20,6 +21,7 @@ beforeEach(async () => {
   await pool.query(
     "DROP TABLE IF EXISTS directory_unit_member_ownership, directory_unit_mappings, directory_managed_previews, directory_managed_user_ownership, directory_source_units, directory_email_lookup_guards, directory_email_resolutions, directory_sync_runs, directory_source_members, directory_source_secrets, directory_sources, audit_log CASCADE",
   );
+  await resetPgMigrations(pool, "fork/directory-sources");
   await pool.end();
 });
 
@@ -272,6 +274,7 @@ test("Postgres source store upgrades and backfills the secret revision fence", {
   const pg = (await import("pg")).default;
   const oldSchema = new pg.Pool({ connectionString: URL });
   await oldSchema.query("ALTER TABLE directory_source_secrets DROP COLUMN source_revision");
+  await resetPgMigrations(oldSchema, "fork/directory-sources");
   await oldSchema.end();
 
   const upgraded = createPostgresDirectorySourceStore(URL!);
