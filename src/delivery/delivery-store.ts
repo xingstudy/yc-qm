@@ -45,6 +45,7 @@ export interface DeliveryStore {
   }): Promise<Delivery>;
   pending(type: string, targetPrefix?: string): Promise<Delivery[]>;
   claimPending(type: string, ttlMs: number, targetPrefix?: string): Promise<Delivery[]>;
+  releaseClaim(id: string): Promise<void>;
   listShadow(opts?: { limit?: number }): Promise<Delivery[]>;
   ack(id: string, at: number, slackApiMs?: number): Promise<void>;
   ackByKey(idempotencyKey: string, at: number): Promise<void>;
@@ -136,6 +137,9 @@ export function createDeliveryStore(opts?: { maxAgeMs?: number }): DeliveryStore
       );
       for (const d of rows) claimedUntil.set(d.id, now + ttlMs);
       return rows;
+    },
+    async releaseClaim(id) {
+      claimedUntil.delete(id);
     },
     async listShadow(opts) {
       const limit = Math.max(1, opts?.limit ?? 100);

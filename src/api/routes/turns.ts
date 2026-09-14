@@ -218,6 +218,14 @@ async function ackDeliveryByKey(ctx: ApiCtx): Promise<void> {
   return sendJson(res, 200, { ok: true });
 }
 
+async function releaseDeliveryClaim(ctx: ApiCtx): Promise<void> {
+  const { res, app } = ctx;
+  const id = ctx.params.id!;
+  if (!id || id.includes("/")) return sendJson(res, 404, { error: "not_found" });
+  await app.releaseDeliveryClaim(id);
+  return sendJson(res, 200, { ok: true });
+}
+
 async function postTurnMetrics(ctx: ApiCtx): Promise<void> {
   const { res, deps, body } = ctx;
   const runId = ctx.params.runId!;
@@ -250,5 +258,6 @@ export const turnRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/deliveries", auth: "source", handle: listDeliveries },
   { method: "POST", path: "/v1/deliveries", auth: "source", handle: postDelivery },
   { method: "POST", path: "/v1/deliveries/:id/ack", auth: "source", handle: ackDelivery },
+  { method: "POST", path: "/v1/deliveries/:id/release", auth: "source", handle: releaseDeliveryClaim },
   { method: "POST", path: "/v1/deliveries/ack-by-key", auth: "source", handle: ackDeliveryByKey },
 ];

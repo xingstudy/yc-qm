@@ -470,6 +470,7 @@ export interface App {
   ): Promise<AmbientDecision>;
   ackDelivery(id: string, slackApiMs?: number): Promise<void>;
   ackDeliveryByKey(idempotencyKey: string): Promise<void>;
+  releaseDeliveryClaim(id: string): Promise<void>;
   setRunDeliveryState(runId: string, state: RunDeliveryState): Promise<boolean>;
   upsertDirectory(members: DirectoryMember[], syncedAt?: number): Promise<boolean>;
   upsertChannels(

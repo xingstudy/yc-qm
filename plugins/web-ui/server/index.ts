@@ -2171,6 +2171,16 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
       maxAuthFailureAttempts: 1,
       maxReconnectAttempts: -1,
     });
+    let stopped = false;
+    let workWechatReady = false;
+    const discardDisconnectedRuntime = (): void => {
+      if (stopped || !workWechatReady || imSdkRuntimes.get(key) !== runtime) return;
+      runtime.stop();
+      imSdkRuntimes.delete(key);
+      void syncImBridges().catch((error: unknown) =>
+        console.error("[web-ui] work-wechat reconnection failed:", String(error)),
+      );
+    };
     type PendingReply = {
       frame: WsFrameHeaders;
       streamId: string;
@@ -2302,6 +2312,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
     };
     client.on("message.text", handleWeComText);
     client.on("event.enter_chat", handleWeComEnter);
+    client.on("disconnected", discardDisconnectedRuntime);
     await waitForImConnection((resolve, reject) => {
       client.on("authenticated", resolve);
       client.on("error", reject);
@@ -2314,6 +2325,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
       resourceId: resource.resourceId,
       fingerprint,
       stop: () => {
+        stopped = true;
         pendingRepliesByRun.clear();
         completedMessageIds.clear();
         inFlightMessageIds.clear();
@@ -2388,12 +2400,12 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         if (idempotencyKey) sentDeliveryKeys.set(idempotencyKey, true);
       },
     };
+    workWechatReady = true;
   } else {
     const clientId = credentials.clientId;
     const clientSecret = credentials.clientSecret;
     if (!clientId || !clientSecret) throw new Error("ClientID 和 ClientSecret 不能为空");
     const client = new DingTalkStreamClient({ clientId, clientSecret, keepAlive: true });
-    let accessToken = "";
     client.registerCallbackListener(DingTalkStream.TOPIC_ROBOT, (frame) => {
       void (async () => {
         try {
@@ -2417,7 +2429,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
     });
     await waitForImConnection((_resolve, reject) => {
       void (async () => {
-        accessToken = String(await client.getAccessToken());
+        await client.getAccessToken();
         await client.connect();
         if (!client.connected) throw new Error("钉钉 Stream 连接失败");
         _resolve();
@@ -2434,6 +2446,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         const latest = await readImBindings(user);
         const webhook = readImSdkSecret(latest.resources.dingtalk)?.replyTargets?.[target];
         if (!webhook) throw new Error("钉钉会话已失效，请先从钉钉向 Bot 发送一条消息");
+        const accessToken = String(await client.getAccessToken());
         const response = await fetch(webhook, {
           method: "POST",
           headers: { "content-type": "application/json", "x-acs-dingtalk-access-token": accessToken },
@@ -3856,6 +3869,23 @@ async function ackImDelivery(delivery: PendingImDelivery): Promise<void> {
   if (acked.status !== 200) throw new Error(`core delivery ack failed (${acked.status})`);
 }
 
+async function releaseImDeliveryClaim(delivery: PendingImDelivery): Promise<void> {
+  const released = await coreFetch("POST", `/v1/deliveries/${encodeURIComponent(delivery.id)}/release`);
+  if (released.status !== 200) throw new Error(`core delivery claim release failed (${released.status})`);
+}
+
+async function releaseImDeliveryClaims(deliveries: PendingImDelivery[], from: number): Promise<void> {
+  await Promise.all(
+    deliveries
+      .slice(from)
+      .map((delivery) =>
+        releaseImDeliveryClaim(delivery).catch((error: unknown) =>
+          console.error("[web-ui] IM delivery claim release failed:", String(error)),
+        ),
+      ),
+  );
+}
+
 async function ackFailedImLocatorDelivery(
   provider: ImProviderId,
   delivery: PendingImDelivery,
@@ -4036,7 +4066,7 @@ export async function drainWeixinDeliveries(stored?: StoredImBindings[]): Promis
         const deliveries = (JSON.parse(claimed.text) as { deliveries?: PendingImDelivery[] }).deliveries ?? [];
         const secret = readWeixinSecret(resource);
         if (!secret) return;
-        for (const delivery of deliveries) {
+        for (const [deliveryIndex, delivery] of deliveries.entries()) {
           const target = (delivery.destination?.target ?? "").slice(targetPrefix.length);
           if (target !== binding.externalChatId) {
             if (imLocatorDelivery(delivery)) await ackImDelivery(delivery);
@@ -4073,6 +4103,7 @@ export async function drainWeixinDeliveries(stored?: StoredImBindings[]): Promis
             if ((sent.ret ?? 0) !== 0) throw new Error(`Weixin sendmessage failed: ${sent.ret} ${sent.errmsg ?? ""}`);
           } catch (error) {
             if (await ackFailedImLocatorDelivery("wechat", delivery, error)) continue;
+            await releaseImDeliveryClaims(deliveries, deliveryIndex);
             throw error;
           }
           await ackImDelivery(delivery);
@@ -4127,7 +4158,7 @@ export async function drainImSdkDeliveries(
         );
         if (claimed.status !== 200) return;
         const deliveries = (JSON.parse(claimed.text) as { deliveries?: PendingImDelivery[] }).deliveries ?? [];
-        for (const delivery of deliveries) {
+        for (const [deliveryIndex, delivery] of deliveries.entries()) {
           const target = (delivery.destination?.target ?? "").slice(targetPrefix.length);
           const runId = imDeliveryRunId(delivery);
           const progress = runId ? await finishImRunProgress(user, provider, runId) : undefined;
@@ -4145,6 +4176,7 @@ export async function drainImSdkDeliveries(
             );
           } catch (error) {
             if (await ackFailedImLocatorDelivery(provider, delivery, error)) continue;
+            await releaseImDeliveryClaims(deliveries, deliveryIndex);
             throw error;
           }
           await ackImDelivery(delivery);

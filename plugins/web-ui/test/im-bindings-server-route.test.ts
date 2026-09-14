@@ -22,6 +22,7 @@ const uiState = new Map<string, UiStateRecord>();
 const coreTurns: unknown[] = [];
 const ackedDeliveries: string[] = [];
 const ackedDeliveryKeys: string[] = [];
+const releasedDeliveryClaims: string[] = [];
 const weixinStatuses: Array<Record<string, unknown>> = [];
 const weixinVerifyCodes: string[] = [];
 const weixinUpdates: Array<Record<string, unknown>> = [];
@@ -124,6 +125,7 @@ const DINGTALK_STREAM_CLIENT_EXPORT = ["D", "W", "Client"].join("");
 
 class MockDingTalkClient {
   connected = false;
+  accessToken = "ding-token";
   readonly callbacks = new Map<string, (frame: { headers: { messageId: string }; data: string }) => void>();
 
   constructor(_options: unknown) {
@@ -139,7 +141,7 @@ class MockDingTalkClient {
   }
 
   async getAccessToken(): Promise<string> {
-    return "ding-token";
+    return this.accessToken;
   }
 
   async connect(): Promise<void> {
@@ -154,11 +156,17 @@ class MockDingTalkClient {
 }
 
 class MockWeComClient extends EventEmitter {
+  isConnected = false;
+
   connect(): void {
-    queueMicrotask(() => this.emit("authenticated"));
+    queueMicrotask(() => {
+      this.isConnected = true;
+      this.emit("authenticated");
+    });
   }
 
   disconnect(): void {
+    this.isConnected = false;
     this.emit("disconnected", "test");
   }
 
@@ -183,6 +191,7 @@ class MockWeComClient extends EventEmitter {
   }
 
   async sendMessage(target: string, body: { markdown: { content: string } }): Promise<Record<string, never>> {
+    if (!this.isConnected) throw new Error("WebSocket not connected, unable to send data");
     if (wecomSendFailures > 0) {
       wecomSendFailures -= 1;
       throw new Error("wecom proactive send failed");
@@ -377,6 +386,12 @@ const core = createServer((req: IncomingMessage, res) => {
       ackedDeliveries.push(deliveryId);
       const deliveryIndex = imDeliveries.findIndex((delivery) => delivery.id === deliveryId);
       if (deliveryIndex >= 0) imDeliveries.splice(deliveryIndex, 1);
+      send(200, { ok: true });
+      return;
+    }
+    const releaseMatch = url.pathname.match(/^\/v1\/deliveries\/([^/]+)\/release$/);
+    if (req.method === "POST" && releaseMatch) {
+      releasedDeliveryClaims.push(decodeURIComponent(releaseMatch[1]!));
       send(200, { ok: true });
       return;
     }
@@ -957,7 +972,7 @@ test("DingTalk locator requires a real conversation webhook before sending", asy
   const turnsBefore = coreTurns.length;
   const client = dingtalkClients.at(-1);
   const callback = client?.callbacks.get(DINGTALK_TOPIC_ROBOT);
-  if (!callback) throw new Error("missing DingTalk callback");
+  if (!client || !callback) throw new Error("missing DingTalk callback");
   callback({
     headers: { messageId: "ding-frame" },
     data: JSON.stringify({
@@ -981,11 +996,12 @@ test("DingTalk locator requires a real conversation webhook before sending", asy
   const ready = await fetch(`${base}/api/im-bindings/status?provider=dingtalk`, { headers: headers(user) });
   assert.equal(((await ready.json()) as { binding: { locatorAvailable: boolean } }).binding.locatorAvailable, true);
 
+  client.accessToken = "ding-token-refreshed";
   const locate = await fetch(`${base}/api/im-bindings/dingtalk/locate`, { method: "POST", headers: headers(user) });
   assert.equal(locate.status, 200);
   assert.deepEqual(await locate.json(), { queued: false, sent: true, message: "定位消息已发送，请打开钉钉查看" });
   assert.deepEqual(dingtalkSent.at(-1), {
-    token: "ding-token",
+    token: "ding-token-refreshed",
     text: "你好，我是你的专属 QM 钉钉机器人。以后可以直接在这里向我提问。",
   });
 });
@@ -1173,6 +1189,47 @@ test("WeCom remembers an opened direct chat and sends Bot locator messages", asy
   const failedBody = (await failedLocate.json()) as { error: string; message: string };
   assert.equal(failedBody.error, "send_failed");
   assert.match(failedBody.message, /wecom proactive send failed/);
+});
+
+test("WeCom reconnects a disconnected idle Bot before draining later replies", async () => {
+  const user = "wecom-idle-user";
+  await fetch(`${base}/api/im-bindings/start`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ provider: "work-wechat" }),
+  });
+  const credentials = await fetch(`${base}/api/im-bindings/work-wechat/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { botId: "wecom-idle-bot", secret: "wecom-idle-secret" } }),
+  });
+  assert.equal(credentials.status, 200);
+  const disconnected = wecomClients.at(-1)!;
+  const clientsBeforeReconnect = wecomClients.length;
+
+  disconnected.disconnect();
+  await waitFor(() => wecomClients.length === clientsBeforeReconnect + 1);
+  const reconnected = wecomClients.at(-1)!;
+  await waitFor(() => reconnected.isConnected);
+  assert.notEqual(reconnected, disconnected);
+  assert.equal(reconnected.isConnected, true);
+
+  imDeliveries.push({
+    id: "delivery-wecom-idle-reconnect",
+    destination: {
+      type: "im:work-wechat",
+      target: `im:work-wechat:${createHash("sha256")
+        .update(`${user}\0work-wechat\0wecom-idle-bot`)
+        .digest("hex")
+        .slice(0, 20)}:wecom-idle-target`,
+    },
+    text: "reply after idle disconnect",
+    idempotencyKey: "run:run-idle-reconnect",
+    createdAt: Date.now(),
+  });
+  await drainImSdkDeliveries("work-wechat");
+  assert.deepEqual(wecomSent.at(-1), { target: "wecom-idle-target", content: "reply after idle disconnect" });
+  assert.ok(ackedDeliveries.includes("delivery-wecom-idle-reconnect"));
 });
 
 test("WeCom direct messages do not wait for target persistence conflicts", async () => {
@@ -1636,6 +1693,7 @@ test("WeCom matches concurrent replies to their original streams", async () => {
   );
   assert.equal(wecomSent.length, sentBeforeRetry);
   assert.ok(ackedDeliveries.includes("delivery-wecom-retry"));
+  assert.ok(releasedDeliveryClaims.includes("delivery-wecom-retry"));
 
   const completedStart = coreTurns.length;
   coreTurnResponses.push({ status: "ok", reply: "already completed reply", runId: "run-completed" });
