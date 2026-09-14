@@ -12,20 +12,32 @@ const databaseUrl = process.env.MODEL_OVERLAY_TEST_DATABASE_URL;
 const headers = { "content-type": "application/json", "x-admin-actor": "admin-alice@default-org" };
 const runtimePath = "/v1/runtime-config?principalId=admin-alice@default-org&scopeId=personal:admin-alice@default-org";
 
-async function start(databaseUrl: string, upstream: string) {
+async function start(databaseUrl: string, upstream: string, sessionStore: "memory" | "postgres" = "memory") {
   const child = fork(new URL("./support/model-overlay-server.ts", import.meta.url), {
-    stdio: ["ignore", "ignore", "ignore", "ipc"],
-    env: { ...process.env, MODEL_OVERLAY_TEST_DATABASE_URL: databaseUrl, MODEL_OVERLAY_TEST_UPSTREAM: upstream },
+    stdio: ["ignore", "ignore", "pipe", "ipc"],
+    env: {
+      ...process.env,
+      MODEL_OVERLAY_TEST_DATABASE_URL: databaseUrl,
+      MODEL_OVERLAY_TEST_UPSTREAM: upstream,
+      MODEL_OVERLAY_TEST_SESSION_STORE: sessionStore,
+    },
+  });
+  let stderr = "";
+  child.stderr?.on("data", (chunk: Buffer) => {
+    stderr = (stderr + chunk.toString()).slice(-4000);
   });
   const timeout = setTimeout(() => child.kill(), 30_000);
-  const message = await Promise.race([
-    once(child, "message"),
-    once(child, "exit").then(() => {
-      throw new Error("local API child exited before listening");
-    }),
-  ]);
-  clearTimeout(timeout);
-  return { child, base: (message[0] as { base: string }).base };
+  try {
+    const message = await Promise.race([
+      once(child, "message"),
+      once(child, "exit").then(() => {
+        throw new Error(`local API child exited before listening: ${stderr}`);
+      }),
+    ]);
+    return { child, base: (message[0] as { base: string }).base };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function stop(child: ChildProcess) {
@@ -63,11 +75,15 @@ test(
     try {
       const first = await start(isolatedDatabaseUrl, upstream.url);
       processes.push(first.child);
+      assert.equal(
+        (await pool.query("SELECT to_regclass($1) AS relation", [`${schema}.tasks`])).rows[0].relation,
+        null,
+      );
       const second = await start(isolatedDatabaseUrl, upstream.url);
       processes.push(second.child);
       const read = async (base: string) => {
         const response = await fetch(base + runtimePath, { headers });
-        assert.equal(response.status, 200);
+        assert.equal(response.status, 200, response.status === 200 ? undefined : await response.text());
         return (await response.json()) as {
           effective: { modelId: string };
           unavailableReason?: string;
@@ -134,6 +150,10 @@ test(
         assert.equal(deleted.effective.modelId, "overlay-pg-model");
         assert.match(deleted.unavailableReason ?? "", /deleted/);
       }
+      const persistent = await start(isolatedDatabaseUrl, upstream.url, "postgres");
+      processes.push(persistent.child);
+      assert.ok((await pool.query("SELECT to_regclass($1) AS relation", [`${schema}.tasks`])).rows[0].relation);
+      assert.match((await read(persistent.base)).unavailableReason ?? "", /deleted/);
     } finally {
       await Promise.all(processes.map(stop));
       await factory.pool.close();

@@ -49,7 +49,8 @@ export async function runtimeConfigBody(ctx: { deps: RuntimeDeps }, scope: Scope
   ).filter(isHarnessId);
   const firstApproved = approvedHarnesses[0] ?? fallback.harnessId;
   const safeFallback =
-    approvedHarnesses.includes(fallback.harnessId) && modelSupportedByHarness(fallback.modelId, fallback.harnessId)
+    approvedHarnesses.includes(fallback.harnessId) &&
+    (modelSupportedByHarness(fallback.modelId, fallback.harnessId) || modelUnavailableReason(fallback.modelId))
       ? fallback
       : { harnessId: firstApproved, modelId: defaultModelForHarness(firstApproved, fallback.modelId) };
   const configuredKeys = ctx.deps.providerKeys ?? ALL_PROVIDERS_AVAILABLE;
@@ -84,7 +85,7 @@ export async function runtimeConfigBody(ctx: { deps: RuntimeDeps }, scope: Scope
   } else if (
     orgLegacyModel &&
     approvedHarnesses.includes(fallback.harnessId) &&
-    modelSupportedByHarness(orgLegacyModel, fallback.harnessId)
+    (modelSupportedByHarness(orgLegacyModel, fallback.harnessId) || modelUnavailableReason(orgLegacyModel))
   ) {
     orgDefault = { harnessId: fallback.harnessId, modelId: orgLegacyModel, revision: 0 };
   }
@@ -114,7 +115,7 @@ export async function runtimeConfigBody(ctx: { deps: RuntimeDeps }, scope: Scope
   } else if (
     legacyModel &&
     approvedHarnesses.includes(fallback.harnessId) &&
-    modelSupportedByHarness(legacyModel, fallback.harnessId)
+    (modelSupportedByHarness(legacyModel, fallback.harnessId) || modelUnavailableReason(legacyModel))
   ) {
     scopeOverride = { harnessId: fallback.harnessId, modelId: legacyModel, orgRevision: 0 };
   }
@@ -124,7 +125,11 @@ export async function runtimeConfigBody(ctx: { deps: RuntimeDeps }, scope: Scope
     } catch (error) {
       if (!(error instanceof NonRetryableTurnError)) throw error;
       const owner = await config.getRuntimeConfigScopeDurable(target, principalId);
-      const selected = (await config.getRuntimeSelectionDurable(owner)) ?? orgStored;
+      const owned = await config.getRuntimeSelectionDurable(owner);
+      const legacy = owned ? null : await config.getBaseModelOwnDurable(owner);
+      const selected = owned ??
+        (legacy ? { ...fallback, modelId: legacy } : null) ??
+        orgStored ?? { ...fallback, modelId: orgLegacyModel ?? fallback.modelId };
       const allowed = await config.getWebuiModelsDurable(target, principalId);
       const scopedAllowed = await config.getScopedWebuiModelsDurable(target, principalId);
       if (
@@ -132,7 +137,7 @@ export async function runtimeConfigBody(ctx: { deps: RuntimeDeps }, scope: Scope
         isHarnessId(selected.harnessId) &&
         approvedHarnesses.includes(selected.harnessId) &&
         modelUnavailableReason(selected.modelId) &&
-        (allowed === null || allowed.includes(selected.modelId) || selected.modelId === orgStored?.modelId) &&
+        (allowed === null || allowed.includes(selected.modelId) || selected.modelId === orgDefault.modelId) &&
         (scopedAllowed === null || scopedAllowed.includes(selected.modelId))
       )
         return selected as RuntimeChoice;

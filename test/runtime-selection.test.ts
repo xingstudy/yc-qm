@@ -6,7 +6,8 @@ import {
   type PersistedBaseModel,
 } from "../src/resolution/config-store.ts";
 import { resolveRuntimeChoice, resolveRuntimeChoiceDurable } from "../src/harness/harness-router.ts";
-import { registerOpenRouterCatalogModel } from "../src/model/pi-models.ts";
+import { registerOpenRouterCatalogModel, setModelOverlays } from "../src/model/pi-models.ts";
+import { runtimeConfigBody } from "../src/api/runtime-config.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { setCustomProviders } from "../src/model/custom-providers.ts";
 
@@ -281,4 +282,40 @@ test("durable runtime resolution hydrates the model catalog before rejecting an 
   const before = hydrations;
   await resolveRuntimeChoiceDurable(config, ORG, PERSONAL, fallback, undefined, hydrate);
   assert.equal(hydrations, before);
+});
+
+test("unavailable deployment and legacy models remain repairable without bypassing scope restrictions", async () => {
+  const modelId = "runtime-deleted-default";
+  setModelOverlays([], [modelId]);
+  const config = createMemoryConfigStore("default-org");
+  config.setApprovedHarnesses(["pi"]);
+  const ctx = { deps: { config, harnessId: "pi", baseModelDefault: modelId } };
+  try {
+    const body = await runtimeConfigBody(ctx, PERSONAL, "alice");
+    assert.equal(body.effective.modelId, modelId);
+    assert.equal(body.orgDefault.modelId, modelId);
+    assert.match(body.unavailableReason ?? "", /deleted/);
+    assert.equal(body.modelsByHarness.pi?.includes(modelId), false);
+    config.setWebuiModels(ORG, ["gpt-5.6-sol"]);
+    assert.equal((await runtimeConfigBody(ctx, PERSONAL, "alice")).effective.modelId, modelId);
+    await assert.rejects(resolveRuntimeChoiceDurable(config, ORG, PERSONAL, { harnessId: "pi", modelId }), /deleted/);
+    ctx.deps.baseModelDefault = "gpt-5.6-sol";
+    config.setBaseModel(ORG, modelId);
+    const legacyOrg = await runtimeConfigBody(ctx, PERSONAL, "alice");
+    assert.equal(legacyOrg.orgDefault.modelId, modelId);
+    assert.equal(legacyOrg.effective.modelId, modelId);
+    config.setBaseModel(ORG, null);
+    config.setWebuiModels(ORG, null);
+    config.setBaseModel(PERSONAL, modelId);
+    const legacyScope = await runtimeConfigBody(ctx, PERSONAL, "alice");
+    assert.equal(legacyScope.effective.modelId, modelId);
+    assert.equal(legacyScope.scopeOverride?.modelId, modelId);
+    config.setWebuiModels(PERSONAL, ["gpt-5.6-sol"]);
+    await assert.rejects(runtimeConfigBody(ctx, PERSONAL, "alice"));
+    config.setWebuiModels(PERSONAL, null);
+    config.setApprovedHarnesses(["codex"]);
+    await assert.rejects(runtimeConfigBody(ctx, PERSONAL, "alice"));
+  } finally {
+    setModelOverlays([]);
+  }
 });

@@ -95,3 +95,9 @@
 - CI 安装阶段暴露本机 registry 地址进入根 lockfile：95 个 tarball URL 已恢复公共 npm。逐包核对公共 registry 的版本和 integrity 与 lockfile 一致，仅替换 URL；跨六个包 lockfile 的回归防止内网地址再次进入，保留 SheetJS 既有官方 CDN 来源。
 
 - PgBouncer 事务池 CI 的旧断言读取已拆分的 connectionString，改为验证实际端口字段，保留真实 backend PID、session lock 与 transaction lock 断言。独立 PostgreSQL + TLS PgBouncer 实测 8/8、0 skip；包括并发复用、超时回滚、初始化关闭及依赖迁移。
+
+- 后续远端 PG 主套件 337/337、零跳过；独立模型配置多进程检查定位出混合 backing 初始化问题。TaskStore 现在跟随 SessionStore，避免数据库仅用于配置时引用不存在的 sessions 表；PG sessions 即使配 memory runs 仍注册 PG tasks。测试服务等待完整初始化并建立有效管理员，子进程启动失败保留 stderr 并清理超时定时器。
+- 被删除 deployment/legacy 默认模型的配置读取现在显示不可用；组织默认值、个人覆盖和 effective 一致。组织 picker 的默认值规则、scoped allowlist 及已批准 harness 边界分别覆盖，执行仍拒绝已删除模型。独立复审发现的展示缺口已补回归；PG TaskStore 耐久性/CAS 3/3，并加入必跑 PG 命令。
+- 后续真实 Memorable CLI + 专用 PostgreSQL 3/3、零跳过。内容提取使用本地桩，无真实提取模型调用；覆盖脱敏捕获、召回和未同意 scope 不返回内容。
+
+- 扫描 DATABASE_URL 条件测试后，将遗漏的八个文件纳入 PG 必跑入口：治理跨实例、ledger/session 事件、上下文摘要、通用迁移、ambient judgment、tool_calls 旧格式和 ack 记录。专用库补测 29/29、零跳过；PgBouncer 独立流程仍单独执行。
