@@ -83,4 +83,11 @@
 
 新增云后端、个人订阅登录、独立记忆服务、新服务合并拓扑、沙箱永久资源等能力按各自配置和验收门槛启用；本次本地 Compose 保留原拓扑与本地 Docker。没有为了展示上游功能修改用户的组织策略、替换供应商或打开新后端。
 
-PR 和 CI 是代码集成门槛；本地真实调用通过不代表生产发布已获批准。main 合并及生产发布保持独立操作。
+本分支已提交实际 merge，并建立 [fork draft PR](https://github.com/xingstudy/yc-qm/pull/22)。PR 和 CI 是代码集成门槛；本地真实调用通过不代表生产发布已获批准。main 合并及生产发布保持独立操作。
+
+## CI 与追加真实 Docker 验证
+
+- 在独立 QA 容器和卷上使用候选 LocalSandbox 实现，验证休眠后 warm restart、网络被删除后的恢复、同名网络重建后的恢复，以及 scratch 生命周期；原有 marker 和容器身份保持。日志 `logs/local-sandbox-live.log`。
+- 使用实际 LocalSandbox 的批量和逐文件写入，验证 Skill 与共享 bundle 的 755 → 644 → 755、可执行脚本真实执行、二进制原样保留。日志 `logs/docker-skill-live.log`。复用本机现有 sandbox 镜像，镜像曾提示旧版本；该证据证明候选 Core 与现有 sandbox 的这些路径兼容，不代替新 sandbox 镜像完整验收。
+- 初次远端 CI 发现 Portal 生产镜像内嵌 Auth 缺少 Auth 包依赖；按 Auth 自己的 lockfile 安装 `/auth/node_modules`，保留独立 Portal 依赖和镜像启动检查。
+- 署名检查原先将整个导入上游历史视为新下游提交。现在仅排除固定 v0.1.11 SHA 及其祖先，下游普通提交、其他合并支线和该 SHA 之后的新上游提交仍检查；Git 引用错误必须失败。实际临时 Git 图回归与镜像相关测试合计 27/27，检查策略修改经过独立审查。

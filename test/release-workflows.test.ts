@@ -499,3 +499,50 @@ test("a partial production promotion resumes the original signed digest artifact
   assert.match(workflow, /test "\$\(jq -r \.release_tag release-candidate\.json\)" = "\$RELEASE_TAG"/);
   assert.match(workflow, /retention-days: 30/g);
 });
+
+test("coauthor validation excludes only the fixed imported history and fails closed on invalid Git refs", () => {
+  const workflow = readFileSync(".github/workflows/cicd.yml", "utf8");
+  const job = workflow.slice(workflow.indexOf("  coauthor-trailers:"), workflow.indexOf("\n  lint:"));
+  const body = job.slice(job.indexOf("        run: |\n") + "        run: |\n".length).replace(/^ {10}/gm, "");
+  const cwd = mkdtempSync(join(tmpdir(), "qm-trailers-"));
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: "Test Author",
+    GIT_AUTHOR_EMAIL: "author@example.test",
+    GIT_COMMITTER_NAME: "Test Author",
+    GIT_COMMITTER_EMAIL: "author@example.test",
+  };
+  const git = (...args: string[]) => {
+    const result = spawnSync("git", args, { cwd, env, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  try {
+    git("init", "--quiet");
+    const tree = git("mktree");
+    const commit = (parents: string[], trailer = "") =>
+      git("commit-tree", tree, ...parents.flatMap((parent) => ["-p", parent]), "-m", `QA\n\n${trailer}`);
+    const base = commit([]);
+    const upstream = commit([base], "Co-authored-by: Codex <noreply@openai.com>");
+    const downstream = commit([base], "Co-authored-by: Human <human@example.test>");
+    const merged = commit([downstream, upstream]);
+    const run = (head: string, imported = upstream) =>
+      spawnSync("bash", ["-c", body], {
+        cwd,
+        env: { ...env, BASE_SHA: base, HEAD_SHA: head, UPSTREAM_SYNC_SHA: imported },
+        encoding: "utf8",
+      });
+    assert.equal(run(merged).status, 0);
+    const invalid = "Co-authored-by: Claude Code <noreply@anthropic.com>";
+    assert.equal(run(commit([merged], invalid)).status, 1);
+    const side = commit([base], invalid);
+    assert.equal(run(commit([merged, side])).status, 1);
+    const laterUpstream = commit([upstream], invalid);
+    assert.equal(run(commit([merged, laterUpstream])).status, 1);
+    assert.equal(run(commit([merged], "Co-authored-by: Person <person@users.noreply.github.com>")).status, 1);
+    assert.notEqual(run(merged, "missing-upstream").status, 0);
+    assert.notEqual(run("missing-head").status, 0);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});

@@ -6,9 +6,11 @@ ARG NPM_INSTALL_REGISTRY=https://registry.npmjs.org
 COPY plugins/portal/package.json plugins/portal/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm,sharing=shared npm ci --omit=dev --prefer-offline --no-audit --registry="${NPM_INSTALL_REGISTRY}"
 
+COPY plugins/auth/package.json plugins/auth/package-lock.json /auth/
+RUN --mount=type=cache,target=/root/.npm,sharing=shared npm ci --prefix /auth --omit=dev --prefer-offline --no-audit --registry="${NPM_INSTALL_REGISTRY}"
+
 COPY plugins/portal/src ./src
 COPY plugins/auth/src /auth/src
-RUN ln -s /app/node_modules /auth/node_modules
 COPY plugins/chassis/src /chassis/src
 COPY plugins/portal/tsconfig.json ./
 

@@ -102,11 +102,13 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          UPSTREAM_SYNC_SHA: 51bf455ea414a58f70274284ce212142518e556a
         run: |
           set -euo pipefail
           base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
           offenders=""
-          for sha in $(git rev-list "$base..$HEAD_SHA"); do
+          commits=$(git rev-list "$base..$HEAD_SHA" --not "$UPSTREAM_SYNC_SHA")
+          for sha in $commits; do
             if git log -1 --format='%(trailers:key=Co-authored-by,valueonly)' "$sha" \
               | grep -Ei '(@users\.noreply\.github\.com|noreply@(openai|anthropic|cursor)\.com|^(Codex|Claude Code|Claude (Opus|Sonnet|Haiku)|Copilot|Cursor)([[:space:]<]|$))' > /dev/null; then
               offenders="$offenders $sha"
