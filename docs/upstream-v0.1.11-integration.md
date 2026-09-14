@@ -93,3 +93,5 @@
 - 署名检查原先将整个导入上游历史视为新下游提交。现在仅排除固定 v0.1.11 SHA 及其祖先，下游普通提交、其他合并支线和该 SHA 之后的新上游提交仍检查；Git 引用错误必须失败。实际临时 Git 图回归与镜像相关测试合计 27/27，检查策略修改经过独立审查。
 
 - CI 安装阶段暴露本机 registry 地址进入根 lockfile：95 个 tarball URL 已恢复公共 npm。逐包核对公共 registry 的版本和 integrity 与 lockfile 一致，仅替换 URL；跨六个包 lockfile 的回归防止内网地址再次进入，保留 SheetJS 既有官方 CDN 来源。
+
+- PgBouncer 事务池 CI 的旧断言读取已拆分的 connectionString，改为验证实际端口字段，保留真实 backend PID、session lock 与 transaction lock 断言。独立 PostgreSQL + TLS PgBouncer 实测 8/8、0 skip；包括并发复用、超时回滚、初始化关闭及依赖迁移。
