@@ -112,6 +112,9 @@ export function createPostgresDeliveryStore(connectionString: string): DeliveryS
       );
       return rows.map(rowToDelivery).sort((a, b) => a.createdAt - b.createdAt);
     },
+    async releaseClaim(id) {
+      await query("UPDATE deliveries SET claim_expires_at = NULL WHERE id = $1 AND delivered_at IS NULL", [id]);
+    },
     async listShadow(opts) {
       const limit = Math.max(1, opts?.limit ?? 100);
       const rows = await q(

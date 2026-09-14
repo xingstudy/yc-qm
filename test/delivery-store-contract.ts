@@ -260,4 +260,22 @@ export async function exerciseDeliveryStore(store: DeliveryStore): Promise<void>
     "an expired claim re-surfaces (at-least-once)",
   );
   await store.ack(abandoned.id, 700);
+
+  const released = await store.enqueue({
+    destination: { type: "group", target: "C-retry" },
+    text: "retry immediately after a transient send failure",
+    idempotencyKey: "fire-retry",
+  });
+  assert.deepEqual(
+    (await store.claimPending("group", 60_000)).map((d) => d.id),
+    [released.id],
+    "the failed drainer owns the row before releasing it",
+  );
+  await store.releaseClaim(released.id);
+  assert.deepEqual(
+    (await store.claimPending("group", 60_000)).map((d) => d.id),
+    [released.id],
+    "a released claim is immediately available to the next drainer",
+  );
+  await store.ack(released.id, 800);
 }

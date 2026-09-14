@@ -56,6 +56,7 @@ export function createMessagingMethods(
   | "fulfillContextRequest"
   | "ackDelivery"
   | "ackDeliveryByKey"
+  | "releaseDeliveryClaim"
   | "setRunDeliveryState"
   | "upsertDirectory"
   | "upsertChannels"
@@ -308,6 +309,9 @@ export function createMessagingMethods(
     },
     async ackDeliveryByKey(idempotencyKey) {
       await deps.deliveries.ackByKey(idempotencyKey, Date.now());
+    },
+    async releaseDeliveryClaim(id) {
+      await deps.deliveries.releaseClaim(id);
     },
     async setRunDeliveryState(runId, state) {
       const found = await deps.runs.setDeliveryState(runId, null, state);
