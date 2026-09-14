@@ -11,6 +11,8 @@ export interface OrganizationUser {
   orgId: string;
   principalId: string;
   email: string | null;
+  invitedEmail?: string;
+  externalMembership?: boolean;
   displayName: string;
   jobTitle: string | null;
   mobile: string | null;
@@ -23,6 +25,30 @@ export interface OrganizationUser {
   lastLoginAt: number | null;
   createdBy: string;
   updatedBy: string;
+}
+
+function userForWrite(users: Iterable<OrganizationUser>, input: OrganizationUser): OrganizationUser {
+  const rows = [...users];
+  const existing = rows.find((user) => user.orgId === input.orgId && user.principalId === input.principalId);
+  const user = {
+    ...input,
+    ...(existing?.invitedEmail ? { invitedEmail: existing.invitedEmail } : {}),
+    ...(existing?.externalMembership ? { externalMembership: true } : {}),
+  };
+  const emails = new Set(
+    [user.email, user.invitedEmail].filter((email): email is string => !!email).map((email) => email.toLowerCase()),
+  );
+  if (
+    rows.some(
+      (row) =>
+        row.orgId === user.orgId &&
+        row.principalId !== user.principalId &&
+        ((row.invitedEmail && emails.has(row.invitedEmail.toLowerCase())) ||
+          (user.invitedEmail && row.email?.toLowerCase() === user.invitedEmail.toLowerCase())),
+    )
+  )
+    throw new Error("organization email already belongs to another user");
+  return user;
 }
 
 export interface AuthIdentity {
@@ -193,6 +219,7 @@ export interface SubtreeImpact {
 export interface OrganizationTx {
   getUser(orgId: string, principalId: string): Promise<OrganizationUser | null>;
   findUserByEmail(orgId: string, email: string): Promise<OrganizationUser | null>;
+  findUserByInvitedEmail(orgId: string, email: string): Promise<OrganizationUser | null>;
   findUserByEmployeeNumber(orgId: string, employeeNumber: string): Promise<OrganizationUser | null>;
   listUsers(orgId: string): Promise<OrganizationUser[]>;
   insertUser(user: OrganizationUser): Promise<boolean>;
@@ -254,6 +281,7 @@ export interface OrganizationStore {
   legacyRuntimeAccessEligible(principalId: string): Promise<boolean>;
   getUser(orgId: string, principalId: string): Promise<OrganizationUser | null>;
   findUserByEmail(orgId: string, email: string): Promise<OrganizationUser | null>;
+  findUserByInvitedEmail(orgId: string, email: string): Promise<OrganizationUser | null>;
   findUserByEmployeeNumber(orgId: string, employeeNumber: string): Promise<OrganizationUser | null>;
   listUsers(orgId: string): Promise<OrganizationUser[]>;
   getUsersByPrincipalIds(orgId: string, principalIds: readonly string[]): Promise<OrganizationUser[]>;
@@ -487,11 +515,17 @@ export function createMemoryOrganizationStore(
     async findUserByEmail(orgId, email) {
       const needle = email.toLowerCase();
       for (const u of users.values()) {
-        if (u.orgId === orgId && u.email !== null && u.email.toLowerCase() === needle) {
+        if (u.orgId === orgId && (u.email?.toLowerCase() === needle || u.invitedEmail?.toLowerCase() === needle)) {
           return { ...u };
         }
       }
       return null;
+    },
+    async findUserByInvitedEmail(orgId, email) {
+      const found = [...users.values()].find(
+        (user) => user.orgId === orgId && user.invitedEmail?.toLowerCase() === email.toLowerCase(),
+      );
+      return found ? { ...found } : null;
     },
     async findUserByEmployeeNumber(orgId, employeeNumber) {
       const needle = employeeNumber.toLowerCase();
@@ -604,7 +638,7 @@ export function createMemoryOrganizationStore(
     },
     async putUser(user) {
       await enqueue(user.orgId, async () => {
-        users.set(userKey(user.orgId, user.principalId), { ...user });
+        users.set(userKey(user.orgId, user.principalId), userForWrite(users.values(), user));
       });
     },
     async getIdentity(orgId, issuer, subject) {
@@ -1007,9 +1041,17 @@ export function createMemoryOrganizationStore(
             assertOrg(scopeOrgId);
             const needle = email.toLowerCase();
             for (const user of draftUsers.values()) {
-              if (user.email !== null && user.email.toLowerCase() === needle) return { ...user };
+              if (user.email?.toLowerCase() === needle || user.invitedEmail?.toLowerCase() === needle)
+                return { ...user };
             }
             return null;
+          },
+          async findUserByInvitedEmail(scopeOrgId, email) {
+            assertOrg(scopeOrgId);
+            const found = [...draftUsers.values()].find(
+              (user) => user.invitedEmail?.toLowerCase() === email.toLowerCase(),
+            );
+            return found ? { ...found } : null;
           },
           async findUserByEmployeeNumber(scopeOrgId, employeeNumber) {
             assertOrg(scopeOrgId);
@@ -1025,13 +1067,13 @@ export function createMemoryOrganizationStore(
           },
           putUser: async (user) => {
             assertOrg(user.orgId);
-            draftUsers.set(userKey(orgId, user.principalId), { ...user });
+            draftUsers.set(userKey(orgId, user.principalId), userForWrite(draftUsers.values(), user));
           },
           insertUser: async (user) => {
             assertOrg(user.orgId);
             const key = userKey(orgId, user.principalId);
             if (draftUsers.has(key)) return false;
-            draftUsers.set(key, { ...user });
+            draftUsers.set(key, userForWrite(draftUsers.values(), user));
             return true;
           },
           async getIdentity(scopeOrgId, issuer, subject) {

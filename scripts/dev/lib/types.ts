@@ -13,7 +13,7 @@ export const EXIT = {
 } as const;
 
 export type ChildName = "core" | "web" | "admin" | "portal";
-export const CHILD_ORDER: ChildName[] = ["core", "web", "admin", "portal"];
+export const CHILD_ORDER: ChildName[] = ["core", "web", "portal"];
 
 export interface SlotPorts {
   core: number;
@@ -108,7 +108,7 @@ export interface BootSpec {
   branch: string;
   callerEnv: Record<string, string>;
   watch: boolean;
-  sandbox: "local" | "sprites" | "smolmachines" | "auto";
+  sandbox: "local" | "sprites" | "smolmachines" | "e2b" | "porter" | "agent37" | "auto";
   canaryChannel?: string;
   strict: boolean;
   slack?: boolean;

@@ -4,6 +4,7 @@ WORKDIR /app
 
 ARG NPM_INSTALL_REGISTRY=https://registry.npmjs.org
 COPY package.json package-lock.json ./
+COPY .husky/install.mjs .husky/install.mjs
 RUN --mount=type=cache,target=/root/.npm,sharing=shared npm ci --omit=dev --prefer-offline --no-audit --libc=musl --registry="${NPM_INSTALL_REGISTRY}" \
   && rm -rf node_modules/@anthropic-ai/claude-agent-sdk-linux-x64 node_modules/opencode-linux-* \
   && test -x node_modules/@anthropic-ai/claude-agent-sdk-linux-x64-musl/claude \
@@ -38,5 +39,6 @@ ARG GIT_SHA=
 ENV GIT_SHA=$GIT_SHA
 EXPOSE 8080
 
+RUN apk add --no-cache util-linux
 USER node
 CMD ["node", "src/index.ts"]

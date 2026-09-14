@@ -301,7 +301,7 @@ test("Project routes use ordinary group sessions with the durable roster as auth
   const firstTurn = await turn("owner", "web:owner:first", "secret-before-join");
   assert.equal(firstTurn.status, "ok", JSON.stringify(firstTurn));
   assert.equal((await built.runs.list())[0]?.request.scopeVersion, await built.projects.version(groupRef));
-  const [first] = (await built.sessions.listAll()).filter((session) => session.scopeId === scope);
+  const [first] = (await built.sessions.scanAll()).filter((session) => session.scopeId === scope);
   assert.ok(first);
   assert.equal(first.channelName, "Launch Cohort");
   assert.ok(!(await built.sessions.listByParticipant("outsider")).some((session) => session.id === first.id));
@@ -416,7 +416,7 @@ test("Project routes use ordinary group sessions with the durable roster as auth
     grantedBy: "owner",
   });
   assert.equal((await deploy.reachDeployment(deployment.id, "member")).status, "ok");
-  assert.equal((await turn("owner", "web:owner:first", "after joining")).status, "ok");
+  assert.equal((await turn("owner", "web:owner:first", "Simulate four-way title outage after joining")).status, "ok");
   assert.ok((await built.app.listSessions("member")).some((session) => session.id === first.id));
   const latestRequest = (await built.sessions.listLlmRequests(first.id)).at(-1)!;
   assert.match(JSON.stringify(latestRequest.promptEnvelope), /secret-before-join/);
@@ -439,11 +439,23 @@ test("Project routes use ordinary group sessions with the durable roster as auth
 
   const globalTitle = (await built.sessions.get(first.id))?.title ?? null;
   const regenerated = await built.app.regenerateTitle(first.id, "member");
-  assert.ok(regenerated?.title);
+  assert.equal(regenerated?.title, "secret-before-join");
   assert.equal((await built.sessions.get(first.id))?.title ?? null, globalTitle);
   assert.equal(
-    (await built.sessions.listByParticipant("member")).find((session) => session.id === first.id)?.title,
+    (await built.app.listSessions("member")).find((session) => session.id === first.id)?.title,
     regenerated.title,
+  );
+  assert.equal((await built.app.listSessions("owner")).find((session) => session.id === first.id)?.title, globalTitle);
+  assert.equal(await built.app.regenerateTitle(first.id, "outsider"), null);
+  assert.ok(await built.app.updateSession(first.id, "owner", { title: "Owner-only project title" }));
+  assert.equal((await built.sessions.get(first.id))?.title ?? null, globalTitle);
+  assert.equal(
+    (await built.app.listSessions("member")).find((session) => session.id === first.id)?.title,
+    regenerated.title,
+  );
+  assert.equal(
+    (await built.app.listSessions("owner")).find((session) => session.id === first.id)?.title,
+    "Owner-only project title",
   );
   const unchangedAdd = await built.app.addProjectMember(project.id, "owner", "member");
   assert.equal(unchangedAdd.status, "ok");
@@ -528,7 +540,7 @@ test("Project routes use ordinary group sessions with the durable roster as auth
     leaseIndex >= 0 && participantIndex > leaseIndex,
     "Project participant reconciliation happens only after the lease",
   );
-  const projectSessions = (await built.sessions.listAll()).filter((session) => session.scopeId === scope);
+  const projectSessions = (await built.sessions.scanAll()).filter((session) => session.scopeId === scope);
   assert.equal(projectSessions.length, 6);
   for (const session of projectSessions) {
     assert.ok((await built.sessions.listByParticipant("member")).some((candidate) => candidate.id === session.id));
@@ -592,7 +604,7 @@ test("Project routes use ordinary group sessions with the durable roster as auth
   assert.equal(healed.status === "ok" && healed.changed, false);
   const outsiderSessions = await built.sessions.listByParticipant("outsider");
   assert.ok(projectSessions.every((session) => outsiderSessions.some((candidate) => candidate.id === session.id)));
-  const globalTitles = new Map((await built.sessions.listAll()).map((session) => [session.id, session.title ?? null]));
+  const globalTitles = new Map((await built.sessions.scanAll()).map((session) => [session.id, session.title ?? null]));
   assert.ok(outsiderSessions.every((session) => (session.title ?? null) === globalTitles.get(session.id)));
   assert.equal((await built.app.removeProjectMember(project.id, "owner", "outsider")).status, "ok");
 
@@ -789,8 +801,22 @@ test("Auto quarantine honors the current Project roster epoch", async () => {
     });
 
   const quarantined = await request("initial-marker", true);
-  assert.equal(quarantined.status, "refused");
-  assert.match(quarantined.reason ?? "", /quarantined/i);
+  assert.equal(quarantined.status, "pending_approval");
+  assert.equal(quarantined.pendingApprovals?.[0]?.kind, "input");
+  const denied = await built.app.turn({
+    surface: "web",
+    actor: { externalId: "owner" },
+    conversation: {
+      kind: "group",
+      channelRef: projectGroupRef(project.id),
+      threadRef,
+      audience: [],
+    },
+    text: "!security-risk initial-marker",
+    unprompted: true,
+    approval: { requestId: quarantined.pendingApprovals![0]!.requestId, approved: false },
+  });
+  assert.equal(denied.status, "refused");
   const session = await built.sessions.getByThread(threadRef);
   assert.ok(session);
   assert.deepEqual(new Set(await built.sessions.participantsOf(session.id)), new Set(["owner", "member"]));
@@ -1052,4 +1078,22 @@ test("Project slack-channel routes gate on visibility and workspace use, and syn
   assert.equal(await built.projects.membership(groupRef, "chan-pal"), false);
   assert.equal(await built.projects.membership(groupRef, "member"), true);
   assert.ok(!(await built.app.listSessions("chan-pal")).some((s) => s.scopeId === scope));
+});
+
+test("a project can add a signed-in principal on a deployment whose directory is never populated", async () => {
+  const built = buildApp(
+    testConfig({
+      dataDir: mkdtempSync(join(tmpdir(), "projects-web-only-")),
+      emailAuthPrincipals: ["dana@acme.com"],
+      orgBootstrapUsers: ["dana@acme.com", "rex@acme.com"],
+    }),
+  );
+  const session = await built.sessions.getOrCreateByThread("web:rex", "dm", "personal:rex@acme.com");
+  await built.sessions.addParticipant(session.id, "rex@acme.com");
+
+  const project = (await built.app.createProject("dana@acme.com", "demo"))!;
+  const added = await built.app.addProjectMember(project.id, "dana@acme.com", "rex@acme.com");
+
+  assert.equal(added.status, "ok");
+  assert.ok(added.project!.memberIds.includes("rex@acme.com"));
 });

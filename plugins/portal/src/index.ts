@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createHmac } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { ADMIN_LOGIN_SCRIPT, ADMIN_LOGIN_SCRIPT_HASH, openAdminLogin } from "./admin-login.ts";
 import { LRUCache } from "lru-cache";
 import {
   deriveKey,
@@ -31,6 +32,7 @@ import {
   verifyIdToken,
   type OidcConfig,
   type PrincipalRule,
+  hostedDomainHint,
 } from "./oidc.ts";
 import {
   proxyToSurface,
@@ -40,14 +42,23 @@ import {
   FORWARD_DEPLOYMENT_LAYER_HEADERS,
   FORWARD_OAUTH_HEADERS,
   FORWARD_BROKER_HEADERS,
+  FORWARD_WEBHOOK_HEADERS,
 } from "./proxy.ts";
 import { signedHeaders, withSourceAuthNonce } from "../../chassis/src/core-client.ts";
-import { coreClaimStore, withinRateLimit } from "../../chassis/src/claims.ts";
+import { coreClaimStore, claimOnce, withinRateLimit, ClaimStoreUnavailableError } from "../../chassis/src/claims.ts";
+import { coreEmailAllowed } from "../../chassis/src/external-members.ts";
 import { corePortalLoginTransactions } from "../../chassis/src/portal-login-transactions.ts";
 import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { mintPortalLoginProof } from "../../chassis/src/portal-login-proof.ts";
 import { errMessage } from "../../chassis/src/errors.ts";
-import { json, escapeHtml, serveEmojiFavicon } from "../../chassis/src/http.ts";
+import {
+  json,
+  escapeHtml,
+  sendBuffered,
+  serveEmojiFavicon,
+  readBody,
+  PayloadTooLargeError,
+} from "../../chassis/src/http.ts";
 import { isExampleDomain, isExampleEmail, isProductionPlaceholder } from "../../chassis/src/production-placeholders.ts";
 import {
   CORE_API_URL as CORE,
@@ -63,8 +74,10 @@ const SESSION_SECRET = process.env.PORTAL_SESSION_SECRET;
 const SESSION_TTL_S = Number(process.env.PORTAL_SESSION_TTL_S ?? 28800);
 const SESSION_MAX_TTL_S = Number(process.env.PORTAL_SESSION_MAX_TTL_S ?? Math.max(86400, SESSION_TTL_S));
 const SESSION_RENEW_AFTER_S = Math.floor(SESSION_TTL_S / 2);
-const COOKIE_DOMAIN = process.env.PORTAL_COOKIE_DOMAIN || undefined;
-const APPS_DOMAIN = process.env.PORTAL_APPS_DOMAIN || undefined;
+const APPS_DOMAIN = process.env.PORTAL_APPS_DOMAIN || process.env.DEPLOY_APPS_DOMAIN || undefined;
+const COOKIE_DOMAIN =
+  process.env.PORTAL_COOKIE_DOMAIN ||
+  (APPS_DOMAIN ? derivedCookieDomain(hostOf(process.env.PORTAL_PUBLIC_URL ?? ""), APPS_DOMAIN) : undefined);
 const IS_PROD = process.env.NODE_ENV === "production";
 const SECURE_COOKIES = PUBLIC_URL.startsWith("https://");
 const ORIGIN = (() => {
@@ -77,8 +90,10 @@ const ORIGIN = (() => {
 const LOCAL_AUTH_BYPASS_REQUESTED = process.env.PORTAL_LOCAL_AUTH_BYPASS === "1";
 const LOCAL_AUTH_BYPASS = LOCAL_AUTH_BYPASS_REQUESTED && !IS_PROD && isLocalPortalUrl(PUBLIC_URL);
 const LOCAL_AUTH_PRINCIPAL = process.env.PORTAL_DEV_PRINCIPAL || process.env.USER || "dev-admin";
-const DEPLOYMENTS_ENABLED = process.env.PORTAL_DEPLOYMENTS_ENABLED === "1";
 const PLAYGROUND = process.env.PORTAL_PLAYGROUND === "1";
+const DEPLOYMENTS_ENABLED = process.env.PORTAL_DEPLOYMENTS_ENABLED
+  ? process.env.PORTAL_DEPLOYMENTS_ENABLED === "1"
+  : !PLAYGROUND;
 function playgroundIntEnv(name: string, fallback: number): number {
   const raw = process.env[name]?.trim();
   if (!raw) return fallback;
@@ -146,6 +161,8 @@ const OIDC: OidcConfig = {
   issuer: process.env.OIDC_ISSUER ?? "https://slack.com",
   jwksUri: process.env.OIDC_JWKS_URI ?? "https://slack.com/openid/connect/keys",
   expectedTeamId: process.env.PORTAL_EXPECTED_TEAM_ID || undefined,
+  prompt: process.env.OIDC_PROMPT || undefined,
+  hostedDomain: hostedDomainHint(process.env.OIDC_ISSUER ?? "https://slack.com", process.env.OIDC_ALLOWED_EMAIL_DOMAIN),
 };
 const OIDC_JWKS_CONFIGURED = Boolean(process.env.OIDC_JWKS_URI?.trim());
 
@@ -270,15 +287,14 @@ function brokerVerifyResponseHeaders(
   const now = Math.floor(Date.now() / 1000);
   return {
     ...headers,
-    "set-cookie": setCookie(
-      "portal_oidc_handoff",
-      seal({ k: "handoff", state, iat: now, exp: now + HANDOFF_TTL_S }, handoffKey),
-      {
+    "set-cookie": [
+      ...[headers["set-cookie"] ?? []].flat(),
+      setCookie("portal_oidc_handoff", seal({ k: "handoff", state, iat: now, exp: now + HANDOFF_TTL_S }, handoffKey), {
         path: "/auth",
         maxAge: HANDOFF_TTL_S,
         secure: SECURE_COOKIES,
-      },
-    ),
+      }),
+    ],
   };
 }
 
@@ -358,14 +374,18 @@ async function isAdmin(session: SessionClaims): Promise<boolean> {
 const PAGE_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
-function sendHtml(res: ServerResponse, status: number, html: string): void {
-  res.writeHead(status, {
-    "content-type": "text/html; charset=utf-8",
-    "content-security-policy": PAGE_CSP,
-    "x-content-type-options": "nosniff",
-    "cache-control": "no-store",
-  });
-  res.end(html);
+function sendHtml(res: ServerResponse, status: number, html: string, csp = PAGE_CSP): void {
+  sendBuffered(
+    res,
+    status,
+    {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": csp,
+      "x-content-type-options": "nosniff",
+      "cache-control": "no-store",
+    },
+    html,
+  );
 }
 
 function sameOriginRequest(req: IncomingMessage): boolean {
@@ -395,6 +415,11 @@ function hostOf(raw: string): string {
   } catch {
     return "";
   }
+}
+
+export function derivedCookieDomain(portalHost: string, appsDomain: string): string | undefined {
+  const host = portalHost.toLowerCase();
+  return host.includes(".") && appsDomain.toLowerCase().endsWith(`.${host}`) ? host : undefined;
 }
 
 export function hostIsWithinDomain(host: string, domain: string): boolean {
@@ -504,13 +529,11 @@ const CARD_STYLE = `<style>
   :root{
     --bg:#ffffff; --surface:#ffffff; --text:#0a0a0a; --muted:#737373;
     --border:#e5e5e5; --secondary:#f5f5f5; --warn:#b42318; --warn-bg:#fdeceb;
-    --shadow:0 1px 3px rgba(0,0,0,.05), 0 4px 12px rgba(0,0,0,.05);
     --radius-md:10px; --radius-lg:16px;
   }
   @media (prefers-color-scheme:dark){
     :root{ --bg:#0a0a0a; --surface:#171717; --text:#fafafa; --muted:#a3a3a3;
-      --border:#2a2a2a; --secondary:#262626; --warn:#ff8a80; --warn-bg:#2a1a1a;
-      --shadow:0 1px 3px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.4); }
+      --border:#2a2a2a; --secondary:#262626; --warn:#ff8a80; --warn-bg:#2a1a1a; }
   }
   *{ box-sizing:border-box; }
   html,body{ height:100%; }
@@ -522,7 +545,7 @@ const CARD_STYLE = `<style>
   main{ margin:auto; padding:32px 20px; width:100%; display:grid; place-items:center; }
   .card{
     width:100%; max-width:420px; background:var(--surface); border:1px solid var(--border);
-    border-radius:var(--radius-lg); box-shadow:var(--shadow); padding:34px 32px 30px; text-align:center;
+    border-radius:var(--radius-lg); padding:34px 32px 30px; text-align:center;
   }
   .card.wide{ max-width:440px; }
   .icon{ width:52px; height:52px; margin:0 auto 18px; border-radius:var(--radius-md); background:var(--secondary);
@@ -535,7 +558,7 @@ const CARD_STYLE = `<style>
   .reason{ margin:16px auto 26px; font-size:13px; color:var(--text);
     background:var(--warn-bg); border:1px solid var(--border); border-radius:var(--radius-md); padding:11px 14px;
     text-align:left; word-break:break-word; }
-  .reason strong{ display:block; color:var(--warn); font-size:11px; text-transform:uppercase; letter-spacing:.04em; margin-bottom:3px; }
+  .reason strong{ display:block; color:var(--warn); font-size:11px; margin-bottom:3px; }
   .note{ margin:18px auto 26px; font-size:13px; color:var(--text); background:var(--secondary);
     border:1px solid var(--border); border-radius:var(--radius-md); padding:12px 14px; text-align:left; }
   .note .who{ display:flex; align-items:center; gap:8px; color:var(--muted); }
@@ -599,7 +622,7 @@ export function signInErrorHtml(detail: string): string {
   return cardPage({
     title: "Sign-in failed",
     heading: "We couldn't sign you in",
-    msg: "Your sign-in didn't complete. This is usually temporary — trying again resolves most cases.",
+    msg: "Your sign-in didn't complete. This is usually temporary. Trying again resolves most cases.",
     icon: ALERT_ICON,
     warn: true,
     extra: `<p class="reason"><strong>Details</strong>${escapeHtml(detail)}</p>`,
@@ -613,7 +636,7 @@ export function nonAdminDeniedHtml(o: { sub: string; org: string }): string {
   return cardPage({
     title: "No admin access",
     heading: "You don't have admin access",
-    msg: "The Admin area is limited to governance admins. Your account is signed in and verified — it just isn't granted admin rights.",
+    msg: "The Admin area is limited to governance admins. Your account is signed in and verified. It just isn't granted admin rights.",
     icon: LOCK_ICON,
     wide: true,
     extra: `<div class="note">
@@ -643,12 +666,12 @@ export function adminUnavailableHtml(): string {
   return cardPage({
     title: "Admin temporarily unavailable",
     heading: "Admin is temporarily unavailable",
-    msg: "We couldn't check your admin access right now. This is usually temporary — trying again resolves most cases.",
+    msg: "We couldn't check your admin access right now. This is usually temporary. Trying again resolves most cases.",
     icon: ALERT_ICON,
     warn: true,
     actions: `<a class="btn primary" href="/admin/">Try again</a>
         <a class="btn ghost" href="/">Back to your surfaces</a>`,
-    help: "If this keeps happening, the admin service may be down — contact your admin.",
+    help: "If this keeps happening, the admin service may be down. Contact your admin.",
   });
 }
 
@@ -685,7 +708,7 @@ export function connectWrongRecipientHtml(o: { provider: string; alreadyConnecte
   if (o.alreadyConnected) {
     return connectPage({
       title: `You've already connected ${prov}`,
-      body: `This link was meant for a different teammate, and your ${prov} is already connected — there's nothing to do here.`,
+      body: `This link was meant for a different teammate, and your ${prov} is already connected, so there's nothing to do here.`,
       action: `<a class="muted" href="/connectors">Manage your connections</a>`,
     });
   }
@@ -731,12 +754,12 @@ async function handleConsentRedeem(
         connectWrongRecipientHtml({ provider: data.provider ?? "", alreadyConnected: !!data.clickerConnected }),
       );
     case "expired":
-      return sendHtml(res, 200, connectErrorHtml("This connect link has expired — ask the agent for a fresh one."));
+      return sendHtml(res, 200, connectErrorHtml("This connect link has expired. Ask the agent for a fresh one."));
     default:
       return sendHtml(
         res,
         200,
-        connectErrorHtml("This connect link is invalid or was already used — ask the agent for a fresh one."),
+        connectErrorHtml("This connect link is invalid or was already used. Ask the agent for a fresh one."),
       );
   }
 }
@@ -790,7 +813,7 @@ async function handleSecretDrop(
     if (isPost)
       return json(res, 502, {
         error: "unreachable",
-        message: "couldn't reach the credential service — try again in a moment",
+        message: "couldn't reach the credential service, try again in a moment",
       });
     return sendHtml(
       res,
@@ -943,6 +966,9 @@ async function mintPlaygroundSession(req: IncomingMessage, res: ServerResponse):
     limit: PLAYGROUND_MINTS_PER_IP,
     windowS: PLAYGROUND_MINT_WINDOW_S,
     nowMs: Date.now(),
+  }).catch((e) => {
+    if (e instanceof ClaimStoreUnavailableError) return false;
+    throw e;
   });
   if (!allowed) return null;
   const principalId = `playground-${randomToken(8)}`;
@@ -1030,6 +1056,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   if (pathname === "/auth/login" && method === "GET") return authLogin(req, res, url);
   if (pathname === "/auth/callback" && method === "GET") return authCallback(req, res, url);
+  if (pathname === "/auth/admin-login") return adminLogin(req, res);
   if (pathname === "/auth/logout" && method === "POST") {
     if (!sameOriginRequest(req)) return json(res, 403, { error: "forbidden" });
     setSession(res, [
@@ -1037,10 +1064,32 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       ...(COOKIE_DOMAIN ? [clearCookie("portal_session", "/", SECURE_COOKIES)] : []),
       clearCookie("portal_oidc_tmp", "/auth", SECURE_COOKIES),
       clearCookie("portal_oidc_handoff", "/auth", SECURE_COOKIES),
+      ...(AUTH_BROKER_UPSTREAM ? [clearCookie("qm_idp_session", AUTH_BROKER_PREFIX, true)] : []),
       ...(LOCAL_AUTH_BYPASS && isLoopbackAddress(clientIpOf(req))
         ? [setCookie(LOCAL_LOGOUT_COOKIE, "1", { path: "/", maxAge: SESSION_TTL_S, secure: SECURE_COOKIES })]
         : []),
     ]);
+    if (AUTH_BROKER_UPSTREAM && url.searchParams.get("everywhere") === "1") {
+      const session = await currentSession(req);
+      if (!session || session.anon) return json(res, 401, { error: "sign in" });
+      if (!PORTAL_IDENTITY_SECRET) return json(res, 503, { error: "not_configured" });
+      const path = withSourceAuthNonce("/v1/auth/broker/sessions/revoke", CORE_SIGNING_SECRET);
+      const body = JSON.stringify({ principalId: session.sub });
+      try {
+        const response = await fetch(`${CORE}${path}`, {
+          method: "POST",
+          headers: {
+            ...signedHeaders(CORE_SIGNING_SECRET, "POST", path, body),
+            ...portalIdentityHeaders(session),
+          },
+          body,
+          signal: AbortSignal.timeout(4_000),
+        });
+        if (!response.ok) return json(res, 503, { error: "revocation_failed" });
+      } catch {
+        return json(res, 503, { error: "revocation_failed" });
+      }
+    }
     if (wantsHtml(req)) {
       res.writeHead(303, { location: "/", "cache-control": "no-store" });
       return void res.end();
@@ -1055,9 +1104,16 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return proxyToUpstream(
       req,
       res,
-      { baseUrl: AUTH_BROKER_UPSTREAM, path: brokerPath, search: url.search },
+      { baseUrl: AUTH_BROKER_UPSTREAM, path: brokerPath, search: url.search, forwardCookies: true },
       FORWARD_BROKER_HEADERS,
-      { "x-qm-client-ip": clientIpOf(req) },
+      {
+        "x-qm-client-ip": clientIpOf(req),
+        cookie: (req.headers.cookie ?? "")
+          .split(";")
+          .map((part) => part.trim())
+          .filter((part) => /^qm_idp_session=[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}$/.test(part))
+          .join("; "),
+      },
       method === "POST" && brokerPath === "/verify" ? brokerVerifyResponseHeaders : undefined,
     );
   }
@@ -1117,6 +1173,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return json(res, 400, { error: "bad_request", message: "illegal path" });
   }
 
+  if (method === "POST" && /^\/v1\/webhooks\/incoming\/[^/]+$/.test(pathname)) {
+    return proxyToUpstream(req, res, { baseUrl: CORE, path: pathname, search: url.search }, FORWARD_WEBHOOK_HEADERS);
+  }
+
   const consentBounce = (): void => {
     res.writeHead(302, { location: `/auth/login?returnTo=${encodeURIComponent(`${pathname}${url.search}`)}` });
     return void res.end();
@@ -1156,7 +1216,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (!session)
       return json(res, 401, {
         error: "sign in",
-        message: "your session expired — re-open the link, sign in, and paste again",
+        message: "your session expired, re-open the link, sign in, and paste again",
       });
     if (!sameOriginRequest(req)) return json(res, 403, { error: "forbidden", message: "cross-origin request refused" });
     if (session.anon)
@@ -1193,6 +1253,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   const isDeployment = DEPLOYMENTS_ENABLED && (seg === "d" || seg === "deployments");
   const surfaceKey = Object.hasOwn(UPSTREAMS, seg) && seg !== "web-ui" ? seg : "web-ui";
 
+  if (
+    method === "GET" &&
+    (/^\/share\/external\/[a-f0-9-]{36}(?:\/files\/[a-f0-9-]{36})?$/.test(pathname) ||
+      /^\/assets\/[a-zA-Z0-9_.-]+$/.test(pathname))
+  ) {
+    return proxyToUpstream(req, res, { baseUrl: UPSTREAMS["web-ui"]!, path: pathname, search: url.search }, ["accept"]);
+  }
+
   if (!session) {
     if (method === "GET" && wantsHtml(req)) {
       if (PLAYGROUND) {
@@ -1204,7 +1272,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         return void res.end();
       }
     } else {
-      return json(res, 401, { error: "sign in" });
+      return json(res, 401, { error: "sign in", loginUrl: "/auth/login" });
     }
   }
 
@@ -1213,6 +1281,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (isDeployment) {
+    if (session.anon) return json(res, 403, { error: "forbidden", message: "sign in to view deployed apps" });
     const rest = pathname.slice(`/${seg}/`.length);
     const slash = rest.indexOf("/");
     const id = decodeURIComponent(slash === -1 ? rest : rest.slice(0, slash));
@@ -1270,7 +1339,6 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   const forwardPath = key === "web-ui" ? pathname : pathname.slice(`/${key}`.length) || "/";
-  if (key === "web-ui" && forwardPath === "/app-edit") res.removeHeader("x-frame-options");
   return proxyToSurface(req, res, {
     upstreamBase: UPSTREAMS[key]!,
     forwardPath,
@@ -1285,6 +1353,82 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   });
 }
 
+async function adminLogin(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!SESSION_SECRET || SESSION_SECRET.trim().length < 32 || !CORE_SIGNING_SECRET) {
+    return json(res, 503, { error: "not_configured" });
+  }
+  if (req.method === "GET") {
+    return sendHtml(
+      res,
+      200,
+      cardPage({
+        title: "Admin sign-in",
+        heading: "Sign in as an administrator",
+        msg: "Only continue if you generated this link for your own admin account.",
+        icon: LOCK_ICON,
+        extra: '<p id="admin-email"></p><noscript>JavaScript is required to open this login link.</noscript>',
+        actions: `<form method="post" action="/auth/admin-login"><input id="admin-token" name="token" type="hidden"><button id="admin-confirm" class="btn primary" style="width:100%" type="submit" disabled>Sign in</button></form><script>${ADMIN_LOGIN_SCRIPT}</script>`,
+        help: "This link expires after five minutes and can be used once. Generate another with qm admin-login.",
+      }),
+      `${PAGE_CSP}; script-src '${ADMIN_LOGIN_SCRIPT_HASH}'`,
+    );
+  }
+  if (req.method !== "POST") return json(res, 405, { error: "method_not_allowed" });
+  if (!sameOriginRequest(req)) return json(res, 403, { error: "forbidden" });
+  let token: string;
+  try {
+    token = new URLSearchParams(await readBody(req, 8192)).get("token") ?? "";
+  } catch (error) {
+    if (error instanceof PayloadTooLargeError) return json(res, 413, { error: "payload_too_large" });
+    throw error;
+  }
+  const claims = openAdminLogin(token, SESSION_SECRET, ORIGIN);
+  const fail = () =>
+    sendHtml(
+      res,
+      400,
+      signInErrorHtml("This admin link is invalid, expired, or already used. Generate a new link with qm admin-login."),
+    );
+  if (!claims) return fail();
+  const sessionVersion = await coreActiveSessionVersion(claims.email);
+  if (sessionVersion === null) return sendHtml(res, 403, signInErrorHtml("This account cannot sign in."));
+  const now = Math.floor(Date.now() / 1000);
+  const session: SessionClaims = {
+    k: "session",
+    sub: claims.email,
+    org: ORG,
+    auth: now,
+    iat: now,
+    exp: now + SESSION_TTL_S,
+    sv: sessionVersion,
+  };
+  const allowed = await adminProbeAttempt(session);
+  if (allowed === null)
+    return sendHtml(res, 503, signInErrorHtml("Admin access could not be checked. Please try again."));
+  if (!allowed.isAdmin) return sendHtml(res, 403, signInErrorHtml("This account does not have admin access."));
+  try {
+    const claimsStore = coreClaimStore(CORE, CORE_SIGNING_SECRET, "portal");
+    if (!(await claimOnce(claimsStore, `admin-login:${claims.jti}`, claims.expiresAtMs))) return fail();
+  } catch (error) {
+    if (error instanceof ClaimStoreUnavailableError) {
+      return sendHtml(res, 503, signInErrorHtml("Sign-in is temporarily unavailable. Please try again."));
+    }
+    throw error;
+  }
+  setAuthenticatedSession(res, session);
+  res.writeHead(303, { location: "/admin/", "cache-control": "no-store" });
+  res.end();
+}
+
+function setAuthenticatedSession(res: ServerResponse, session: SessionClaims): void {
+  setSession(res, [
+    ...sessionCookieSet(seal(session, sessionKey)),
+    clearCookie("portal_oidc_tmp", "/auth", SECURE_COOKIES),
+    clearCookie("portal_oidc_handoff", "/auth", SECURE_COOKIES),
+    clearCookie("portal_impersonate", "/", SECURE_COOKIES),
+  ]);
+}
+
 async function authLogin(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const returnTo = sanitizeReturnTo(url.searchParams.get("returnTo"), PUBLIC_URL, APPS_DOMAIN);
   const localSession = await localDevSession(req, Date.now(), true);
@@ -1293,6 +1437,7 @@ async function authLogin(req: IncomingMessage, res: ServerResponse, url: URL): P
       ...sessionCookieSet(seal(localSession, sessionKey)),
       clearCookie("portal_oidc_tmp", "/auth", SECURE_COOKIES),
       clearCookie("portal_oidc_handoff", "/auth", SECURE_COOKIES),
+      ...(AUTH_BROKER_UPSTREAM ? [clearCookie("qm_idp_session", AUTH_BROKER_PREFIX, true)] : []),
       clearCookie(LOCAL_LOGOUT_COOKIE, "/", SECURE_COOKIES),
     ]);
     res.writeHead(302, { location: returnTo, "cache-control": "no-store" });
@@ -1393,7 +1538,9 @@ async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL)
     infoSub = typeof info.sub === "string" ? info.sub : "";
     if (!infoSub) throw new Error("userinfo missing sub");
     if (typeof claims.sub === "string" && claims.sub !== infoSub) throw new Error("subject mismatch");
-    sub = resolvePrincipal(PRINCIPAL_RULE, { sub: infoSub, claims, userinfo: info });
+    sub = await resolvePrincipal(PRINCIPAL_RULE, { sub: infoSub, claims, userinfo: info }, (email) =>
+      coreEmailAllowed(CORE, CORE_SIGNING_SECRET, email, "portal"),
+    );
     externalIdentity = resolveExternalIdentity({ claims, userinfo: info });
     const rawName = info.name ?? claims.name;
     if (typeof rawName === "string") name = rawName.trim().slice(0, 200);
@@ -1499,6 +1646,11 @@ async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL)
 
 export function bootChecks(): void {
   const problems: string[] = [];
+  if (!AUTH_BROKER_UPSTREAM && originOf(OIDC.authEndpoint) && originOf(OIDC.authEndpoint) === originOf(PUBLIC_URL)) {
+    problems.push(
+      "OIDC_AUTH_ENDPOINT is on the portal's own origin but AUTH_BROKER_UPSTREAM is unset — every sign-in would redirect from /auth/login back into the portal forever; wire AUTH_BROKER_UPSTREAM to the auth service or point OIDC_AUTH_ENDPOINT at a real identity provider",
+    );
+  }
   if (LOCAL_AUTH_BYPASS_REQUESTED && IS_PROD) {
     problems.push("PORTAL_LOCAL_AUTH_BYPASS may not be enabled in production");
   }
@@ -1522,7 +1674,7 @@ export function bootChecks(): void {
     }
     if (COOKIE_DOMAIN || APPS_DOMAIN) {
       problems.push(
-        "PORTAL_PLAYGROUND requires PORTAL_COOKIE_DOMAIN and PORTAL_APPS_DOMAIN unset — a domain-wide cookie would carry anonymous sessions to app subdomains, which never see the anon flag",
+        "PORTAL_PLAYGROUND requires PORTAL_COOKIE_DOMAIN and the apps domain (PORTAL_APPS_DOMAIN / DEPLOY_APPS_DOMAIN) unset — a domain-wide cookie would carry anonymous sessions to app subdomains, which never see the anon flag",
       );
     }
     if (DEPLOYMENTS_ENABLED) {
@@ -1533,7 +1685,7 @@ export function bootChecks(): void {
   }
   if (APPS_DOMAIN && !COOKIE_DOMAIN) {
     problems.push(
-      "PORTAL_APPS_DOMAIN requires PORTAL_COOKIE_DOMAIN (app returnTo without a domain-wide session cookie loops sign-in forever)",
+      `the apps domain (${APPS_DOMAIN}) is not a subdomain of the portal host, so the cookie domain cannot be derived — set PORTAL_COOKIE_DOMAIN to the parent domain covering both (app returnTo without a domain-wide session cookie loops sign-in forever)`,
     );
   }
   if (COOKIE_DOMAIN && !hostIsWithinDomain(hostOf(PUBLIC_URL), COOKIE_DOMAIN)) {
@@ -1600,7 +1752,7 @@ export function bootChecks(): void {
     }
     if (!PUBLIC_URL.startsWith("https://")) problems.push("PORTAL_PUBLIC_URL must be https in production");
     if (!OIDC.authEndpoint.startsWith("https://")) {
-      problems.push(`OIDC_AUTH_ENDPOINT must be https — the browser is sent there: ${OIDC.authEndpoint}`);
+      problems.push(`OIDC_AUTH_ENDPOINT must be https, since the browser is sent there: ${OIDC.authEndpoint}`);
     }
     const brokerOrigin =
       AUTH_BROKER_UPSTREAM && isPrivateNetworkUrl(AUTH_BROKER_UPSTREAM) ? originOf(AUTH_BROKER_UPSTREAM) : "";
@@ -1612,7 +1764,7 @@ export function bootChecks(): void {
     if (AUTH_BROKER_UPSTREAM) {
       if (!isPrivateNetworkUrl(AUTH_BROKER_UPSTREAM)) {
         problems.push(
-          "AUTH_BROKER_UPSTREAM must address a private-network host — the broker is never exposed directly",
+          "AUTH_BROKER_UPSTREAM must address a private-network host, since the broker is never exposed directly",
         );
       }
       if (OIDC.issuer !== `${PUBLIC_URL}${AUTH_BROKER_PREFIX}`) {
@@ -1642,32 +1794,51 @@ function validEmailDomain(value: string): boolean {
     );
 }
 
-export function startServer(): void {
+export async function startServer(): Promise<void> {
   bootChecks();
-  server.listen(PORT, () => {
-    console.log(`[portal] public front door on http://localhost:${PORT} → web-ui/admin over 6PN (org ${ORG})`);
-    if (!SESSION_SECRET)
-      console.warn("[portal] PORTAL_SESSION_SECRET unset — using an INSECURE dev key (dev/test only)");
-    if (!SECURE_COOKIES)
-      console.warn("[portal] PORTAL_PUBLIC_URL is not https — cookies are NOT Secure (dev/test only)");
-    if (LOCAL_AUTH_BYPASS)
-      console.warn(
-        `[portal] PORTAL_LOCAL_AUTH_BYPASS=1 -- using ${LOCAL_AUTH_PRINCIPAL} as the local session principal (dev/test only)`,
+  if (process.env.AUTH_EMBEDDED === "1") {
+    if (AUTH_BROKER_UPSTREAM !== "http://127.0.0.1:8099") {
+      throw new Error("Embedded auth requires the loopback broker upstream");
+    }
+    const auth = await import("../../auth/src/index.ts");
+    const broker = await auth.startServer({ port: 8099, host: "127.0.0.1" });
+    server.once("close", () => broker.close());
+    server.once("error", () => broker.close());
+  }
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(PORT, () => {
+      server.off("error", reject);
+      resolve();
+      console.log(`[portal] public front door on http://localhost:${PORT} → web-ui/admin over 6PN (org ${ORG})`);
+      if (!SESSION_SECRET)
+        console.warn("[portal] PORTAL_SESSION_SECRET unset, using an INSECURE dev key (dev/test only)");
+      if (!SECURE_COOKIES)
+        console.warn("[portal] PORTAL_PUBLIC_URL is not https, cookies are NOT Secure (dev/test only)");
+      if (LOCAL_AUTH_BYPASS)
+        console.warn(
+          `[portal] PORTAL_LOCAL_AUTH_BYPASS=1 -- using ${LOCAL_AUTH_PRINCIPAL} as the local session principal (dev/test only)`,
+        );
+      if (PLAYGROUND)
+        console.warn(
+          `[portal] PORTAL_PLAYGROUND=1 -- unauthenticated visitors get anonymous browser-pinned sessions (${PLAYGROUND_MINTS_PER_IP} mints per IP per ${PLAYGROUND_MINT_WINDOW_S}s); admin sign-in stays on /auth/login`,
+        );
+      if (PLAYGROUND && !ON_FLY && XFF_TRUSTED_HOPS === 0)
+        console.warn(
+          "[portal] playground mint limits key on the socket address — set PORTAL_XFF_TRUSTED_HOPS when behind a reverse proxy, or every visitor shares one bucket",
+        );
+      console.log(
+        "[portal] /admin access is derived (portal → admin surface /api/whoami over 6PN → core canAdminister); the core's ADMIN_GRANTS is the one source of admin identity",
       );
-    if (PLAYGROUND)
-      console.warn(
-        `[portal] PORTAL_PLAYGROUND=1 -- unauthenticated visitors get anonymous browser-pinned sessions (${PLAYGROUND_MINTS_PER_IP} mints per IP per ${PLAYGROUND_MINT_WINDOW_S}s); admin sign-in stays on /auth/login`,
-      );
-    if (PLAYGROUND && !ON_FLY && XFF_TRUSTED_HOPS === 0)
-      console.warn(
-        "[portal] playground mint limits key on the socket address — set PORTAL_XFF_TRUSTED_HOPS when behind a reverse proxy, or every visitor shares one bucket",
-      );
-    console.log(
-      "[portal] /admin access is derived (portal → admin surface /api/whoami over 6PN → core canAdminister); the core's ADMIN_GRANTS is the one source of admin identity",
-    );
+    });
   });
 }
 
 export { handle, server };
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) startServer();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  startServer().catch((error: unknown) => {
+    console.error("[portal] failed to start:", errMessage(error));
+    process.exitCode = 1;
+  });
+}

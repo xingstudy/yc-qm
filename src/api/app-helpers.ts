@@ -10,7 +10,8 @@ import type {
 import { orgId as orgIdOf } from "../config.ts";
 import { isManageableCreationScope, parseScopeId, scopeId } from "../types.ts";
 import { type ListOwnedOptions } from "../files/file-artifact-store.ts";
-import type { Run } from "../runs/run-store.ts";
+import { isTerminal, type Run } from "../runs/run-store.ts";
+import { sleep } from "../util/async.ts";
 import type { RunSignal } from "../runs/run-signal-store.ts";
 import { processRun } from "../runs/worker.ts";
 import { deployRef, encodeRef, parseRef } from "../acl/resource-ref.ts";
@@ -25,9 +26,10 @@ import {
   createMembershipControlsScope,
 } from "../resolution/scope-membership.ts";
 import { samePerson } from "../directory/person.ts";
+import { actorAssertionActive } from "../identity/identity-service.ts";
 import type { Deployment } from "../deploy/deploy-store.ts";
 import { swallow } from "../util/errors.ts";
-import { commandApprovalId } from "../core/approval-id.ts";
+import { adminSessionUrl } from "../util/admin-links.ts";
 import {
   openGroupViaSurface,
   resolveReachTarget,
@@ -51,7 +53,7 @@ import { toFileItem } from "./app-types.ts";
 export function createAppHelpers(deps: AppDeps, app: App) {
   const adminBase = deps.publicWebUrl?.replace(/\/$/, "");
   const adminLink = (sessionId: string): string | undefined =>
-    adminBase ? `${adminBase}/admin/history?session=${encodeURIComponent(sessionId)}` : undefined;
+    adminBase ? adminSessionUrl(adminBase, sessionId) : undefined;
 
   const surfaceContext = createSurfaceContextPuller(app);
   const directoryRefresher = createSurfaceContextPuller(app, { waitMs: 4_000 });
@@ -87,17 +89,14 @@ export function createAppHelpers(deps: AppDeps, app: App) {
   }
 
   async function approvalCurrentForSession(session: Session, record: PendingApprovalRecord): Promise<boolean> {
+    if (!actorAssertionActive(deps.identity, record.request?.actor)) return false;
     const parsed = parseScopeId(session.scopeId);
     if (parsed.kind !== "group" || !isProjectGroupRef(parsed.ref)) return true;
-    const requester = record.request?.actor.externalId;
-    return (
-      !!requester &&
-      authorizesCapabilityScope({
-        actorId: requester,
-        scopeId: session.scopeId,
-        scopeVersion: record.request?.scopeVersion,
-      })
-    );
+    return authorizesCapabilityScope({
+      actorId: record.request!.actor.externalId,
+      scopeId: session.scopeId,
+      scopeVersion: record.request?.scopeVersion,
+    });
   }
 
   async function approvalRecordIsCurrent(record: PendingApprovalRecord, knownSession?: Session): Promise<boolean> {
@@ -105,22 +104,46 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     return !!session && approvalCurrentForSession(session, record);
   }
 
+  async function approvalsVisibleToViewer<T extends { record: PendingApprovalRecord }>(
+    session: Session,
+    viewer: string,
+    candidates: T[],
+  ): Promise<T[]> {
+    const own = candidates.filter(({ record }) => samePerson(record.request?.actor.externalId, viewer));
+    if (!own.length) return [];
+    if ((await managedProjectMembership(session.scopeId, viewer)) === false) return [];
+    const parsed = parseScopeId(session.scopeId);
+    if (parsed.kind !== "group" || !isProjectGroupRef(parsed.ref)) return own;
+    const window = (await deps.sessions.participantWindowsOf(session.id)).find((candidate) =>
+      samePerson(candidate.principalId, viewer),
+    );
+    if (!window) return [];
+    return own.filter(
+      ({ record }) =>
+        record.createdAt !== undefined &&
+        record.createdAt >= window.validFrom &&
+        (window.validTo === null || record.createdAt < window.validTo),
+    );
+  }
+
   async function approvalVisibleToViewer(
     session: Session,
     viewer: string,
     record: PendingApprovalRecord,
   ): Promise<boolean> {
-    if (record.request?.actor.externalId !== viewer) return false;
-    if ((await managedProjectMembership(session.scopeId, viewer)) === false) return false;
-    const parsed = parseScopeId(session.scopeId);
-    if (parsed.kind !== "group" || !isProjectGroupRef(parsed.ref)) return true;
-    if (!samePerson(record.request?.actor.externalId, viewer) || record.createdAt === undefined) return false;
-    const window = (await deps.sessions.listParticipants()).find(
-      (candidate) => candidate.sessionId === session.id && samePerson(candidate.principalId, viewer),
-    );
-    return (
-      !!window && record.createdAt >= window.validFrom && (window.validTo === null || record.createdAt < window.validTo)
-    );
+    return (await approvalsVisibleToViewer(session, viewer, [{ record }])).length === 1;
+  }
+
+  async function approvalResumable(
+    session: Session,
+    actorId: string,
+    record: PendingApprovalRecord | null | undefined,
+  ): Promise<"ok" | "expired" | "foreign_session" | "stale" | "not_requester"> {
+    if (!record) return "expired";
+    if (record.sessionId !== session.id) return "foreign_session";
+    if (!(await approvalRecordIsCurrent(record, session))) return "stale";
+    if (!(await approvalVisibleToViewer(session, actorId, record))) return "not_requester";
+    return "ok";
   }
 
   async function pendingApprovalForSession(
@@ -130,53 +153,43 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     if (!deps.approvals) return [];
     const [entries, session] = await Promise.all([deps.approvals.entries(), deps.sessions.get(sessionId)]);
     if (!session) return [];
-    const candidates: PendingApprovalRecord[] = [];
-    for (const [, record] of entries) {
+    const candidates: Array<{ key: string; record: PendingApprovalRecord }> = [];
+    for (const [key, record] of entries) {
       if (record.sessionId !== sessionId || (opts.blockingOnly && record.blocksInput === false)) continue;
-      if (await approvalRecordIsCurrent(record, session)) candidates.push(record);
+      if (await approvalRecordIsCurrent(record, session)) candidates.push({ key, record });
     }
-    const visible = opts.viewer
-      ? (
-          await Promise.all(
-            candidates.map(async (record) => ({
-              record,
-              allowed: await approvalVisibleToViewer(session, opts.viewer!, record),
-            })),
-          )
-        )
-          .filter(({ allowed }) => allowed)
-          .map(({ record }) => record)
-      : candidates;
-    return visible.map((r) => ({
-      requestId: commandApprovalId(r.sessionId, r.command),
+    const visible = opts.viewer ? await approvalsVisibleToViewer(session, opts.viewer, candidates) : candidates;
+    return visible.map(({ key, record: r }) => ({
+      requestId: key,
       command: r.command,
       reason: r.reason ?? "requires approval",
       ...(r.matched ? { matched: r.matched } : {}),
       ...(r.purpose ? { purpose: r.purpose } : {}),
       ...(r.summary ? { summary: r.summary } : {}),
+      ...(r.summaryDetail ? { summaryDetail: r.summaryDetail } : {}),
       ...(r.grantModes ? { grantModes: r.grantModes } : {}),
       blocksInput: r.blocksInput !== false,
       ...(r.kind === "approval" ? { kind: r.kind } : {}),
     }));
   }
 
-  async function pendingApprovalResultForThread(threadRef: string, viewer?: string): Promise<TurnResult | null> {
+  async function pendingApprovalResultForThread(
+    threadRef: string,
+    viewer?: string,
+    opts: { alwaysBlock?: boolean } = {},
+  ): Promise<TurnResult | null> {
     const session = await deps.sessions.getByThread(threadRef);
     if (!session) return null;
-    if (viewer && !(await sessionsForViewer(viewer)).some((candidate) => candidate.id === session.id)) return null;
-    const all = viewer ? await pendingApprovalForSession(session.id, { blockingOnly: true }) : [];
-    const approvals = await pendingApprovalForSession(session.id, {
-      blockingOnly: true,
-      ...(viewer ? { viewer } : {}),
-    });
+    if (!opts.alwaysBlock && viewer && !(await sessionForViewer(session.id, viewer))) return null;
+    const all = await pendingApprovalForSession(session.id, { blockingOnly: true });
+    if (!all.length) return null;
+    const approvals = viewer ? await pendingApprovalForSession(session.id, { blockingOnly: true, viewer }) : all;
     if (!approvals.length) {
-      return all.length
-        ? {
-            status: "pending_approval",
-            sessionId: session.id,
-            reason: "This conversation is waiting for another project member to resolve a pending approval.",
-          }
-        : null;
+      return {
+        status: "pending_approval",
+        sessionId: session.id,
+        reason: "This conversation is waiting for someone else to resolve a pending approval.",
+      };
     }
     return {
       status: "pending_approval",
@@ -187,16 +200,26 @@ export function createAppHelpers(deps: AppDeps, app: App) {
   }
 
   async function drive(runId: string): Promise<TurnResult> {
-    const claimed = await deps.runs.claimById(runId, "inline", deps.leaseTtlMs);
-    if (claimed) {
-      return withAdminLink(
-        await processRun({ runs: deps.runs, orchestrator: deps.orchestrator, leaseTtlMs: deps.leaseTtlMs }, claimed),
-      );
+    const timeoutMs = deps.runWaitMs ?? 60_000;
+    const deadline = performance.now() + timeoutMs;
+    for (;;) {
+      const run = await deps.runs.get(runId);
+      if (!run) throw new Error(`run ${runId} not found`);
+      if (isTerminal(run.status)) {
+        return withAdminLink(
+          run.result ?? { status: "failed", sessionId: run.sessionId, reason: "run produced no result" },
+        );
+      }
+      const claimed = await deps.runs.claimById(runId, "inline", deps.leaseTtlMs);
+      if (claimed) {
+        return withAdminLink(
+          await processRun({ runs: deps.runs, orchestrator: deps.orchestrator, leaseTtlMs: deps.leaseTtlMs }, claimed),
+        );
+      }
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw new Error(`run ${runId} did not finish within ${timeoutMs}ms`);
+      await sleep(Math.min(100, remaining));
     }
-    const finished = await deps.runs.waitFor(runId, deps.runWaitMs);
-    return withAdminLink(
-      finished.result ?? { status: "failed", sessionId: finished.sessionId, reason: "run produced no result" },
-    );
   }
 
   async function mayUseSharedScope(kind: "channel" | "group", ref: string, actor: Principal): Promise<boolean> {
@@ -262,6 +285,12 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     return sessions.filter((_session, index) => allowed[index] !== false);
   }
 
+  async function sessionForViewer(sessionId: string, principalId: string): Promise<Session | null> {
+    const session = await deps.sessions.getForParticipant(sessionId, principalId);
+    if (!session) return null;
+    return (await managedProjectMembership(session.scopeId, principalId)) === false ? null : session;
+  }
+
   async function contextsFor(principalId: string): Promise<ContextSummary[]> {
     const personal = scopeId("personal", principalId);
     const byScope = new Map<ScopeId, ContextSummary>();
@@ -318,20 +347,19 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     inScope?: ScopeId,
   ): Promise<FileListPage> {
     const myScopes = await currentResourceScopesForViewer(principalId);
-    const owned = await deps.files.listOwnedByScopes(myScopes, {
-      ...opts,
-      ...(inScope ? { createdInScope: inScope } : {}),
-    });
     const handles = await deps.acl.handlesFor(myScopes);
-    const refs = handles.map((h) => ({ ownerScopeId: h.ownerScopeId, path: h.ownerPath }));
-    const sharedRows = await deps.files.resolveByOwnerPaths(refs);
-    const shared = sharedRows
-      .filter((f) => !myScopes.includes(f.ownerScopeId) && (!inScope || f.createdInScope === inScope))
-      .sort((a, b) => b.updatedAt - a.updatedAt);
+    const page = await deps.files.listDocuments(
+      myScopes,
+      handles.map((h) => ({ ownerScopeId: h.ownerScopeId, path: h.ownerPath })),
+      {
+        ...opts,
+        ...(inScope ? { createdInScope: inScope } : {}),
+      },
+    );
     return {
-      owned: owned.files.map(toFileItem),
-      shared: shared.map(toFileItem),
-      ...(owned.nextCursor ? { nextCursor: owned.nextCursor } : {}),
+      owned: page.files.filter((f) => myScopes.includes(f.ownerScopeId)).map(toFileItem),
+      shared: page.files.filter((f) => !myScopes.includes(f.ownerScopeId)).map(toFileItem),
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     };
   }
 
@@ -549,9 +577,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
   }
 
   async function reconcileProjectMember(project: Project, memberId: string, add: boolean): Promise<void> {
-    const sessions = (await deps.sessions.listAll()).filter(
-      (session) => session.scopeId === projectScopeId(project.id),
-    );
+    const sessions = await deps.sessions.listByScope(projectScopeId(project.id));
     for (const session of sessions) {
       if (add) await deps.sessions.addParticipant(session.id, memberId, undefined, { includeHistory: true });
       else await deps.sessions.removeParticipant(session.id, memberId);
@@ -563,37 +589,49 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     const drained: Array<{ signal: RunSignal; replayRunId?: string }> = [];
     for (const signal of await deps.signals.takePending(runId)) {
       if (signal.kind === "abort") continue;
-      if (!signal.request) {
-        // A steer sent through /v1/runs/:id/signal carries no TurnRequest. Its text is
-        // still a real user message — re-enqueue it on the run's own request instead of
-        // dropping it, so a steer that raced the run's end is never silently lost.
-        const orphanRun = signal.text?.trim() ? await deps.runs.get(runId) : null;
+      let replayRunId: string | undefined;
+      let replayOutcomeKnown = true;
+      if (signal.request) {
+        try {
+          const { approval: _ap, redeliveryKey: _redeliveryKey, ...base } = signal.request;
+          const prior = (await deps.runs.get(runId))?.request;
+          const inheritedOptions = {
+            ...(base.model === undefined && prior?.model !== undefined ? { model: prior.model } : {}),
+            ...(base.harness === undefined && prior?.harness !== undefined ? { harness: prior.harness } : {}),
+            ...(base.thinkingLevel === undefined && prior?.thinkingLevel !== undefined
+              ? { thinkingLevel: prior.thinkingLevel }
+              : {}),
+            ...(base.fastMode === undefined && prior?.fastMode !== undefined ? { fastMode: prior.fastMode } : {}),
+            ...(base.timezone === undefined && prior?.timezone !== undefined ? { timezone: prior.timezone } : {}),
+          };
+          const replayed = await app.turn({ ...base, ...inheritedOptions, async: true });
+          replayRunId = replayed.runId;
+        } catch (err) {
+          replayOutcomeKnown = false;
+          swallow(`signals: orphaned-signal replay for run ${runId}`, err);
+        }
+      }
+      if (!replayRunId && replayOutcomeKnown && signal.text?.trim()) {
+        const orphanRun = await deps.runs.get(runId);
         if (orphanRun) {
           try {
             const { displayText: _d, attachments: _a, approval: _ap, ...base } = orphanRun.request;
             const { run: fresh } = await deps.runs.enqueue({
               sessionId: orphanRun.sessionId,
-              request: { ...base, text: signal.text! },
+              request: { ...base, text: signal.text },
             });
-            drained.push({ signal, replayRunId: fresh.id });
-            continue;
+            replayRunId = fresh.id;
           } catch (err) {
             swallow(`signals: requestless orphaned-steer replay for run ${runId}`, err);
           }
         }
+      }
+      if (!replayRunId) {
         console.warn(
-          `[signals] orphaned ${signal.kind} for terminal run ${runId} has no stored request — dropped: ${signal.text?.slice(0, 120) ?? ""}`,
+          `[signals] orphaned ${signal.kind} for terminal run ${runId} could not be replayed — dropped: ${signal.text?.slice(0, 120) ?? ""}`,
         );
-        drained.push({ signal });
-        continue;
       }
-      try {
-        const replayed = await app.turn({ ...signal.request, async: true });
-        drained.push({ signal, ...(replayed.runId ? { replayRunId: replayed.runId } : {}) });
-      } catch (err) {
-        swallow(`signals: orphaned-signal replay for run ${runId}`, err);
-        drained.push({ signal });
-      }
+      drained.push({ signal, ...(replayRunId ? { replayRunId } : {}) });
     }
     return drained;
   }
@@ -601,9 +639,11 @@ export function createAppHelpers(deps: AppDeps, app: App) {
   return {
     adminBase,
     adminLink,
+    directoryMember: (principalId: string) => app.directoryMember(principalId),
     withAdminLink,
     resolveReachTargetFor,
     approvalRecordIsCurrent,
+    approvalResumable,
     approvalVisibleToViewer,
     pendingApprovalForSession,
     pendingApprovalResultForThread,
@@ -614,6 +654,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     projectsForViewer,
     managedProjectMembership,
     sessionsForViewer,
+    sessionForViewer,
     contextsFor,
     filesForViewer,
     currentResourceScopesForViewer,

@@ -189,6 +189,7 @@ const built = buildApp({
   runStore: "memory",
   harness: "mock",
 });
+await built.migrationsReady;
 const core = createServer(built.app, {
   signingSecret: secret,
   connectorTokens: built.connectorTokens,

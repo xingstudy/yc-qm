@@ -3,6 +3,7 @@ import { html, t } from "./i18n.ts";
 import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { fieldSelect } from "./ui";
+import { tip } from "./tooltip";
 
 export const BOT_MODES = ["ignore", "rollup", "action", "user"] as const;
 export type BotMode = (typeof BOT_MODES)[number];
@@ -126,7 +127,7 @@ async function save(): Promise<void> {
     ambientPolicyState.notice = "Saved.";
     ambientPolicyState.noticeKind = "saved";
   } catch (e) {
-    ambientPolicyState.notice = errMessage(e, "Couldn't save — try again.");
+    ambientPolicyState.notice = errMessage(e, "Couldn't save. Try again.");
     ambientPolicyState.noticeKind = "error";
   } finally {
     ambientPolicyState.saving = false;
@@ -163,7 +164,7 @@ function ambientValue(enabled: boolean | null): string {
 function botRow(b: BotPolicyView, i: number): TemplateResult {
   return html`
     <div class="ambient-bot-row">
-      <span class="ambient-bot-name">${b.name}</span>
+      <span class="ambient-bot-name" dir="auto">${b.name}</span>
       ${fieldSelect({
         className: "ambient-bot-mode",
         compact: true,
@@ -205,7 +206,7 @@ function botRow(b: BotPolicyView, i: number): TemplateResult {
         class="project-icon-button danger"
         type="button"
         aria-label=${t(`Remove ${b.name} from the ledger`)}
-        title="Remove"
+        ${tip(t("Remove"))}
         ?disabled=${ambientPolicyState.saving}
         @click=${() => {
           ambientPolicyState.bots = ambientPolicyState.bots.filter((_, j) => j !== i);
@@ -254,8 +255,8 @@ export function ambientPolicySection(scopeId: string): TemplateResult | typeof n
           ],
         })}
         <p class="ambient-policy-hint" id="ambient-enabled-hint">
-          When off, the agent never acts on overheard messages here — it only responds to direct @mentions. Default: on
-          only when standing orders (or an action-mode bot) are set below — otherwise mention-only.
+          When off, the agent never acts on overheard messages here; it only responds to direct @mentions. Default: on
+          only when standing orders (or an action-mode bot) are set below, otherwise mention-only.
         </p>
       </div>
       <div class="ambient-group">

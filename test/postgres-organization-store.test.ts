@@ -1396,6 +1396,9 @@ test(
   async () => {
     const org = "org-tx-audit";
     await rawRows("DROP TABLE IF EXISTS audit_log CASCADE");
+    await rawRows(
+      "DELETE FROM qm_schema_migrations WHERE starts_with(id, 'admin/audit-log/') OR starts_with(id, 'fork/audit-log/')",
+    );
     const auditLog = createPostgresAuditLog(URL!);
     const store = createPostgresOrganizationStore(URL!, { auditLog });
     await store.ensureOrgRoot({ orgId: org, name: "Acme", actor: "admin", now: 1 });
@@ -1584,3 +1587,20 @@ test("pg org tree: cross-org isolation — same unit ids in two orgs never inter
   assert.equal(closureA.length, 9, "org-iso-a closure covers exactly its own four-unit tree");
   assert.equal(closureB.length, 6, "org-iso-b closure unchanged by the other org's move and insert");
 });
+
+test(
+  "invitation ownership remains immutable and unique across profile emails in independent PG instances",
+  { skip },
+  async () => {
+    const first = createPostgresOrganizationStore(URL!);
+    const second = createPostgresOrganizationStore(URL!);
+    await first.putUser(user({ invitedEmail: "invite@example.test", externalMembership: true }));
+    await first.putUser(user({ email: "renamed@example.test", invitedEmail: "changed@example.test" }));
+    const bound = await second.getUser("org1", "U1");
+    assert.equal(bound?.invitedEmail, "invite@example.test");
+    assert.equal(bound?.externalMembership, true);
+    assert.equal((await second.findUserByEmail("org1", "invite@example.test"))?.principalId, "U1");
+    await assert.rejects(second.putUser(user({ principalId: "U2", email: "invite@example.test" })), /already belongs/);
+    assert.equal(await second.getUser("org1", "U2"), null);
+  },
+);

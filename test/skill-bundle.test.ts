@@ -120,3 +120,9 @@ test("shared binary assets with source bytes are retained and hashed by encoding
   assert.deepEqual(files, [{ path: "assets/logo.png", content: "AAECAw==", encoding: "base64" }]);
   assert.notEqual(computeBundleHash(files), computeBundleHash([{ path: "assets/logo.png", content: "AAECAw==" }]));
 });
+
+test("shared bundle executable changes invalidate the bundle hash in both directions", () => {
+  const file = { path: "run.sh", content: "exit 0" };
+  assert.notEqual(computeBundleHash([file]), computeBundleHash([{ ...file, executable: true }]));
+  assert.equal(computeBundleHash([file]), computeBundleHash([{ ...file, executable: false }]));
+});

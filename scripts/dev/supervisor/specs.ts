@@ -25,6 +25,8 @@ export function buildChildSpecs(i: SpecInputs): ChildSpec[] {
     Object.entries(base).filter(
       ([name]) =>
         ![
+          "HOME",
+          "CODEX_HOME",
           "AUTH_WECOM_CORP_ID",
           "AUTH_WECOM_AGENT_ID",
           "AUTH_WECOM_SECRET",
@@ -32,6 +34,7 @@ export function buildChildSpecs(i: SpecInputs): ChildSpec[] {
         ].includes(name),
     ),
   );
+  pluginBase.CODEX_AUTH_FILE = "";
   const orgId = i.baseEnv.DEV_INSTANCE_ORG_ID || "acme";
   const orgBootstrapUsers = [
     ...new Set(

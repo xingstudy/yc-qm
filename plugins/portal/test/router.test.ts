@@ -234,6 +234,20 @@ const upstream = createServer((req: IncomingMessage, res) => {
       );
     });
   }
+  if (req.url?.startsWith("/api/files/")) {
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": "sandbox allow-scripts; frame-ancestors 'self' *.apps.test",
+    });
+    return void res.end("<p>hi</p>");
+  }
+  if (req.url?.startsWith("/app-edit")) {
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": "default-src 'self'; frame-ancestors 'self' demo.apps.test",
+    });
+    return void res.end("<p>edit</p>");
+  }
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ url: req.url, cookie: req.headers.cookie ?? null, headers: req.headers }));
 });
@@ -255,6 +269,8 @@ process.env.OIDC_ISSUER = OIDC_ISSUER;
 process.env.OIDC_JWKS_URI = `${upstreamUrl}/oidc/jwks`;
 process.env.OIDC_CLIENT_ID = OIDC_CLIENT_ID;
 process.env.OIDC_CLIENT_SECRET = "router-test-client-secret";
+const SESSION_TTL_S = 28800;
+process.env.PORTAL_SESSION_TTL_S = String(SESSION_TTL_S);
 
 const { server } = await import("../src/index.ts");
 const { deriveKey, seal, open, openEncryptedTmp } = await import("../src/session.ts");
@@ -267,7 +283,7 @@ const transactionKey = deriveKey("router-test-portal-secret", "portal.oidc.trans
 function sessionCookie(sub: string, ageS = 0, sv?: number): string {
   const now = Math.floor(Date.now() / 1000);
   const iat = now - ageS;
-  const claims = { k: "session", sub, org: "acme", ...(sv !== undefined ? { sv } : {}), iat, exp: iat + 28800 };
+  const claims = { k: "session", sub, org: "acme", ...(sv !== undefined ? { sv } : {}), iat, exp: iat + SESSION_TTL_S };
   return `portal_session=${encodeURIComponent(seal(claims, sessionKey))}`;
 }
 
@@ -306,6 +322,7 @@ test("favicon: served unauthenticated as an SVG of the pirate-flag emoji", async
 test("no session: JSON request is 401, HTML navigation is 302 to login", async () => {
   const j = await fetch(`${base}/api/sessions`, { redirect: "manual" });
   assert.equal(j.status, 401);
+  assert.equal(((await j.json()) as { loginUrl?: unknown }).loginUrl, "/auth/login");
   const h = await fetch(`${base}/`, { headers: { accept: "text/html" }, redirect: "manual" });
   assert.equal(h.status, 302);
   assert.match(h.headers.get("location") ?? "", /^\/auth\/login\?returnTo=/);
@@ -358,6 +375,15 @@ test("web-ui /app-edit drops x-frame-options so its own frame-ancestors CSP can 
   assert.equal(editPage.headers.get("x-frame-options"), null, "/app-edit must not carry the blanket DENY");
   const normal = await fetch(`${base}/api/x`, { headers: { cookie: sessionCookie("U1") } });
   assert.equal(normal.headers.get("x-frame-options"), "DENY", "every other surface path keeps DENY");
+});
+
+test("a surface that declares frame-ancestors keeps it; the blanket DENY stays on everything else", async () => {
+  const file = await fetch(`${base}/api/files/f1/content/demo.html`, { headers: { cookie: sessionCookie("U1") } });
+  assert.equal(file.status, 200);
+  assert.equal(file.headers.get("x-frame-options"), null, "DENY would defeat the surface's own frame-ancestors");
+  assert.match(file.headers.get("content-security-policy") ?? "", /frame-ancestors 'self' \*\.apps\.test/);
+  const normal = await fetch(`${base}/api/x`, { headers: { cookie: sessionCookie("U1") } });
+  assert.equal(normal.headers.get("x-frame-options"), "DENY");
 });
 
 test("admin tier (derived gate): non-admin sub is 403 before the upstream; admin sub gets admin=<sub>", async () => {
@@ -417,6 +443,30 @@ test("CSRF: a non-GET without a same-origin Origin is refused", async () => {
     headers: { cookie: sessionCookie("U1"), origin: PUBLIC },
   });
   assert.equal(sameOrigin.status, 200);
+});
+
+test("inbound webhooks pass through to the core with NO session, signature headers preserved, no synthesized cookie", async () => {
+  const r = await fetch(`${base}/v1/webhooks/incoming/wh_abc?x=1`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-hub-signature-256": "sha256=deadbeef",
+      "x-github-delivery": "d-1",
+    },
+    body: JSON.stringify({ hello: "world" }),
+  });
+  assert.equal(r.status, 200);
+  const body = (await r.json()) as { url: string; cookie: string | null; headers: Record<string, string> };
+  assert.equal(body.url, "/v1/webhooks/incoming/wh_abc?x=1");
+  assert.equal(body.cookie, null);
+  assert.equal(body.headers["x-hub-signature-256"], "sha256=deadbeef");
+  assert.equal(body.headers["x-github-delivery"], "d-1");
+});
+
+test("the webhook passthrough is exact-shape + POST-only (no widening of /v1)", async () => {
+  assert.equal((await fetch(`${base}/v1/webhooks/incoming/abc`)).status, 404);
+  assert.equal((await fetch(`${base}/v1/webhooks/incoming/a/b`, { method: "POST" })).status, 404);
+  assert.equal((await fetch(`${base}/v1/webhooks`, { method: "POST" })).status, 404);
 });
 
 test("the provider callback still passes through publicly with NO session/cookie", async () => {
@@ -528,9 +578,9 @@ test("new human path /drop/:id: form GET reaches the core /v1 drop form with x-d
   assert.equal(portalIdentityClaims(ob).sv, 9);
 });
 
-test("deployments are OFF by default (404 even with a session)", async () => {
+test("deployments are ON by default — /d/ proxies to core for a signed-in session", async () => {
   const r = await fetch(`${base}/d/some-app/`, { headers: { cookie: sessionCookie("U1") } });
-  assert.equal(r.status, 404);
+  assert.notEqual(r.status, 404, "the /d/ route exists without PORTAL_DEPLOYMENTS_ENABLED");
 });
 
 test("auth/login durably stores the flow, keeps the rollout cookie, and redirects with PKCE", async () => {
@@ -942,10 +992,13 @@ test("sliding renewal: a fresh session is NOT re-stamped, an aged one is re-issu
   const setCookie = aged.headers.get("set-cookie") ?? "";
   const m = setCookie.match(/portal_session=([^;]+)/);
   assert.ok(m, "an aged session is re-stamped through the proxy");
-  assert.match(setCookie, /Max-Age=28800/, "the renewed cookie carries a full TTL");
+  assert.match(setCookie, new RegExp(`Max-Age=${SESSION_TTL_S}\\b`), "the renewed cookie carries a full TTL");
   const claims = open(decodeURIComponent(m![1] ?? ""), sessionKey) as { sub: string; exp: number } | null;
   assert.equal(claims?.sub, "U1", "the renewed cookie is valid and preserves the sub");
-  assert.ok((claims?.exp ?? 0) > Math.floor(Date.now() / 1000) + 28000, "exp is pushed out to ~now + full TTL");
+  assert.ok(
+    (claims?.exp ?? 0) > Math.floor(Date.now() / 1000) + SESSION_TTL_S - 800,
+    "exp is pushed out to ~now + full TTL",
+  );
 });
 
 test("admin-status probe is memoized within the TTL (one round-trip per sub)", async () => {

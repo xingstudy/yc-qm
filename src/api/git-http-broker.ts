@@ -40,7 +40,7 @@ const realGitHttpFetch: GitHttpFetch = async (url, init) => {
   return {
     status: resp.status,
     headers,
-    body: resp.body ? Readable.fromWeb(resp.body as ReadableStream<Uint8Array>) : null,
+    body: resp.body ? Readable.fromWeb(resp.body as Parameters<typeof Readable.fromWeb>[0]) : null,
   };
 };
 

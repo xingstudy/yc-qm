@@ -1,6 +1,7 @@
 import type { ActorAssertion, Principal } from "../types.ts";
 import { createMemoryMap, type DurableMap } from "../persistence/durable-map.ts";
 import { personKey } from "../directory/person.ts";
+import { externalMemberActive, type ExternalMember } from "./external-members.ts";
 
 interface IdentityProvider {
   resolve(actor: ActorAssertion): Principal;
@@ -36,28 +37,76 @@ export interface IdentityService extends IdentityProvider {
   deactivate(externalId: string, source?: DeactivationSource, sessionVersion?: number): Promise<void>;
   reactivate(externalId: string, sessionVersion?: number): Promise<void>;
   recordDirectorySync(removedIds: string[], presentIds: string[]): Promise<DirectorySyncOutcome>;
+  listExternalMembers(): Promise<ExternalMember[]>;
+  readExternalMember(email: string): Promise<ExternalMember | null>;
+  externalMember(principalId: string): ExternalMember | undefined;
+  putExternalMember(m: ExternalMember): Promise<void>;
+  removeExternalMember(principalId: string): Promise<void>;
   hydrate(): Promise<void>;
-  refresh(): Promise<void>;
+  refresh(force?: boolean): Promise<void>;
+}
+
+export function actorAssertionActive(
+  identity: Pick<IdentityService, "classify" | "isInternal">,
+  actor: ActorAssertion | undefined,
+): boolean {
+  return !!actor?.externalId && identity.isInternal(identity.classify(actor.externalId, actor.isExternalGuest));
+}
+
+interface IdentityOptions {
+  isOverridden?: (externalId: string) => boolean;
+  directorySyncProtected?: readonly string[];
+  externalMembers?: DurableMap<ExternalMember>;
+  statusBacking?: DurableMap<IdentityStatusRecord>;
+  ready?: () => Promise<void>;
 }
 
 export function createIdentityService(
   backing?: DurableMap<DeactivationRecord>,
-  statusBacking?: DurableMap<IdentityStatusRecord>,
+  optionsOrStatus?: IdentityOptions | DurableMap<IdentityStatusRecord>,
   ready?: () => Promise<void>,
 ): IdentityService {
+  const opts: IdentityOptions =
+    optionsOrStatus && "all" in optionsOrStatus
+      ? { statusBacking: optionsOrStatus, ready }
+      : { ...optionsOrStatus, ready: ready ?? optionsOrStatus?.ready };
   const store = backing ?? createMemoryMap<DeactivationRecord>();
-  const statusStore = statusBacking ?? createMemoryMap<IdentityStatusRecord>();
+  const statusStore = opts.statusBacking ?? createMemoryMap<IdentityStatusRecord>();
   const deactivated = new Map<string, DeactivationRecord>();
   const statusVersions = new Map<string, IdentityStatusRecord>();
+  const externalStore = opts.externalMembers ?? createMemoryMap<ExternalMember>();
+  const externals = new Map<string, ExternalMember>();
+  const directorySyncProtected = new Set((opts.directorySyncProtected ?? []).map(personKey).filter(Boolean));
   const REFRESH_TTL_MS = 10_000;
   let refreshedAt = 0;
   let refreshP: Promise<void> | null = null;
   let hydrateP: Promise<void> | null = null;
 
+  const keptByDirectorySync = (key: string): boolean => directorySyncProtected.has(key) || externals.has(key);
+
+  async function load(): Promise<void> {
+    await synchronize();
+    const members = await externalStore.all();
+    externals.clear();
+    for (const member of members) externals.set(personKey(member.email), member);
+  }
+
   function classify(externalId: string, isExternalGuest?: boolean): Principal {
-    const record = deactivated.get(personKey(externalId));
-    const type: Principal["type"] =
-      (record !== undefined && record.status !== "active") || isExternalGuest ? "guest" : "internal";
+    const key = personKey(externalId);
+    const record = deactivated.get(key);
+    if (
+      statusVersions.get(key)?.status === "deactivated" ||
+      (record?.sessionVersion !== undefined && record.status !== "active")
+    ) {
+      return { id: externalId, type: "guest" };
+    }
+    if (opts.isOverridden?.(externalId)) return { id: externalId, type: "internal" };
+    const external = externals.get(key);
+    const inactive =
+      record?.source === "manual" ||
+      (record?.source === "directory-sync" && !keptByDirectorySync(key)) ||
+      (external !== undefined && !externalMemberActive(external));
+    const type: Principal["type"] = inactive || isExternalGuest ? "guest" : "internal";
     return { id: externalId, type };
   }
 
@@ -191,6 +240,21 @@ export function createIdentityService(
     deactivated.delete(key);
   }
 
+  async function refresh(force = false): Promise<void> {
+    await opts.ready?.();
+    const now = Date.now();
+    if (refreshP) return refreshP;
+    if (!force && now - refreshedAt < REFRESH_TTL_MS) return;
+    refreshP = load()
+      .then(() => {
+        refreshedAt = Date.now();
+      })
+      .finally(() => {
+        refreshP = null;
+      });
+    return refreshP;
+  }
+
   return {
     classify,
     deactivate,
@@ -202,6 +266,7 @@ export function createIdentityService(
         if (await hasVersionedStatus(key)) continue;
         const record = deactivated.get(key);
         if (record?.sessionVersion !== undefined || (record && record.status !== "active")) continue;
+        if (keptByDirectorySync(key)) continue;
         await deactivate(id, "directory-sync");
         outcome.deactivated.push(id);
       }
@@ -216,26 +281,36 @@ export function createIdentityService(
       }
       return outcome;
     },
+    async listExternalMembers(): Promise<ExternalMember[]> {
+      await refresh();
+      return [...externals.values()];
+    },
+    async readExternalMember(email) {
+      await opts.ready?.();
+      const key = personKey(email);
+      const member = await externalStore.get(key);
+      if (member) externals.set(key, member);
+      else externals.delete(key);
+      return member;
+    },
+    externalMember(principalId: string): ExternalMember | undefined {
+      return externals.get(personKey(principalId));
+    },
+    async putExternalMember(m: ExternalMember): Promise<void> {
+      const key = personKey(m.email);
+      await externalStore.put(key, m);
+      externals.set(key, m);
+    },
+    async removeExternalMember(principalId: string): Promise<void> {
+      const key = personKey(principalId);
+      await externalStore.delete(key);
+      externals.delete(key);
+    },
     hydrate(): Promise<void> {
-      if (!hydrateP) {
-        hydrateP = synchronize();
-      }
+      if (!hydrateP) hydrateP = load();
       return hydrateP;
     },
-    async refresh(): Promise<void> {
-      await ready?.();
-      const now = Date.now();
-      if (refreshP) return refreshP;
-      if (now - refreshedAt < REFRESH_TTL_MS) return;
-      refreshP = synchronize()
-        .then(() => {
-          refreshedAt = Date.now();
-        })
-        .finally(() => {
-          refreshP = null;
-        });
-      return refreshP;
-    },
+    refresh,
     resolve(actor: ActorAssertion): Principal {
       const p = classify(actor.externalId, actor.isExternalGuest);
       return {

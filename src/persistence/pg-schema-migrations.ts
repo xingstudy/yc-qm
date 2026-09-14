@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Client, Pool, PoolClient } from "pg";
 import { sleep } from "../util/async.ts";
 
-const PG_MIGRATIONS_TABLE = "qm_schema_migrations";
+export const PG_MIGRATIONS_TABLE = "qm_schema_migrations";
 const PG_SCHEMA_LOCK_TIMEOUT_MS = 5 * 60_000;
 
 export interface PgMigrationDefinition {
@@ -13,11 +13,13 @@ export interface PgMigrationDefinition {
   transactional?: boolean;
 }
 
-interface PgMigration extends PgMigrationDefinition {
+export interface PgMigration extends PgMigrationDefinition {
   checksum: string;
 }
 
-export type PgMaintenanceDefinition = Pick<PgMigrationDefinition, "id" | "statements" | "transactional">;
+export type PgMaintenanceDefinition = Pick<PgMigrationDefinition, "id" | "statements" | "transactional"> & {
+  beforeMigrations?: boolean;
+};
 
 export function assertOneStatement(stmt: string): void {
   const bare = stmt
@@ -202,7 +204,10 @@ export async function applyPgMigrations(
   options: { maintenance?: readonly PgMaintenanceDefinition[]; lockTimeoutMs?: number } = {},
 ): Promise<void> {
   const migrations = definitions.map(definePgMigration);
-  const maintenance = (options.maintenance ?? []).map(definePgMigration);
+  const maintenance = (options.maintenance ?? []).map((definition) => ({
+    ...definePgMigration(definition),
+    beforeMigrations: definition.beforeMigrations === true,
+  }));
   if (!migrations.length && !maintenance.length) return;
   const ids = new Set<string>();
   for (const migration of migrations) {
@@ -212,6 +217,13 @@ export async function applyPgMigrations(
   await withPgSchemaLock(
     pool,
     async (client) => {
+      const maintain = async (before: boolean) => {
+        for (const operation of maintenance.filter((item) => item.beforeMigrations === before)) {
+          if (operation.transactional === false) await applyPgStatements(client, operation.statements);
+          else await transaction(client, () => applyPgStatements(client, operation.statements));
+        }
+      };
+      await maintain(true);
       if (migrations.length) {
         await client.query(`CREATE TABLE IF NOT EXISTS ${PG_MIGRATIONS_TABLE}(
         id TEXT PRIMARY KEY,
@@ -250,10 +262,7 @@ export async function applyPgMigrations(
         if (migration.transactional === false) await execute();
         else await transaction(client, execute);
       }
-      for (const operation of maintenance) {
-        if (operation.transactional === false) await applyPgStatements(client, operation.statements);
-        else await transaction(client, () => applyPgStatements(client, operation.statements));
-      }
+      await maintain(false);
     },
     options.lockTimeoutMs,
   );

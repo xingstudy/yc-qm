@@ -220,6 +220,7 @@ export function createDirectorySourceService(options: {
   keyMaterial: Buffer | string;
   auditLog: AuditLog;
   environmentSources?: readonly EnvironmentDirectorySource[];
+  initializationReady?: Promise<void>;
   now?: () => number;
 }): DirectorySourceService {
   const { orgId, store, providers, auditLog } = options;
@@ -608,6 +609,7 @@ export function createDirectorySourceService(options: {
   };
 
   const ready = (async () => {
+    await options.initializationReady;
     const configuredIds = new Set<string>();
     for (const input of options.environmentSources ?? []) {
       let configured: EnvironmentDirectorySource;
@@ -689,6 +691,7 @@ export function createDirectorySourceService(options: {
       }
     }
   })();
+  void ready.catch((error) => swallow("directory source initialization failed", error));
 
   const service: DirectorySourceService = {
     durable: store.durable,

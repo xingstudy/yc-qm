@@ -107,6 +107,8 @@ export function createSkillAccessResolver(input: {
   const activeAudienceMember = async (principalId: string): Promise<SkillAuthorizationAudienceMember | null> => {
     const user = await store.getUser(orgId, principalId);
     if (user) {
+      if (user.status !== "active") return null;
+      if (user.externalMembership) return (await resolveAudienceMember?.(principalId)) ?? null;
       return user.status === "active" ? { principalId: user.principalId, sessionVersion: user.sessionVersion } : null;
     }
     return (await resolveAudienceMember?.(principalId)) ?? null;

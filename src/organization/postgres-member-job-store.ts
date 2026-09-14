@@ -99,7 +99,10 @@ function rowToItem(row: Row): OrganizationMemberJobItem {
   };
 }
 
-export function createPostgresOrganizationMemberJobStore(connectionString: string): OrganizationMemberJobStore {
+export function createPostgresOrganizationMemberJobStore(
+  connectionString: string,
+  options: { autoStart?: boolean } = {},
+): OrganizationMemberJobStore {
   const pg = createPgPool(connectionString, MIGRATIONS);
   const load = async (orgId: string, jobId: string, actorId: string): Promise<OrganizationMemberJobDetail | null> => {
     const jobs = await pg.q(`SELECT * FROM organization_member_jobs WHERE org_id = $1 AND id = $2 AND actor_id = $3`, [
@@ -275,6 +278,9 @@ export function createPostgresOrganizationMemberJobStore(connectionString: strin
         return expired.rowCount ?? 0;
       });
     },
+    start() {
+      sweeper.start();
+    },
     async close() {
       sweeper.stop();
       await pg.close();
@@ -284,6 +290,6 @@ export function createPostgresOrganizationMemberJobStore(connectionString: strin
     label: "organization-member-jobs",
     immediate: true,
   });
-  sweeper.start();
+  if (options.autoStart !== false) sweeper.start();
   return store;
 }

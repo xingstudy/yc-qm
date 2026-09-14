@@ -32,6 +32,13 @@ export function normalizeProviderBaseUrl(protocol: string, value: string): strin
     : normalized;
 }
 
+export interface ModelGatewayTransportConfig {
+  url: string;
+  apiKey: string;
+  apiKeyHeader: string;
+  models: Readonly<Record<string, string>>;
+}
+
 /**
  * Validate and normalize a provider base URL. Returns the normalized
  * origin+path with trailing slashes removed. Throws on anything that
@@ -75,4 +82,18 @@ export function setProviderBaseUrls(urls: ProviderBaseUrls): void {
 export function providerBaseUrl(provider: string): string | undefined {
   const value = (PROVIDER_IDS as readonly string[]).includes(provider) ? configured[provider as ProviderId] : undefined;
   return value === undefined ? undefined : normalizeProviderBaseUrl(provider, value);
+}
+
+export function modelGatewayRequest<T extends { id: string; baseUrl: string }>(
+  config: ModelGatewayTransportConfig | undefined,
+  model: T,
+): { model: T; target: string; apiKey: string; headers: Record<string, string> } | undefined {
+  const target = config?.models[model.id];
+  if (!target || !config) return undefined;
+  return {
+    model: { ...model, baseUrl: config.url },
+    target,
+    apiKey: config.apiKey,
+    headers: { [config.apiKeyHeader]: config.apiKey },
+  };
 }

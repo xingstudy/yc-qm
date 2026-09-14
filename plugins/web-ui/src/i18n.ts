@@ -5,6 +5,9 @@ export type AppLocale = "en" | "zh-CN";
 export const LOCALE_KEY = "qm:locale";
 
 const ZH: Record<string, string> = {
+  Home: "首页",
+  Search: "搜索",
+  "Create New Chat": "新建对话",
   "Import preserves instructions, scripts, references and binary assets inside each skill directory.":
     "导入会保留每个技能目录中的指令、脚本、参考文件和图片等二进制资源。",
   "No skills available to import": "没有可导入的技能",

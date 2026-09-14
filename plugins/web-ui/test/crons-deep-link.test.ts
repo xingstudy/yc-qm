@@ -11,13 +11,30 @@ test("a run's worklog link addresses the chats view, not the page it was rendere
 });
 
 test("a retained worklog deep link opens even though background sessions stay out of conversation history", () => {
-  assert.match(shell, /const linkedTranscript = listedSession \? null : await entriesPrefetch;/);
-  assert.match(shell, /const linkedSession = listedSession \?\? linkedTranscript\?\.session;/);
-  assert.match(shell, /await openSession\([\s\S]*?linkedSession,[\s\S]*?Promise\.resolve\(linkedTranscript\)/);
+  assert.match(shell, /const linked = \(await transcript\)\?\.session/);
+  assert.match(shell, /await openSession\(linked, transcript, approvalsPrefetch/);
+  assert.match(shell, /revealSessionSurface\(linked\)/);
 });
 
 test("a cron row is a real link to its own path", () => {
   assert.match(source, /<a\s+class="cron-row-main"\s+href=\$\{deepLinkPath\(UI_BASE, "crons", null, null, c\.id\)\}/);
+});
+
+test("cron index rows keep details and raw schedules out of the summary", () => {
+  const row = source.slice(source.indexOf("function cronPageRow"), source.indexOf("function cronRowActions"));
+  assert.doesNotMatch(row, /cronPreview|cronScheduleSummary/);
+  assert.match(row, /cronRunSummary\(c\)/);
+});
+
+test("cron index keeps only search in its header controls", () => {
+  const page = source.slice(source.indexOf("function drawCronsPage"), source.indexOf("function setCronTab"));
+  assert.doesNotMatch(page, /onScope|onRefresh|label: "New cron"/);
+  assert.match(page, /placeholder: "Search crons"/);
+});
+
+test("reopening a cron refreshes recent runs without a manual refresh control", () => {
+  assert.match(source, /const shouldRefreshRuns = opts\.refreshRuns \|\| activeCronId !== c\.id;/);
+  assert.match(source, /openCron\(c, \{ refreshRuns: true \}\)/);
 });
 
 test("modified clicks fall through to the browser so open-in-tab and save-link still work", () => {

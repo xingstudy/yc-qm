@@ -4,6 +4,7 @@ import { parseScopeId, scopeId } from "../types.ts";
 import { personKey, personKeys, samePersonInDirectory, samePersonMatcher } from "../directory/person.ts";
 import type { Destination, SurfaceContextRequest, SurfaceContextResult } from "../types.ts";
 import { errMessage } from "../util/errors.ts";
+import { adminCronHistoryUrl } from "../util/admin-links.ts";
 import { createMemoryMap } from "../persistence/durable-map.ts";
 import { randomUUID } from "node:crypto";
 import {
@@ -15,6 +16,9 @@ import {
   type ReachResolution,
 } from "../reach/reach.ts";
 import { isVisible } from "../directory/visibility.ts";
+import { pickMatch, type DirectoryMember } from "../directory/directory-store.ts";
+import { externalMemberActive } from "../identity/external-members.ts";
+import { hasRevisionEvents, recordMessageRevisions } from "../core/message-revisions.ts";
 import { answerWebContextRequest } from "./web-context.ts";
 import { validateUserSchedule } from "../cron/schedule.ts";
 
@@ -36,8 +40,17 @@ export function createMessagingMethods(
   | "updateCron"
   | "deleteCron"
   | "setCronEnabled"
+  | "setCronFireNote"
+  | "listCronFires"
+  | "cronFiresByThreadRefs"
+  | "latestCronFireForThread"
   | "setCronDestination"
   | "setCronRecipientConsent"
+  | "createWebhook"
+  | "getWebhook"
+  | "listWebhooks"
+  | "setWebhookEnabled"
+  | "setWebhookRecipientConsent"
   | "pendingDeliveries"
   | "enqueueDelivery"
   | "ingestSurfaceEvents"
@@ -84,6 +97,35 @@ export function createMessagingMethods(
   const contextRequests = deps.contextRequests ?? createMemoryMap<SurfaceContextRequest>();
   const contextRequestListeners = new Set<(request: SurfaceContextRequest) => void>();
   const contextRequestTokens = new Map<string, string>();
+  // Principals identity knows about that the Slack directory never sees: the email
+  // allow-list, invited external users, and anyone who has signed in. On a Slack-less
+  // deployment these are the only members there are.
+  const identityMembers = async (): Promise<DirectoryMember[]> => {
+    const [externals, participants] = await Promise.all([
+      deps.identity.listExternalMembers(),
+      deps.sessions?.listParticipants() ?? [],
+    ]);
+    const candidates: DirectoryMember[] = [
+      ...(deps.emailAuthMembers ?? []),
+      ...externals
+        .filter((member) => externalMemberActive(member))
+        .map((member) => ({ principalId: member.email, displayName: member.email, type: "internal" as const })),
+      ...participants
+        .filter((w) => deps.identity.classify(w.principalId).type === "internal")
+        .map((w) => ({ principalId: w.principalId, displayName: w.principalId, type: "internal" as const })),
+    ];
+    const byKey = new Map<string, DirectoryMember>();
+    for (const member of candidates) {
+      const key = personKey(member.principalId);
+      if (key && !byKey.has(key)) byKey.set(key, member);
+    }
+    return [...byKey.values()];
+  };
+  const mergedDirectoryMembers = async () => {
+    const [stored, viaEmail] = await Promise.all([deps.directory.list(), identityMembers()]);
+    const seen = new Set(stored.map((member) => personKey(member.principalId)));
+    return [...stored, ...viaEmail.filter((member) => !seen.has(personKey(member.principalId)))];
+  };
 
   return {
     async createCron(input) {
@@ -108,6 +150,15 @@ export function createMessagingMethods(
     },
     getCron(id) {
       return deps.crons.get(id);
+    },
+    listCronFires(id, opts) {
+      return deps.crons.listFires(id, opts);
+    },
+    cronFiresByThreadRefs(threadRefs) {
+      return deps.crons.firesByThreadRefs(threadRefs);
+    },
+    latestCronFireForThread(id, threadRef) {
+      return deps.crons.latestFireForThread(id, threadRef);
     },
     listCrons() {
       return deps.crons.list();
@@ -181,6 +232,21 @@ export function createMessagingMethods(
     setCronEnabled(id, enabled) {
       return deps.crons.setEnabled(id, enabled);
     },
+    async setCronFireNote(id, note) {
+      const before = await deps.crons.get(id);
+      if (!before) return "missing";
+      const outcome = await deps.crons.setFireNote(id, note);
+      if (outcome === "applied") {
+        deps.auditLog.record({
+          at: Date.now(),
+          principalId: note.by ?? before.owner,
+          action: "cron_note",
+          resource: id,
+          scopeLabel: before.ownerScopeId,
+        });
+      }
+      return outcome;
+    },
     async setCronDestination(id, destination) {
       const before = await deps.crons.get(id);
       if (!before) return null;
@@ -197,6 +263,29 @@ export function createMessagingMethods(
     setCronRecipientConsent(id, recipientConsent) {
       return deps.crons.setRecipientConsent(id, recipientConsent);
     },
+    async createWebhook(input) {
+      const webhook = await deps.webhooks.create(input);
+      deps.auditLog.record({
+        at: Date.now(),
+        principalId: webhook.createdBy,
+        action: "webhook_create",
+        resource: webhook.id,
+        scopeLabel: webhook.ownerScopeId,
+      });
+      return webhook;
+    },
+    getWebhook(id) {
+      return deps.webhooks.get(id);
+    },
+    listWebhooks() {
+      return deps.webhooks.list();
+    },
+    setWebhookEnabled(id, enabled) {
+      return deps.webhooks.setEnabled(id, enabled);
+    },
+    setWebhookRecipientConsent(id, recipientConsent) {
+      return deps.webhooks.setRecipientConsent(id, recipientConsent);
+    },
     pendingDeliveries(type, claimMs, targetPrefix) {
       return claimMs && claimMs > 0
         ? deps.deliveries.claimPending(type, claimMs, targetPrefix)
@@ -209,6 +298,11 @@ export function createMessagingMethods(
       if (!deps.surfaceCache || !events.length) return { upserted: 0 };
       if (self && (self.name || self.mentionId)) ambientSelf.set(`${orgIdOf()}:${surface}`, self);
       const out = await deps.surfaceCache.ingest(events);
+      if (surface === "slack" && hasRevisionEvents(events)) {
+        void recordMessageRevisions(deps.sessions, events).catch((e) =>
+          console.error("[revisions] surface revision record failed:", errMessage(e)),
+        );
+      }
       for (const container of new Set(events.filter((e) => !e.self).map((e) => e.container))) {
         void judgeAmbientContainer(surface, container).catch((e) =>
           console.error("[ambient] judge failed:", errMessage(e)),
@@ -317,7 +411,7 @@ export function createMessagingMethods(
 
     async upsertDirectory(members, syncedAt) {
       const previous = await deps.directory.list();
-      if (!(await deps.directory.replace(members, syncedAt))) return;
+      if (!(await deps.directory.replace(members, syncedAt))) return false;
       const present = members.filter((m) => m.type === "internal").map((m) => m.principalId);
       const presentSet = new Set(present);
       const removed = previous.map((m) => m.principalId).filter((id) => !presentSet.has(id));
@@ -341,13 +435,21 @@ export function createMessagingMethods(
           scopeLabel: orgScope,
         });
       }
+      return true;
     },
     async upsertChannels(channels, channelMembers, syncedAt, channelRosterIds, revocations) {
-      await deps.directory.replaceChannels(channels, channelMembers, syncedAt, channelRosterIds, revocations);
+      const applied = await deps.directory.replaceChannels(
+        channels,
+        channelMembers,
+        syncedAt,
+        channelRosterIds,
+        revocations,
+      );
       await h.syncLinkedProjectRosters();
+      return applied;
     },
     async upsertGroups(groupMembers, syncedAt, groupIds, groupRosterIds) {
-      await deps.directory.replaceGroups(groupMembers, syncedAt, groupIds, groupRosterIds);
+      return deps.directory.replaceGroups(groupMembers, syncedAt, groupIds, groupRosterIds);
     },
     async setDirectoryWorkspaceUrl(url) {
       await deps.directory.setWorkspaceUrl(url);
@@ -365,8 +467,18 @@ export function createMessagingMethods(
         ...(isPrivate !== undefined ? { isPrivate } : {}),
       });
     },
-    resolveRecipient(query) {
-      return deps.directory.resolve(query);
+    async resolveRecipient(query) {
+      const stored = await deps.directory.resolve(query);
+      if (stored.kind !== "none") return stored;
+      const match = pickMatch(
+        await identityMembers(),
+        query,
+        (member) => member.principalId,
+        (member) => member.displayName,
+      );
+      if (match.kind === "one") return { kind: "one", member: match.item };
+      if (match.kind === "ambiguous") return { kind: "ambiguous", candidates: match.items };
+      return { kind: "none" };
     },
     async resolveVisibleRecipient(actorId, query, opts) {
       if (!deps.organization) return deps.directory.resolve(query);
@@ -401,13 +513,17 @@ export function createMessagingMethods(
       return deps.directory.resolveChannel(query);
     },
     directoryMembers() {
-      return deps.directory.list();
+      return mergedDirectoryMembers();
     },
     directoryChannels() {
       return deps.directory.listChannels();
     },
-    directoryMember(principalId) {
-      return deps.directory.get(principalId);
+    async directoryMember(principalId) {
+      return (
+        (await deps.directory.get(principalId)) ??
+        (await identityMembers()).find((member) => personKey(member.principalId) === personKey(principalId)) ??
+        null
+      );
     },
     samePerson(a, b) {
       return samePersonInDirectory(deps.directory, a, b);
@@ -416,9 +532,7 @@ export function createMessagingMethods(
       return samePersonMatcher(deps.directory, actorId);
     },
     cronAdminUrl(cron) {
-      return adminBase
-        ? `${adminBase}/admin/history?scope=${encodeURIComponent(cron.ownerScopeId)}&origin=cron&cron=${encodeURIComponent(cron.id)}`
-        : undefined;
+      return adminBase ? adminCronHistoryUrl(adminBase, cron.ownerScopeId, cron.id) : undefined;
     },
     async channelName(channelId) {
       const chan = (await deps.directory.listChannels()).find((c) => c.channelId === channelId);
@@ -471,12 +585,16 @@ export function createMessagingMethods(
         if (r.group) extra.group = r.group;
       }
       if (input.threadTs) {
-        if (baseDestination.type !== "slack" && baseDestination.type !== "group") {
+        if (
+          baseDestination.type !== "slack" &&
+          baseDestination.type !== "group" &&
+          baseDestination.type !== "principal"
+        ) {
           return {
             ok: false,
             status: 400,
             error: "bad_request",
-            message: "threadTs threads a channel or group DM post — a DM to a person has no threads",
+            message: "threadTs requires a Slack channel, group DM, or person DM",
           };
         }
         baseDestination = withThread(baseDestination, input.threadTs);

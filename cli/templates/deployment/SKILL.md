@@ -6,16 +6,17 @@ description: Deploy the QM package from an organization-owned deployment reposit
 # Deploy QM
 
 Read `../../../deployment.md` completely and follow it as the authoritative
-workflow when deployment is requested; a local edit alone does not initiate it.
-Read only the selected provider reference, and `references/slack.md` only when
-Slack is requested.
+workflow when deployment is requested; a local edit alone does not initiate it. Read only the selected provider reference. Read `references/email.md`
+before collecting email secrets. Administrators can defer email setup and use
+`qm admin-login`; ordinary email sign-in needs a transport. Read
+`references/slack.md` only when Slack is requested.
 
 A deployment needs a base model key and a way for people to sign in. Collect
 both in the same pass. The base model provider is a deployment choice recorded
 as `modelProvider`, not a setting to leave for the Admin page. Sign-in is either
-the built-in `auth` broker, which needs an email transport, or an external OIDC
-provider such as Slack, which needs no email at all — read `references/email.md`
-only once the operator has chosen the broker.
+the built-in `auth` broker, with optional email setup for an initial admin-only
+deployment, or an external OIDC provider such as Slack. Read `references/email.md`
+once the operator has chosen the broker.
 
 Use the repository's installed `@yc-software/qm` dependency through
 `npm exec qm -- <command>`. Do not require or clone the QM source repository.

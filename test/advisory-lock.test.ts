@@ -1,3 +1,11 @@
+import {
+  createSandboxResources,
+  type SandboxResource,
+  type SandboxDefault,
+  type SandboxResourceRollout,
+} from "../src/sandbox/sandbox-resources.ts";
+import type { SandboxRoute } from "../src/sandbox/sandbox-routing.ts";
+import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createPgPool } from "../src/persistence/pg-pool.ts";
@@ -23,8 +31,8 @@ test(
   "pg mutex: the SAME key serializes — the two fns never overlap (one finishes before the other starts)",
   { skip },
   async () => {
-    const pgA = createPgPool(URL!, []);
-    const pgB = createPgPool(URL!, []);
+    const pgA = createPgPool(URL!);
+    const pgB = createPgPool(URL!);
     try {
       const lockA = createPostgresAdvisoryLock(pgA, { pollMs: 20 });
       const lockB = createPostgresAdvisoryLock(pgB, { pollMs: 20 });
@@ -52,8 +60,8 @@ test(
 );
 
 test("pg mutex: DIFFERENT keys run concurrently (independent locks)", { skip }, async () => {
-  const pgA = createPgPool(URL!, []);
-  const pgB = createPgPool(URL!, []);
+  const pgA = createPgPool(URL!);
+  const pgB = createPgPool(URL!);
   try {
     const lockA = createPostgresAdvisoryLock(pgA, { pollMs: 20 });
     const lockB = createPostgresAdvisoryLock(pgB, { pollMs: 20 });
@@ -74,7 +82,7 @@ test("pg mutex: DIFFERENT keys run concurrently (independent locks)", { skip }, 
 });
 
 test("pg mutex: the lock is released after fn THROWS (the next acquire succeeds)", { skip }, async () => {
-  const pg = createPgPool(URL!, []);
+  const pg = createPgPool(URL!);
   try {
     const lock = createPostgresAdvisoryLock(pg, { pollMs: 20 });
     await assert.rejects(
@@ -96,8 +104,8 @@ test("pg mutex: the lock is released after fn THROWS (the next acquire succeeds)
 });
 
 test("pg mutex: waiting beyond timeoutMs throws a clear error", { skip }, async () => {
-  const pgHolder = createPgPool(URL!, []);
-  const pgWaiter = createPgPool(URL!, []);
+  const pgHolder = createPgPool(URL!);
+  const pgWaiter = createPgPool(URL!);
   try {
     const holder = createPostgresAdvisoryLock(pgHolder, { pollMs: 20 });
     const waiter = createPostgresAdvisoryLock(pgWaiter, { pollMs: 20, timeoutMs: 100 });
@@ -119,5 +127,54 @@ test("pg mutex: waiting beyond timeoutMs throws a clear error", { skip }, async 
   } finally {
     await pgHolder.close();
     await pgWaiter.close();
+  }
+});
+
+test("pg sandbox activation fences publication from a separate compatible reader", { skip }, async () => {
+  const pgA = createPgPool(URL!);
+  const pgB = createPgPool(URL!);
+  const release = Promise.withResolvers<string[]>();
+  try {
+    const options = {
+      enabled: false,
+      rollout: createMemoryMap<SandboxResourceRollout>(),
+      records: createMemoryMap<SandboxResource>(),
+      defaults: createMemoryMap<SandboxDefault>(),
+      routes: createMemoryMap<SandboxRoute>(),
+      backends: {},
+      defaultBackend: "local" as const,
+      canUseScope: async () => true,
+    };
+    const entered = Promise.withResolvers<void>();
+    const reader = createSandboxResources({ ...options, lock: createPostgresAdvisoryLock(pgB, { pollMs: 10 }) });
+    const active = createSandboxResources({
+      ...options,
+      enabled: true,
+      lock: createPostgresAdvisoryLock(pgA, { pollMs: 10 }),
+      legacyScopes: () => {
+        entered.resolve();
+        return release.promise;
+      },
+    });
+    const activation = active.initialize();
+    await entered.promise;
+    const publication = reader.recordLegacy("personal:late", "local", { id: "late", rootDir: "/workspace" });
+    release.resolve([]);
+    await activation;
+    const id = await publication;
+    assert.equal((await reader.resolve("personal:late"))?.id, id);
+    assert.deepEqual(await options.defaults.get("personal:late"), { sandboxId: id });
+    let changed = false;
+    await assert.rejects(
+      reader.withLegacyMutation("personal:late", async () => {
+        changed = true;
+      }),
+      /retired/,
+    );
+    assert.equal(changed, false);
+  } finally {
+    release.resolve([]);
+    await pgA.close();
+    await pgB.close();
   }
 });

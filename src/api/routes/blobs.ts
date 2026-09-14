@@ -1,13 +1,29 @@
 import { verifyBlobTransferCapability } from "../../auth/capability-token.ts";
-import { BlobHashMismatchError, BlobTooLargeError, MAX_BLOB_BYTES } from "../../persistence/blob-transfer.ts";
+import {
+  BlobHashMismatchError,
+  BlobTooLargeError,
+  MAX_BLOB_BYTES,
+  MAX_STAGE_BLOB_BYTES,
+} from "../../persistence/blob-transfer.ts";
 import { CAPABILITY_HEADER } from "../contract.ts";
-import { canonicalPayload, headerValue, pipeToResponse, sendJson, verifyOrReject } from "../http.ts";
+import {
+  canonicalPayload,
+  extendBodyDeadline,
+  headerValue,
+  pipeToResponse,
+  sendJson,
+  verifyOrReject,
+} from "../http.ts";
+
+const STAGE_UPLOAD_DEADLINE_MS = 1_800_000;
 import type { BaseCtx, Route } from "./route.ts";
 import { currentCapabilityActor } from "../capability-actor.ts";
 
 type BlobDir = "read" | "write";
 
-async function authorizeBlob(ctx: BaseCtx, dir: BlobDir, blobId: string | null): Promise<boolean> {
+type BlobAuthz = { via: "capability" | "source" } | null;
+
+async function authorizeBlob(ctx: BaseCtx, dir: BlobDir, blobId: string | null): Promise<BlobAuthz> {
   const { req, res, secret, auth, url, pathname, method } = ctx;
   const capSecret = ctx.deps.capabilitySecret ?? secret;
   const capToken = headerValue(req, CAPABILITY_HEADER);
@@ -20,19 +36,19 @@ async function authorizeBlob(ctx: BaseCtx, dir: BlobDir, blobId: string | null):
     if (!claims) {
       req.resume();
       sendJson(res, 403, { error: "forbidden", message: "blob-transfer capability token not valid for this transfer" });
-      return false;
+      return null;
     }
     if (!(await currentCapabilityActor(ctx.deps, claims))) {
       req.resume();
       sendJson(res, 401, { error: "unauthorized", message: "principal is no longer active" });
-      return false;
+      return null;
     }
     if (!(await ctx.app.authorizesCapabilityScope(claims))) {
       req.resume();
       sendJson(res, 403, { error: "forbidden", message: "capability scope membership has been revoked" });
-      return false;
+      return null;
     }
-    return true;
+    return { via: "capability" };
   }
   const tail = method === "POST" ? (headerValue(req, "x-content-sha256") ?? "") : "";
   if (
@@ -47,9 +63,9 @@ async function authorizeBlob(ctx: BaseCtx, dir: BlobDir, blobId: string | null):
     ))
   ) {
     req.resume();
-    return false;
+    return null;
   }
-  return true;
+  return { via: "source" };
 }
 
 async function putBlob(ctx: BaseCtx): Promise<void> {
@@ -63,10 +79,12 @@ async function putBlob(ctx: BaseCtx): Promise<void> {
     req.resume();
     return sendJson(res, 400, { error: "bad_request", message: "x-content-sha256 (hex sha-256) required" });
   }
-  if (!(await authorizeBlob(ctx, "write", null))) return;
+  const authz = await authorizeBlob(ctx, "write", null);
+  if (!authz) return;
+  if (authz.via === "capability") extendBodyDeadline(req, STAGE_UPLOAD_DEADLINE_MS);
   try {
     const info = await deps.blobTransfer.put(req, {
-      maxBytes: MAX_BLOB_BYTES,
+      maxBytes: authz.via === "capability" ? MAX_STAGE_BLOB_BYTES : MAX_BLOB_BYTES,
       ...(declaredSha ? { expectedSha256: declaredSha } : {}),
     });
     return sendJson(res, 200, { blobId: info.blobId, sizeBytes: info.sizeBytes });

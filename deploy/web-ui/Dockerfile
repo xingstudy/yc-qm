@@ -5,7 +5,7 @@ ARG NPM_INSTALL_REGISTRY=https://registry.npmjs.org
 ENV WEB_UI_BASE=$WEB_UI_BASE
 COPY plugins/web-ui/package.json plugins/web-ui/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm,sharing=shared npm ci --prefer-offline --no-audit --registry="${NPM_INSTALL_REGISTRY}"
-COPY plugins/web-ui/index.html plugins/web-ui/vite.config.ts plugins/web-ui/tsconfig.json ./
+COPY plugins/web-ui/index.html plugins/web-ui/shared.html plugins/web-ui/vite.config.ts plugins/web-ui/tsconfig.json ./
 COPY plugins/web-ui/src ./src
 COPY plugins/chassis/src /chassis/src
 RUN npm run build
@@ -17,6 +17,8 @@ ARG NPM_INSTALL_REGISTRY=https://registry.npmjs.org
 COPY plugins/web-ui/package.json plugins/web-ui/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm,sharing=shared npm ci --omit=dev --prefer-offline --no-audit --registry="${NPM_INSTALL_REGISTRY}" && rm package-lock.json
 COPY plugins/web-ui/server ./server
+COPY plugins/admin/src /admin/src
+COPY plugins/admin/public /admin/public
 COPY plugins/chassis/src /chassis/src
 COPY --from=build /app/dist-web ./dist-web
 
@@ -29,5 +31,6 @@ RUN --mount=type=cache,target=/var/cache/apk,sharing=locked apk upgrade \
 ENV NODE_ENV=production
 ENV PORT=8080
 EXPOSE 8080
+RUN apk add --no-cache util-linux
 USER node
 CMD ["node", "server/index.ts"]

@@ -1,6 +1,7 @@
+import type { RememberedSessions, RememberedSession } from "../src/sessions.ts";
 import { createServer, type Server } from "node:http";
 import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
-import { readConfig, type AuthConfig } from "../src/config.ts";
+import { emailConfigured, readConfig, type AuthConfig } from "../src/config.ts";
 import type { ClaimStore } from "../../chassis/src/claims.ts";
 import type { Mailer, OutgoingEmail } from "../src/email.ts";
 import { loadSigningKey } from "../src/keys.ts";
@@ -155,6 +156,8 @@ export interface Harness {
   settle(): Promise<void>;
   close(): Promise<void>;
   now: { ms: number };
+  sessions: RememberedSessions;
+  remembered: Map<string, RememberedSession & { absoluteMs: number; idleS: number }>;
 }
 
 export async function startHarness(
@@ -164,19 +167,44 @@ export async function startHarness(
     brandName?: () => string;
     directorySources?: DirectorySourceClient;
     directoryContinuations?: PortalLoginTransactions;
+    emailAllowed?: (email: string) => Promise<boolean>;
+    sessions?: RememberedSessions;
   } = {},
 ): Promise<Harness> {
   const cfg = readConfig(testEnv(options.env));
   const claims = options.claims ?? memoryClaimStore();
   const mailer = captureMailer();
   const now = { ms: Date.now() };
+  const remembered = new Map<string, RememberedSession & { absoluteMs: number; idleS: number }>();
+  const sessions: RememberedSessions = options.sessions ?? {
+    async create(email, idleS, absoluteS) {
+      const token = randomBytes(32).toString("base64url");
+      const session = {
+        email,
+        authTime: Math.floor(now.ms / 1000),
+        expiresAtMs: now.ms + idleS * 1000,
+        absoluteMs: now.ms + absoluteS * 1000,
+        idleS,
+      };
+      remembered.set(token, session);
+      return { ...session, token };
+    },
+    async use(token) {
+      const session = remembered.get(token);
+      if (!session || session.expiresAtMs <= now.ms || session.absoluteMs <= now.ms) return null;
+      session.expiresAtMs = Math.min(session.absoluteMs, now.ms + session.idleS * 1000);
+      return session;
+    },
+  };
   const pending: Array<Promise<void>> = [];
   const handle = createAuthHandler({
     cfg,
     signingKey: await loadSigningKey(cfg.signingJwk!),
     signer: new TokenSigner(cfg.tokenSecret, cfg.issuer),
     claims,
-    mailer,
+    sessions,
+    mailer: emailConfigured(cfg) ? mailer : null,
+    emailAllowed: options.emailAllowed ?? (async () => false),
     directoryContinuations: options.directoryContinuations ?? memoryContinuations(() => now.ms),
     ...(options.brandName ? { brandName: options.brandName } : {}),
     ...(options.directorySources ? { directorySources: options.directorySources } : {}),
@@ -195,6 +223,8 @@ export async function startHarness(
   return {
     cfg,
     claims,
+    sessions,
+    remembered,
     mailer,
     now,
     base: `http://127.0.0.1:${port}`,

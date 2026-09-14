@@ -22,6 +22,8 @@ beforeEach(async () => {
     "DROP TABLE IF EXISTS directory_unit_member_ownership, directory_unit_mappings, directory_managed_previews, directory_managed_user_ownership, directory_source_units, directory_email_lookup_guards, directory_email_resolutions, directory_sync_runs, directory_source_members, directory_source_secrets, directory_sources, audit_log CASCADE",
   );
   await resetPgMigrations(pool, "fork/directory-sources");
+  await resetPgMigrations(pool, "admin/audit-log");
+  await resetPgMigrations(pool, "fork/audit-log");
   await pool.end();
 });
 
@@ -331,7 +333,7 @@ test("Postgres source transactions initialize a fresh audit schema before record
     assert.equal((await auditLog.events()).filter((event) => event.action === "directory_source.create").length, 1);
   } finally {
     await store.close();
-    await (await auditLog.pool()).end();
+    await auditLog.close();
   }
 });
 

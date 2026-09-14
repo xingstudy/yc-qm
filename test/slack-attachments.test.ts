@@ -260,6 +260,10 @@ test("collectEarlierThreadFiles ignores channel backscroll for a top-level trigg
   assert.equal(out.length, 0);
 });
 
+const noArtifacts = async (): Promise<Buffer> => {
+  throw new Error("no artifact fallback in this test");
+};
+
 test("uploadAttachments fetches each blob and calls files.uploadV2 with the right args", async () => {
   const calls: Record<string, unknown>[] = [];
   const client = {
@@ -268,19 +272,66 @@ test("uploadAttachments fetches each blob and calls files.uploadV2 with the righ
       info: async () => ({ file: { shares: {} } }),
     },
   };
-  const fetchBlob = async (id: string) => Buffer.from(`bytes-for-${id}`);
+  const blobs = { readBlob: async (id: string) => Buffer.from(`bytes-for-${id}`), readFileArtifact: noArtifacts };
   await uploadAttachments(
     client,
     "C1",
     "123.45",
     [{ name: "x.txt", mimetype: "text/plain", sizeBytes: 2, blobId: "B1" }],
-    fetchBlob,
+    blobs,
   );
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.channel_id, "C1");
   assert.equal(calls[0]!.thread_ts, "123.45");
-  assert.equal(calls[0]!.filename, "x.txt");
-  assert.equal(Buffer.from(calls[0]!.file as Uint8Array).toString("utf8"), "bytes-for-B1");
+  assert.deepEqual(
+    (calls[0]!.file_uploads as Array<{ filename: string; file: Buffer }>).map(({ filename, file }) => [
+      filename,
+      file.toString(),
+    ]),
+    [["x.txt", "bytes-for-B1"]],
+  );
+});
+
+test("uploadAttachments batches mixed files with commentary into one Slack message", async () => {
+  const calls: Record<string, unknown>[] = [];
+  const client = {
+    files: {
+      uploadV2: async (args: Record<string, unknown>) => {
+        calls.push(args);
+        return { files: [{ files: [{ id: "F1" }, { id: "F2" }, { id: "F3" }] }] };
+      },
+      info: async () => ({ file: { shares: { private: { C1: [{ ts: "123.456" }] } } } }),
+    },
+  };
+  const attachments = [
+    { name: "first.png", mimetype: "image/png", sizeBytes: 3, blobId: "B1" },
+    { name: "second.jpg", mimetype: "image/jpeg", sizeBytes: 3, blobId: "B2" },
+    { name: "notes.pdf", mimetype: "application/pdf", sizeBytes: 3, blobId: "B3" },
+  ];
+  const blobs = { readBlob: async (id: string) => Buffer.from(id), readFileArtifact: noArtifacts };
+
+  const uploaded = await uploadAttachments(client, "C1", "123.45", attachments, blobs, {
+    initialComment: "two screenshots and the notes",
+  });
+
+  assert.deepEqual(uploaded, { uploaded: true, messageTs: "123.456" });
+  assert.equal(calls.length, 1, "one composed post should make one Slack upload call");
+  assert.equal(calls[0]!.channel_id, "C1");
+  assert.equal(calls[0]!.thread_ts, "123.45");
+  assert.equal(calls[0]!.initial_comment, "two screenshots and the notes");
+  assert.deepEqual(
+    (calls[0]!.file_uploads as Array<{ filename: string; file: Buffer }>).map(({ filename, file }) => [
+      filename,
+      file.toString(),
+    ]),
+    [
+      ["first.png", "B1"],
+      ["second.jpg", "B2"],
+      ["notes.pdf", "B3"],
+    ],
+  );
+  assert.equal(calls[0]!.filename, undefined);
+  assert.equal(calls[0]!.file, undefined);
 });
 
 test("uploadAttachments falls back to durable file artifacts when the transient blob is gone", async () => {
@@ -291,21 +342,22 @@ test("uploadAttachments falls back to durable file artifacts when the transient 
       info: async () => ({ file: { shares: {} } }),
     },
   };
-  const fetchBlob = async () => {
-    throw new Error("blob download failed: HTTP 404");
+  const blobs = {
+    readBlob: async (): Promise<Buffer> => {
+      throw new Error("blob download failed: HTTP 404");
+    },
+    readFileArtifact: async (artifactId: string, viewerId: string) => Buffer.from(`artifact:${artifactId}:${viewerId}`),
   };
-  const fetchArtifact = async (artifactId: string, viewerId: string) =>
-    Buffer.from(`artifact:${artifactId}:${viewerId}`);
   await uploadAttachments(
     client,
     "C1",
     undefined,
     [{ name: "x.gif", mimetype: "image/gif", sizeBytes: 2, blobId: "B1", artifactId: "A1", artifactViewerId: "U1" }],
-    fetchBlob,
-    fetchArtifact,
+    blobs,
   );
   assert.equal(calls.length, 1);
-  assert.equal(Buffer.from(calls[0]!.file as Uint8Array).toString("utf8"), "artifact:A1:U1");
+  const [uploaded] = calls[0]!.file_uploads as Array<{ filename: string; file: Buffer }>;
+  assert.equal(uploaded!.file.toString(), "artifact:A1:U1");
 });
 
 test("uploadAttachments propagates an upload failure (so the caller can report it)", async () => {
@@ -317,10 +369,9 @@ test("uploadAttachments propagates an upload failure (so the caller can report i
       info: async () => ({ file: { shares: {} } }),
     },
   };
-  const fetchBlob = async () => Buffer.from("data");
+  const blobs = { readBlob: async () => Buffer.from("data"), readFileArtifact: noArtifacts };
   await assert.rejects(
-    () =>
-      uploadAttachments(client, "C1", undefined, [{ name: "y", mimetype: "x", sizeBytes: 4, blobId: "B" }], fetchBlob),
+    () => uploadAttachments(client, "C1", undefined, [{ name: "y", mimetype: "x", sizeBytes: 4, blobId: "B" }], blobs),
     /missing_scope/,
   );
 });
@@ -333,14 +384,15 @@ test("uploadAttachments skips a 0-byte blob (Slack rejects a zero-length upload)
       info: async () => ({ file: { shares: {} } }),
     },
   };
-  const fetchBlob = async () => Buffer.alloc(0);
-  await uploadAttachments(
+  const blobs = { readBlob: async () => Buffer.alloc(0), readFileArtifact: noArtifacts };
+  const uploaded = await uploadAttachments(
     client,
     "C1",
     undefined,
     [{ name: "empty.png", mimetype: "image/png", sizeBytes: 0, blobId: "B" }],
-    fetchBlob,
+    blobs,
   );
+  assert.deepEqual(uploaded, { uploaded: false });
   assert.equal(calls.length, 0);
 });
 
@@ -357,13 +409,13 @@ test("uploadAttachments waits for the file's channel share to commit before reso
       },
     },
   };
-  const fetchBlob = async () => Buffer.from("data");
+  const blobs = { readBlob: async () => Buffer.from("data"), readFileArtifact: noArtifacts };
   await uploadAttachments(
     client,
     "C1",
     undefined,
     [{ name: "f.txt", mimetype: "text/plain", sizeBytes: 4, blobId: "B" }],
-    fetchBlob,
+    blobs,
   );
   assert.ok(infoCalls >= 3, `expected polling until the share committed, got ${infoCalls}`);
 });

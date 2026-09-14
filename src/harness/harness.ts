@@ -1,4 +1,6 @@
+import type { RuntimeControl, RuntimeHandoff } from "./runtime-types.ts";
 import type { AttachmentMeta, ConversationTurn, ScopeId, Session, SessionEntry } from "../types.ts";
+import type { HarnessId } from "../model/pi-models.ts";
 import type {
   GapPhases,
   GapWork,
@@ -10,8 +12,16 @@ import type {
 } from "../sessions/session-store.ts";
 export type { GapWork } from "../sessions/session-store.ts";
 import type { OverheardEntryPayload } from "./replay.ts";
+import type { ProviderKeys } from "./pi-harness.ts";
 import type { ToolContext } from "../tools/primitives.ts";
-import type { SecurityScreenVerdict } from "../security/security-posture.ts";
+import type { SecurityScreenVerdict, ToolResultScreen, ToolResultScreenInput } from "../security/security-posture.ts";
+
+export interface RuntimeChoice {
+  harnessId: HarnessId;
+  modelId: string;
+  effortLevel?: string;
+  fastMode?: boolean;
+}
 
 interface HarnessImage {
   mimeType: string;
@@ -39,11 +49,25 @@ export interface HarnessLlmRequestRecord {
   usage?: LlmCallUsage | null;
 }
 
-interface HarnessSecurityScreenInput {
+export interface HarnessSecurityScreenInput {
   payload: string;
+  harnessId?: string;
+  modelId?: string;
+  systemPrompt?: string;
   signal: AbortSignal;
   recordModelCall(rec: { model: string; inputTokens: number; entryCount: number }): void;
-  recordLlmRequest?(rec: HarnessLlmRequestRecord): void | Promise<void>;
+  recordLlmRequest?(rec: HarnessLlmRequestRecord, signal?: AbortSignal): void | Promise<void>;
+}
+
+/**
+ * Derived per-turn Codex auth: access + id token only. The refresh token
+ * stays in the keychain; the harness (and its jail) never see it.
+ */
+export interface CodexTurnAuth {
+  accessToken: string;
+  idToken: string;
+  accountId?: string;
+  expiresAt?: number;
 }
 
 export interface HarnessTurnInput {
@@ -59,25 +83,19 @@ export interface HarnessTurnInput {
   overheard?: OverheardEntryPayload[];
   attachments?: AttachmentMeta[];
   images?: HarnessImage[];
-  model?: string;
-  harness?: string;
-  thinkingLevel?: string;
-  fastMode?: boolean;
+  runtime?: Partial<RuntimeChoice>;
+  runtimeControl?: RuntimeControl;
+  runtimeActorId?: string;
   readOnly?: boolean;
   surfaceTools?: boolean;
   surfaceName?: string;
   pollFire?: boolean;
   turnWallClockMs?: number;
   systemPrompt: string;
-  systemCacheBoundary?: number;
   history: SessionEntry[];
   tools: ToolContext;
   credentialExecServices?: readonly { service: string; binary: string }[];
-  screenExternalContent?(input: {
-    content: string;
-    tool: string;
-    source: string;
-  }): Promise<SecurityScreenVerdict | undefined>;
+  commandCredentialHandles?: readonly string[];
   toolApprovalGate?(tool: string): boolean;
   emit(entry: NewEntry): Promise<SessionEntry>;
   tape?(rec: NewTapeRecord): Promise<unknown>;
@@ -86,19 +104,25 @@ export interface HarnessTurnInput {
   tapeFold?: unknown[];
   scopeLabel: ScopeId;
   orgScopeId: ScopeId;
+  providerKeys?: ProviderKeys;
+  runtimePinned?: boolean;
+  claudeOauthToken?: string;
+  codexAuth?: CodexTurnAuth;
   recordModelCall(rec: { model: string; inputTokens: number; entryCount: number }): void;
-  recordLlmRequest?(rec: HarnessLlmRequestRecord): void | Promise<void>;
+  recordLlmRequest?(rec: HarnessLlmRequestRecord, signal?: AbortSignal): void | Promise<void>;
   onProgress?(p: { toolCalls: number; tokens?: number }): void;
   onGapWork?(sink: (work: GapWork) => void): void;
   onDelta?(chunk: string): void;
   onTextBlockStart?(): void;
-  screenToolResult?(tool: string, result: string, unscreenable: boolean): Promise<boolean | "unscreened">;
+  screenToolResult?(input: ToolResultScreenInput): Promise<ToolResultScreen>;
 }
 
 export interface HarnessTurnResult {
+  runtimeHandoff?: RuntimeHandoff;
   reply: string;
   silent?: boolean;
   stopped?: true;
+  stoppedTapeComplete?: true;
   pendingApprovals?: Array<{
     command: string;
     reason: string;
@@ -111,7 +135,6 @@ export interface HarnessTurnResult {
   modelCalls?: number;
   cacheUsage?: { cacheRead: number; cacheWrite: number; uncachedInput: number };
   compileMs?: number;
-  tapeWriteFailed?: boolean;
 }
 
 export interface HarnessDetectInput {
@@ -157,7 +180,8 @@ export interface HarnessModelUtilities {
 
 type HarnessControlTransport = "mock" | "in-process" | "sdk" | "http" | "json-rpc" | "api";
 type HarnessToolTransport = "mock" | "in-process" | "plugin" | "dynamic" | "in-process-mcp" | "mcp";
-type HarnessCapability = "abort" | "steer" | "images" | "thinking-level" | "fast-mode" | "provider-sessions";
+type HarnessCapability =
+  "abort" | "steer" | "images" | "thinking-level" | "fast-mode" | "provider-sessions" | "native-tape";
 
 export interface HarnessAdapterProfile {
   id: string;

@@ -1,6 +1,6 @@
 import type { AuditEvent } from "../audit/audit-log.ts";
 import { isDeepStrictEqual } from "node:util";
-import type { DurableMap } from "../persistence/durable-map.ts";
+import { selectValues, type DurableMap } from "../persistence/durable-map.ts";
 import type {
   OrganizationStore,
   OrganizationTx,
@@ -60,6 +60,11 @@ export class SkillAccessNotFoundError extends Error {}
 
 export interface SkillAccessRepository extends SkillStore {
   ready(): Promise<void>;
+  importOwnedBatch(input: {
+    scopeId: ScopeId;
+    createdBy: string;
+    manifests: readonly SkillManifest[];
+  }): Promise<Skill[]>;
   getAccess(skillId: string, actor: SkillAccessActor): Promise<SkillAccessView>;
   setAccess(
     skillId: string,
@@ -93,6 +98,9 @@ function transactionalBacking(tx: OrganizationTx, orgId: string): DurableMap<Ski
   };
   return {
     all: () => tx.listSkills(orgId),
+    async select(query) {
+      return selectValues(await tx.listSkills(orgId), query);
+    },
     async entries() {
       return (await tx.listSkills(orgId)).map((skill) => [skill.id, skill]);
     },
@@ -557,6 +565,41 @@ export function createSkillAccessRepository(input: {
           });
       }
       await readyPromise;
+    },
+    async importOwnedBatch({ scopeId, createdBy, manifests }) {
+      await repository.ready();
+      return store.transact(orgId, async (tx) => {
+        if ((await tx.getSkillAccessPolicyVersion(orgId)) !== 1) throw new Error("skill access is not enforced");
+        if ((await tx.getUser(orgId, createdBy))?.status !== "active")
+          throw new SkillAccessConflictError("skill author is not active");
+        const scope = parseScopeId(scopeId);
+        if (
+          (scope.kind !== "personal" && scope.kind !== "channel" && scope.kind !== "group") ||
+          (scope.kind === "personal" && scopeId !== `personal:${createdBy}`)
+        )
+          throw new SkillAccessConflictError("invalid skill import owner");
+        const names = new Set(
+          (await tx.listSkills(orgId))
+            .filter((skill) => skill.scopeId === scopeId && skill.status !== "archived")
+            .map((skill) => skill.manifest.name),
+        );
+        const skills = txSkills(tx);
+        const imported: Skill[] = [];
+        for (const manifest of manifests) {
+          if (names.has(manifest.name)) throw new SkillAccessConflictError("A skill with that name already exists");
+          names.add(manifest.name);
+          const skill = await skills.create({ scopeId, manifest, createdBy });
+          await tx.putSkillAccessPolicy(policyFor(skill, createdBy, Date.now()));
+          await tx.replaceSkillAccessGrants(orgId, skill.id, []);
+          await skills.review(skill.id, "system:skill-authoring", manifest.requiredCapabilities);
+          const published = await skills.publish(skill.id);
+          imported.push(published);
+          for (const action of ["skill.create", "skill.review", "skill.publish", "skill_create"])
+            await tx.audit(auditEvent(orgId, createdBy, action, published));
+        }
+        await tx.bumpRevision(orgId);
+        return imported;
+      });
     },
     async create(createInput: { scopeId: ScopeId; manifest: SkillManifest; createdBy: string; pack?: Skill["pack"] }) {
       return write(createInput.createdBy, "skill.create", async (skills, tx) => {

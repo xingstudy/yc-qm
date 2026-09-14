@@ -16,9 +16,9 @@ import { testConfig } from "./support/test-config.ts";
 
 test("computeUsers dedupes participants, credits in-window turns, and joins admin status", () => {
   const participants = [
-    { sessionId: "s1", principalId: "U1", validFrom: 100, validTo: null },
-    { sessionId: "s2", principalId: "U1", validFrom: 200, validTo: null },
-    { sessionId: "s1", principalId: "U2", validFrom: 100, validTo: null },
+    { sessionId: "s1", principalId: "U1", validFrom: 100, validTo: null, validFromSeq: null, validToSeq: null },
+    { sessionId: "s2", principalId: "U1", validFrom: 200, validTo: null, validFromSeq: null, validToSeq: null },
+    { sessionId: "s1", principalId: "U2", validFrom: 100, validTo: null, validFromSeq: null, validToSeq: null },
   ];
   const turns = [
     { principalId: "U1", sessionId: "s1", day: 0, turns: 2, firstAt: 150, lastAt: 160 },
@@ -39,7 +39,9 @@ test("computeUsers dedupes participants, credits in-window turns, and joins admi
 
 test("computeUsers sums a window's turn rollup and takes its latest timestamp", () => {
   const rows = computeUsers({
-    participants: [{ sessionId: "s1", principalId: "U1", validFrom: 100, validTo: 200 }],
+    participants: [
+      { sessionId: "s1", principalId: "U1", validFrom: 100, validTo: 200, validFromSeq: null, validToSeq: null },
+    ],
     turns: [{ principalId: "U1", sessionId: "s1", day: 0, turns: 2, firstAt: 100, lastAt: 199 }],
     grants: [],
   });
@@ -404,7 +406,12 @@ test("/v1/admin/users/:principalId: a grant-holder with no sessions still resolv
 });
 
 test("/v1/admin/directory: org_admin resolves a name or id to candidates; empty query → []; non-admin denied", async () => {
-  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "admin-dir-")) }));
+  const built = buildApp(
+    testConfig({
+      dataDir: mkdtempSync(join(tmpdir(), "admin-dir-")),
+      emailAuthPrincipals: ["new@example.com"],
+    }),
+  );
   const server = createInsecureTestServer(built.app, {
     admin: built.admin,
     sessions: built.sessions,
@@ -430,6 +437,14 @@ test("/v1/admin/directory: org_admin resolves a name or id to candidates; empty 
       "name prefix resolves the member",
     );
     assert.ok(!d.members.some((m: any) => m.principalId === "jane@example.com"), "non-matching member excluded");
+
+    const onboarded = await fetch(`${base}/v1/admin/directory?q=${encodeURIComponent("new@example.com")}`, {
+      headers: { "x-admin-actor": "admin-alice@default-org" },
+    });
+    assert.equal(onboarded.status, 200);
+    assert.deepEqual(((await onboarded.json()) as any).members, [
+      { principalId: "new@example.com", displayName: "new@example.com" },
+    ]);
 
     const empty = await fetch(`${base}/v1/admin/directory`, {
       headers: { "x-admin-actor": "admin-alice@default-org" },

@@ -233,6 +233,9 @@ test("a fresh app advertises and materializes only admin-enabled connector skill
 function fakeSandbox() {
   const files = new Map<string, string>();
   const sandbox = {
+    async run() {
+      return { code: 0, stdout: "", stderr: "", timedOut: false };
+    },
     async readFile(_h: SandboxHandle, rel: string) {
       return files.has(rel) ? files.get(rel)! : null;
     },

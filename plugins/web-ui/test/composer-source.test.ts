@@ -13,7 +13,13 @@ test("scope-default buttons render when any runtime setting differs from the sco
 });
 
 test("composer-right keeps its control order: make default, use org default, model, harness, send", () => {
-  const right = composer.slice(composer.indexOf('class="composer-right"'));
+  const runtime = composer.slice(
+    composer.indexOf("const runtimeControls ="),
+    composer.indexOf("return html`", composer.indexOf("const runtimeControls =")),
+  );
+  const rendered = composer.slice(composer.indexOf('class="composer-right"'));
+  assert.match(rendered, /showRuntimeControls \? runtimeControls : nothing/);
+  const right = runtime + rendered;
   const makeDefault = right.indexOf("Make default");
   const orgDefault = right.indexOf("Use org default");
   const model = right.indexOf('kind: "model"');
@@ -55,7 +61,9 @@ test("attaching files is allowed while a turn is streaming", () => {
 });
 
 test("a mid-turn submit queues — attachments cannot ride a queued message and stay for the next", () => {
-  assert.match(composer, /title=\$\{t\("Queue for after this turn"\)\}/);
+  // Mid-turn Enter queues through core (queueDraft), so the steer-button attachment note is gone;
+  // the queue button gates only on draft text, never on the run slot.
+  assert.match(composer, /\$\{tip\(t\("Queue for after this turn"\)\)\}/);
   assert.doesNotMatch(composer, /attachments stay for your next message/);
 });
 
@@ -73,6 +81,6 @@ test("a steer whose run already ended is recovered, never silently dropped", () 
 test("scope runtime defaults include effort and fast mode", () => {
   assert.match(composer, /effortLevel: composerState\.effortLevel/);
   assert.match(composer, /fastMode: fastOn/);
-  assert.match(composer, /config\.effective\.effortLevel/);
-  assert.match(composer, /config\.effective\.fastMode === true/);
+  assert.match(composer, /getRuntimeConfig\(scopeKey\(\)\)\?\.effective\.effortLevel/);
+  assert.match(composer, /getRuntimeConfig\(scopeKey\(\)\)\?\.effective\.fastMode === true/);
 });

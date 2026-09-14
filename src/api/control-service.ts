@@ -1,15 +1,22 @@
 import { isDeepStrictEqual } from "node:util";
-import type { Cron, CronFireLogEntry, CronSchedule, Destination, Principal } from "../types.ts";
+import type { Cron, CronFireLogEntry, CronSchedule, Destination, Principal, Webhook } from "../types.ts";
 import type { CreateCronInput, CronPatch } from "../cron/cron-store.ts";
+import type { CreateWebhookInput } from "../webhooks/webhook-store.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
-import type { Scheduler } from "../cron/scheduler.ts";
+import {
+  cronFireReadsNotes,
+  describeRunNowRefusal,
+  echoesCronContextMarkers,
+  flattenFireNote,
+  type Scheduler,
+} from "../cron/scheduler.ts";
 import { DEFAULT_CRON_TIMEZONE } from "../cron/schedule.ts";
 import { resolveCapabilityDestination } from "./capability-destination.ts";
 import { withSlackUnfurlOption, principalDestination } from "../reach/reach.ts";
 import { consentRequiredRecipient } from "../triggers/trigger-store.ts";
 import { sendConsentNotice } from "../triggers/consent-notice.ts";
 import { notifyOwnerOfCronEdit, type CronEditDetail } from "../triggers/edit-notice.ts";
-import { errMessage, swallow } from "../util/errors.ts";
+import { errMessage } from "../util/errors.ts";
 import { AdminError } from "../admin/admin-service.ts";
 import { SkillAccessRequiredError } from "../acl/acl-store.ts";
 import { SkillAccessConflictError, type SkillAccessSubject } from "../authorization/skill-access-repository.ts";
@@ -66,6 +73,17 @@ export type CronCreateResult =
       candidates?: Array<{ id: string; label: string }>;
     };
 
+export interface WebhookCreateRequest {
+  action: string;
+  verification: Webhook["verification"];
+  filters?: Webhook["filters"];
+  destinationKey?: string;
+}
+
+export type WebhookCreateResult =
+  | { ok: true; webhook: Webhook; url: string; secret?: string }
+  | { ok: false; code: "bad_request" | "unknown_destination" | "webhook_create_failed"; message: string };
+
 export interface CronPatchRequest {
   title?: string;
   action?: string;
@@ -91,6 +109,8 @@ export interface CronRunsResult {
 export const CRON_PATCH_NOTHING_TO_CHANGE =
   "nothing to change — pass title, task, schedule, enabled, archived, unfurlLinks, runAs, or unattendedGrants";
 
+export const CRON_FIRE_NOTE_MAX_CHARS = 400;
+
 export type ControlOk<T> = { ok: true } & T;
 export type ControlErr<C extends string> = { ok: false; code: C; message: string };
 
@@ -111,6 +131,11 @@ export interface ControlService {
     req: CronPatchRequest,
     claims: CapabilityClaims,
   ): Promise<ControlOk<{ cron: Cron }> | ControlErr<"not_found" | "forbidden" | "bad_request" | "cron_update_failed">>;
+  noteCron(
+    id: string,
+    text: string,
+    claims: CapabilityClaims,
+  ): Promise<ControlOk<{ applied: boolean }> | ControlErr<"not_found" | "forbidden" | "bad_request">>;
   deleteCron(
     id: string,
     claims: CapabilityClaims,
@@ -123,12 +148,25 @@ export interface ControlService {
   runCron(
     id: string,
     claims: CapabilityClaims,
-  ): Promise<ControlOk<Record<never, never>> | ControlErr<"not_found" | "forbidden" | "unavailable" | "bad_request">>;
+  ): Promise<
+    | ControlOk<{ fireKey: string }>
+    | ControlErr<"not_found" | "forbidden" | "unavailable" | "bad_request" | "already_running">
+  >;
   retargetCron(
     id: string,
     destinationKey: string,
     claims: CapabilityClaims,
   ): Promise<ControlOk<{ cron: Cron }> | ControlErr<"not_found" | "forbidden" | "unknown_destination">>;
+  createWebhook(
+    req: WebhookCreateRequest,
+    claims: CapabilityClaims,
+    publicBase: string | undefined,
+  ): Promise<WebhookCreateResult>;
+  listWebhooks(claims: CapabilityClaims): Promise<Webhook[]>;
+  disableWebhook(
+    id: string,
+    claims: CapabilityClaims,
+  ): Promise<ControlOk<Record<never, never>> | ControlErr<"not_found" | "forbidden">>;
   readSoul(claims: CapabilityClaims): { effectiveSoul: string; soul: string | null; soulVersion: number };
   writeSoul(
     content: string,
@@ -149,6 +187,18 @@ export async function canAdministerCron(
   if (!team && (await (isActor ? isActor(cron.owner) : app.samePerson(cron.owner, actorId)))) return true;
   if (team && cron.ownerScopeId === callerScopeId) return true;
   return app.managesScope(actorId, cron.ownerScopeId);
+}
+
+export async function canAdministerWebhook(
+  app: Pick<App, "membershipControlsScope" | "managesScope" | "samePerson">,
+  webhook: Webhook,
+  actorId: string,
+  isActor?: (id: string) => Promise<boolean>,
+): Promise<boolean> {
+  if (await app.membershipControlsScope(webhook.ownerScopeId)) {
+    return app.managesScope(actorId, webhook.ownerScopeId);
+  }
+  return isActor ? isActor(webhook.owner) : app.samePerson(webhook.owner, actorId);
 }
 
 function withDefaultTimezone(schedule: CronSchedule, cap: CapabilityClaims): CronSchedule {
@@ -264,7 +314,13 @@ async function patchFromCronPatchRequest(
   };
 }
 
-const UNATTENDED_GRANTS = new Set(["admin.sessions.read"]);
+const UNATTENDED_GRANTS = new Set([
+  "admin.sessions.read",
+  "admin.audit.read",
+  "admin.metrics.read",
+  "admin.egress.read",
+  "admin.files.read",
+]);
 
 function validateUnattendedGrants(grants: string[]): string | null {
   if (!grants.every((grant) => UNATTENDED_GRANTS.has(grant))) return "unknown unattended grant";
@@ -532,9 +588,8 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
       if (req.limit !== undefined && (!Number.isInteger(req.limit) || req.limit < 1)) {
         return { ok: false, code: "bad_request", message: "limit must be a positive integer" };
       }
-      const fireLog = cron.fireLog ?? [];
-      const runs = req.limit !== undefined ? fireLog.slice(-req.limit) : fireLog;
-      return { ok: true, cron, runs, total: fireLog.length };
+      const { runs, total } = await app.listCronFires(id, req.limit !== undefined ? { limit: req.limit } : {});
+      return { ok: true, cron, runs, total };
     },
 
     async patchCron(id, req, capability) {
@@ -587,6 +642,59 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
       }
     },
 
+    async noteCron(id, text, capability) {
+      const flattened = flattenFireNote(text);
+      if (!flattened)
+        return { ok: false, code: "bad_request", message: "the note is empty — say what the next fire should know" };
+      const length = [...flattened].length;
+      if (length > CRON_FIRE_NOTE_MAX_CHARS) {
+        return {
+          ok: false,
+          code: "bad_request",
+          message: `the note is ${length} chars — the cap is ${CRON_FIRE_NOTE_MAX_CHARS}. Trim it to the outcome plus what the next fire must know; longer state belongs in files on the workspace disk.`,
+        };
+      }
+      if (echoesCronContextMarkers(flattened)) {
+        return {
+          ok: false,
+          code: "bad_request",
+          message: "the note can't include the cron runtime context markers — write a plain report instead",
+        };
+      }
+      const cron = await app.getCron(id);
+      if (!cron) return { ok: false, code: "not_found", message: `no cron ${id}` };
+      if (!(await canAdministerCron(app, cron, capability.actorId, capability.scopeId)))
+        return { ok: false, code: "forbidden", message: "not your cron" };
+      if (cron.archived) {
+        return {
+          ok: false,
+          code: "bad_request",
+          message: `cron ${id} is archived — its fires won't run, so a note would never be read`,
+        };
+      }
+      if (!cronFireReadsNotes(cron)) {
+        return {
+          ok: false,
+          code: "bad_request",
+          message: `cron ${id}'s fires don't read shift-change notes (it is loop-backed, one-shot, or runs a raw !run/!scratch task) — durable handoff state belongs in files on the cron's workspace disk`,
+        };
+      }
+      const ownFire = capability.threadRef?.startsWith(`cron:${id}:fire:`) === true;
+      if (!ownFire && (cron.unattendedGrants?.length ?? 0) > 0) {
+        const refusal = await unattendedGrantRefusal(app, admin, cron, capability);
+        if (refusal) return { ok: false, code: "forbidden", message: refusal };
+      }
+      const fireEntry = ownFire ? await app.latestCronFireForThread(id, capability.threadRef!) : undefined;
+      const outcome = await app.setCronFireNote(id, {
+        text: flattened,
+        at: fireEntry?.firedAt ?? Date.now(),
+        ...(ownFire ? {} : { by: capability.actorId }),
+      });
+      if (outcome === "missing") return { ok: false, code: "not_found", message: `no cron ${id}` };
+      if (outcome === "applied" && !ownFire) await notifyEdit(cron, capability, ["note"], flattened);
+      return { ok: true, applied: outcome === "applied" };
+    },
+
     async deleteCron(id, capability) {
       const cron = await app.getCron(id);
       if (!cron) return { ok: false, code: "not_found", message: `no cron ${id}` };
@@ -633,8 +741,12 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
           code: "bad_request",
           message: `cron ${id} is ${cron.archived ? "archived" : "paused"} — enable it before firing it on demand`,
         };
-      void scheduler.runNow(id).catch((e: unknown) => swallow(`manual fire of cron ${id}`, e));
-      return { ok: true };
+      const result = await scheduler.runNow(id);
+      if (!result.started) {
+        const refusal = describeRunNowRefusal(id, result)!;
+        return { ok: false, code: refusal.error, message: refusal.message };
+      }
+      return { ok: true, fireKey: result.fireKey };
     },
 
     async retargetCron(id, destinationKey, capability) {
@@ -664,6 +776,79 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
         destLabel ? { destinationLabel: destLabel } : undefined,
       );
       return { ok: true, cron: updated ?? cron };
+    },
+
+    async createWebhook(req, capability, publicBase): Promise<WebhookCreateResult> {
+      const resolved = resolveCapabilityDestination(capability, req.destinationKey);
+      if (!resolved.ok) {
+        return {
+          ok: false,
+          code: "unknown_destination",
+          message: "destinationKey is not one of the destinations available for this conversation",
+        };
+      }
+      // A webhook is standing (event-driven); a third-party-principal destination needs the
+      // recipient's consent, same as a recurring cron. (Today destinationKey only resolves the
+      // current conversation, so this won't fire — the gate is here so it stays correct if webhook
+      // addressing ever widens.)
+      const consentRecipient = consentRequiredRecipient({
+        owner: capability.actorId,
+        standing: true,
+        destination: resolved.destination,
+      });
+      const input: CreateWebhookInput = {
+        action: req.action,
+        verification: req.verification,
+        owner: capability.actorId,
+        createdBy: capability.actorId,
+        ownerScopeId: capability.scopeId,
+        ...(req.filters?.length ? { filters: req.filters } : {}),
+        ...(resolved.destination ? { destination: resolved.destination } : {}),
+        ...(consentRecipient
+          ? { recipientConsent: { recipientId: consentRecipient, status: "pending" as const } }
+          : {}),
+      };
+      try {
+        const webhook = await app.createWebhook(input);
+        if (consentRecipient) {
+          const ownerMember = await app.directoryMember(capability.actorId);
+          await sendConsentNotice((i) => app.enqueueDelivery(i), {
+            triggerId: webhook.id,
+            recipientId: consentRecipient,
+            ownerId: capability.actorId,
+            ...(ownerMember?.displayName ? { ownerName: ownerMember.displayName } : {}),
+            what: "an event-triggered message",
+          });
+        }
+        const incomingPath = `/v1/webhooks/incoming/${webhook.id}`;
+        const base = publicBase ? publicBase.replace(/\/$/, "") : "";
+        return {
+          ok: true,
+          webhook,
+          url: base ? `${base}${incomingPath}` : incomingPath,
+          ...(webhook.verification.secret ? { secret: webhook.verification.secret } : {}),
+        };
+      } catch (e) {
+        return { ok: false, code: "webhook_create_failed", message: errMessage(e) };
+      }
+    },
+
+    async listWebhooks(capability) {
+      const all = await app.listWebhooks();
+      const isActor = await app.personMatcher(capability.actorId);
+      const allowed = await Promise.all(
+        all.map((webhook) => canAdministerWebhook(app, webhook, capability.actorId, isActor)),
+      );
+      return all.filter((_webhook, index) => allowed[index]);
+    },
+
+    async disableWebhook(id, capability) {
+      const webhook = await app.getWebhook(id);
+      if (!webhook) return { ok: false, code: "not_found", message: `no webhook ${id}` };
+      if (!(await canAdministerWebhook(app, webhook, capability.actorId)))
+        return { ok: false, code: "forbidden", message: "not your webhook" };
+      await app.setWebhookEnabled(id, false);
+      return { ok: true };
     },
 
     readSoul(capability) {

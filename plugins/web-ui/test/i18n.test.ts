@@ -171,7 +171,7 @@ test("conditional interface labels pass through the translator", () => {
   const source = (name: string) => readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
   assert.match(source("crons.ts"), /t\(showDisabledCrons \? "Hide disabled" : "Show disabled"\)/);
   assert.match(source("contexts.ts"), /t\(contextsState\.createSaving \? "Close" : "Cancel"\)/);
-  assert.match(source("sessions.ts"), /title=\$\{t\(s\.archived \? "Unarchive" : "Archive"\)\}/);
+  assert.match(source("sessions.ts"), /\$\{tip\(t\(s\.archived \? "Unarchive" : "Archive"\)\)\}/);
   assert.match(source("shell.ts"), /t\(gate\.pending \? "Signing in…" : "Continue"\)/);
   assert.match(source("deploys.ts"), /t\(manage \? "Can manage" : "Can view"\)/);
   assert.match(source("skills.ts"), /t\(deleting === skill\.id \? "Archiving…" : "Archive skill"\)/);
@@ -180,7 +180,10 @@ test("conditional interface labels pass through the translator", () => {
   assert.match(source("ambient-policy.ts"), /t\(ambientPolicyState\.saving \? "Saving…" : "Save"\)/);
   assert.match(source("context-model.ts"), /message === fallback \? t\(fallback\) : message/);
   assert.doesNotMatch(source("context-model.ts"), /t\(contextModelState\.notice\)/);
-  assert.match(source("files.ts"), /<span>\$\{t\(dropLabel\)\}<\/span>/);
+  assert.match(
+    source("files.ts"),
+    /<span>\$\{t\(dropLabel\)\}\$\{uploadTarget \? scopeChip\(uploadTarget\) : nothing\}<\/span>/,
+  );
   assert.match(source("files.ts"), /return message === fallback \? t\(fallback\) : message/);
   assert.doesNotMatch(source("files.ts"), /t\(status\)/);
   assert.match(source("connectors.ts"), /t\(status === "connected" \? "connected\." : "connection failed\."\)/);
@@ -196,8 +199,8 @@ test("conditional interface labels pass through the translator", () => {
   assert.match(source("sessions.ts"), /\?\? t\("Personal"\)/);
   assert.match(source("context-model.ts"), /\$\{t\(inheritsGroup \? "Inherited default" : "Org default"\)\}/);
   assert.match(source("connectors.ts"), /\$\{t\(meta\.hosts\)\}/);
-  assert.match(source("connectors.ts"), /\$\{t\(meta\.desc\)\}/);
-  assert.match(source("connectors.ts"), /\$\{t\(ask\.requestedMode \?\? "one-time"\)\}/);
+
+  assert.match(source("connectors.ts"), /\$\{t\(accessModeLabel\(ask\.requestedMode\)\)\}/);
   assert.match(source("skills.ts"), /name: t\("Personal — only you"\)/);
   assert.match(source("chat.ts"), /return t\(work\.status === "working" \? `Working for \$\{secs\}s`/);
   assert.match(source("chat.ts"), /return t\("Needs your approval"\)/);
@@ -225,9 +228,12 @@ test("conditional interface labels pass through the translator", () => {
   assert.match(source("chat.ts"), /bgPanel\.error = message === fallback \? t\(fallback\) : message/);
   assert.doesNotMatch(source("chat.ts"), /t\(bgPanel\.error\)/);
   assert.match(source("files.ts"), /<span>\$\{t\(label\)\}<\/span>/);
-  assert.match(source("files.ts"), /<span class="badge">\$\{t\(f\.kind\)\}<\/span>/);
-  assert.match(source("sessions.ts"), /aria-label=\$\{t\(`Copy link to \$\{sessionTitle\(s\)\}`\)\}/);
-  assert.match(source("deploys.ts"), /aria-label=\$\{t\(`More actions for \$\{deploymentTitle\(d\)\}`\)\}/);
+  assert.match(
+    source("files.ts"),
+    /options: options\.map\(\(\[v, text\]\) => html`<option value=\$\{v\}>\$\{t\(text\)\}/,
+  );
+  assert.match(source("sessions.ts"), /role="menuitem" @click=\$\{\(\) => void copySessionLink\(s\)\}/);
+  assert.match(source("deploys.ts"), /aria-label=\$\{t\(`Manage \$\{deploymentTitle\(d\)\}`\)\}/);
   assert.match(source("ambient-policy.ts"), /ariaLabel: t\(`Handling for \$\{b\.name\}`\)/);
   assert.match(source("composer.ts"), /t\("Queue for after this turn"\)/);
   assert.match(source("crons.ts"), /error\.textContent = t\(taskControl \? "Title and task are required\."/);
@@ -235,8 +241,8 @@ test("conditional interface labels pass through the translator", () => {
   assert.match(source("sessions.ts"), /working \? t\("agent is working"\) : null/);
   assert.match(source("sessions.ts"), /aria-label=\$\{t\(ariaLabel\)\}/);
   assert.match(source("split.ts"), /<span>\$\{t\(label\)\}<\/span>/);
-  assert.match(source("split.ts"), /if \(panelParams\(panel\)\.sessionId\) return t\("Conversation"\)/);
-  assert.match(source("split.ts"), /title=\$\{t\(b\.label\)\}/);
+  assert.match(source("split.ts"), /return params\.sessionId \? t\("Conversation"\) : t\("New session"\)/);
+  assert.match(source("split.ts"), /tip\(t\(b\.label\)\)/);
   assert.match(source("chat.ts"), /title = t\(liveWorkExpanded \? "Show less" : "Show more"\)/);
-  assert.match(source("session-scope.ts"), /\$\{t\("context — the agent works with that context's files/);
+  assert.match(source("session-scope.ts"), /aria-label=\$\{t\(hint\)\}/);
 });

@@ -239,12 +239,15 @@ export function createMcpToolService(opts: {
   refreshIntervalMs?: number;
   requestTimeoutMs?: number;
   readyTimeoutMs?: number;
+  initializationReady?: Promise<void>;
 }): McpToolService {
   const now = opts.now ?? (() => Date.now());
   const clients = new Map<string, { client: McpClient; server: McpServer }>();
   let snapshot: McpToolDescriptor[] = [];
   let capabilities = new Map<string, { descriptor: McpToolDescriptor; server: McpServer; identity: string }>();
   let closed = false;
+  const closing = Promise.withResolvers<void>();
+  let initialized = !opts.initializationReady;
   let refreshGeneration = 0;
   let activeCalls = 0;
   const callDrains = new Set<() => void>();
@@ -253,6 +256,7 @@ export function createMcpToolService(opts: {
   const readyTimeoutMs = opts.readyTimeoutMs ?? READY_TIMEOUT_MS;
 
   function record(action: string, resource: string, status: string, principalId?: string): void {
+    if (!initialized) return;
     opts.audit?.record({
       at: now(),
       principalId: principalId || "system",
@@ -307,6 +311,9 @@ export function createMcpToolService(opts: {
   async function refresh(): Promise<void> {
     if (closed) return;
     const generation = ++refreshGeneration;
+    if (opts.initializationReady) await Promise.race([opts.initializationReady, closing.promise]);
+    if (closed) return;
+    initialized = true;
     await queue("mcp-tools", async () => {
       if (closed || generation !== refreshGeneration) return;
       const deadline = Date.now() + readyTimeoutMs;
@@ -478,6 +485,7 @@ export function createMcpToolService(opts: {
     },
     async close() {
       closed = true;
+      closing.resolve();
       clearInterval(timer);
       unsubscribe();
       await queue("mcp-tools", async () => undefined);

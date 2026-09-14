@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { createPostgresAuditLog } from "../src/admin/postgres-audit-log.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 import { createPostgresOrganizationStore } from "../src/organization/postgres-organization-store.ts";
 import { createPostgresDirectorySourceStore } from "../src/directory-sources/postgres-directory-source-store.ts";
 import { createPostgresOrganizationMemberJobStore } from "../src/organization/postgres-member-job-store.ts";
@@ -8,7 +10,7 @@ import { createPostgresPortalLoginTransactionStore } from "../src/auth/portal-lo
 import { spawn } from "node:child_process";
 import { test, type TestContext } from "node:test";
 import pg, { type Pool } from "pg";
-import { createPgPool } from "../src/persistence/pg-pool.ts";
+import { createPgPool, migrateRegisteredPgSchemas } from "../src/persistence/pg-pool.ts";
 import {
   applyPgMigrations,
   definePgMigration,
@@ -316,6 +318,20 @@ databaseTest(
     VALUES ('fixture-state-hash', 'pending', 'synthetic-payload', '2100-01-01')`);
     await pool.query(`INSERT INTO portal_login_rate_limits(bucket, window_number, used, updated_at)
     VALUES ('fixture-bucket', 1, 3, '2100-01-01')`);
+    await pool.query(`INSERT INTO organization_users(org_id, principal_id, email, display_name, status, session_version, profile_revision, created_at, updated_at, created_by, updated_by)
+      VALUES ('fixture', 'invited', 'Invited@example.test', 'Invited', 'invited', 1, 1, 100, 101, 'admin', 'admin'),
+             ('fixture', 'active', 'Active@example.test', 'Active', 'active', 1, 1, 100, 101, 'system', 'system')`);
+    const expectedMigrations = [
+      ...fixture.expectedMigrations,
+      {
+        id: "fork/organization/0002-invited-email",
+        checksum: "cdc921633f78a5f23c859f8feb8db802cbe089c9c003e2a69dc2966eab82a0b8",
+      },
+      {
+        id: "fork/organization/0003-invited-email-index",
+        checksum: "ccee07e8e47b1e81deb08f6b7ccfef2615797943b41712f65490563231fbbe0a",
+      },
+    ].sort((a, b) => a.id.localeCompare(b.id));
     const tables = [
       "organization_users",
       "auth_identities",
@@ -329,7 +345,11 @@ databaseTest(
     const snapshot = async () => {
       const values: Record<string, unknown> = {};
       for (const table of tables)
-        values[table] = (await pool.query(`SELECT to_jsonb(t) AS row FROM ${table} t ORDER BY to_jsonb(t)::text`)).rows;
+        values[table] = (
+          await pool.query(
+            `SELECT to_jsonb(t) - 'invited_email' - 'external_membership' AS row FROM ${table} t ORDER BY to_jsonb(t)::text`,
+          )
+        ).rows;
       return values;
     };
     const before = await snapshot();
@@ -345,6 +365,7 @@ databaseTest(
       const jobs = createPostgresOrganizationMemberJobStore(url);
       const portal = createPostgresPortalLoginTransactionStore(url);
       try {
+        await migrateRegisteredPgSchemas(url);
         assert.equal((await organization.getUser("fixture", "user-1"))?.sessionVersion, 7);
         assert.equal(
           (await directory.getSource("fixture", "source-1"))?.secretEnc,
@@ -353,6 +374,18 @@ databaseTest(
         assert.equal((await jobs.get("fixture", "job-1", "admin"))?.items.length, 1);
         assert.deepEqual(await portal.claim("missing-state"), { status: "missing" });
         assert.deepEqual(await snapshot(), before);
+        assert.deepEqual(
+          (
+            await pool.query(
+              "SELECT principal_id, invited_email, external_membership FROM organization_users ORDER BY principal_id",
+            )
+          ).rows,
+          [
+            { principal_id: "active", invited_email: null, external_membership: false },
+            { principal_id: "invited", invited_email: "invited@example.test", external_membership: false },
+            { principal_id: "user-1", invited_email: null, external_membership: false },
+          ],
+        );
       } finally {
         await directory.close();
         await jobs.close?.();
@@ -361,22 +394,22 @@ databaseTest(
     const actual = (await pool.query("SELECT id, checksum FROM qm_schema_migrations")).rows.sort((a, b) =>
       a.id.localeCompare(b.id),
     );
-    assert.deepEqual(actual, fixture.expectedMigrations);
+    assert.deepEqual(actual, expectedMigrations);
     const mismatched = createPostgresOrganizationStore(url, { exclusiveOrgId: "other-tenant" });
     await assert.rejects(mismatched.getUser("other-tenant", "user-1"), /already belongs to fixture/);
     assert.deepEqual(await snapshot(), before);
     await applyPgMigrations(pool, [
       {
-        id: "fork/organization/0002",
+        id: "test/organization-extension",
         statements: ["ALTER TABLE organization_users ADD COLUMN fixture_extension text"],
       },
     ]);
     const afterExtension = (await pool.query("SELECT id, checksum FROM qm_schema_migrations ORDER BY id")).rows;
     assert.deepEqual(
-      afterExtension.filter((row) => row.id !== "fork/organization/0002"),
-      fixture.expectedMigrations,
+      afterExtension.filter((row) => row.id !== "test/organization-extension"),
+      expectedMigrations,
     );
-    assert.equal(afterExtension.length, fixture.expectedMigrations.length + 1);
+    assert.equal(afterExtension.length, expectedMigrations.length + 1);
     assert.equal(
       (await pool.query("SELECT fixture_extension FROM organization_users")).rows[0].fixture_extension,
       null,
@@ -458,3 +491,94 @@ databaseTest("a later migration failure retains completed boundaries and retries
     { value: 2 },
   ]);
 });
+
+databaseTest("prod-v1.3.0 ACL and audit schema adoption preserves rows and adds query contracts", async (pool, url) => {
+  const fixture = JSON.parse(
+    readFileSync(new URL("./fixtures/postgres/prod-v1.3.0-acl-audit-schema.json", import.meta.url), "utf8"),
+  ) as { schemas: Record<string, { statements: string[] }> };
+  for (const schema of Object.values(fixture.schemas))
+    for (const statement of schema.statements) await pool.query(statement);
+  await pool.query(
+    "INSERT INTO acl_grants VALUES ('fixture', 'personal:owner', 'private.txt', 'personal:reader', 'read', 'owner', 123)",
+  );
+  await pool.query(`INSERT INTO audit_log(at, principal_id, action, resource, scope_label, idempotency_key, org_id, actor_kind, request_id, before_digest, after_digest, source, result)
+    VALUES (1, 'owner', 'grant.read', 'literal%_path', 'org:fixture', 'existing', 'fixture', 'human', 'request-1', 'before', 'after', 'portal', 'success')`);
+  const beforeGrants = (await pool.query("SELECT * FROM acl_grants")).rows;
+  const beforeAudit = (await pool.query("SELECT * FROM audit_log")).rows;
+  for (let pass = 0; pass < 2; pass++) {
+    const grants = createPostgresGrantStore(url, "fixture");
+    const log = createPostgresAuditLog(url);
+    try {
+      await migrateRegisteredPgSchemas(url);
+      assert.deepEqual(await grants.all(), [
+        {
+          ownerScopeId: "personal:owner",
+          ref: "private.txt",
+          granteeScopeId: "personal:reader",
+          permission: "read",
+          grantedBy: "owner",
+        },
+      ]);
+      assert.deepEqual((await pool.query("SELECT * FROM acl_grants")).rows, beforeGrants);
+      assert.deepEqual((await pool.query("SELECT * FROM audit_log")).rows, beforeAudit);
+      const event = (await log.events())[0]!;
+      assert.equal(event.requestId, "request-1");
+      assert.equal(event.beforeDigest, "before");
+      assert.equal(event.afterDigest, "after");
+      assert.equal(event.actorKind, "human");
+      assert.equal(event.source, "portal");
+      assert.equal(event.result, "success");
+      await log.recordOnce!("existing", {
+        at: 2,
+        principalId: "owner",
+        action: "duplicate",
+        resource: "bad",
+        scopeLabel: "org:fixture",
+      });
+      assert.equal((await log.events()).length, 1);
+      assert.equal((await log.tail({ limit: 5, resourceContains: "%_" })).length, 1);
+      assert.equal((await log.tail({ limit: 5, resourceContains: "%x" })).length, 0);
+      assert.deepEqual(await log.tallyByResource!("grant.read"), new Map([["literal%_path", 1]]));
+    } finally {
+      await log.close();
+    }
+  }
+  assert.deepEqual(
+    (await pool.query("SELECT id FROM qm_schema_migrations ORDER BY id")).rows.map((row) => row.id),
+    [
+      "acl/grants/0001",
+      "acl/grants/0002",
+      "admin/audit-log/0001",
+      "admin/audit-log/0002",
+      "fork/acl-grants/0001",
+      "fork/audit-log/0001",
+    ],
+  );
+});
+
+databaseTest(
+  "registry migration runs post-maintenance once and later wrapper reads do not repeat it",
+  async (pool, url) => {
+    const migration = {
+      id: "test/registry-maintenance/1",
+      statements: ["CREATE TABLE registry_maintenance_runs(value int)"],
+    };
+    const maintenance = [
+      { id: "test/registry-maintenance/runtime", statements: ["INSERT INTO registry_maintenance_runs VALUES (1)"] },
+    ];
+    const first = createPgPool(url, [migration], maintenance);
+    const second = createPgPool(url, [migration], maintenance);
+    try {
+      await migrateRegisteredPgSchemas(url);
+      assert.equal((await pool.query("SELECT * FROM registry_maintenance_runs")).rowCount, 1);
+      await Promise.all([first.pool(), second.pool()]);
+      assert.equal((await pool.query("SELECT * FROM registry_maintenance_runs")).rowCount, 1);
+      await migrateRegisteredPgSchemas(url);
+      assert.equal((await pool.query("SELECT * FROM registry_maintenance_runs")).rowCount, 2);
+      assert.equal((await pool.query("SELECT * FROM qm_schema_migrations")).rowCount, 1);
+    } finally {
+      await first.close();
+      await second.close();
+    }
+  },
+);

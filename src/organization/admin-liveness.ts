@@ -20,9 +20,12 @@ async function activeAdminKeys(deps: OrganizationAdminLivenessDeps): Promise<Set
       .map((grant) => [personKey(grant.principalId), grant.principalId]),
   );
   const users = await Promise.all(
-    [...admins].map(async ([key, principalId]) => ({ key, user: await deps.organization.getUser(principalId) })),
+    [...admins].map(async ([key, principalId]) => ({
+      key,
+      active: (await deps.admin?.adminStatusOf({ id: principalId, type: "internal" }))?.isAdmin === true,
+    })),
   );
-  return new Set(users.filter(({ user }) => user?.status === "active").map(({ key }) => key));
+  return new Set(users.filter(({ active }) => active).map(({ key }) => key));
 }
 
 export async function validateAdminStatusTargets(

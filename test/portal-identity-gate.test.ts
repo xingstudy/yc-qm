@@ -42,6 +42,8 @@ describe("user-scoped routes require a portal-verified actor when enforcement is
       requireSignedPortalIdentity: true,
       scheduler: built.scheduler,
       uiState: built.uiState,
+      identity: built.identity,
+      sessionShares: built.sessionShares,
     });
     await new Promise<void>((resolve) => server.listen(0, resolve));
     base = `http://localhost:${(server.address() as AddressInfo).port}`;
@@ -93,6 +95,8 @@ describe("user-scoped routes require a portal-verified actor when enforcement is
       "/v1/memory/history?principalId=",
       "/v1/contexts/policy?scope=channel:C1&principalId=",
       "/v1/sessions/s1/background?viewer=",
+      "/v1/shared-sessions/token?viewer=",
+      "/v1/shared-sessions/token/files/file?viewer=",
       "/v1/sessions/s1/background/p1/output?viewer=",
     ]) {
       assert.equal((await fetch(`${base}${path}U1`)).status, 401, `${path} without an identity`);
@@ -103,6 +107,19 @@ describe("user-scoped routes require a portal-verified actor when enforcement is
       );
       const mine = await fetch(`${base}${path}U1`, { headers: { "x-portal-identity": alice } });
       assert.ok(mine.status !== 401 && mine.status !== 403, `${path} as myself should reach the handler`);
+    }
+  });
+
+  it("session sharing mutations bind the portal actor", async () => {
+    for (const method of ["POST"]) {
+      for (const headers of [{}, { "x-portal-identity": await token("U1") }]) {
+        const response = await fetch(`${base}/v1/sessions/s1/share`, {
+          method,
+          headers: { "content-type": "application/json", ...headers },
+          body: JSON.stringify({ principalId: "U2" }),
+        });
+        assert.equal(response.status, "x-portal-identity" in headers ? 403 : 401);
+      }
     }
   });
 
@@ -221,9 +238,34 @@ describe("user-scoped routes require a portal-verified actor when enforcement is
     );
   });
 
-  it("binds deployment and approval routes to the verified actor", async () => {
+  it("binds webhook, deployment, and approval routes to the verified actor", async () => {
     const alice = await token("U1");
     const aliceHeaders = { "content-type": "application/json", "x-portal-identity": alice };
+    const webhook = await built.app.createWebhook({
+      ownerScopeId: "personal:U2",
+      owner: "U2",
+      createdBy: "U2",
+      action: "private webhook",
+      verification: { scheme: "hmac-sha256", secret: "webhook-secret" },
+    });
+    assert.equal((await fetch(`${base}/v1/webhooks?viewer=U2`, { headers: aliceHeaders })).status, 403);
+    assert.deepEqual(
+      (
+        (await (await fetch(`${base}/v1/webhooks?viewer=U1`, { headers: aliceHeaders })).json()) as {
+          webhooks: unknown[];
+        }
+      ).webhooks,
+      [],
+    );
+    assert.equal(
+      (
+        await fetch(`${base}/v1/webhooks/${webhook.id}/disable?principalId=U1`, {
+          method: "POST",
+          headers: aliceHeaders,
+        })
+      ).status,
+      403,
+    );
 
     const deployment = {
       id: "deployment-u2",

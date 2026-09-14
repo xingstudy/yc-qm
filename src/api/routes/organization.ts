@@ -3,7 +3,6 @@ import { sendJson } from "../http.ts";
 import { currentPortalActor } from "../portal-actor.ts";
 import { adminActorFrom, authorizeAdmin, isObj, orgScope } from "./shared.ts";
 import { type ApiCtx, type Route } from "./route.ts";
-import { adminStatusFromGrants } from "../../admin/admin-service.ts";
 import {
   changeManagedStatusWithAdminProtection,
   isLastActiveOrganizationAdmin,
@@ -168,12 +167,11 @@ async function currentDirectoryActor(ctx: ApiCtx): Promise<{
     return null;
   }
   const actor = adminActorFrom(ctx);
-  const grants = (await ctx.deps.admin?.listGrants()) ?? [];
   const allowAdminElevation = (ctx.actor !== null && ctx.actor !== undefined) || ctx.capability?.liveActor === true;
   return {
     organization,
     principalId,
-    isAdmin: allowAdminElevation && actor ? adminStatusFromGrants(grants, actor.id).isAdmin : false,
+    isAdmin: allowAdminElevation && actor ? (await ctx.deps.admin?.adminStatusOf(actor))?.isAdmin === true : false,
   };
 }
 
@@ -413,8 +411,7 @@ async function authorizeOrganizationRead(ctx: ApiCtx): Promise<{
     return null;
   }
   const principal = adminActorFrom(ctx);
-  const grants = await ctx.deps.admin.listGrants();
-  if (principal && adminStatusFromGrants(grants, principal.id).isAdmin) {
+  if (principal && (await ctx.deps.admin.adminStatusOf(principal)).isAdmin) {
     return { organization, actorId: principal.id, asManager: false, unitIds: new Set(), groupIds: new Set() };
   }
   const actorId = ctx.actor?.p;
@@ -456,9 +453,8 @@ async function authorizeOrgMembershipWrite(
     sendJson(ctx.res, 404, { error: "not_found" });
     return null;
   }
-  const grants = await ctx.deps.admin.listGrants();
   const principal = adminActorFrom(ctx);
-  if (principal && adminStatusFromGrants(grants, principal.id).isAdmin) {
+  if (principal && (await ctx.deps.admin.adminStatusOf(principal)).isAdmin) {
     return { organization, actorId: principal.id, asManager: false };
   }
   const actorId = ctx.actor?.p;

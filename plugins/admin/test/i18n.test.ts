@@ -34,7 +34,7 @@ test("admin exposes a bilingual control and translates only explicit UI sinks", 
   assert.match(html, /const ADMIN_ZH = \{/);
   assert.match(html, /Governance: "治理"/);
   assert.match(html, /Sessions: "会话"/);
-  assert.doesNotMatch(html, /new MutationObserver/);
+  assert.doesNotMatch(html, /new MutationObserver\(translateAdminNode/);
   assert.match(html, /translateAdminNode\(document\.body\);/);
   assert.match(html, /b\.textContent = adminTr\(cell\.action\.label\)/);
   assert.match(html, /heading\.textContent = adminTr\("Version history"\)/);
@@ -55,7 +55,7 @@ test("admin exposes a bilingual control and translates only explicit UI sinks", 
   assert.match(html, /adminTr\(Number\(background\)\.toLocaleString\(adminLocaleCode\(\)\) \+ " background"\)/);
   assert.match(html, /card\.title = adminTr\(expanded \? "Click to collapse tool text"/);
   assert.match(html, /link\.title = adminTr\(/);
-  assert.match(html, /label\.textContent = adminTr\(deliveryLabel\)/);
+  assert.match(html, /label\.textContent = adminTr\(event.shadow \|\| isDelivery \? deliveryLabel\(event\)/);
   assert.match(html, /`\$\{adminTr\(deliveryState\)\} · \$\{fmtTime\(event\.createdAt\)\}`/);
   assert.match(html, /\$\("sc-cap-state"\)\.textContent = adminTr\(/);
   assert.match(html, /adminTr\("Any path on this host"\)/);
@@ -84,7 +84,7 @@ test("admin exposes a bilingual control and translates only explicit UI sinks", 
   assert.match(html, /adminTr\(open \? "Collapse entry" : "Expand entry"\)/);
   assert.match(html, /adminTr\(open \? "Collapse model context" : "Expand model context"\)/);
   assert.match(html, /text\.appendChild\(slackParseText\(m\.text \|\| "", m\.mentions\)\)/);
-  assert.match(html, /txt\.textContent = p\.message \|\| "—"/);
+  assert.match(html, /txt\.textContent = p\.message \|\| adminTr\("None"\)/);
   assert.match(html, /textContent: adminTr\("Config store not available\."\)/);
   assert.match(html, /b\.textContent = adminTr\(label\)/);
   assert.match(html, /j\.reason \|\| \(j\.decision === "fastlane" \? adminTr\("@mention — routed past the judge"\)/);

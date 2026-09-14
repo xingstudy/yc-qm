@@ -10,6 +10,7 @@ import {
   codeChallengeS256,
   type OAuthClientResolver,
   type AccountType,
+  type OAuthState,
 } from "../../connectors/oauth.ts";
 import { bestOAuthTokenStatus, CONNECTOR_STATUS_ACCOUNT_TYPES } from "../../credentials/connector-status.ts";
 import type { OAuthTokenStatus } from "../../credentials/keychain.ts";
@@ -27,6 +28,19 @@ function oauthStateSecret(deps: ServerDeps, signingSecret: string | undefined): 
   const value = deps.oauthStateSecret ?? signingSecret;
   if (!value) throw new Error("OAuth state secret required");
   return value;
+}
+
+type OAuthFlowContext = Omit<OAuthState, "issuedAt" | "nonce">;
+
+function beginOAuthFlow(deps: ServerDeps, secret: string | undefined, state: OAuthFlowContext): Promise<string> {
+  if (deps.oauthFlows) return deps.oauthFlows.start(state);
+  return sealOAuthState(state, { secret: oauthStateSecret(deps, secret) });
+}
+
+async function resumeOAuthFlow(deps: ServerDeps, secret: string | undefined, param: string): Promise<OAuthState> {
+  const stored = deps.oauthFlows ? await deps.oauthFlows.finish(param) : null;
+  if (stored) return stored;
+  return openOAuthState(param, { secret: oauthStateSecret(deps, secret), maxAgeMs: OAUTH_STATE_MAX_AGE_MS });
 }
 
 export function resolverFor(deps: ServerDeps): OAuthClientResolver {
@@ -90,34 +104,40 @@ function latestRefreshFailure(
 }
 
 async function connectorProviderStatus(deps: ServerDeps, principalId: string): Promise<Record<string, unknown>> {
-  const providers: Record<string, unknown> = {};
-  for (const [name, provider] of Object.entries(PROVIDERS)) {
-    const hosts = (await Promise.all(
-      provider.hosts.map(async (host) => {
-        const probed = await Promise.all(
-          CONNECTOR_STATUS_ACCOUNT_TYPES.map(
-            async (at) =>
-              (await deps.connectorTokens?.connectorTokenStatus(host, principalId, at)) ?? { connected: false },
-          ),
-        );
-        const best = bestOAuthTokenStatus(probed);
-        return { host, ...best };
-      }),
-    )) as HostStatus[];
-    const configured = await providerConfigured(deps, name);
-    const reconnectHosts = hosts.filter((h) => h.needsReconnect);
-    const latestFailure = latestRefreshFailure(hosts);
-    providers[name] = {
-      hosts,
-      connected: hosts.some((h) => h.connected && !h.needsReconnect),
-      ...(reconnectHosts.length ? { needsReconnect: true } : {}),
-      ...latestFailure,
-      configured,
-      available: configured,
-      consentMode: provider.consentMode,
-    };
-  }
-  return providers;
+  const entries = await Promise.all(
+    Object.entries(PROVIDERS).map(async ([name, provider]) => {
+      const [hosts, configured] = await Promise.all([
+        Promise.all(
+          provider.hosts.map(async (host) => {
+            const probed = await Promise.all(
+              CONNECTOR_STATUS_ACCOUNT_TYPES.map(
+                async (at) =>
+                  (await deps.connectorTokens?.connectorTokenStatus(host, principalId, at)) ?? { connected: false },
+              ),
+            );
+            const best = bestOAuthTokenStatus(probed);
+            return { host, ...best };
+          }),
+        ) as Promise<HostStatus[]>,
+        providerConfigured(deps, name),
+      ]);
+      const reconnectHosts = hosts.filter((h) => h.needsReconnect);
+      const latestFailure = latestRefreshFailure(hosts);
+      return [
+        name,
+        {
+          hosts,
+          connected: hosts.some((h) => h.connected && !h.needsReconnect),
+          ...(reconnectHosts.length ? { needsReconnect: true } : {}),
+          ...latestFailure,
+          configured,
+          available: configured,
+          consentMode: provider.consentMode,
+        },
+      ] as const;
+    }),
+  );
+  return Object.fromEntries(entries);
 }
 
 async function oauthCallback(ctx: BaseCtx): Promise<void> {
@@ -132,10 +152,7 @@ async function oauthCallback(ctx: BaseCtx): Promise<void> {
   if (!code || !stateParam) return sendJson(res, 400, { error: "bad_request", message: "code and state required" });
   let state;
   try {
-    state = await openOAuthState(stateParam, {
-      secret: oauthStateSecret(deps, secret),
-      maxAgeMs: OAUTH_STATE_MAX_AGE_MS,
-    });
+    state = await resumeOAuthFlow(deps, secret, stateParam);
     if (state.provider !== oauthRoute.provider) throw new Error("OAuth provider mismatch");
     if (state.orgId !== undefined && state.orgId !== configOrgId()) {
       throw new Error("OAuth state is for a different org");
@@ -245,21 +262,18 @@ async function consentRedeem(ctx: ApiCtx): Promise<void> {
     }
     const returnTo = safeReturnTo(url.searchParams.get("returnTo")) ?? rec.returnTo;
     const codeVerifier = PROVIDERS[rec.provider]?.pkce ? generateCodeVerifier() : undefined;
-    const state = await sealOAuthState(
-      {
-        provider: rec.provider,
-        principalId: rec.principalId,
-        redirectUri: rec.redirectUri,
-        orgId: configOrgId(),
-        ...(rec.accountType !== "default" ? { accountType: rec.accountType } : {}),
-        clientRef: client.clientRef,
-        ...(returnTo ? { returnTo } : {}),
-        ...(codeVerifier ? { codeVerifier } : {}),
-        consentLinkId: linkId,
-        ...(sessionVersion !== undefined ? { sessionVersion } : {}),
-      },
-      { secret: oauthStateSecret(deps, secret) },
-    );
+    const state = await beginOAuthFlow(deps, secret, {
+      provider: rec.provider,
+      principalId: rec.principalId,
+      redirectUri: rec.redirectUri,
+      orgId: configOrgId(),
+      ...(rec.accountType !== "default" ? { accountType: rec.accountType } : {}),
+      clientRef: client.clientRef,
+      ...(returnTo ? { returnTo } : {}),
+      ...(codeVerifier ? { codeVerifier } : {}),
+      ...(sessionVersion !== undefined ? { sessionVersion } : {}),
+      consentLinkId: linkId,
+    });
     const consentUrl = authorizeUrl(rec.provider, {
       redirectUri: rec.redirectUri,
       state,
@@ -384,22 +398,19 @@ async function oauthStart(ctx: ApiCtx): Promise<void> {
       });
     }
     const codeVerifier = provider.pkce ? generateCodeVerifier() : undefined;
-    const state = await sealOAuthState(
-      {
-        provider: oauthRoute.provider,
-        principalId,
-        redirectUri,
-        orgId: configOrgId(),
-        ...(accountType !== "default" ? { accountType } : {}),
-        clientRef: client.clientRef,
-        ...(safeReturnTo(url.searchParams.get("returnTo"))
-          ? { returnTo: safeReturnTo(url.searchParams.get("returnTo")) }
-          : {}),
-        ...(codeVerifier ? { codeVerifier } : {}),
-        ...(sessionVersion !== undefined ? { sessionVersion } : {}),
-      },
-      { secret: oauthStateSecret(deps, secret) },
-    );
+    const state = await beginOAuthFlow(deps, secret, {
+      provider: oauthRoute.provider,
+      principalId,
+      redirectUri,
+      orgId: configOrgId(),
+      ...(accountType !== "default" ? { accountType } : {}),
+      clientRef: client.clientRef,
+      ...(safeReturnTo(url.searchParams.get("returnTo"))
+        ? { returnTo: safeReturnTo(url.searchParams.get("returnTo")) }
+        : {}),
+      ...(codeVerifier ? { codeVerifier } : {}),
+      ...(sessionVersion !== undefined ? { sessionVersion } : {}),
+    });
     const consentUrl = authorizeUrl(oauthRoute.provider, {
       redirectUri,
       state,

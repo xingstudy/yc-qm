@@ -1,16 +1,25 @@
+import { postCallText, postResultOk } from "./surface-post.ts";
+import type { ModelMetadata } from "./pi-models.ts";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import type { Attachment } from "@earendil-works/pi-web-ui";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Usage } from "@earendil-works/pi-ai";
 import type { Agent, AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
-import { swallow } from "../../chassis/src/errors.ts";
+import { errMessage, swallow } from "../../chassis/src/errors.ts";
+import { userFacingFailureText } from "../../chassis/src/failure-copy.ts";
 import { groupDmText } from "./group-dm-label.ts";
 import { base64ToBytes } from "./paste-text.ts";
-import { defaultEffortForModel, harnessSupportsEffort } from "./model-options.ts";
-import type { CatalogModelInfo } from "./pi-models.ts";
+import { defaultEffortForModel, harnessSupportsEffort } from "./runtime-capabilities.ts";
+import { SIGNIN_REQUIRED_EVENT, signinRedirect } from "./signin-return.ts";
 
 const BASE_URL = ((import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? "/").replace(/\/$/, "");
 
 export function withBase(path: string): string {
   return `${BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+export function fileContentUrl(id: string, name?: string): string {
+  const base = `/api/files/${encodeURIComponent(id)}/content`;
+  return withBase(name ? `${base}/${encodeURIComponent(name)}` : base);
 }
 
 const POLL_MS = 500;
@@ -25,6 +34,7 @@ export function setClock(fn: () => number): void {
 }
 
 interface PiAttachment {
+  id?: string;
   type: "image" | "document";
   fileName: string;
   mimeType: string;
@@ -32,12 +42,73 @@ interface PiAttachment {
   content: string;
   extractedText?: string;
 }
-interface CoreAttachment {
+export interface CoreAttachment {
   name: string;
   mimetype: string;
   sizeBytes: number;
   blobId: string;
 }
+
+export const MAX_ATTACHMENT_BYTES = 1_000_000_000;
+export const MAX_FILES_PER_MESSAGE = 10;
+
+export function oversizeAttachmentNote(name: string): string {
+  return `"${name}" is too large — files up to ~1 GB can be sent. It was left out.`;
+}
+
+export function emptyAttachmentNote(name: string): string {
+  return `"${name}" is empty. It was left out.`;
+}
+
+export function tooManyFilesNote(names: string[]): string {
+  const skipped = names.map((n) => `"${n}"`).join(", ");
+  return `Skipped ${skipped} — too many files in one message (max ${MAX_FILES_PER_MESSAGE}).`;
+}
+
+export interface SkippedAttachment {
+  id?: string;
+  name: string;
+  note: string;
+  permanent: boolean;
+}
+
+export interface AttachmentUpload {
+  uploaded: CoreAttachment[];
+  skipped: SkippedAttachment[];
+}
+
+export async function uploadAttachments(attachments: readonly PiAttachment[]): Promise<AttachmentUpload> {
+  const uploaded: CoreAttachment[] = [];
+  const skipped: SkippedAttachment[] = [];
+  for (const a of attachments) {
+    const skip = (note: string, permanent: boolean): void => {
+      skipped.push({ ...(a.id ? { id: a.id } : {}), name: a.fileName, note, permanent });
+    };
+    if (typeof a.content !== "string" || a.content.length === 0) {
+      skip(emptyAttachmentNote(a.fileName), true);
+      continue;
+    }
+    if (a.size > MAX_ATTACHMENT_BYTES) {
+      skip(oversizeAttachmentNote(a.fileName), true);
+      continue;
+    }
+    try {
+      uploaded.push(await toCoreAttachment(a));
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 413) skip(oversizeAttachmentNote(a.fileName), true);
+      else skip(`"${a.fileName}" couldn't be uploaded (${errMessage(err)}). Try again.`, false);
+    }
+  }
+  return { uploaded, skipped };
+}
+
+type WebUserMessage = AgentMessage & {
+  role: "user" | "user-with-attachments";
+  content: string | Array<{ type: string; text?: string }>;
+  attachments?: PiAttachment[];
+  clientTurnId?: string;
+  sendFailure?: string;
+};
 
 export interface DeliveredFile {
   name: string;
@@ -238,10 +309,20 @@ export function userMessagesBefore(entries: SessionEntry[], anchorSeq: number): 
 
 export const TAIL_TURNS = 25;
 
+export interface SessionPin {
+  id: string;
+  text?: string;
+  entrySeq?: number;
+  preview?: string;
+  addedBy: string;
+  createdAt: number;
+}
+
 export interface TranscriptPage {
   session?: CoreSession;
   entries: SessionEntry[];
   earlierEntries?: number;
+  pins?: SessionPin[];
 }
 
 export async function fetchTranscript(
@@ -254,6 +335,10 @@ export async function fetchTranscript(
   if (window?.beforeSeq !== undefined) qs.set("beforeSeq", String(window.beforeSeq));
   const suffix = qs.size ? `?${qs.toString()}` : "";
   return api<TranscriptPage>(`/api/sessions/${encodeURIComponent(id)}${suffix}`);
+}
+
+export function fetchSessionApprovals(id: string): Promise<{ approvals: PendingApproval[] } | null> {
+  return api<{ approvals: PendingApproval[] }>(`/api/sessions/${encodeURIComponent(id)}/approvals`).catch(() => null);
 }
 
 export async function fetchEntry(sessionId: string, seq: number): Promise<SessionEntry> {
@@ -315,12 +400,23 @@ export interface PendingApproval {
   blocksInput?: boolean;
 }
 
+export function approvalBlocksComposer(approval: PendingApproval): boolean {
+  return approval.blocksInput !== false;
+}
+
 export interface ApprovalDecision {
   requestId: string;
   approved: boolean;
   scope?: "once" | "session" | "always";
 }
-export type AssistantWork = AssistantMessage & { work?: WorkBlock; deliveredFiles?: DeliveredFile[] };
+export type AssistantWork = AssistantMessage & {
+  work?: WorkBlock;
+  deliveredFiles?: DeliveredFile[];
+  retryableSend?: boolean;
+  sendBlocked?: "pending_approval";
+  sendFailed?: "attachments";
+  droppedAttachmentIds?: string[];
+};
 
 export interface RunPoll {
   status: "pending" | "running" | "done" | "failed";
@@ -357,6 +453,22 @@ export interface ActiveRun {
 export interface QueuedRun {
   runId: string;
   text: string;
+  hasAttachments?: boolean;
+}
+
+export function runIsTerminal(run: Pick<RunPoll, "status" | "result" | "replyComplete">): boolean {
+  return run.status === "done" || run.status === "failed" || run.result != null || run.replyComplete === true;
+}
+
+export function resumeAnchor(): AgentMessage {
+  return { role: "user", content: "", resumeAnchor: true } as unknown as AgentMessage;
+}
+
+export function continuableMessages(messages: AgentMessage[]): { messages: AgentMessage[]; popped: AgentMessage[] } {
+  const kept = messages.slice();
+  const popped: AgentMessage[] = [];
+  while (kept.length && (kept[kept.length - 1] as { role?: string }).role === "assistant") popped.unshift(kept.pop()!);
+  return { messages: kept.length ? kept : [resumeAnchor()], popped };
 }
 
 export function isContinuable(s: Pick<CoreSession, "threadRef" | "scopeId">, user: string): boolean {
@@ -388,8 +500,15 @@ function baseAssistant(model: Model<Api>): AssistantMessage {
   };
 }
 
-async function latestUserTurn(agent: Agent): Promise<{ text: string; attachments: CoreAttachment[] }> {
-  const messages = agent.state.messages as Array<AgentMessage & { attachments?: PiAttachment[] }>;
+async function latestUserTurn(agent: Agent): Promise<{
+  text: string;
+  attachments: CoreAttachment[];
+  idempotencyKey?: string;
+  issues: string[];
+  droppedIds: string[];
+  retryable: Attachment[];
+}> {
+  const messages = agent.state.messages as Array<AgentMessage & { attachments?: PiAttachment[] } & SendKeyed>;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m?.role !== "user" && m?.role !== "user-with-attachments") continue;
@@ -400,12 +519,27 @@ async function latestUserTurn(agent: Agent): Promise<{ text: string; attachments
             .filter((c) => c.type === "text")
             .map((c) => c.text ?? "")
             .join("\n");
-    const attachments = await Promise.all(
-      (m.attachments ?? []).filter((a) => typeof a.content === "string" && a.content.length > 0).map(toCoreAttachment),
+    const { uploaded, skipped } = await uploadAttachments(m.attachments ?? []);
+    const transientIds = new Set(skipped.filter((s) => !s.permanent).flatMap((s) => (s.id ? [s.id] : [])));
+    const retryable = (m.attachments ?? []).filter(
+      (a): a is PiAttachment & Attachment => a.id !== undefined && transientIds.has(a.id),
     );
-    return { text, attachments };
+    if (skipped.length && m.attachments) {
+      const skippedIds = new Set(skipped.map((s) => s.id).filter(Boolean));
+      m.attachments = m.attachments.filter((a) => !a.id || !skippedIds.has(a.id));
+    }
+    const idempotencyKey = sendKeyOf(m) ?? mintSendKey();
+    m.idempotencyKey = idempotencyKey;
+    return {
+      text,
+      attachments: uploaded,
+      idempotencyKey,
+      issues: skipped.map((s) => s.note),
+      droppedIds: skipped.filter((s) => s.permanent).flatMap((s) => (s.id ? [s.id] : [])),
+      retryable,
+    };
   }
-  return { text: "", attachments: [] };
+  return { text: "", attachments: [], issues: [], droppedIds: [], retryable: [] };
 }
 
 function attachmentBytes(a: PiAttachment): Uint8Array {
@@ -421,15 +555,12 @@ function toHex(buf: ArrayBuffer): string {
 async function toCoreAttachment(a: PiAttachment): Promise<CoreAttachment> {
   const bytes = attachmentBytes(a);
   const sha256 = toHex(await crypto.subtle.digest("SHA-256", bytes as unknown as ArrayBuffer));
-  const r = await fetch(withBase(`/api/blobs?sha=${sha256}`), {
+  const r = await webFetch(withBase(`/api/blobs?sha=${sha256}`), {
     method: "POST",
     headers: { "content-type": "application/octet-stream" },
     body: bytes as unknown as BodyInit,
   });
-  if (!r.ok) {
-    if (r.status === 401) reportSigninRequired(await r.json().catch(() => ({})));
-    throw new ApiError(`attachment upload failed: HTTP ${r.status}`, r.status);
-  }
+  if (!r.ok) throw new ApiError(`attachment upload failed: HTTP ${r.status}`, r.status);
   const { blobId, sizeBytes } = (await r.json()) as { blobId: string; sizeBytes: number };
   return { name: a.fileName, mimetype: a.mimeType, sizeBytes: sizeBytes ?? a.size, blobId };
 }
@@ -460,6 +591,24 @@ export function reportSigninRequired(detail: SigninRequired): void {
   onSigninRequired?.(detail);
 }
 
+export async function webFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const response = await fetch(input, init);
+  if (response.status !== 401) return response;
+  let body: unknown;
+  try {
+    body = await response.clone().json();
+  } catch {
+    body = null;
+  }
+  const redirect = signinRedirect((body as { loginUrl?: unknown } | null)?.loginUrl, window.location);
+  if (redirect) window.location.assign(redirect);
+  else {
+    reportSigninRequired((body ?? {}) as SigninRequired);
+    window.dispatchEvent(new Event(SIGNIN_REQUIRED_EVENT));
+  }
+  return response;
+}
+
 export interface UiStateRecord {
   value: unknown;
   updatedAt: number;
@@ -474,7 +623,7 @@ export function putUiState(key: string, value: unknown, updatedAt: number, init?
 }
 
 export async function api<T = unknown>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(withBase(path), { headers: { "content-type": "application/json" }, ...init });
+  const r = await webFetch(withBase(path), { headers: { "content-type": "application/json" }, ...init });
   const text = await r.text();
   let body: unknown = {};
   try {
@@ -483,21 +632,20 @@ export async function api<T = unknown>(path: string, init?: RequestInit): Promis
     swallow("web-ui: parse api response body", e);
   }
   if (!r.ok) {
-    if (r.status === 401 && path !== "/signin") reportSigninRequired(body as SigninRequired);
-    const msg =
-      (body as { error?: string; message?: string })?.message ??
-      (body as { error?: string })?.error ??
-      `HTTP ${r.status}`;
+    const details = body as { message?: string; reason?: string; error?: string } | null;
+    const msg = details?.message ?? details?.reason ?? details?.error ?? `HTTP ${r.status}`;
     throw new ApiError(msg, r.status, body);
   }
   return body as T;
 }
 
 export interface RuntimeConfig {
+  interactiveFastMode?: boolean;
+  unavailableReason?: string;
   scopeId: string;
   approvedHarnesses: string[];
   modelsByHarness: Record<string, string[]>;
-  modelCatalog: Record<string, CatalogModelInfo>;
+  modelCatalog: Record<string, ModelMetadata>;
   orgDefault: { harnessId: string; modelId: string; effortLevel?: string; fastMode?: boolean; revision: number };
   inheritedFrom?: string;
   inheritedDefault?: { harnessId: string; modelId: string };
@@ -511,7 +659,6 @@ export interface RuntimeConfig {
   effective: { harnessId: string; modelId: string; effortLevel?: string; fastMode?: boolean };
   upgradeAvailable: boolean;
   fastModeModelIds?: string[];
-  interactiveFastMode?: boolean;
 }
 
 export async function fetchRuntimeConfig(scopeId?: string | null): Promise<RuntimeConfig | null> {
@@ -542,13 +689,31 @@ export async function updateRuntimeConfig(
 }
 
 export type WorkObserver = (work: WorkBlock) => void;
+export type SendIssueObserver = (issues: string[], retryable: Attachment[]) => void;
 
 export interface RunSlot {
   runId: string | null;
+  generation: number;
+  stopGeneration: number | null;
+  unreachedAbort: boolean;
 }
 
 export function createRunSlot(): RunSlot {
-  return { runId: null };
+  return { runId: null, generation: 0, stopGeneration: null, unreachedAbort: false };
+}
+
+function beginSubmit(slot: RunSlot | undefined): number {
+  if (!slot) return 0;
+  slot.unreachedAbort = false;
+  return ++slot.generation;
+}
+
+export function requestStop(slot: RunSlot): void {
+  slot.stopGeneration = slot.generation;
+}
+
+function dropStopForGeneration(slot: RunSlot | undefined, gen: number): void {
+  if (slot && slot.stopGeneration === gen) slot.stopGeneration = null;
 }
 
 export function hasLiveRun(slot: RunSlot): boolean {
@@ -557,13 +722,32 @@ export function hasLiveRun(slot: RunSlot): boolean {
 
 export type SignalOutcome = { ok: true } | { ok: false; reason: string; replayed?: boolean };
 
-export async function signalLiveRun(slot: RunSlot, kind: "abort" | "steer", text?: string): Promise<SignalOutcome> {
+export interface SteerContext {
+  threadRef: string | null;
+  scopeId?: string | null;
+  channelName?: string | null;
+}
+
+export async function signalLiveRun(
+  slot: RunSlot,
+  kind: "abort" | "steer",
+  text: string | undefined,
+  context: SteerContext,
+): Promise<SignalOutcome> {
   const run = slot.runId !== null ? { runId: slot.runId } : null;
   if (!run) throw new Error("No active run to signal.");
+  const steerContext =
+    kind === "steer" && context.threadRef
+      ? {
+          threadRef: context.threadRef,
+          ...(context.scopeId ? { scopeId: context.scopeId } : {}),
+          ...(context.channelName ? { channelName: context.channelName } : {}),
+        }
+      : {};
   try {
     await api(runPath(run.runId, "/signal"), {
       method: "POST",
-      body: JSON.stringify({ kind, ...(text !== undefined ? { text } : {}) }),
+      body: JSON.stringify({ kind, ...(text !== undefined ? { text } : {}), ...steerContext }),
     });
     return { ok: true };
   } catch (err) {
@@ -582,12 +766,59 @@ export async function signalLiveRun(slot: RunSlot, kind: "abort" | "steer", text
   }
 }
 
+const STEER_VERIFY_DELAYS_MS = [1200, 2200, 3600];
+const STEER_VERIFY_SKEW_MS = 120_000;
+
+export async function latestTranscriptSeq(sessionId: string): Promise<number | undefined> {
+  const page = await fetchTranscript(sessionId, { tailTurns: 1 });
+  const seqs = (page.entries ?? []).flatMap((e) => (e.seq === undefined ? [] : [e.seq]));
+  return seqs.length ? Math.max(...seqs) : undefined;
+}
+
+function steerTextMatches(stored: string, wanted: string): boolean {
+  return stored === wanted || stored.endsWith(`: ${wanted}`);
+}
+
+export async function verifySteerDelivered(
+  sessionId: string | null,
+  text: string,
+  sentAt: number,
+  delays: readonly number[] = STEER_VERIFY_DELAYS_MS,
+  sinceSeq?: number,
+): Promise<boolean> {
+  if (!sessionId) return false;
+  const wanted = text.trim();
+  if (!wanted) return false;
+  for (const delay of delays) {
+    await sleep(delay);
+    try {
+      const page = await fetchTranscript(sessionId, { tailTurns: 3 });
+      const found = (page.entries ?? []).some((e) => {
+        if (e.type !== "user") return false;
+        if (sinceSeq !== undefined && !(e.seq !== undefined && e.seq > sinceSeq)) return false;
+        const p = e.payload as { text?: string; steered?: boolean } | null;
+        return (
+          p?.steered === true &&
+          typeof p.text === "string" &&
+          steerTextMatches(p.text.trim(), wanted) &&
+          e.createdAt >= sentAt - STEER_VERIFY_SKEW_MS
+        );
+      });
+      if (found) return true;
+    } catch (e) {
+      swallow("web-ui: verify steer delivery", e);
+    }
+  }
+  return false;
+}
+
 export function makeCoreStreamFn(
   threadRef: string,
   agent: Agent,
   getTurnOptions?: () => TurnOptions,
   onWork?: WorkObserver,
   slot?: RunSlot,
+  onSendIssues?: SendIssueObserver,
 ): StreamFn {
   const fn = (
     model: Model<Api>,
@@ -595,7 +826,7 @@ export function makeCoreStreamFn(
     options?: { signal?: AbortSignal },
   ): AssistantMessageEventStream => {
     const stream = createAssistantMessageEventStream();
-    void drive(stream, model, threadRef, agent, getTurnOptions, options?.signal, onWork, undefined, false, slot);
+    void drive(stream, model, threadRef, agent, getTurnOptions, options?.signal, onWork, false, slot, onSendIssues);
     return stream;
   };
   return fn as unknown as StreamFn;
@@ -610,18 +841,25 @@ export async function activeRunForThread(threadRef: string): Promise<ActiveRun> 
   return { ...live, queued: r.queued ?? [] };
 }
 
+export const PENDING_APPROVAL_REASON = "Approve or deny the pending command to continue.";
+
 export async function queueTurn(
   threadRef: string,
   text: string,
   agent: Agent,
   getTurnOptions?: () => TurnOptions,
+  idempotencyKey?: string,
+  attachments: CoreAttachment[] = [],
 ): Promise<QueuedRun> {
-  const submit = await api<{ runId?: string }>("/api/turn", {
+  const submit = await api<{ status?: string; runId?: string; reason?: string }>("/api/turn", {
     method: "POST",
-    body: JSON.stringify(turnRequestBody(threadRef, text, agent.state.model, agent, getTurnOptions)),
+    body: JSON.stringify(
+      turnRequestBody(threadRef, text, agent.state.model, agent, getTurnOptions, { idempotencyKey, attachments }),
+    ),
   });
+  if (submit.status === "pending_approval") throw new Error(submit.reason ?? PENDING_APPROVAL_REASON);
   if (!submit.runId) throw new Error("Could not queue the message.");
-  return { runId: submit.runId, text };
+  return { runId: submit.runId, text, ...(attachments.length ? { hasAttachments: true } : {}) };
 }
 
 export async function withdrawRun(runId: string): Promise<boolean> {
@@ -648,19 +886,86 @@ export function makeRunResumeStreamFn(
   return fn as unknown as StreamFn;
 }
 
+export async function resolveApproval(decision: ApprovalDecision): Promise<string> {
+  const submit = await api<{ runId?: string }>(`/api/approvals/${encodeURIComponent(decision.requestId)}`, {
+    method: "POST",
+    body: JSON.stringify({ approved: decision.approved, ...(decision.scope ? { scope: decision.scope } : {}) }),
+  });
+  if (!submit.runId) throw new Error("Could not continue after the approval.");
+  return submit.runId;
+}
+
 export async function runApprovalTurn(
-  threadRef: string,
   agent: Agent,
   decision: ApprovalDecision,
-  getTurnOptions: (() => TurnOptions) | undefined,
   onWork: WorkObserver | undefined,
-  signal?: AbortSignal,
   slot?: RunSlot,
 ): Promise<void> {
   const stream = createAssistantMessageEventStream();
-  await drive(stream, agent.state.model, threadRef, agent, getTurnOptions, signal, onWork, decision, false, slot);
+  await driveApproval(stream, agent.state.model, decision, onWork, slot);
   const outcome = await stream.result();
   if (outcome.stopReason === "error") throw new Error(outcome.errorMessage || "Could not send the approval.");
+}
+
+const APPROVAL_GONE_MESSAGE = "This approval is no longer available — it may have expired or already been handled.";
+const APPROVAL_NOT_APPLIED_MESSAGE =
+  "This approval couldn't be applied right now — the conversation is waiting on a different approval.";
+
+async function driveApproval(
+  stream: AssistantMessageEventStream,
+  model: Model<Api>,
+  decision: ApprovalDecision,
+  onWork?: WorkObserver,
+  slot?: RunSlot,
+): Promise<void> {
+  const gen = beginSubmit(slot);
+  const partial = baseAssistant(model);
+  const work: WorkBlock = { status: "thinking", activity: [] };
+  (partial as AssistantWork).work = work;
+  const notify = (): void => onWork?.(work);
+  try {
+    notify();
+    stream.push({ type: "start", partial });
+    stream.push({ type: "text_start", contentIndex: 0, partial });
+    const submit = await api<{ status?: string; runId?: string; reply?: string; reason?: string }>(
+      `/api/approvals/${encodeURIComponent(decision.requestId)}`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          approved: decision.approved,
+          ...(decision.scope ? { scope: decision.scope } : {}),
+          idempotencyKey: mintSendKey(),
+        }),
+      },
+    );
+    if (submit.runId) {
+      await followRun(stream, partial, submit.runId, undefined, notify, undefined, slot, gen);
+      return;
+    }
+    if (submit.status === "pending_approval") {
+      throw new Error(submit.reason?.trim() ? submit.reason : APPROVAL_NOT_APPLIED_MESSAGE);
+    }
+    work.status = "complete";
+    work.finishedAt = Date.now();
+    notify();
+    finish(stream, partial, { acc: "", lastProgressAt: now() }, submit.reply ?? "");
+  } catch (e) {
+    work.status = "failed";
+    work.finishedAt = Date.now();
+    notify();
+    fail(stream, partial, approvalFailureMessage(e));
+  } finally {
+    dropStopForGeneration(slot, gen);
+  }
+}
+
+function approvalFailureMessage(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.status === 404) return APPROVAL_GONE_MESSAGE;
+    const reason = (e.body as { reason?: unknown } | null)?.reason;
+    if (typeof reason === "string" && reason.trim()) return reason;
+  }
+  return errMessage(e);
 }
 
 export function makeOpenerStreamFn(
@@ -676,7 +981,7 @@ export function makeOpenerStreamFn(
     options?: { signal?: AbortSignal },
   ): AssistantMessageEventStream => {
     const stream = createAssistantMessageEventStream();
-    void drive(stream, model, threadRef, agent, getTurnOptions, options?.signal, onWork, undefined, true, slot);
+    void drive(stream, model, threadRef, agent, getTurnOptions, options?.signal, onWork, true, slot);
     return stream;
   };
   return fn as unknown as StreamFn;
@@ -688,8 +993,9 @@ function turnRequestBody(
   model: Model<Api>,
   agent: Agent,
   getTurnOptions?: () => TurnOptions,
-  attachments: CoreAttachment[] = [],
+  send: { idempotencyKey?: string; attachments?: CoreAttachment[] } = {},
 ): Record<string, unknown> {
+  const { idempotencyKey, attachments = [] } = send;
   const turnOptions = getTurnOptions?.() ?? {};
   const thinkingLevel =
     !turnOptions.harness || harnessSupportsEffort(turnOptions.harness)
@@ -707,7 +1013,28 @@ function turnRequestBody(
     ...(turnOptions.scopeId ? { scopeId: turnOptions.scopeId } : {}),
     ...(turnOptions.channelName ? { channelName: turnOptions.channelName } : {}),
     ...(attachments.length ? { attachments } : {}),
+    ...(idempotencyKey ? { idempotencyKey } : {}),
   };
+}
+
+interface SendKeyed {
+  idempotencyKey?: string;
+}
+
+export function mintSendKey(): string {
+  return crypto.randomUUID();
+}
+
+export function sendKeyOf(message: unknown): string | undefined {
+  const key = (message as SendKeyed | null)?.idempotencyKey;
+  return typeof key === "string" && key ? key : undefined;
+}
+
+export function userSendMessage(text: string, attachments?: unknown[]): AgentMessage {
+  const base = attachments?.length
+    ? { role: "user-with-attachments", content: text, attachments, timestamp: Date.now() }
+    : { role: "user", content: text, timestamp: Date.now() };
+  return { ...base, idempotencyKey: mintSendKey() } satisfies SendKeyed as unknown as AgentMessage;
 }
 
 async function drive(
@@ -718,10 +1045,11 @@ async function drive(
   getTurnOptions?: () => TurnOptions,
   signal?: AbortSignal,
   onWork?: WorkObserver,
-  approval?: ApprovalDecision,
   opener?: boolean,
   slot?: RunSlot,
+  onSendIssues?: SendIssueObserver,
 ): Promise<void> {
+  const gen = beginSubmit(slot);
   const partial = baseAssistant(model);
   const work: WorkBlock = { status: "thinking", activity: [] };
   (partial as AssistantWork).work = work;
@@ -731,21 +1059,48 @@ async function drive(
     stream.push({ type: "start", partial });
     stream.push({ type: "text_start", contentIndex: 0, partial });
 
-    const { text, attachments } = opener
-      ? { text: "", attachments: [] as CoreAttachment[] }
+    const { text, attachments, idempotencyKey, issues, droppedIds, retryable } = opener
+      ? {
+          text: "",
+          attachments: [] as CoreAttachment[],
+          idempotencyKey: undefined,
+          issues: [] as string[],
+          droppedIds: [] as string[],
+          retryable: [] as Attachment[],
+        }
       : await latestUserTurn(agent);
+    if (!opener && !text.trim() && attachments.length === 0) {
+      work.status = "failed";
+      work.finishedAt = Date.now();
+      notify();
+      if (issues.length) {
+        (partial as AssistantWork).sendFailed = "attachments";
+        (partial as AssistantWork).droppedAttachmentIds = droppedIds;
+      }
+      fail(stream, partial, issues.join(" ") || "Nothing to send.");
+      return;
+    }
+    if (issues.length) onSendIssues?.(issues, retryable);
 
-    const submit = await api<{ status?: string; runId?: string; reply?: string }>("/api/turn", {
+    const submit = await api<{ status?: string; runId?: string; reply?: string; reason?: string }>("/api/turn", {
       method: "POST",
       body: JSON.stringify({
-        ...turnRequestBody(threadRef, text, model, agent, getTurnOptions, attachments),
-        ...(approval ? { approval } : {}),
+        ...turnRequestBody(threadRef, text, model, agent, getTurnOptions, { idempotencyKey, attachments }),
         ...(opener ? { proactiveOpener: true } : {}),
       }),
     });
 
     if (submit.runId) {
-      await followRun(stream, partial, submit.runId, signal, notify, undefined, slot);
+      await followRun(stream, partial, submit.runId, signal, notify, undefined, slot, gen);
+      return;
+    }
+
+    if (submit.status === "pending_approval") {
+      work.status = "failed";
+      work.finishedAt = Date.now();
+      notify();
+      (partial as AssistantWork).sendBlocked = "pending_approval";
+      fail(stream, partial, submit.reason ?? PENDING_APPROVAL_REASON);
       return;
     }
 
@@ -757,7 +1112,16 @@ async function drive(
     work.status = "failed";
     work.finishedAt = Date.now();
     notify();
+    if (e instanceof TypeError) {
+      const errorMessage = "Message wasn’t sent. Check your connection and try again.";
+      const message = latestUserMessage(agent);
+      if (message) message.sendFailure = errorMessage;
+      fail(stream, partial, errorMessage, true);
+      return;
+    }
     fail(stream, partial, e instanceof Error ? e.message : String(e));
+  } finally {
+    dropStopForGeneration(slot, gen);
   }
 }
 
@@ -771,6 +1135,7 @@ async function resumeDrive(
   slot?: RunSlot,
   seedText?: string,
 ): Promise<void> {
+  const gen = beginSubmit(slot);
   const partial = baseAssistant(model);
   const work: WorkBlock = { status: "thinking", activity: [] };
   (partial as AssistantWork).work = work;
@@ -786,12 +1151,14 @@ async function resumeDrive(
     // (when longer) simply replaces it via the normal delta path.
     if (seedText?.trim()) pushDelta(stream, partial, st, seedText);
     if (initialRun && applyRun(stream, partial, st, initialRun, notify) === "terminal") return;
-    await followRun(stream, partial, runId, signal, notify, st, slot);
+    await followRun(stream, partial, runId, signal, notify, st, slot, gen);
   } catch (e) {
     work.status = "failed";
     work.finishedAt = Date.now();
     notify();
     fail(stream, partial, e instanceof Error ? e.message : String(e));
+  } finally {
+    dropStopForGeneration(slot, gen);
   }
 }
 
@@ -803,10 +1170,23 @@ async function followRun(
   notify?: () => void,
   st: Acc = { acc: "", lastProgressAt: now() },
   slot?: RunSlot,
+  gen = 0,
 ): Promise<void> {
-  if (slot) slot.runId = runId;
   try {
+    if (slot && slot.stopGeneration === gen) {
+      slot.stopGeneration = null;
+      slot.runId = runId;
+      try {
+        const outcome = await signalLiveRun(slot, "abort", undefined, { threadRef: null });
+        if (!outcome.ok) slot.unreachedAbort = true;
+      } catch (e) {
+        slot.unreachedAbort = true;
+        swallow("web-ui: stop requested before the run id arrived", e);
+      }
+      return abortStream(stream, partial);
+    }
     if (signal?.aborted) return abortStream(stream, partial);
+    if (slot) slot.runId = runId;
     const viaSse = await streamRunViaSse(stream, partial, runId, st, signal, notify);
     if (viaSse === "done") return;
     if (signal?.aborted) return abortStream(stream, partial);
@@ -893,9 +1273,7 @@ function applyRun(
     st.lastProgressAt = now();
     pushDelta(stream, partial, st, p);
   }
-  const terminal =
-    run.status === "done" || run.status === "failed" || run.result !== null || run.replyComplete === true;
-  if (!terminal) return "open";
+  if (!runIsTerminal(run)) return "open";
   const res = run.result;
   const delivered = deliveredFilesFromAttachments(res?.attachments);
   if (delivered.length) {
@@ -930,7 +1308,7 @@ function applyRun(
     return "terminal";
   }
   if (!paused && !quiet && (run.status === "failed" || (res && res.status !== "ok"))) {
-    fail(stream, partial, res?.reason ?? "The agent run failed.");
+    fail(stream, partial, userFacingFailureText(res ?? { status: "failed" }));
     return "terminal";
   }
   finish(stream, partial, st, st.acc);
@@ -978,25 +1356,45 @@ export interface SessionStateEvent {
   at: number;
 }
 
+export interface InboxItemEvent {
+  loopId: string;
+  itemId: string;
+  op: string;
+}
+
 export function subscribeDeliveries(
   onThread: (threadRef: string) => void,
   onSessionState?: (event: SessionStateEvent) => void,
   onResync?: () => void,
+  onInboxItem?: (event: InboxItemEvent) => void,
+  onInboxResync?: () => void,
 ): () => void {
   if (typeof EventSource === "undefined") return () => {};
   const es = new EventSource(withBase("/api/deliveries/events"));
   let everOpened = false;
   es.onopen = (): void => {
-    if (everOpened) onResync?.();
+    if (everOpened) {
+      onResync?.();
+      onInboxResync?.();
+    }
     everOpened = true;
   };
   es.addEventListener("session_state_resync", () => onResync?.());
+  es.addEventListener("inbox_resync", () => onInboxResync?.());
   es.addEventListener("session_state", (e: MessageEvent) => {
     try {
       const ev = JSON.parse(e.data) as SessionStateEvent;
       if (typeof ev.threadRef === "string" && ev.threadRef && typeof ev.state === "string") onSessionState?.(ev);
     } catch (err) {
       swallow("web-ui: handle session-state frame", err);
+    }
+  });
+  es.addEventListener("inbox_item", (e: MessageEvent) => {
+    try {
+      const ev = JSON.parse(e.data) as InboxItemEvent;
+      if (typeof ev.loopId === "string" && typeof ev.itemId === "string") onInboxItem?.(ev);
+    } catch (err) {
+      swallow("web-ui: handle inbox-item frame", err);
     }
   });
   es.addEventListener("delivery", (e: MessageEvent) => {
@@ -1103,7 +1501,12 @@ function streamRunViaSse(
   });
 }
 
-function fail(stream: AssistantMessageEventStream, partial: AssistantMessage, errorMessage: string): void {
+function fail(
+  stream: AssistantMessageEventStream,
+  partial: AssistantMessage,
+  errorMessage: string,
+  retryableSend = false,
+): void {
   const block = partial.content[0];
   const soFar = block?.type === "text" ? block.text : "";
   const error: AssistantMessage = {
@@ -1111,6 +1514,7 @@ function fail(stream: AssistantMessageEventStream, partial: AssistantMessage, er
     content: [{ type: "text", text: soFar }],
     stopReason: "error",
     errorMessage,
+    ...(retryableSend ? { retryableSend: true } : {}),
   };
   stream.push({ type: "error", reason: "error", error });
   stream.end(error);
@@ -1201,18 +1605,35 @@ interface HistoryUserMessage {
   timestamp?: number;
   attachments?: HistoryAttachment[];
   steered?: boolean;
+  speaker?: string;
+  ts?: string;
+  edited?: boolean;
+  deleted?: boolean;
 }
 
-function postCallText(payload: unknown): string | null {
-  const p = (payload ?? {}) as { action?: unknown; text?: unknown; files?: unknown };
-  if (p.action !== "post" || typeof p.text !== "string") return null;
-  if (!p.text.trim() && !(Array.isArray(p.files) && p.files.length)) return null;
-  return p.text;
+export interface HistorySystemNote {
+  role: "system-note";
+  note: "message_revision";
+  action: "edited" | "deleted";
+  ts: string;
+  content: string;
+  speaker?: string;
+  timestamp?: number;
 }
 
-function postResultOk(payload: unknown): boolean {
-  const p = (payload ?? {}) as { ok?: unknown; isError?: unknown };
-  return p.isError !== true && p.ok !== false;
+function messageRevisionPayload(payload: unknown): HistorySystemNote | null {
+  const p = payload as { kind?: unknown; action?: unknown; ts?: unknown; text?: unknown; name?: unknown } | null;
+  if (p?.kind !== "message_revision") return null;
+  if (p.action !== "edited" && p.action !== "deleted") return null;
+  if (typeof p.ts !== "string" || !p.ts) return null;
+  return {
+    role: "system-note",
+    note: "message_revision",
+    action: p.action,
+    ts: p.ts,
+    content: typeof p.text === "string" ? p.text : "",
+    ...(typeof p.name === "string" && p.name.trim() ? { speaker: p.name.trim() } : {}),
+  };
 }
 
 function userEntryText(payload: unknown): string | null {
@@ -1224,8 +1645,9 @@ function userEntryText(payload: unknown): string | null {
   return display.trim() ? display : null;
 }
 
-export function entriesToMessages(entries: SessionEntry[], model: Model<Api>): AgentMessage[] {
+export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): AgentMessage[] {
   const out: AgentMessage[] = [];
+  const userByTs = new Map<string, HistoryUserMessage>();
   let pending: ToolActivity[] = [];
   let deliveryFiles: DeliveredFile[] = [];
   let posted = false;
@@ -1251,7 +1673,23 @@ export function entriesToMessages(entries: SessionEntry[], model: Model<Api>): A
     )?.files;
     deliveryFiles.push(...deliveredFilesFromAttachments(files));
   };
-  const flushWork = (text: string, at?: number, closed = false): void => {
+
+  const appendAttachedFiles = (resultPayload: unknown): void => {
+    const before = deliveryFiles.length;
+    appendPostFiles(resultPayload);
+    const restaged = new Set(deliveryFiles.slice(before).map((f) => f.name));
+    if (restaged.size)
+      deliveryFiles = [
+        ...deliveryFiles.slice(0, before).filter((f) => !restaged.has(f.name)),
+        ...deliveryFiles.slice(before),
+      ];
+  };
+  const flushWork = (
+    text: string,
+    at?: number,
+    closed = false,
+    timing?: { startedAt?: number; finishedAt?: number },
+  ): void => {
     if (!text && !pending.length && !deliveryFiles.length) return;
     const deliveredSilence = (a: ToolActivity): boolean => {
       if (a.type !== "tool_result") return false;
@@ -1271,9 +1709,9 @@ export function entriesToMessages(entries: SessionEntry[], model: Model<Api>): A
     const msg: AssistantWork = {
       role: "assistant",
       content: [{ type: "text", text }],
-      api: model.api,
-      provider: model.provider,
-      model: model.id,
+      api: model?.api ?? "unknown",
+      provider: model?.provider ?? "unknown",
+      model: model?.id ?? "unknown",
       usage: zeroUsage(),
       stopReason: "stop",
       timestamp: at ?? pending[pending.length - 1]?.createdAt,
@@ -1281,8 +1719,9 @@ export function entriesToMessages(entries: SessionEntry[], model: Model<Api>): A
     if (pending.length)
       msg.work = {
         status: "complete",
-        startedAt: pending[0]?.createdAt,
-        finishedAt: at ?? pending[pending.length - 1]?.createdAt,
+
+        startedAt: timing?.startedAt ?? pending[0]?.createdAt,
+        finishedAt: timing?.finishedAt ?? at ?? pending[pending.length - 1]?.createdAt,
         activity: pending,
       };
     if (deliveryFiles.length) msg.deliveredFiles = deliveryFiles;
@@ -1299,6 +1738,10 @@ export function entriesToMessages(entries: SessionEntry[], model: Model<Api>): A
       files?: Array<{ name?: string; mimetype?: string; sizeBytes?: number; artifactId?: string }>;
       hidden?: boolean;
       steered?: boolean;
+      name?: string;
+      ts?: string;
+      workStartedAt?: number;
+      workFinishedAt?: number;
     } | null;
     const text = payload?.text ?? "";
     if (ACTIVITY_TYPES.has(e.type)) {
@@ -1329,6 +1772,13 @@ export function entriesToMessages(entries: SessionEntry[], model: Model<Api>): A
         }
         continue;
       }
+      if (
+        e.type === "tool_result" &&
+        (e.payload as { tool?: unknown } | null)?.tool === "attach" &&
+        postResultOk(e.payload)
+      ) {
+        appendAttachedFiles(e.payload);
+      }
       if (e.type !== "thinking" || isRenderableThinking(e.payload)) {
         pending.push(activity);
       }
@@ -1347,7 +1797,10 @@ export function entriesToMessages(entries: SessionEntry[], model: Model<Api>): A
           content: userText,
           timestamp: e.createdAt,
           ...(payload?.steered ? { steered: true } : {}),
+          ...(typeof payload?.name === "string" && payload.name.trim() ? { speaker: payload.name.trim() } : {}),
+          ...(typeof payload?.ts === "string" && payload.ts ? { ts: payload.ts } : {}),
         };
+        if (msg.ts) userByTs.set(msg.ts, msg);
         if (atts.length) {
           msg.attachments = atts.map((a, i) => ({
             id: a.artifactId ?? `${e.seq ?? e.createdAt}:${i}`,
@@ -1361,6 +1814,10 @@ export function entriesToMessages(entries: SessionEntry[], model: Model<Api>): A
         out.push(msg as AgentMessage);
       }
     } else if (e.type === "assistant") {
+      const timing = {
+        ...(typeof payload?.workStartedAt === "number" ? { startedAt: payload.workStartedAt } : {}),
+        ...(typeof payload?.workFinishedAt === "number" ? { finishedAt: payload.workFinishedAt } : {}),
+      };
       if (text || pending.length || heldPosts.size) {
         spillHeldPosts();
         if (posted && text) {
@@ -1371,15 +1828,27 @@ export function entriesToMessages(entries: SessionEntry[], model: Model<Api>): A
             payload: { text, demoted: true },
             createdAt: e.createdAt,
           });
-          flushWork("", e.createdAt);
+          flushWork("", e.createdAt, false, timing);
         } else {
-          flushWork(text, e.createdAt, !posted);
+          flushWork(text, e.createdAt, !posted, timing);
         }
       }
       posted = false;
     } else if (e.type === "delivery") {
       appendDeliveryFiles(deliveredFilesFromAttachments(payload?.files));
     } else if (e.type === "system") {
+      const revision = messageRevisionPayload(e.payload);
+      if (revision) {
+        spillHeldPosts();
+        flushWork("", e.createdAt);
+        const original = userByTs.get(revision.ts);
+        if (original) {
+          if (revision.action === "deleted") original.deleted = true;
+          else original.edited = true;
+        }
+        out.push({ ...revision, timestamp: e.createdAt } as unknown as AgentMessage);
+        continue;
+      }
       const failure = e.payload as { kind?: string; message?: string } | null;
       if (failure?.kind === "turn_failure" && typeof failure.message === "string" && failure.message) {
         spillHeldPosts();
@@ -1387,9 +1856,9 @@ export function entriesToMessages(entries: SessionEntry[], model: Model<Api>): A
         const msg: AssistantMessage = {
           role: "assistant",
           content: [{ type: "text", text: "" }],
-          api: model.api,
-          provider: model.provider,
-          model: model.id,
+          api: model?.api ?? "unknown",
+          provider: model?.provider ?? "unknown",
+          model: model?.id ?? "unknown",
           usage: zeroUsage(),
           stopReason: "error",
           errorMessage: failure.message,
@@ -1407,7 +1876,7 @@ export function entriesToMessages(entries: SessionEntry[], model: Model<Api>): A
 export function attachPendingApprovals(
   messages: AgentMessage[],
   approvals: PendingApproval[],
-  model: Model<Api>,
+  model?: Model<Api>,
 ): void {
   if (!approvals.length) return;
 
@@ -1433,9 +1902,9 @@ export function attachPendingApprovals(
     trailing = {
       role: "assistant",
       content: [{ type: "text", text: "" }],
-      api: model.api,
-      provider: model.provider,
-      model: model.id,
+      api: model?.api ?? "unknown",
+      provider: model?.provider ?? "unknown",
+      model: model?.id ?? "unknown",
       usage: zeroUsage(),
       stopReason: "stop",
       timestamp: Date.now(),
@@ -1449,4 +1918,13 @@ export function attachPendingApprovals(
     if (!target.work) target.work = { status: "complete", activity: [] };
     (target.work.pendingApprovals ??= []).push(approval);
   }
+}
+
+function latestUserMessage(agent: Agent): WebUserMessage | undefined {
+  const messages = agent.state.messages as WebUserMessage[];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role === "user" || message?.role === "user-with-attachments") return message as WebUserMessage;
+  }
+  return undefined;
 }

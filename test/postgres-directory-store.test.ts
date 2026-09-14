@@ -9,6 +9,7 @@ before(async () => {
   if (!URL) return;
   const pg = (await import("pg")).default;
   const p = new pg.Pool({ connectionString: URL });
+  await p.query("DROP TABLE IF EXISTS qm_schema_migrations CASCADE");
   await p.query(
     "DROP TABLE IF EXISTS directory_members, directory_channels, directory_channel_members, directory_groups, directory_group_members, directory_sync, directory_meta CASCADE",
   );
@@ -168,6 +169,10 @@ test(
   { skip },
   async () => {
     const store = createPostgresDirectoryStore(URL!);
+    await store.replace([
+      { principalId: "U-alice", displayName: "Alice", type: "internal" },
+      { principalId: "U-carol", displayName: "Carol", type: "internal" },
+    ]);
     await store.replaceChannels(
       [{ channelId: "C-sec", name: "secret", isPrivate: true }],
       [{ channelId: "C-sec", principalId: "U-carol" }],
@@ -177,6 +182,10 @@ test(
     assert.equal(await store.channelMembership("C-sec", "U-alice"), false);
     assert.equal(await store.channelMember("C-sec", "U-alice"), false);
     assert.equal(await store.channelMember("C-other", "U-carol"), false);
+    assert.deepEqual(
+      (await store.conversationMembers("channel", "C-sec"))?.map((member) => member.principalId),
+      ["U-carol"],
+    );
 
     await store.replaceChannels([{ channelId: "C-sec", name: "secret", isPrivate: true }]);
     assert.equal(await store.channelMember("C-sec", "U-carol"), true);
@@ -211,6 +220,11 @@ test(
   { skip },
   async () => {
     const store = createPostgresDirectoryStore(URL!);
+    await store.replace([
+      { principalId: "U-alice", displayName: "Alice", type: "internal" },
+      { principalId: "U-carol", displayName: "Carol", type: "internal" },
+      { principalId: "U-sam", displayName: "Sam", type: "internal" },
+    ]);
     await store.replaceGroups([
       { groupId: "G-1", principalId: "U-alice" },
       { groupId: "G-1", principalId: "U-carol" },
@@ -229,6 +243,10 @@ test(
     assert.equal(await store.groupMember("G-1", "U-sam"), true);
     assert.equal(await store.groupMember("G-2", "U-sam"), false);
     assert.equal(await store.groupMembership("G-2", "U-sam"), false);
+    assert.deepEqual(
+      (await store.conversationMembers("group", "G-1"))?.map((member) => member.principalId),
+      ["U-alice", "U-carol", "U-sam"],
+    );
     assert.deepEqual(await store.listGroupsFor("U-sam"), ["G-1"]);
 
     const direct = (await freshPg(URL!)).query;
@@ -405,12 +423,14 @@ test("pg directory: removals apply without clearing a failed channel refresh", {
 
 test("pg directory: a private Slack Connect roster is not an ordinary send target", { skip }, async () => {
   const store = createPostgresDirectoryStore(URL!);
+  await store.replace([{ principalId: "U-member", displayName: "Member", type: "internal" }]);
   await store.replaceChannels(
     [{ channelId: "C-connect", name: "connect", isPrivate: true, isExternal: true }],
     [{ channelId: "C-connect", principalId: "U-member" }],
   );
   assert.equal(await store.channelMembership("C-connect", "U-member"), true);
   assert.equal(await store.channelMember("C-connect", "U-member"), false);
+  assert.equal(await store.conversationMembers("channel", "C-connect"), undefined);
   assert.deepEqual(await store.listChannelsFor("U-member"), []);
 });
 
@@ -448,5 +468,68 @@ test(
     assert.equal(await store.replaceGroups(roster, 13000), true);
     assert.equal(await store.replaceGroups([], 12500), false, "a swap older than the newest snapshot seen must lose");
     assert.equal(await store.groupMember("G-idem", "U-alice"), true);
+  },
+);
+
+test(
+  "directory migrations repair the selected schema even when another schema has matching column names",
+  { skip },
+  async () => {
+    const pg = (await import("pg")).default;
+    const { randomUUID } = await import("node:crypto");
+    const admin = new pg.Pool({ connectionString: URL });
+    const suffix = randomUUID().replaceAll("-", "");
+    const shadow = `directory_shadow_${suffix}`;
+    await admin.query(`CREATE SCHEMA ${shadow}`);
+    await admin.query(`CREATE TABLE ${shadow}.directory_channels(roster_known boolean)`);
+    await admin.query(`CREATE TABLE ${shadow}.directory_members(slack_id text)`);
+    await admin.query(`CREATE TABLE ${shadow}.directory_sync(groups_hash text, channel_members_synced boolean)`);
+    try {
+      for (const legacy of [false, true]) {
+        const schema = `directory_target_${legacy ? "old" : "new"}_${suffix}`;
+        await admin.query(`CREATE SCHEMA ${schema}`);
+        const url = new globalThis.URL(URL!);
+        url.searchParams.set("options", `-c search_path=${schema}`);
+        const raw = new pg.Pool({ connectionString: url.toString() });
+        try {
+          if (legacy) {
+            await raw.query(
+              "CREATE TABLE directory_members(org_id text, principal_id text, display_name text, display_name_lc text, type text, PRIMARY KEY(org_id, principal_id))",
+            );
+            await raw.query(
+              "CREATE TABLE directory_channels(org_id text, channel_id text, name text, name_lc text, is_private boolean NOT NULL DEFAULT FALSE, PRIMARY KEY(org_id,channel_id))",
+            );
+            await raw.query(
+              "CREATE TABLE directory_sync(org_id text PRIMARY KEY, members_hash text, channels_hash text, updated_at bigint NOT NULL)",
+            );
+            await raw.query(
+              "INSERT INTO directory_members VALUES ('default-org','retained','Retained','retained','internal')",
+            );
+          }
+          const store = createPostgresDirectoryStore(url.toString());
+          if (legacy) assert.equal((await store.get("retained"))?.displayName, "Retained");
+          await seed(store);
+          assert.equal((await store.resolveChannel("eng")).kind, "one");
+          const columns = (
+            await raw.query("SELECT table_name,column_name FROM information_schema.columns WHERE table_schema=$1", [
+              schema,
+            ])
+          ).rows;
+          for (const [table, column] of [
+            ["directory_channels", "roster_known"],
+            ["directory_members", "slack_id"],
+            ["directory_sync", "groups_hash"],
+            ["directory_sync", "channel_members_synced"],
+          ])
+            assert.ok(columns.some((item) => item.table_name === table && item.column_name === column));
+        } finally {
+          await raw.end();
+          await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+        }
+      }
+    } finally {
+      await admin.query(`DROP SCHEMA ${shadow} CASCADE`);
+      await admin.end();
+    }
   },
 );

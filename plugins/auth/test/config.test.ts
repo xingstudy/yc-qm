@@ -28,6 +28,26 @@ test("a complete broker configuration boots", () => {
   );
 });
 
+test("the broker boots without email delivery while keeping its authentication requirements", () => {
+  for (const transport of ["resend", "smtp"]) {
+    const withoutEmail = {
+      AUTH_EMAIL_TRANSPORT: transport,
+      AUTH_EMAIL_FROM: undefined,
+      RESEND_API_KEY: undefined,
+      SMTP_HOST: undefined,
+      SMTP_USERNAME: undefined,
+      SMTP_PASSWORD: undefined,
+      CORE_SIGNING_SECRET: "a".repeat(48),
+    };
+    assert.equal(problemsFor(withoutEmail), "");
+    assert.match(
+      problemsFor({ ...withoutEmail, AUTH_ALLOWED_EMAILS: undefined }),
+      /AUTH_ALLOWED_EMAILS or AUTH_ALLOWED_EMAIL_DOMAIN is required/,
+    );
+    assert.match(problemsFor({ ...withoutEmail, AUTH_TOKEN_SECRET: undefined }), /AUTH_TOKEN_SECRET is required/);
+  }
+});
+
 test("production refuses to start without a trust boundary", () => {
   const problems = problemsFor({ AUTH_ALLOWED_EMAILS: undefined, AUTH_ALLOWED_EMAIL_DOMAIN: undefined });
   assert.match(problems, /AUTH_ALLOWED_EMAILS or AUTH_ALLOWED_EMAIL_DOMAIN is required/);
@@ -39,8 +59,6 @@ test("production refuses missing or placeholder credentials and keys", () => {
     ["AUTH_CLIENT_SECRET", /AUTH_CLIENT_SECRET is required/],
     ["AUTH_TOKEN_SECRET", /AUTH_TOKEN_SECRET is required/],
     ["AUTH_SIGNING_JWK", /AUTH_SIGNING_JWK is required/],
-    ["AUTH_EMAIL_FROM", /AUTH_EMAIL_FROM must be a verified sender/],
-    ["RESEND_API_KEY", /RESEND_API_KEY is required/],
   ] as const) {
     for (const value of [undefined, "", "  ", "replace-me", "TODO"]) {
       assert.match(problemsFor({ [name]: value }), pattern, `${name}=${JSON.stringify(value)}`);
@@ -62,6 +80,9 @@ test("a production template marker never becomes a usable mail-broker default", 
     const env = {
       AUTH_EMAIL_TRANSPORT: "smtp",
       RESEND_API_KEY: undefined,
+      SMTP_HOST: "smtp.example.test",
+      SMTP_USERNAME: "u",
+      SMTP_PASSWORD: "p",
       [name]: "replace-me",
     };
     assert.match(problemsFor(env), new RegExp(name));
@@ -134,19 +155,23 @@ test("a weak or reused token secret is refused", () => {
   );
 });
 
-test("the smtp transport demands its own credentials", () => {
-  const smtp = { AUTH_EMAIL_TRANSPORT: "smtp", RESEND_API_KEY: undefined };
-  assert.match(problemsFor(smtp), /SMTP_HOST is required/);
-  assert.equal(
-    problemsFor({
-      ...smtp,
-      SMTP_HOST: "smtp.example.test",
-      SMTP_USERNAME: "u",
-      SMTP_PASSWORD: "p",
-      CORE_SIGNING_SECRET: "a".repeat(48),
-    }),
-    "",
-  );
+test("missing any email credential disables delivery without preventing startup", () => {
+  const settings = {
+    SMTP_HOST: "smtp.example.test",
+    SMTP_USERNAME: "u",
+    SMTP_PASSWORD: "p",
+    CORE_SIGNING_SECRET: "a".repeat(48),
+  };
+  for (const transport of ["resend", "smtp"]) {
+    const complete = { ...settings, AUTH_EMAIL_TRANSPORT: transport };
+    assert.equal(problemsFor(complete), "");
+    const credentials = transport === "resend" ? ["RESEND_API_KEY"] : ["SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD"];
+    for (const name of ["AUTH_EMAIL_FROM", ...credentials]) {
+      for (const value of [undefined, "", "  "]) {
+        assert.equal(problemsFor({ ...complete, [name]: value }), "", `${transport}: ${name}=${JSON.stringify(value)}`);
+      }
+    }
+  }
 });
 
 test("malformed allowlists and senders are refused", () => {
@@ -162,6 +187,8 @@ test("malformed allowlists and senders are refused", () => {
   );
   assert.match(problemsFor({ AUTH_EMAIL_FROM: "qm <no-reply@example.com>" }), /verified sender address/);
   assert.match(problemsFor({ AUTH_EMAIL_FROM: "qm <not-an-address>" }), /verified sender address/);
+  assert.match(problemsFor({ AUTH_EMAIL_FROM: "replace-me" }), /verified sender address/);
+  assert.match(problemsFor({ RESEND_API_KEY: "replace-me" }), /RESEND_API_KEY is required/);
 });
 
 test("oversized token lifetimes are refused", () => {
@@ -229,16 +256,33 @@ test("`node src/index.ts` refuses to boot on a placeholder configuration and ser
   assert.match(refuses.stderr, /AUTH_CLIENT_SECRET is required/);
 
   const PORT = "18299";
-  const child = spawnSync(
-    process.execPath,
-    [
-      "--input-type=module",
-      "-e",
-      `import('./src/index.ts').then(async (m) => { await m.startServer(); const r = await fetch('http://127.0.0.1:${PORT}/healthz'); console.log(r.status); process.exit(0); })`,
-    ],
-    { cwd: process.cwd(), env: { ...base, PORT }, encoding: "utf8" },
-  );
-  assert.equal(child.status, 0, child.stderr);
-  assert.match(child.stdout, /200/);
-  assert.match(child.stdout, /sign-in broker on/);
+  for (const email of [{}, { AUTH_EMAIL_FROM: undefined, RESEND_API_KEY: undefined }, { RESEND_API_KEY: undefined }]) {
+    const child = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import('./src/index.ts').then(async (m) => { await m.startServer(); const r = await fetch('http://127.0.0.1:${PORT}/healthz'); console.log(r.status); process.exit(0); })`,
+      ],
+      { cwd: process.cwd(), env: { ...base, ...email, PORT }, encoding: "utf8" },
+    );
+    assert.equal(child.status, 0, child.stderr);
+    assert.match(child.stdout, /200/);
+    assert.match(child.stdout, /sign-in broker on/);
+    if ("RESEND_API_KEY" in email) assert.match(child.stdout, /email not configured/);
+  }
+});
+
+test("remembered session lifetimes reject zero, negative, reversed and oversized values", () => {
+  for (const [idle, absolute] of [
+    [0, 0],
+    [-2, -1],
+    [61, 60],
+    [60, 90 * 86400 + 1],
+  ]) {
+    assert.match(
+      problemsFor({ AUTH_SESSION_IDLE_S: String(idle), AUTH_SESSION_ABSOLUTE_S: String(absolute) }),
+      /AUTH_SESSION_IDLE_S/,
+    );
+  }
 });

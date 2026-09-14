@@ -18,6 +18,8 @@ test("the canonical and packaged MicroVM Dockerfiles stay snapshot-safe and exec
   assert.match(canonical, /go version -m \/usr\/local\/bin\/gh \| grep -Eq/);
   assert.match(canonical, /COPY --from=gh-builder \/usr\/local\/bin\/gh \/usr\/local\/bin\/gh/);
   assert.match(canonical, /dnf install -y[\s\\]+curl-minimal\b/);
+  assert.doesNotMatch(canonical, /cli\.github\.com\/packages\/rpm/);
+  assert.doesNotMatch(canonical, /dnf install -y gh-/);
   assert.match(canonical, /awscli-exe-linux-aarch64-\d+\.\d+\.\d+\.zip/);
   assert.match(canonical, /[a-f0-9]{64} {2}\/tmp\/awscliv2\.zip" \| sha256sum -c -/);
   assert.match(canonical, /rpm -q openssl-snapsafe-libs/);

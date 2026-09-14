@@ -8,12 +8,17 @@ type SecretGate =
   | "postgres"
   | "sprites"
   | "smolmachines"
-  | "fly-sandbox"
+  | "e2b"
+  | "modal"
+  | "porter"
+  | "agent37"
+  | "porter-deploy"
   | "fly-deploy"
   | "aws-deploy-gate"
   | "google-oauth"
   | "dropbox-oauth"
   | "linear-oauth"
+  | "email-auth"
   | "model-anthropic"
   | "model-openai"
   | "model-openrouter";
@@ -29,13 +34,18 @@ export const CORE_SECRET_SPECS: readonly RuntimeSecretSpec[] = [
   { name: "CORE_SIGNING_SECRET", requiredWhen: "production" },
   { name: "PORTAL_IDENTITY_SECRET", requiredWhen: "production" },
   { name: "SKILL_SIGNING_SECRET", requiredWhen: "production" },
+  { name: "AUTH_ALLOWED_EMAILS", requiredWhen: "email-auth" },
   { name: "OPENAI_API_KEY", requiredWhen: ["codex", "model-openai"] },
   { name: "ANTHROPIC_API_KEY", requiredWhen: "model-anthropic" },
   { name: "OPENROUTER_API_KEY", requiredWhen: "model-openrouter" },
   { name: "DATABASE_URL", requiredWhen: "postgres" },
   { name: "SPRITES_TOKEN", requiredWhen: "sprites" },
   { name: "SMOLMACHINES_TOKEN", requiredWhen: "smolmachines" },
-  { name: "FLY_API_TOKEN", requiredWhen: "fly-sandbox" },
+  { name: "AGENT37_API_KEY", requiredWhen: "agent37" },
+  { name: "E2B_API_KEY", requiredWhen: "e2b" },
+  { name: "MODAL_TOKEN_ID", requiredWhen: "modal" },
+  { name: "MODAL_TOKEN_SECRET", requiredWhen: "modal" },
+  { name: "PORTER_DEPLOY_API_TOKEN", requiredWhen: ["porter", "porter-deploy"] },
   { name: "FLY_DEPLOY_API_TOKEN", requiredWhen: "fly-deploy" },
   { name: "AWS_DEPLOY_GATE_SECRET", requiredWhen: "aws-deploy-gate" },
   { name: "GOOGLE_OAUTH_CLIENT_SECRET", requiredWhen: "google-oauth" },
@@ -45,18 +55,25 @@ export const CORE_SECRET_SPECS: readonly RuntimeSecretSpec[] = [
 
 const GATE_PREDICATES: Readonly<Record<SecretGate, (env: NodeJS.ProcessEnv) => boolean>> = {
   production: (env) => env.NODE_ENV === "production",
-  codex: (env) => env.HARNESS?.trim() === "codex",
+  codex: (env) => env.HARNESS?.trim() === "codex" && !env.CODEX_AUTH_FILE?.trim() && !env.CODEX_AUTH_CREDENTIAL?.trim(),
   postgres: (env) => env.SESSION_STORE === "postgres" || env.RUN_STORE === "postgres",
-  sprites: (env) => env.SANDBOX_BACKEND === "sprites" || env.SANDBOX_SECONDARY_BACKEND === "sprites",
-  smolmachines: (env) => env.SANDBOX_BACKEND === "smolmachines" || env.SANDBOX_SECONDARY_BACKEND === "smolmachines",
-  "fly-sandbox": (env) => env.SANDBOX_BACKEND === "fly",
+  sprites: (env) => env.SANDBOX_BACKEND === "sprites",
+  smolmachines: (env) => env.SANDBOX_BACKEND === "smolmachines",
+  e2b: (env) => env.SANDBOX_BACKEND === "e2b",
+  modal: (env) => env.SANDBOX_BACKEND === "modal",
+  porter: (env) => env.SANDBOX_BACKEND === "porter",
+  agent37: (env) => env.SANDBOX_BACKEND === "agent37",
+  "porter-deploy": (env) => env.DEPLOY_PROVIDER === "porter",
   "fly-deploy": (env) => env.DEPLOY_PROVIDER === "fly",
-  "aws-deploy-gate": (env) => Boolean(env.AWS_DEPLOY_APPS_DOMAIN),
+  "aws-deploy-gate": (env) => Boolean(env.AWS_DEPLOY_APPS_DOMAIN || env.DEPLOY_APPS_DOMAIN),
   "google-oauth": (env) => Boolean(env.GOOGLE_OAUTH_CLIENT_ID),
   "dropbox-oauth": (env) => Boolean(env.DROPBOX_OAUTH_CLIENT_ID),
   "linear-oauth": (env) => Boolean(env.LINEAR_OAUTH_CLIENT_ID),
+  "email-auth": (env) => Boolean(env.AUTH_ALLOWED_EMAILS?.trim()),
   "model-anthropic": (env) => env.MODEL_PROVIDER?.trim() === "anthropic",
-  "model-openai": (env) => env.MODEL_PROVIDER?.trim() === "openai",
+  "model-openai": (env) =>
+    env.MODEL_PROVIDER?.trim() === "openai" &&
+    !(env.HARNESS?.trim() === "codex" && (env.CODEX_AUTH_FILE?.trim() || env.CODEX_AUTH_CREDENTIAL?.trim())),
   "model-openrouter": (env) => env.MODEL_PROVIDER?.trim() === "openrouter",
 };
 
@@ -80,7 +97,10 @@ function isInvalidSecret(name: string, value: string | undefined): boolean {
   const candidate = value?.trim();
   if (isProductionPlaceholder(candidate)) return true;
   return (
-    (name === "CONNECTOR_SECRET_KEY" || name === "CORE_SIGNING_SECRET" || name === "SKILL_SIGNING_SECRET") &&
+    (name === "CONNECTOR_SECRET_KEY" ||
+      name === "CORE_SIGNING_SECRET" ||
+      name === "SKILL_SIGNING_SECRET" ||
+      name === "AWS_DEPLOY_GATE_SECRET") &&
     !isStrongSigningSecret(candidate)
   );
 }

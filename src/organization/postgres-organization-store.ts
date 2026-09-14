@@ -5,6 +5,7 @@ import {
   type PoolClient,
   withPgTransaction,
 } from "../persistence/pg-pool.ts";
+import { definePgMigration } from "../persistence/pg-schema-migrations.ts";
 import { sleep } from "../util/async.ts";
 import type { PostgresAuditLog } from "../admin/postgres-audit-log.ts";
 import type {
@@ -49,6 +50,8 @@ function rowToUser(r: Record<string, unknown>): OrganizationUser {
     orgId: r.org_id as string,
     principalId: r.principal_id as string,
     email: (r.email as string | null) ?? null,
+    ...(r.invited_email ? { invitedEmail: r.invited_email as string } : {}),
+    ...(r.external_membership ? { externalMembership: true } : {}),
     displayName: r.display_name as string,
     jobTitle: (r.job_title as string | null) ?? null,
     mobile: (r.mobile as string | null) ?? null,
@@ -187,7 +190,7 @@ function rowToSkillAccessGrant(r: Record<string, unknown>): SkillAccessGrant {
 }
 
 const USER_COLUMNS =
-  "org_id, principal_id, email, display_name, job_title, mobile, employee_number, status, session_version, profile_revision, created_at, updated_at, last_login_at, created_by, updated_by";
+  "org_id, principal_id, email, display_name, job_title, mobile, employee_number, status, session_version, profile_revision, created_at, updated_at, last_login_at, created_by, updated_by, invited_email, external_membership";
 
 const IDENTITY_COLUMNS =
   "org_id, issuer, subject, principal_id, email_at_link, source_id, provider, external_tenant_id, external_subject_id, matched_by, evidence_json, created_at, updated_at";
@@ -1285,6 +1288,24 @@ const MIGRATIONS = [
     "68c9811d18216f1403f6a63224e5d4c2ced7d2b0380f68983dc046db206bffe7",
     "53c18bed98a0eb484e63a16f3639e95f9b80c5ec62b900d7d9664a475bf58ba0",
   ]),
+  definePgMigration({
+    id: "fork/organization/0002-invited-email",
+    expectedChecksum: "cdc921633f78a5f23c859f8feb8db802cbe089c9c003e2a69dc2966eab82a0b8",
+    statements: [
+      "ALTER TABLE organization_users ADD COLUMN IF NOT EXISTS invited_email TEXT",
+      "ALTER TABLE organization_users ADD COLUMN IF NOT EXISTS external_membership BOOLEAN NOT NULL DEFAULT FALSE",
+      "UPDATE organization_users SET invited_email = lower(email) WHERE status = 'invited' AND email IS NOT NULL AND invited_email IS NULL",
+    ],
+    transactional: true,
+  }),
+  definePgMigration({
+    id: "fork/organization/0003-invited-email-index",
+    expectedChecksum: "ccee07e8e47b1e81deb08f6b7ccfef2615797943b41712f65490563231fbbe0a",
+    statements: [
+      "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS organization_users_invited_email ON organization_users(org_id, lower(invited_email)) WHERE invited_email IS NOT NULL",
+    ],
+    transactional: false,
+  }),
 ];
 
 const ORGANIZATION_CLOSURE_MIGRATION_SQL = `DO $do$
@@ -1380,10 +1401,23 @@ const ORGANIZATION_LEGACY_RUNTIME_ELIGIBILITY_SQL = `DO $do$
    END
    $do$`;
 
+async function userEmailConflictOn(exec: Exec, user: OrganizationUser): Promise<boolean> {
+  const emails = [user.email, user.invitedEmail]
+    .filter((email): email is string => !!email)
+    .map((email) => email.toLowerCase());
+  if (!emails.length) return false;
+  const result = await exec(
+    `SELECT 1 FROM organization_users WHERE org_id = $1 AND principal_id <> $2 AND (lower(email) = lower($4) OR lower(invited_email) = ANY($3::text[])) LIMIT 1`,
+    [user.orgId, user.principalId, emails, user.invitedEmail ?? null],
+  );
+  return result.rows.length > 0;
+}
+
 async function putUserOn(exec: Exec, u: OrganizationUser): Promise<void> {
+  if (await userEmailConflictOn(exec, u)) throw new Error("organization email already belongs to another user");
   await exec(
     `INSERT INTO organization_users (${USER_COLUMNS})
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
      ON CONFLICT (org_id, principal_id)
      DO UPDATE SET
        email = EXCLUDED.email,
@@ -1398,7 +1432,9 @@ async function putUserOn(exec: Exec, u: OrganizationUser): Promise<void> {
        updated_at = EXCLUDED.updated_at,
        last_login_at = EXCLUDED.last_login_at,
        created_by = EXCLUDED.created_by,
-       updated_by = EXCLUDED.updated_by`,
+       updated_by = EXCLUDED.updated_by,
+       invited_email = COALESCE(organization_users.invited_email, EXCLUDED.invited_email),
+       external_membership = organization_users.external_membership OR EXCLUDED.external_membership`,
     [
       u.orgId,
       u.principalId,
@@ -1415,14 +1451,17 @@ async function putUserOn(exec: Exec, u: OrganizationUser): Promise<void> {
       u.lastLoginAt,
       u.createdBy,
       u.updatedBy,
+      u.invitedEmail ?? null,
+      u.externalMembership ?? false,
     ],
   );
 }
 
 async function insertUserOn(exec: Exec, u: OrganizationUser): Promise<boolean> {
+  if (await userEmailConflictOn(exec, u)) return false;
   const result = await exec(
     `INSERT INTO organization_users (${USER_COLUMNS})
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
      ON CONFLICT DO NOTHING`,
     [
       u.orgId,
@@ -1440,6 +1479,8 @@ async function insertUserOn(exec: Exec, u: OrganizationUser): Promise<boolean> {
       u.lastLoginAt,
       u.createdBy,
       u.updatedBy,
+      u.invitedEmail ?? null,
+      u.externalMembership ?? false,
     ],
   );
   return result.rowCount > 0;
@@ -1892,7 +1933,15 @@ async function getUserOn(exec: Exec, orgId: string, principalId: string): Promis
 
 async function findUserByEmailOn(exec: Exec, orgId: string, email: string): Promise<OrganizationUser | null> {
   const res = await exec(
-    `SELECT ${USER_COLUMNS} FROM organization_users WHERE org_id = $1 AND lower(email) = lower($2)`,
+    `SELECT ${USER_COLUMNS} FROM organization_users WHERE org_id = $1 AND (lower(email) = lower($2) OR lower(invited_email) = lower($2))`,
+    [orgId, email],
+  );
+  return res.rows[0] ? rowToUser(res.rows[0]) : null;
+}
+
+async function findUserByInvitedEmailOn(exec: Exec, orgId: string, email: string): Promise<OrganizationUser | null> {
+  const res = await exec(
+    `SELECT ${USER_COLUMNS} FROM organization_users WHERE org_id = $1 AND lower(invited_email) = lower($2)`,
     [orgId, email],
   );
   return res.rows[0] ? rowToUser(res.rows[0]) : null;
@@ -2240,6 +2289,9 @@ export function createPostgresOrganizationStore(
     },
     async getUser(orgId, principalId) {
       return getUserOn(pg.query, orgId, principalId);
+    },
+    async findUserByInvitedEmail(orgId, email) {
+      return findUserByInvitedEmailOn(pg.query, orgId, email);
     },
     async findUserByEmail(orgId, email) {
       return findUserByEmailOn(pg.query, orgId, email);
@@ -2590,6 +2642,10 @@ export function createPostgresOrganizationStore(
           getUser: (scopeOrgId, principalId) => {
             assertOrg(scopeOrgId);
             return getUserOn(exec, scopeOrgId, principalId);
+          },
+          findUserByInvitedEmail: (scopeOrgId, email) => {
+            assertOrg(scopeOrgId);
+            return findUserByInvitedEmailOn(exec, scopeOrgId, email);
           },
           findUserByEmail: (scopeOrgId, email) => {
             assertOrg(scopeOrgId);

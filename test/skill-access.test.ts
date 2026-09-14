@@ -9,7 +9,11 @@ import {
 import { createSkillAccessResolver } from "../src/authorization/skill-access.ts";
 import { createDirectoryVisibilityResolver } from "../src/authorization/directory-visibility.ts";
 import { createAuditLog } from "../src/audit/audit-log.ts";
-import { createMemoryOrganizationStore, type OrganizationUser } from "../src/organization/organization-store.ts";
+import {
+  createMemoryOrganizationStore,
+  type OrganizationUser,
+  type OrganizationTx,
+} from "../src/organization/organization-store.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { createSkillStore, type Skill } from "../src/skills/skill-store.ts";
 import { scopeId } from "../src/types.ts";
@@ -117,7 +121,7 @@ async function fixture() {
   });
   await repository.review(skill.id, "alice", []);
   await repository.publish(skill.id);
-  return { store, repository, resolver, skill };
+  return { store, repository, resolver, skill, auditLog };
 }
 
 test("skill access creates home policy and resolves home audience", async () => {
@@ -474,5 +478,108 @@ test("an unknown audience member makes Skill resolution fail closed", async () =
   assert.deepEqual(
     snapshot.audience.map((member) => member.principalId),
     ["bob"],
+  );
+});
+
+test("external skill audiences are revalidated for expiry even while their persisted user remains active", async () => {
+  const { store, repository, skill } = await fixture();
+  await store.putUser({ ...user("alice"), externalMembership: true, invitedEmail: "alice@example.com" });
+  let active = true;
+  const resolver = createSkillAccessResolver({
+    orgId: ORG,
+    store,
+    skills: repository,
+    canReadHome: async () => true,
+    resolveAudienceMember: async (principalId) => (active ? { principalId, sessionVersion: 1 } : null),
+  });
+  const snapshot = await resolver.snapshot({ audienceIds: ["alice"], orderedScopes: [scopeId("personal", "alice")] });
+  assert.equal(snapshot.resolutions[0]?.skill?.id, skill.id);
+  active = false;
+  assert.equal((await store.getUser(ORG, "alice"))?.status, "active");
+  await assert.rejects(resolver.assertCurrent(snapshot), /skill authorization snapshot expired/);
+  assert.deepEqual(await resolver.visibleForUser("alice", [scopeId("personal", "alice")]), []);
+});
+
+test("batch import publishes skills with policies and audit atomically and preserves archived history", async () => {
+  const { repository, store, skill, auditLog } = await fixture();
+  await repository.archive(skill.id, "alice");
+  const created = await repository.importOwnedBatch({
+    scopeId: scopeId("personal", "alice"),
+    createdBy: "alice",
+    manifests: [skill.manifest, { ...skill.manifest, name: "second" }],
+  });
+  assert.equal(created.length, 2);
+  assert.ok(created.every((item) => item.status === "published" && repository.verify(item)));
+  assert.equal((await repository.get(skill.id))?.status, "archived");
+  assert.equal((await store.listSkillAccessPolicies(ORG)).length, 3);
+  for (const item of created) {
+    assert.equal((await repository.getAccess(item.id, { principalId: "alice", isAdmin: false })).mode, "home");
+    assert.ok(
+      (await auditLog.events()).some(
+        (event) => event.action === "skill.publish" && event.resource === `skill:${item.id}`,
+      ),
+    );
+  }
+  await assert.rejects(
+    repository.importOwnedBatch({
+      scopeId: scopeId("personal", "alice"),
+      createdBy: "alice",
+      manifests: [skill.manifest],
+    }),
+    /already exists/,
+  );
+});
+
+test("batch import rolls back earlier publications, policies and audit when a later write fails", async (t) => {
+  const { repository, store, skill, auditLog } = await fixture();
+  const baseline = await repository.list();
+  const policies = await store.listSkillAccessPolicies(ORG);
+  const audits = await auditLog.events();
+  const transact = store.transact.bind(store);
+  t.mock.method(store, "transact", <T>(orgId: string, operation: (tx: OrganizationTx) => Promise<T>) =>
+    transact(orgId, async (tx) => {
+      const put = tx.putSkill.bind(tx);
+      let writes = 0;
+      tx.putSkill = async (item) => {
+        if (++writes === 4) throw new Error("second skill write failed");
+        await put(item);
+      };
+      return operation(tx);
+    }),
+  );
+  await assert.rejects(
+    repository.importOwnedBatch({
+      scopeId: scopeId("personal", "alice"),
+      createdBy: "alice",
+      manifests: ["first", "second"].map((name) => ({ ...skill.manifest, name })),
+    }),
+    /second skill write failed/,
+  );
+  assert.deepEqual(await repository.list(), baseline);
+  assert.deepEqual(await store.listSkillAccessPolicies(ORG), policies);
+  assert.deepEqual(await auditLog.events(), audits);
+});
+
+test("concurrent batch confirmations publish once and reject inactive authors", async () => {
+  const { repository, store, skill } = await fixture();
+  const request = {
+    scopeId: scopeId("personal", "alice"),
+    createdBy: "alice",
+    manifests: [{ ...skill.manifest, name: "batch" }],
+  };
+  const results = await Promise.allSettled([
+    repository.importOwnedBatch(request),
+    repository.importOwnedBatch(request),
+  ]);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal((await repository.list()).filter((item) => item.manifest.name === "batch").length, 1);
+  await store.putUser({ ...user("alice"), status: "suspended" });
+  await assert.rejects(
+    repository.importOwnedBatch({ ...request, manifests: [{ ...skill.manifest, name: "blocked" }] }),
+    /not active/,
+  );
+  assert.equal(
+    (await repository.list()).some((item) => item.manifest.name === "blocked"),
+    false,
   );
 });

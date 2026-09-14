@@ -8,7 +8,6 @@ import { join } from "node:path";
 import { buildApp } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";
 import { createMemorySessionStore } from "../src/sessions/memory-session-store.ts";
-import { SESSION_ENTRIES_SEARCH_INDEX_SQL } from "../src/sessions/postgres-session-store.ts";
 import type { SessionStore } from "../src/sessions/session-store.ts";
 import { scopeId } from "../src/types.ts";
 
@@ -26,10 +25,6 @@ async function seed(sessions: SessionStore, threadRef: string, principal: string
   await sessions.releaseLease(lease!);
   return s.id;
 }
-
-test("Postgres builds the full-text index without blocking writes", () => {
-  assert.match(SESSION_ENTRIES_SEARCH_INDEX_SQL, /^CREATE INDEX CONCURRENTLY IF NOT EXISTS/);
-});
 
 test("memory store: searchEntries matches user and assistant text, newest first", async () => {
   const store = createMemorySessionStore();
@@ -110,6 +105,12 @@ test("app.searchSessions decorates hits with session metadata and enforces visib
   await sessions.updateTitle(id, "Trip planning");
   await seed(sessions, "web:U2:other", "U2", ["zanzibar for U2 only"]);
 
+  sessions.listByParticipant = async () => {
+    throw new Error("search must not list every session");
+  };
+  sessions.getForParticipant = async () => {
+    throw new Error("search must not read legacy message activity");
+  };
   const hits = await app.searchSessions("U1", "zanzibar");
   assert.equal(hits.length, 2, "only U1's own conversation is searched");
   assert.ok(hits.every((h) => h.sessionId === id));

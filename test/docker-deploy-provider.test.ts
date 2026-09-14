@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createDockerDeployProvider } from "../src/deploy/docker-deploy-provider.ts";
+import { createDockerDeployProvider, dockerDaemonFailure } from "../src/deploy/docker-deploy-provider.ts";
 import { createDeployStore } from "../src/deploy/deploy-store.ts";
 import type { DockerExec } from "../src/sandbox/docker-exec.ts";
 import { scopeId } from "../src/types.ts";
@@ -266,4 +266,48 @@ test("Docker provider cleans up after create, copy, start, and inspect failures"
     assert.ok(calls.some((args) => args.join(" ") === `rm -f ${container}`));
     assert.ok(calls.some((args) => args.join(" ") === `network rm ${container}-net`));
   }
+});
+
+test("the daemon probe reports nothing when Docker answers", async () => {
+  const calls: string[][] = [];
+  const dockerExec: DockerExec = async (args) => {
+    calls.push(args);
+    return { code: 0, stdout: "29.1.3\n", stderr: "" };
+  };
+
+  assert.equal(await dockerDaemonFailure({ dockerExec }), null);
+  assert.deepEqual(calls, [["version", "-f", "{{.Server.Version}}"]]);
+});
+
+test("the daemon probe reports why Docker is unreachable", async () => {
+  const dockerExec: DockerExec = async () => ({
+    code: 1,
+    stdout: "",
+    stderr: "dial unix /var/run/docker.sock: connect: no such file or directory\n",
+  });
+
+  assert.equal(
+    await dockerDaemonFailure({ dockerExec }),
+    "dial unix /var/run/docker.sock: connect: no such file or directory",
+  );
+});
+
+test("the daemon probe reports a failed probe rather than throwing", async () => {
+  const dockerExec: DockerExec = async () => {
+    throw new Error("spawn docker ENOENT");
+  };
+
+  assert.equal(await dockerDaemonFailure({ dockerExec }), "spawn docker ENOENT");
+});
+
+test("the daemon probe reports the exit code when Docker is silent", async () => {
+  const dockerExec: DockerExec = async () => ({ code: 7, stdout: "", stderr: "" });
+
+  assert.equal(await dockerDaemonFailure({ dockerExec }), "exit 7");
+});
+
+test("the daemon probe reports a hung daemon as a timeout", async () => {
+  const dockerExec: DockerExec = async () => ({ code: -1, stdout: "", stderr: "" });
+
+  assert.equal(await dockerDaemonFailure({ dockerExec }), "no response within 10s");
 });

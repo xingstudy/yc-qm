@@ -1,27 +1,48 @@
+import { NonRetryableTurnError } from "../core/turn-error.ts";
+import { webuiModelEnabled } from "./runtime-config.ts";
 import type { Conversation, Principal, TurnRequest, TurnResult } from "../types.ts";
 import { orgId as orgIdOf } from "../config.ts";
 import { scopeId } from "../types.ts";
 import { isHalt, routeWake, type Wake } from "../wake/wake.ts";
 import type { OrchestratorInput } from "../core/orchestrator.ts";
-import { resolveTurnOrigin } from "../core/turn-origin.ts";
+import { isPersonAuthored, resolveTurnOrigin } from "../core/turn-origin.ts";
+import { conversationScope } from "../resolution/resolution-service.ts";
 import { isTerminal, leaseLapsed } from "../runs/run-store.ts";
-import { turnModelOptions, validateWebTurnModelOptions, webTurnRuntimeModelRefusal } from "../core/turn-options.ts";
+import type { SessionStateEvent } from "../runs/session-state-bus.ts";
+import { turnModelOptions, validateWebTurnModelOptions } from "../core/turn-options.ts";
 import { isProjectGroupRef, projectIdFromGroupRef } from "../projects/project-store.ts";
+import { samePerson } from "../directory/person.ts";
 import {
   defaultModelForHarness,
   isHarnessId,
   modelProviderAvailabilityFor,
   modelServiceable,
+  modelOfferedInWebui,
+  modelUnavailableReason,
+  resolveModel,
 } from "../model/pi-models.ts";
 import { builtInModelCatalog, selectableCatalogForHarness, selectableModelCatalog } from "../model/model-catalog.ts";
 import { resolveRuntimeChoiceDurable } from "../harness/harness-router.ts";
-import { errMessage } from "../util/errors.ts";
+import { swallow, swallowAs } from "../util/errors.ts";
+import { sleep } from "../util/async.ts";
+import { GENERIC_FAILURE_CLAUSE } from "../../plugins/chassis/src/failure-copy.ts";
 
 import type { App, AppDeps } from "./app-types.ts";
 import { STALE_LEASE_GRACE_MS } from "./app-types.ts";
+
+const PARTICIPANT_REHYDRATE_TIMEOUT_MS = 5_000;
 import { unscreenedNotice } from "../security/security-posture.ts";
 import type { AppHelpers } from "./app-helpers.ts";
 import type { AmbientHelpers } from "./app-ambient.ts";
+
+export function attributedSteerText(
+  steerer: { id: string; displayName?: string | undefined },
+  runOwnerId: string | null,
+  text: string,
+): string {
+  if (runOwnerId !== null && samePerson(steerer.id, runOwnerId)) return text;
+  return `${steerer.displayName?.trim() || steerer.id}: ${text}`;
+}
 
 export function createTurnMethods(
   deps: AppDeps,
@@ -32,6 +53,7 @@ export function createTurnMethods(
   | "turn"
   | "getApproval"
   | "subscribeSessionStates"
+  | "subscribeLedgerEvents"
   | "listSessionApprovals"
   | "pendingApprovalForThread"
   | "getRun"
@@ -44,17 +66,19 @@ export function createTurnMethods(
     withAdminLink,
     drive,
     approvalRecordIsCurrent,
+    approvalResumable,
     approvalVisibleToViewer,
     pendingApprovalForSession,
     pendingApprovalResultForThread,
     mayUseSharedScope,
     viewerMayUseRun,
-    sessionsForViewer,
+    sessionForViewer,
     replayOrphanedRunSignals,
   } = h;
   const { shouldRouteToSpine, markTriggerHandled, addressedWakeText } = ambient;
   return {
     async turn(req: TurnRequest): Promise<TurnResult> {
+      await deps.refreshModels?.();
       await deps.identity.refresh();
       const actor: Principal = deps.identity.resolve(req.actor);
       if (!deps.identity.isInternal(actor)) {
@@ -106,21 +130,35 @@ export function createTurnMethods(
         }
       }
 
+      const orgRuntimeScope = scopeId("org", orgIdOf());
+      const turnRuntimeScope =
+        req.conversation.kind === "dm"
+          ? scopeId("personal", actor.id)
+          : scopeId(req.conversation.kind, req.conversation.channelRef ?? req.conversation.threadRef);
+      const [storedOrgRuntime, storedTurnRuntime] = await Promise.all([
+        deps.config.getRuntimeSelectionDurable(orgRuntimeScope),
+        turnRuntimeScope === orgRuntimeScope ? null : deps.config.getRuntimeSelectionDurable(turnRuntimeScope),
+      ]);
+      const needsOpenRouterCatalog = [storedOrgRuntime?.modelId, storedTurnRuntime?.modelId].some(
+        (modelId) => modelId && !resolveModel(modelId),
+      );
+      if (needsOpenRouterCatalog && deps.modelCredentials && (await deps.modelCredentials.availability()).openrouter) {
+        await selectableModelCatalog(deps.modelCredentialFetch);
+      }
+
       async function withCurrentProjectRoster<T>(fn: () => Promise<T>): Promise<T | null> {
         if (!projectId || !deps.projects) return fn();
         if (!conversationRef || !projectVersion) return null;
         return (await deps.projects.withVersion(conversationRef, projectVersion, fn)) ?? null;
       }
 
+      const individualAuth = !!deps.userModelCredentials && (await deps.config.getIndividualModelAuthDurable());
       if (req.surface === "web") {
         await deps.refreshCustomProviders?.();
         const threadRef = req.conversation.threadRef;
         const existing = await deps.sessions.getByThread(threadRef);
         if (existing) {
-          const claimed =
-            req.conversation.kind === "dm"
-              ? scopeId("personal", actor.id)
-              : scopeId(req.conversation.kind, req.conversation.channelRef ?? threadRef);
+          const claimed = conversationScope(req.conversation, actor.id);
           if (existing.scopeId !== claimed) {
             return { status: "refused", reason: "that conversation lives in a different context" };
           }
@@ -128,81 +166,101 @@ export function createTurnMethods(
           return { status: "refused", reason: "you can only start a new conversation on your own thread" };
         }
         const org = scopeId("org", orgIdOf());
-        const targetScope =
-          req.conversation.kind === "dm"
-            ? scopeId("personal", actor.id)
-            : scopeId(req.conversation.kind, req.conversation.channelRef ?? threadRef);
+        const targetScope = conversationScope(req.conversation, actor.id);
         const fallbackHarness = isHarnessId(deps.harnessId) ? deps.harnessId : "pi";
         const runtimeFallback = deps.runtimeFallback ?? {
           harnessId: fallbackHarness,
           modelId: defaultModelForHarness(fallbackHarness),
         };
-        let orgRuntime;
-        let configuredRuntime;
-        let runtime;
-        try {
-          orgRuntime = await resolveRuntimeChoiceDurable(deps.config, org, org, runtimeFallback);
-          configuredRuntime =
-            targetScope === org
-              ? orgRuntime
-              : await resolveRuntimeChoiceDurable(deps.config, org, targetScope, runtimeFallback, undefined, actor.id);
-          runtime =
-            req.harness || req.model
-              ? await resolveRuntimeChoiceDurable(
-                  deps.config,
-                  org,
-                  targetScope,
-                  runtimeFallback,
-                  {
-                    ...(req.harness && isHarnessId(req.harness) ? { harnessId: req.harness } : {}),
-                    ...(req.model ? { modelId: req.model } : {}),
-                  },
-                  actor.id,
-                )
-              : configuredRuntime;
-        } catch (error) {
-          return { status: "refused", reason: errMessage(error) };
+        if (!individualAuth) {
+          let orgRuntime;
+          let configuredRuntime;
+          let runtime;
+          try {
+            const orgModel =
+              storedOrgRuntime?.modelId ?? (await deps.config.getBaseModelOwnDurable(org)) ?? runtimeFallback.modelId;
+            orgRuntime = modelUnavailableReason(orgModel)
+              ? { harnessId: storedOrgRuntime?.harnessId ?? runtimeFallback.harnessId, modelId: orgModel }
+              : await resolveRuntimeChoiceDurable(deps.config, org, org, runtimeFallback);
+            configuredRuntime =
+              targetScope === org
+                ? orgRuntime
+                : await resolveRuntimeChoiceDurable(
+                    deps.config,
+                    org,
+                    targetScope,
+                    runtimeFallback,
+                    undefined,
+                    actor.id,
+                  );
+            runtime =
+              req.harness || req.model
+                ? await resolveRuntimeChoiceDurable(
+                    deps.config,
+                    org,
+                    targetScope,
+                    runtimeFallback,
+                    {
+                      ...(req.harness && isHarnessId(req.harness) ? { harnessId: req.harness } : {}),
+                      ...(req.model ? { modelId: req.model } : {}),
+                    },
+                    actor.id,
+                  )
+                : configuredRuntime;
+          } catch (error) {
+            if (
+              error instanceof NonRetryableTurnError &&
+              /(?:not allowed for this scope|no model is allowed for this scope)$/.test(error.message)
+            )
+              return { status: "refused", reason: error.message };
+            swallow("turn: runtime resolution", error);
+            return { status: "refused", reason: `I couldn't set up that runtime choice — ${GENERIC_FAILURE_CLAUSE}` };
+          }
+          if (req.harness && !isHarnessId(req.harness)) {
+            return { status: "refused", reason: `runtime ${req.harness} is not approved` };
+          }
+          const configuredKeys = deps.providerKeys ??
+            deps.modelProviders ?? { anthropic: false, openai: false, openrouter: false };
+          let providers = deps.modelProviders;
+          if (deps.modelCredentials) {
+            providers = modelProviderAvailabilityFor(
+              runtime.harnessId,
+              configuredKeys,
+              await deps.modelCredentials.availability(),
+            );
+          } else if (deps.providerKeys) {
+            providers = modelProviderAvailabilityFor(runtime.harnessId, configuredKeys);
+          }
+          if (providers && !modelServiceable(runtime.modelId, providers)) {
+            return {
+              status: "refused",
+              reason: "that model isn't available on this deployment (its provider isn't configured)",
+            };
+          }
+          const configuredWebuiModels = await deps.config.getWebuiModelsDurable(targetScope, actor.id);
+          let enabledWebuiModels: string[];
+          if (configuredWebuiModels?.length) {
+            enabledWebuiModels = [...new Set([...configuredWebuiModels, orgRuntime.modelId])];
+          } else {
+            const catalog = providers?.openrouter
+              ? await selectableModelCatalog(deps.modelCredentialFetch)
+              : builtInModelCatalog();
+            enabledWebuiModels = [
+              ...new Set([
+                ...selectableCatalogForHarness(catalog, runtime.harnessId)
+                  .filter((model) => modelOfferedInWebui(model.id))
+                  .map((model) => model.id),
+                ...(orgRuntime.harnessId === runtime.harnessId ? [orgRuntime.modelId] : []),
+              ]),
+            ];
+          }
+          const invalidModelOption =
+            validateWebTurnModelOptions(req, enabledWebuiModels, providers) ??
+            (!(await webuiModelEnabled({ deps }, runtime.modelId, targetScope, actor.id))
+              ? "that model is not enabled for the web UI"
+              : null);
+          if (invalidModelOption) return { status: "refused", reason: invalidModelOption };
         }
-        if (req.harness && !isHarnessId(req.harness)) {
-          return { status: "refused", reason: `runtime ${req.harness} is not approved` };
-        }
-        const configuredKeys = deps.providerKeys ??
-          deps.modelProviders ?? { anthropic: false, openai: false, openrouter: false };
-        let providers = deps.modelProviders;
-        if (deps.modelCredentials) {
-          providers = modelProviderAvailabilityFor(
-            runtime.harnessId,
-            configuredKeys,
-            await deps.modelCredentials.availability(),
-          );
-        } else if (deps.providerKeys) {
-          providers = modelProviderAvailabilityFor(runtime.harnessId, configuredKeys);
-        }
-        if (providers && !modelServiceable(runtime.modelId, providers)) {
-          return {
-            status: "refused",
-            reason: "that model isn't available on this deployment (its provider isn't configured)",
-          };
-        }
-        const configuredWebuiModels = await deps.config.getWebuiModelsDurable(targetScope, actor.id);
-        let enabledWebuiModels: string[];
-        if (configuredWebuiModels?.length) {
-          enabledWebuiModels = [...new Set([...configuredWebuiModels, orgRuntime.modelId])];
-        } else {
-          const catalog = providers?.openrouter
-            ? await selectableModelCatalog(deps.modelCredentialFetch)
-            : builtInModelCatalog();
-          enabledWebuiModels = [
-            ...new Set([
-              ...selectableCatalogForHarness(catalog, runtime.harnessId).map((model) => model.id),
-              ...(orgRuntime.harnessId === runtime.harnessId ? [orgRuntime.modelId] : []),
-            ]),
-          ];
-        }
-        const invalidModelOption =
-          validateWebTurnModelOptions(req, enabledWebuiModels, providers) ??
-          webTurnRuntimeModelRefusal(runtime.modelId, orgRuntime.modelId, configuredWebuiModels);
-        if (invalidModelOption) return { status: "refused", reason: invalidModelOption };
       }
 
       const rawAudience = req.conversation.audience ?? [req.actor];
@@ -252,8 +310,8 @@ export function createTurnMethods(
         ...(req.detectOpener ? { detectOpener: req.detectOpener } : {}),
         ...(req.attachments?.length ? { attachments: req.attachments } : {}),
         ...(req.inboundNotes?.length ? { inboundNotes: req.inboundNotes } : {}),
-        ...(req.harness ? { harness: req.harness } : {}),
-        ...(req.model ? { model: req.model } : {}),
+        ...(!individualAuth && req.harness ? { harness: req.harness } : {}),
+        ...(!individualAuth && req.model ? { model: req.model } : {}),
         ...turnModelOptions(req),
         ...(req.readOnly ? { readOnly: true } : {}),
         ...(req.skipMemory ? { skipMemory: true } : {}),
@@ -277,28 +335,52 @@ export function createTurnMethods(
           deps.approvals?.get(req.approval.requestId),
           deps.sessions.getByThread(conversation.threadRef),
         ]);
-        if (
-          !approval ||
-          approval.sessionId !== approvalSession?.id ||
-          !approvalSession ||
-          !(await approvalRecordIsCurrent(approval, approvalSession)) ||
-          !(await approvalVisibleToViewer(approvalSession, actor.id, approval))
-        ) {
+        if (!approvalSession || (await approvalResumable(approvalSession, actor.id, approval)) !== "ok") {
           return { status: "refused", reason: "approval isn't visible in your project tenure" };
         }
       }
-      const blocked = await pendingApprovalResultForThread(conversation.threadRef, projectGroup ? actor.id : undefined);
+      const blocked = await pendingApprovalResultForThread(conversation.threadRef, actor.id, { alwaysBlock: true });
       let request = input;
       if (blocked) {
-        const pendingList = blocked.pendingApprovals ?? [];
-        const matches = (id?: string): boolean => !!id && pendingList.some((p) => p.requestId === id);
-        if (!matches(req.approval?.requestId)) return blocked;
+        const record = req.approval ? await deps.approvals?.get(req.approval.requestId) : undefined;
+        const blockedSession = blocked.sessionId ? await deps.sessions.get(blocked.sessionId) : null;
+        let cause: Awaited<ReturnType<typeof approvalResumable>> | "no_session" | "nonblocking" = blockedSession
+          ? await approvalResumable(blockedSession, actor.id, record)
+          : "no_session";
+        if (cause === "ok" && record?.blocksInput === false) cause = "nonblocking";
+        if (cause !== "ok") {
+          if (req.approval) {
+            deps.auditLog.record({
+              at: Date.now(),
+              principalId: actor.id,
+              action: `command_approval.${req.approval.approved ? "approve" : "deny"}`,
+              resource: req.approval.requestId,
+              scopeLabel: blockedSession?.scopeId ?? conversation.threadRef,
+              status: "refused",
+              detail: JSON.stringify({ approvalOutcome: "sealed_thread", cause }),
+            });
+          }
+          return blocked;
+        }
       }
 
-      let dedupKey: string | undefined;
+      const redeliveryKey = req.approval ? undefined : req.redeliveryKey;
+      if (redeliveryKey && deps.signals) {
+        const prior = await deps.runs.getByDedupKey(redeliveryKey);
+        if (prior) {
+          if (prior.request.conversation.threadRef !== conversation.threadRef)
+            console.error(
+              `[turn] redelivery ${redeliveryKey} names ${conversation.threadRef} but its run lives in ${prior.request.conversation.threadRef}`,
+            );
+          return { status: "silent" };
+        }
+        if (await deps.signals.hasDedupeKey(redeliveryKey)) return { status: "silent" };
+      }
+      let dedupKey: string | undefined = redeliveryKey;
       if (req.idempotencyKey) {
         dedupKey =
           projectVersion === undefined ? req.idempotencyKey : `${req.idempotencyKey}:project-${projectVersion}`;
+        if (req.approval) dedupKey = `${dedupKey}:approval:${req.approval.requestId}:${req.approval.approved}`;
       }
 
       if (origin.kind === "human" && !req.approval) deps.reaperPoke?.();
@@ -317,9 +399,13 @@ export function createTurnMethods(
           liveOriginKind === "automation" &&
           (origin.kind === "human" || (origin.kind === "ambient" && origin.live === true)) &&
           !(origin.kind === "human" && isHalt(req.text));
+        if (live && redeliveryKey && live.dedupKey === redeliveryKey) return { status: "silent" };
         if (live && !isTerminal(live.status) && !personIntoAutomation) {
-          const steerText =
-            origin.kind === "ambient" ? `${actor.displayName?.trim() || actor.id}: ${req.text}` : req.text;
+          const steerText = attributedSteerText(
+            actor,
+            origin.kind === "ambient" ? null : live.request.actor.id,
+            req.text,
+          );
           let injectedText = steerText;
           if (origin.kind === "ambient") {
             const session = await deps.sessions.getByThread(conversation.threadRef);
@@ -348,18 +434,22 @@ export function createTurnMethods(
           const route = routeWake(wake, true, resolveTurnOrigin(live.request).kind === "ambient");
           if (route.kind === "steer" || route.kind === "drop") {
             const steerTs = origin.kind === "human" ? (origin.messageTs ?? origin.entryTs) : origin.entryTs;
+            let redelivered = false;
             const routedRunId = await withCurrentProjectRoster(async () => {
               if (route.kind === "steer")
-                await deps.signals!.send(live.id, {
+                redelivered = !(await deps.signals!.send(live.id, {
                   kind: route.signal,
                   ...(route.text ? { text: route.text } : {}),
                   ...(steerTs ? { ts: steerTs } : {}),
                   ...(route.signal === "steer" ? { request: req } : {}),
-                });
+                  ...(redeliveryKey ? { dedupeKey: redeliveryKey } : {}),
+                }));
               return live.id;
             });
             if (!routedRunId)
               return { status: "refused", reason: "project membership changed; retry from the current project" };
+            if (redelivered)
+              return req.async ? { status: "queued", runId: routedRunId, steered: true } : drive(routedRunId);
             if (route.kind === "steer") {
               const after = await deps.runs.get(live.id);
               if (!after || isTerminal(after.status)) {
@@ -401,6 +491,7 @@ export function createTurnMethods(
                   text: req.text,
                   ts: origin.messageTs,
                   request: req,
+                  ...(redeliveryKey ? { dedupeKey: redeliveryKey } : {}),
                 });
               return liveAmbient.id;
             });
@@ -436,6 +527,7 @@ export function createTurnMethods(
       const enqueued = await withCurrentProjectRoster(enqueue);
       if (!enqueued) return { status: "refused", reason: "project membership changed; retry from the current project" };
       const { run, deduped } = enqueued;
+      if (deduped && redeliveryKey && run.dedupKey === redeliveryKey) return { status: "silent" };
       if (!deduped) {
         deps.sessionStateBus?.emit({
           threadRef: conversation.threadRef,
@@ -454,8 +546,34 @@ export function createTurnMethods(
       return drive(run.id);
     },
 
-    subscribeSessionStates(cb) {
-      return deps.sessionStateBus?.subscribe(cb) ?? (() => {});
+    subscribeSessionStates(cb, opts) {
+      if (!deps.sessionStateBus) return () => {};
+      const lookupParticipants = async (threadRef: string): Promise<string[]> => {
+        const session = await deps.sessions.getByThread(threadRef);
+        return session ? deps.sessions.participantsOf(session.id) : [];
+      };
+      const rehydrate = async (event: SessionStateEvent): Promise<SessionStateEvent> => {
+        if (!event.participantsShed) return event;
+        const { participantsShed: _shed, ...bare } = event;
+        const participants = await Promise.race([
+          lookupParticipants(event.threadRef),
+          sleep(PARTICIPANT_REHYDRATE_TIMEOUT_MS, { unref: true }).then(() => null),
+        ]).catch(swallowAs("session-state: rehydrate participants", null));
+        return participants?.length ? { ...bare, participants } : bare;
+      };
+      let tail: Promise<void> = Promise.resolve();
+      const queue = (step: () => void | Promise<void>): void => {
+        tail = tail.then(step).catch(swallowAs("session-state: subscriber", undefined));
+      };
+      const onResync = opts?.onResync;
+      return deps.sessionStateBus.subscribe(
+        (event) => queue(async () => cb(await rehydrate(event))),
+        onResync ? { onResync: () => queue(onResync) } : undefined,
+      );
+    },
+
+    subscribeLedgerEvents(cb, opts) {
+      return deps.ledgerEventBus?.subscribe(cb, opts) ?? (() => {});
     },
 
     async getApproval(requestId, viewer) {
@@ -469,8 +587,7 @@ export function createTurnMethods(
     },
 
     async listSessionApprovals(sessionId, viewer) {
-      const mine = await sessionsForViewer(viewer);
-      if (!mine.some((s) => s.id === sessionId)) return [];
+      if (!(await sessionForViewer(sessionId, viewer))) return [];
       return pendingApprovalForSession(sessionId, { blockingOnly: false, viewer });
     },
 
@@ -485,7 +602,7 @@ export function createTurnMethods(
       const partial = deps.turnStream?.snapshot(runId);
       const firstBlock = deps.turnStream?.firstBlock(runId);
       const surfacePosted = deps.turnStream?.surfacePosted(runId) ?? false;
-      const alive = deps.turnStream?.alive(runId) ?? false;
+      const alive = run.status === "running" && !leaseLapsed(run, Date.now());
       const replying = deps.turnStream?.replying(runId) ?? false;
       const replyComplete = deps.turnStream?.isReplyDone(runId) ?? false;
       const activity = await deps.runActivity?.list(runId);
@@ -519,7 +636,12 @@ export function createTurnMethods(
       if (!live) return null;
       const queued = visible
         .slice(1)
-        .map((run) => ({ runId: run.id, text: run.request.displayText ?? run.request.text ?? "" }));
+        .filter((run) => isPersonAuthored(resolveTurnOrigin(run.request).kind))
+        .map((run) => ({
+          runId: run.id,
+          text: run.request.displayText ?? run.request.text ?? "",
+          ...(run.request.attachments?.length ? { hasAttachments: true } : {}),
+        }));
       return { runId: live.id, ...(queued.length ? { queued } : {}) };
     },
 
@@ -539,15 +661,34 @@ export function createTurnMethods(
       if (signal.kind === "steer" && !signal.text?.trim()) {
         return { accepted: false, reason: "text_required" };
       }
-      await deps.signals.send(runId, signal);
+      if (signal.request && signal.request.conversation.threadRef !== run.request.conversation.threadRef) {
+        return { accepted: false, reason: "conversation_mismatch" };
+      }
+      let outbound = signal;
+      if (signal.kind === "steer") {
+        const requestActor = signal.request?.actor;
+        let steerer: { id: string; displayName?: string | undefined } | undefined;
+        if (requestActor) steerer = { id: requestActor.externalId, displayName: requestActor.displayName };
+        else if (viewer) {
+          steerer = { id: viewer, displayName: (await deps.directory.get(viewer).catch(() => null))?.displayName };
+        }
+        outbound = {
+          ...signal,
+          ts: signal.ts ?? `${Date.now()}.${crypto.randomUUID().slice(0, 8)}`,
+          ...(steerer ? { text: attributedSteerText(steerer, run.request.actor.id, signal.text!) } : {}),
+        };
+      }
+      await deps.signals.send(runId, outbound);
       const after = await deps.runs.get(runId);
       if (!after || isTerminal(after.status)) {
-        await replayOrphanedRunSignals(runId);
+        const drained = await replayOrphanedRunSignals(runId);
         if (signal.kind !== "steer") return { accepted: false, reason: "terminal" };
         // The steer was stored before the run went terminal, so its text is replayed as
         // a fresh turn (by this drain, the onTerminal hook, or the orphan sweeper —
         // whoever drains first). Tell the caller so it attaches to the fresh run
         // instead of treating the message as lost.
+        const own = drained.find((d) => d.signal.ts === outbound.ts);
+        if (own && !own.replayRunId) return { accepted: false, reason: "terminal" };
         return { accepted: false, reason: "terminal", replayed: true };
       }
       return { accepted: true };

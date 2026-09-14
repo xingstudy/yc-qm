@@ -12,7 +12,9 @@ import { loadConfig } from "../src/config.ts";
 
 const BASE_ENV = { HARNESS: "mock" } as NodeJS.ProcessEnv;
 
-afterEach(() => setProviderBaseUrls({}));
+afterEach(() => {
+  setProviderBaseUrls({});
+});
 
 test("parseProviderBaseUrl normalizes trailing slashes and whitespace", () => {
   assert.equal(parseProviderBaseUrl("X", " https://gw.example.com/v1// "), "https://gw.example.com/v1");
@@ -97,4 +99,43 @@ test("Anthropic base URLs accept an optional v1 path while preserving gateway pr
   assert.equal(config.claudeProcessEnv.ANTHROPIC_BASE_URL, "https://gateway.example/prefix");
   setProviderBaseUrls({ anthropic: "https://gateway.example/v1" });
   assert.equal(resolveModel("claude-opus-5")?.baseUrl, "https://gateway.example");
+});
+
+test("loadConfig accepts a complete model gateway and rejects partial or malformed routing", () => {
+  const config = loadConfig({
+    ...BASE_ENV,
+    MODEL_GATEWAY_URL: "http://gateway.internal:8080/",
+    MODEL_GATEWAY_API_KEY: "secret",
+    MODEL_GATEWAY_API_KEY_HEADER: "api-key",
+    MODEL_GATEWAY_MODELS: "claude-opus-5=router/opus,claude-haiku-4-5=router/haiku",
+  });
+  assert.deepEqual(config.modelGateway, {
+    url: "http://gateway.internal:8080",
+    apiKey: "secret",
+    apiKeyHeader: "api-key",
+    models: { "claude-opus-5": "router/opus", "claude-haiku-4-5": "router/haiku" },
+  });
+  assert.throws(() => loadConfig({ ...BASE_ENV, MODEL_GATEWAY_URL: "http://gateway.internal" }), /required/);
+  assert.throws(
+    () =>
+      loadConfig({
+        ...BASE_ENV,
+        MODEL_GATEWAY_URL: "http://gateway.internal",
+        MODEL_GATEWAY_API_KEY: "secret",
+        MODEL_GATEWAY_API_KEY_HEADER: "bad header",
+        MODEL_GATEWAY_MODELS: "claude-opus-5=router/opus",
+      }),
+    /HTTP header name/,
+  );
+  assert.throws(
+    () =>
+      loadConfig({
+        ...BASE_ENV,
+        MODEL_GATEWAY_URL: "http://gateway.internal",
+        MODEL_GATEWAY_API_KEY: "secret",
+        MODEL_GATEWAY_API_KEY_HEADER: "api-key",
+        MODEL_GATEWAY_MODELS: "claude-opus-5",
+      }),
+    /invalid MODEL_GATEWAY_MODELS/,
+  );
 });
