@@ -961,12 +961,6 @@ export function buildApp(
     backing: artifactMap<StoredMcpServer>("mcp_servers"),
     keyMaterial: config.connectorSecretKey ?? randomBytes(32),
   });
-  const mcpToolService = createMcpToolService({
-    servers: mcpServers,
-    audit: auditLog,
-    initializationReady: migrationsReady,
-  });
-  const mcpTools = () => mcpToolService.toolDefs();
   const errors = config.databaseUrl ? createPostgresErrorLog(config.databaseUrl) : createErrorLog();
   const sandboxOnError = (e: { category: string; code: string; message: string; scopeLabel?: string }) =>
     errors.record({
@@ -1287,6 +1281,13 @@ export function buildApp(
     ? createBrowserSessionStore({ sessions: artifactMap<StoredBrowserSession>("browser_sessions"), key: credentialKey })
     : undefined;
   const connectorTokens = withOperatorTokenFallback(credentialStore, config.egressServiceHosts ?? [], secretSource);
+  const mcpToolService = createMcpToolService({
+    servers: mcpServers,
+    connectorTokens: credentialStore,
+    audit: auditLog,
+    initializationReady: migrationsReady,
+  });
+  const mcpTools = () => mcpToolService.toolDefs();
   const consentLinks: ConsentLinkStore = createConsentLinkStore(artifactMap<ConsentLinkRecord>("consent_links"));
   const oauthFlows: OAuthFlowStore = createOAuthFlowStore(artifactMap<OAuthState>("oauth_flows"));
   const secretDrops: SecretDropStore = createSecretDropStore(artifactMap<SecretDropRecord>("secret_drops"));

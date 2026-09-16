@@ -86,13 +86,14 @@ export function harnessToolContext(turn: HarnessTurnInput): ToolContextRef {
 
 export function harnessToolOptions(
   opts: HarnessToolPlumbing,
-  turn?: Pick<HarnessTurnInput, "readOnly" | "surfaceTools" | "surfaceName" | "credentialExecServices">,
+  turn?: Pick<HarnessTurnInput, "readOnly" | "surfaceTools" | "surfaceName" | "credentialExecServices"> &
+    Partial<Pick<HarnessTurnInput, "tools">>,
 ): AgentToolsOptions {
   return {
     scratchExec: opts.scratchExec,
     ownerAuthExec: opts.ownerAuthExec,
     reachExec: opts.reachExec,
-    ...(opts.mcpTools ? { mcpTools: opts.mcpTools } : {}),
+    ...(opts.mcpTools ? { mcpTools: () => turn?.tools?.mcpToolDefs() ?? opts.mcpTools!() } : {}),
     controlTools: opts.controlTools,
     sandboxResources: opts.sandboxResources,
     execTimeoutMs: opts.execTimeoutMs,

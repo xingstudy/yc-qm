@@ -1,7 +1,7 @@
 import { decryptSecret, deriveConnectorKey, encryptSecret } from "../connectors/connector-client-store.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
 
-export type McpServerAuthMode = "none" | "bearer" | "client-credentials";
+export type McpServerAuthMode = "none" | "bearer" | "client-credentials" | "user-oauth";
 
 export interface McpServer {
   id: string;

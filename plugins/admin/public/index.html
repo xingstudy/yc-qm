@@ -2901,6 +2901,11 @@
         padding: 10px 0;
         border-bottom: 1px solid var(--border);
       }
+      #mcp-bearer-token-field[hidden],
+      #mcp-client-id-field[hidden],
+      #mcp-client-secret-field[hidden] {
+        display: none !important;
+      }
       .credential-row.is-editing {
         background: var(--subtle);
         margin: 0 -10px;
@@ -6470,6 +6475,108 @@
           </div>
 
           <div id="view-design" class="hidden"></div>
+          <div id="view-mcp-servers" class="hidden">
+            <section class="card" id="card-mcp-servers">
+              <div class="head">
+                <h2>MCP servers</h2>
+                <p>
+                  Connect public HTTPS Model Context Protocol servers to make their tools available to the organization.
+                  Credentials are write-only and never displayed after saving.
+                </p>
+              </div>
+              <div class="body"><div id="mcp-server-list" class="hint">No MCP servers configured.</div></div>
+              <div class="body" style="border-top: 1px solid var(--border, #2a2a2a); padding-top: 12px">
+                <div class="sc-form-head">
+                  <p class="hint" id="mcp-form-title">Add an MCP server</p>
+                  <span class="badge muted" id="mcp-form-mode">New</span>
+                </div>
+                <label style="display: block; margin-bottom: 8px"
+                  >Server ID
+                  <input
+                    type="text"
+                    id="mcp-server-id"
+                    autocomplete="off"
+                    placeholder="company-tools"
+                    pattern="[a-z][a-z0-9-]{1,39}"
+                    style="width: 100%"
+                /></label>
+                <label style="display: block; margin-bottom: 8px"
+                  >Name
+                  <input
+                    type="text"
+                    id="mcp-server-name"
+                    autocomplete="off"
+                    placeholder="Company tools"
+                    style="width: 100%"
+                /></label>
+                <label style="display: block; margin-bottom: 8px"
+                  >Server URL
+                  <input
+                    type="url"
+                    id="mcp-server-url"
+                    autocomplete="off"
+                    placeholder="https://mcp.example.com"
+                    style="width: 100%"
+                /></label>
+                <label style="display: block; margin-bottom: 8px"
+                  >Authentication
+                  <select id="mcp-server-auth" style="width: 100%">
+                    <option value="none">None</option>
+                    <option value="bearer">Bearer token</option>
+                    <option value="client-credentials">Client credentials</option>
+                    <option value="user-oauth">Atlassian user OAuth</option>
+                  </select>
+                </label>
+                <label id="mcp-bearer-token-field" style="display: block; margin-bottom: 8px"
+                  >Bearer token
+                  <input
+                    type="password"
+                    id="mcp-server-token"
+                    autocomplete="off"
+                    placeholder="(write-only)"
+                    style="width: 100%"
+                /></label>
+                <label id="mcp-client-id-field" style="display: block; margin-bottom: 8px"
+                  >Client ID
+                  <input
+                    type="text"
+                    id="mcp-server-client-id"
+                    autocomplete="off"
+                    placeholder="Client ID"
+                    style="width: 100%"
+                /></label>
+                <label id="mcp-client-secret-field" style="display: block; margin-bottom: 8px"
+                  >Client secret
+                  <input
+                    type="password"
+                    id="mcp-server-client-secret"
+                    autocomplete="off"
+                    placeholder="(write-only)"
+                    style="width: 100%"
+                /></label>
+                <p class="field-hint" id="mcp-credential-hint">
+                  Leave a stored credential blank to retain it when the URL and authentication mode do not change.
+                </p>
+                <p class="field-hint" id="mcp-user-oauth-hint" hidden>
+                  Each user connects their own Atlassian account in Keychain. QM stores no shared Atlassian token.
+                </p>
+                <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 10px"
+                  ><input type="checkbox" id="mcp-server-enabled" style="width: auto" checked /> Enabled</label
+                >
+                <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 10px"
+                  ><input type="checkbox" id="mcp-server-read-only" style="width: auto" /> Read-only tools only</label
+                >
+                <label style="display: flex; align-items: center; gap: 10px; cursor: pointer"
+                  ><input type="checkbox" id="mcp-server-validate" style="width: auto" checked /> Validate and discover
+                  tools before saving</label
+                >
+              </div>
+              <div class="foot">
+                <button class="primary" id="mcp-server-save">Save MCP server</button
+                ><button id="mcp-server-reset">Clear form</button><span class="status" id="st-mcp-servers"></span>
+              </div>
+            </section>
+          </div>
 
           <div id="view-data" class="hidden"></div>
         </div>
@@ -7398,6 +7505,33 @@
         "Stored secret retained": "保留已存储密钥",
         "Save credential": "保存凭据",
         "Clear form": "清空表单",
+        "MCP servers": "MCP 服务器",
+        "Connect public HTTPS Model Context Protocol servers to make their tools available to the organization. Credentials are write-only and never displayed after saving.":
+          "连接公网 HTTPS Model Context Protocol 服务器，使其工具可供整个组织使用。凭据仅可写入，保存后不会显示。",
+        "No MCP servers configured.": "尚未配置 MCP 服务器。",
+        "Add an MCP server": "添加 MCP 服务器",
+        "Server ID": "服务器 ID",
+        "Server URL": "服务器 URL",
+        Authentication: "认证方式",
+        "Bearer token": "Bearer 令牌",
+        "Client credentials": "客户端凭据",
+        "Leave a stored credential blank to retain it when the URL and authentication mode do not change.":
+          "当 URL 和认证方式不变时，留空已保存的凭据即可保留它。",
+        "Read-only tools only": "仅允许只读工具",
+        "Validate and discover tools before saving": "保存前验证并发现工具",
+        "Save MCP server": "保存 MCP 服务器",
+        Tools: "工具",
+        "Read-only": "只读",
+        "Only an org admin can manage MCP servers.": "只有组织管理员可以管理 MCP 服务器。",
+        "Failed to load MCP servers.": "无法加载 MCP 服务器。",
+        "Delete MCP server ": "删除 MCP 服务器 ",
+        "? Its tools will no longer be available.": "？其工具将不再可用。",
+        "Server ID must be 2-40 lowercase letters, numbers, or hyphens.":
+          "服务器 ID 必须为 2–40 个小写字母、数字或连字符。",
+        "Server URL is required.": "必须填写服务器 URL。",
+        "Saving and validating…": "正在保存并验证…",
+        "Saved. Discovered ": "已保存。发现了 ",
+        " tools.": " 个工具。",
         "Connector OAuth clients": "连接器 OAuth 客户端",
         "No connectors configured.": "尚未配置连接器。",
         "Add a connector": "添加连接器",
@@ -8752,6 +8886,7 @@
             "credentials",
             "customize",
             "connectors",
+            "mcp-servers",
             "directory-sources",
             "org-members",
             "users",
@@ -8912,6 +9047,7 @@
         credentials: "Credentials",
         customize: "Customize",
         connectors: "Connectors",
+        "mcp-servers": "MCP servers",
         "directory-sources": "Identity sources",
         users: "Users",
         "org-members": "Organization members",
@@ -9736,9 +9872,10 @@
         $("connector-dm-tip").classList.toggle("hidden", view !== "connectors");
         $("view-connectors").classList.toggle("hidden", view !== "connectors");
         $("view-design").classList.toggle("hidden", view !== "design");
+        $("view-mcp-servers").classList.toggle("hidden", view !== "mcp-servers");
         $("view-data").classList.toggle(
           "hidden",
-          view === "onboarding" || isGovLike(view) || view === "connectors" || view === "design",
+          view === "onboarding" || isGovLike(view) || view === "connectors" || view === "design" || view === "mcp-servers",
         );
         if (view === "onboarding") return void loadOnboarding();
         if (isGovLike(view)) {
@@ -9747,6 +9884,7 @@
         }
         if (view === "connectors") return void loadConnectors();
         if (view === "design") return void renderDesignLibrary();
+        if (view === "mcp-servers") return void loadMcpServers();
         if (view === "user") return void showUserDetail(st.principal);
         if (view === "slack") return void renderSlackMirror(st);
         if (view === "judgments") return void renderAmbientJudgments(st);
@@ -13059,6 +13197,188 @@
             r.status === 403 ? "Only an org admin can manage connectors." : "Save failed.",
             "err",
           );
+      };
+      let mcpServerList = [];
+      let mcpTools = [];
+      let mcpEditing = null;
+      function syncMcpAuthFields() {
+        const auth = $("mcp-server-auth").value;
+        $("mcp-bearer-token-field").hidden = auth !== "bearer";
+        $("mcp-client-id-field").hidden = auth !== "client-credentials";
+        $("mcp-client-secret-field").hidden = auth !== "client-credentials";
+        $("mcp-user-oauth-hint").hidden = auth !== "user-oauth";
+        $("mcp-credential-hint").hidden = auth === "user-oauth";
+        if (auth === "user-oauth") $("mcp-server-url").value = "https://mcp.atlassian.com/v2/mcp";
+      }
+      function renderMcpServerList(servers, tools) {
+        mcpServerList = servers;
+        mcpTools = tools;
+        const root = $("mcp-server-list");
+        root.textContent = "";
+        if (!servers.length) {
+          root.className = "hint";
+
+          root.textContent = adminTr("No MCP servers configured.");
+          return;
+        }
+        root.className = "";
+        servers.forEach((server) => {
+          const row = document.createElement("div");
+          row.className = "credential-row";
+          if (server.id === mcpEditing) row.classList.add("is-editing");
+          const left = document.createElement("div");
+          left.className = "credential-main";
+          const title = document.createElement("div");
+          title.className = "credential-title";
+          const name = document.createElement("strong");
+          name.textContent = server.name || server.id;
+          title.append(name, badge(server.id, "muted"));
+          const meta = document.createElement("div");
+          meta.className = "hint";
+          const toolCount = tools.filter((tool) => tool.serverId === server.id).length;
+          meta.textContent =
+            server.url +
+            " · " +
+            server.auth +
+            (server.updatedBy ? " · " + adminTr("by") + " " + server.updatedBy : "") +
+            (server.updatedAt ? " · " + fmtTime(server.updatedAt) : "");
+          const badges = document.createElement("div");
+          badges.className = "credential-badges";
+          badges.append(
+            localizedBadge(server.enabled === false ? "Disabled" : "Enabled", server.enabled === false ? "warn" : "ok"),
+            badge(adminTr("Tools") + ": " + toolCount, "muted"),
+            ...(server.readOnly ? [localizedBadge("Read-only", "info")] : []),
+          );
+          left.append(title, meta, badges);
+          const actions = document.createElement("div");
+          actions.className = "credential-actions";
+          const edit = document.createElement("button");
+          edit.type = "button";
+          edit.textContent = adminTr("Edit");
+          edit.onclick = () => loadMcpForm(server);
+          const del = document.createElement("button");
+          del.type = "button";
+          del.className = "rowbtn danger";
+          del.textContent = adminTr("Delete");
+          del.onclick = () => deleteMcpServer(server.id);
+          actions.append(edit, del);
+          row.append(left, actions);
+          root.appendChild(row);
+        });
+      }
+      async function loadMcpServers() {
+        const r = await api("GET", "/api/mcp-servers");
+        if (!r.ok) {
+          setApiStatus(
+            "st-mcp-servers",
+            r.data?.message,
+            r.status === 403 ? "Only an org admin can manage MCP servers." : "Failed to load MCP servers.",
+            "err",
+          );
+          return;
+        }
+        renderMcpServerList(r.data?.servers || [], r.data?.tools || []);
+        if (mcpEditing && !mcpServerList.some((server) => server.id === mcpEditing)) resetMcpForm();
+      }
+      function loadMcpForm(server) {
+        mcpEditing = server.id;
+        $("mcp-form-title").textContent = adminTr("Editing") + " " + (server.name || server.id);
+        $("mcp-form-mode").textContent = adminTr("Editing");
+        $("mcp-form-mode").className = "badge info";
+        $("mcp-server-save").textContent = adminTr("Save changes");
+        $("mcp-server-reset").textContent = adminTr("Cancel edit");
+        $("mcp-server-id").value = server.id;
+        $("mcp-server-id").disabled = true;
+        $("mcp-server-name").value = server.name || "";
+        $("mcp-server-url").value = server.url || "";
+        $("mcp-server-auth").value = server.auth || "none";
+        $("mcp-server-token").value = "";
+        $("mcp-server-client-id").value = server.clientId || "";
+        $("mcp-server-client-secret").value = "";
+        $("mcp-server-token").placeholder = adminTr(
+          server.hasBearerToken ? "•••• set (re-enter to replace)" : "(write-only)",
+        );
+        $("mcp-server-client-secret").placeholder = adminTr(
+          server.hasClientSecret ? "•••• set (re-enter to replace)" : "(write-only)",
+        );
+        $("mcp-server-enabled").checked = server.enabled !== false;
+        $("mcp-server-read-only").checked = server.readOnly === true;
+        $("mcp-server-validate").checked = true;
+        syncMcpAuthFields();
+        renderMcpServerList(mcpServerList, mcpTools);
+        $("card-mcp-servers").scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+      function resetMcpForm() {
+        mcpEditing = null;
+        $("mcp-form-title").textContent = adminTr("Add an MCP server");
+        $("mcp-form-mode").textContent = adminTr("New");
+        $("mcp-form-mode").className = "badge muted";
+        $("mcp-server-save").textContent = adminTr("Save MCP server");
+        $("mcp-server-reset").textContent = adminTr("Clear form");
+        $("mcp-server-id").disabled = false;
+        $("mcp-server-id").value = "";
+        $("mcp-server-name").value = "";
+        $("mcp-server-url").value = "";
+        $("mcp-server-auth").value = "none";
+        $("mcp-server-token").value = "";
+        $("mcp-server-token").placeholder = adminTr("(write-only)");
+        $("mcp-server-client-id").value = "";
+        $("mcp-server-client-secret").value = "";
+        $("mcp-server-client-secret").placeholder = adminTr("(write-only)");
+        $("mcp-server-enabled").checked = true;
+        $("mcp-server-read-only").checked = false;
+        $("mcp-server-validate").checked = true;
+        syncMcpAuthFields();
+        if (mcpServerList.length) renderMcpServerList(mcpServerList, mcpTools);
+      }
+      $("mcp-server-auth").onchange = syncMcpAuthFields;
+      $("mcp-server-reset").onclick = resetMcpForm;
+      async function deleteMcpServer(id) {
+        if (!confirm(adminTr("Delete MCP server ") + id + adminTr("? Its tools will no longer be available."))) return;
+        const r = await api("DELETE", "/api/mcp-servers/" + encodeURIComponent(id));
+        if (!r.ok) return setApiStatus("st-mcp-servers", r.data?.message, "Delete failed.", "err");
+        if (mcpEditing === id) resetMcpForm();
+        await loadMcpServers();
+        setStatus("st-mcp-servers", "Deleted", "ok");
+      }
+      $("mcp-server-save").onclick = async () => {
+        const id = $("mcp-server-id").value.trim();
+        if (!/^[a-z][a-z0-9-]{1,39}$/.test(id)) {
+          setStatus("st-mcp-servers", "Server ID must be 2-40 lowercase letters, numbers, or hyphens.", "err");
+          return;
+        }
+        const url = $("mcp-server-url").value.trim();
+        if (!url) {
+          setStatus("st-mcp-servers", "Server URL is required.", "err");
+          return;
+        }
+        const auth = $("mcp-server-auth").value;
+        const body = {
+          name: $("mcp-server-name").value.trim(),
+          url,
+          auth,
+          enabled: $("mcp-server-enabled").checked,
+          readOnly: $("mcp-server-read-only").checked,
+          validate: $("mcp-server-validate").checked,
+        };
+        if (auth === "bearer" && $("mcp-server-token").value) body.bearerToken = $("mcp-server-token").value;
+        if (auth === "client-credentials") {
+          if ($("mcp-server-client-id").value) body.clientId = $("mcp-server-client-id").value.trim();
+          if ($("mcp-server-client-secret").value) body.clientSecret = $("mcp-server-client-secret").value;
+        }
+        $("mcp-server-save").disabled = true;
+        setStatus("st-mcp-servers", "Saving and validating…", "saving", true);
+        const r = await api("PUT", "/api/mcp-servers/" + encodeURIComponent(id), body);
+        $("mcp-server-save").disabled = false;
+        if (!r.ok) return setApiStatus("st-mcp-servers", r.data?.message, "Save failed.", "err");
+        const discovered = r.data?.tools?.length;
+        resetMcpForm();
+        await loadMcpServers();
+        setStatus(
+          "st-mcp-servers",
+          discovered == null ? "Saved" : adminTr("Saved. Discovered ") + discovered + adminTr(" tools."),
+          "ok",
+        );
       };
       function syncEffectClass(sel) {
         sel.className = "policy-effect effect-control effect-" + sel.value;

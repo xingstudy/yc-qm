@@ -46,6 +46,10 @@ const CONNECTOR_LABELS: Record<string, { name: string; hosts: string }> = {
     name: "X (Twitter)",
     hosts: "Posts & profile",
   },
+  atlassian: {
+    name: "Atlassian",
+    hosts: "Jira, Confluence & Rovo",
+  },
 };
 
 const CONNECTOR_LOGOS: Record<string, string> = {
@@ -145,6 +149,7 @@ let connectorsLoading = false;
 let keysLoading = false;
 let connectorsEverLoaded = false;
 let keysEverLoaded = false;
+let mcpRefreshInFlight = false;
 
 export function resetKeychainState(): void {
   keychainOperations.reset();
@@ -160,6 +165,7 @@ export function resetKeychainState(): void {
   keysLoading = false;
   connectorsEverLoaded = false;
   keysEverLoaded = false;
+  mcpRefreshInFlight = false;
   addingCredential = null;
   secureDropUrl = null;
   confirmation = null;
@@ -595,11 +601,9 @@ function drawConnectors(): void {
               class="pane-refresh"
               type="button"
               aria-label="Refresh keychain"
-              title="Refresh keychain"
-              @click=${() => {
-                connectorNotice = "";
-                void renderConnectors();
-              }}
+              title="Refresh keychain and discover MCP tools"
+              ?disabled=${mcpRefreshInFlight}
+              @click=${() => void refreshKeychain()}
             >
               ${icon(RefreshCw, 17)}
             </button>
@@ -698,6 +702,29 @@ export async function renderConnectors(): Promise<void> {
     },
   );
   await Promise.all([connDone, keysDone]);
+}
+
+async function refreshKeychain(): Promise<void> {
+  if (mcpRefreshInFlight) return;
+  const stateEpoch = keychainOperations.captureEpoch();
+  mcpRefreshInFlight = true;
+  connectorNotice = t("Refreshing MCP tools…");
+  drawConnectors();
+  try {
+    const { toolCount = 0 } = await api<{ toolCount?: number }>("/api/connectors/mcp/refresh", { method: "POST" });
+    if (!keychainOperations.isCurrentEpoch(stateEpoch)) return;
+    connectorNotice = toolCount
+      ? t("MCP tools refreshed.")
+      : t("No MCP tools were found. Reconnect the account if this is unexpected.");
+  } catch (e) {
+    if (keychainOperations.isCurrentEpoch(stateEpoch))
+      connectorNotice = connectorErrorNotice(e, "Could not refresh MCP tools.");
+  } finally {
+    if (keychainOperations.isCurrentEpoch(stateEpoch)) {
+      mcpRefreshInFlight = false;
+      await renderConnectors();
+    }
+  }
 }
 
 async function deleteCredential(credential: KeychainCredential): Promise<void> {

@@ -5672,6 +5672,14 @@ const apiRoutes: readonly WebRoute[] = [
   },
   {
     method: "POST",
+    path: "/api/connectors/mcp/refresh",
+    handle: async (c) => {
+      const { res, user } = c;
+      return relayCore(res, "POST", "/v1/connectors/mcp/refresh", JSON.stringify({ principalId: user }));
+    },
+  },
+  {
+    method: "POST",
     path: "/api/connectors/revoke",
     handle: async (c) => {
       const { req, res, user } = c;

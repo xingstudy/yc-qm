@@ -8,6 +8,8 @@ import {
   createSecretClientResolver,
   generateCodeVerifier,
   codeChallengeS256,
+  isDynamicOAuthProvider,
+  resolveAtlassianMcpClient,
   type OAuthClientResolver,
   type AccountType,
   type OAuthState,
@@ -54,12 +56,30 @@ function parseAccountType(v: string | null | undefined): AccountType {
 }
 
 async function providerConfigured(deps: ServerDeps, provider: string): Promise<boolean> {
+  if (isDynamicOAuthProvider(provider)) return true;
   try {
     await resolverFor(deps)(provider, {});
     return true;
   } catch {
     return false;
   }
+}
+
+async function oauthClient(
+  deps: ServerDeps,
+  provider: string,
+  accountType: AccountType,
+  redirectUri: string,
+  clientRef?: string,
+) {
+  if (isDynamicOAuthProvider(provider)) {
+    return resolveAtlassianMcpClient({
+      redirectUri,
+      clientRef,
+      ...(deps.oauthFetch ? { fetchImpl: deps.oauthFetch } : {}),
+    });
+  }
+  return resolverFor(deps)(provider, { accountType });
 }
 
 function parseOAuthRoute(pathname: string): { provider: string; action: "start" | "callback" } | null {
@@ -171,7 +191,7 @@ async function oauthCallback(ctx: BaseCtx): Promise<void> {
       throw new Error("OAuth principal is no longer active");
     }
     const accountType = state.accountType ?? "default";
-    const client = await resolverFor(deps)(oauthRoute.provider, { accountType });
+    const client = await oauthClient(deps, oauthRoute.provider, accountType, state.redirectUri, state.clientRef);
     const { hosts, token } = await exchangeCode(oauthRoute.provider, code, state.redirectUri, {
       client,
       fetchImpl: deps.oauthFetch,
@@ -182,6 +202,9 @@ async function oauthCallback(ctx: BaseCtx): Promise<void> {
     const stamped = { ...token, clientRef: client.clientRef, accountType, orgId: configOrgId() };
     for (const host of hosts)
       await deps.connectorTokens.setConnectorToken(host, state.principalId, stamped, accountType);
+    if (oauthRoute.provider === "atlassian") {
+      await deps.mcpToolService?.refreshForPrincipal(state.principalId, true).catch(() => undefined);
+    }
     audit(deps, {
       principalId: state.principalId,
       action: "connector.oauth.connected",
@@ -253,7 +276,7 @@ async function consentRedeem(ctx: ApiCtx): Promise<void> {
     return sendJson(res, 200, { status: "invalid" });
   }
   try {
-    const client = await resolverFor(deps)(rec.provider, { accountType: rec.accountType });
+    const client = await oauthClient(deps, rec.provider, rec.accountType, rec.redirectUri);
     if (client.redirectAllowlist && !client.redirectAllowlist.includes(rec.redirectUri)) {
       return sendJson(res, 400, {
         error: "redirect_not_allowed",
@@ -328,24 +351,26 @@ async function consentMint(ctx: ApiCtx): Promise<void> {
       error: "bad_request",
       message: "no public callback configured (set PUBLIC_WEB_URL) and no redirectUri supplied",
     });
-  let client;
-  try {
-    client = await resolverFor(deps)(provider, { accountType });
-  } catch (e) {
-    return sendJson(res, 501, { error: "oauth_not_configured", message: errMessage(e) });
-  }
-  if (base) {
-    if (client.redirectAllowlist && !client.redirectAllowlist.includes(redirectUri)) {
+  if (!isDynamicOAuthProvider(provider)) {
+    let client;
+    try {
+      client = await oauthClient(deps, provider, accountType, redirectUri);
+    } catch (e) {
+      return sendJson(res, 501, { error: "oauth_not_configured", message: errMessage(e) });
+    }
+    if (base) {
+      if (client.redirectAllowlist && !client.redirectAllowlist.includes(redirectUri)) {
+        return sendJson(res, 400, {
+          error: "redirect_not_allowed",
+          message: "redirectUri is not registered for this client",
+        });
+      }
+    } else if (!client.redirectAllowlist || !client.redirectAllowlist.includes(redirectUri)) {
       return sendJson(res, 400, {
         error: "redirect_not_allowed",
-        message: "redirectUri is not registered for this client",
+        message: "set PUBLIC_WEB_URL, or supply a redirectUri registered in the client's redirect allowlist",
       });
     }
-  } else if (!client.redirectAllowlist || !client.redirectAllowlist.includes(redirectUri)) {
-    return sendJson(res, 400, {
-      error: "redirect_not_allowed",
-      message: "set PUBLIC_WEB_URL, or supply a redirectUri registered in the client's redirect allowlist",
-    });
   }
   const returnTo =
     safeReturnTo(typeof b.returnTo === "string" ? b.returnTo : null) ?? (deps.portalUrl ? "/connectors" : undefined);
@@ -390,7 +415,7 @@ async function oauthStart(ctx: ApiCtx): Promise<void> {
   if (sessionVersion === null)
     return sendJson(res, 401, { error: "unauthorized", message: "principal is no longer active" });
   try {
-    const client = await resolverFor(deps)(oauthRoute.provider, { accountType });
+    const client = await oauthClient(deps, oauthRoute.provider, accountType, redirectUri);
     if (client.redirectAllowlist && !client.redirectAllowlist.includes(redirectUri)) {
       return sendJson(res, 400, {
         error: "redirect_not_allowed",
@@ -444,6 +469,28 @@ async function oauthStatus(ctx: ApiCtx): Promise<void> {
   if (!principalId) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
   audit(deps, { principalId, action: "connector.oauth.status", resource: "connectors", scopeLabel: principalId });
   return sendJson(res, 200, { principalId, providers: await connectorProviderStatus(deps, principalId) });
+}
+
+async function refreshMcpTools(ctx: ApiCtx): Promise<void> {
+  const { res, deps, body } = ctx;
+  const request = body as Record<string, unknown>;
+  const principalId = typeof request.principalId === "string" ? request.principalId : "";
+  if (!principalId) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
+  if (!deps.mcpToolService)
+    return sendJson(res, 501, { error: "not_configured", message: "MCP tool service not wired" });
+  try {
+    await deps.mcpToolService.refreshForPrincipal(principalId, true);
+  } catch (e) {
+    return sendJson(res, 502, { error: "mcp_refresh_failed", message: errMessage(e) });
+  }
+  const toolCount = deps.mcpToolService.toolDefs(principalId).length;
+  audit(deps, {
+    principalId,
+    action: "connector.mcp.refreshed",
+    resource: "mcp",
+    scopeLabel: principalId,
+  });
+  return sendJson(res, 200, { ok: true, principalId, toolCount });
 }
 
 export async function oauthRevoke(ctx: ApiCtx): Promise<void> {
@@ -510,15 +557,17 @@ async function setToken(ctx: ApiCtx): Promise<void> {
 async function catalog(ctx: ApiCtx): Promise<void> {
   const { res, deps } = ctx;
   const entries = await Promise.all(
-    Object.entries(PROVIDERS).map(async ([name, p]) => ({
-      provider: name,
-      hosts: p.hosts,
-      scopes: p.scopes,
-      consentMode: p.consentMode,
-      redirectPath: p.redirectPath,
-      setupGuide: p.setupGuide,
-      configured: await providerConfigured(deps, name),
-    })),
+    Object.entries(PROVIDERS)
+      .filter(([name]) => !isDynamicOAuthProvider(name))
+      .map(async ([name, p]) => ({
+        provider: name,
+        hosts: p.hosts,
+        scopes: p.scopes,
+        consentMode: p.consentMode,
+        redirectPath: p.redirectPath,
+        setupGuide: p.setupGuide,
+        configured: await providerConfigured(deps, name),
+      })),
   );
   return sendJson(res, 200, { catalog: entries });
 }
@@ -532,6 +581,7 @@ export const connectorRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/connectors/oauth/consent/redeem/:linkId", auth: "source", handle: consentRedeem },
   { match: (m, p) => m === "GET" && parseOAuthRoute(p)?.action === "start", auth: "source", handle: oauthStart },
   { method: "GET", path: "/v1/connectors/oauth/status", auth: "source", handle: oauthStatus },
+  { method: "POST", path: "/v1/connectors/mcp/refresh", auth: "source", handle: refreshMcpTools },
   { method: "POST", path: "/v1/connectors/oauth/revoke", auth: "either", handle: oauthRevoke },
   { method: "POST", path: "/v1/connectors/token", auth: "source", handle: setToken },
   { method: "GET", path: "/v1/connectors/catalog", auth: "source", handle: catalog },

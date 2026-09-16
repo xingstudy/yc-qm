@@ -2257,6 +2257,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             `[orchestrator] trigger delivery has no surface tools (missing deliveries store?) — reply would be lost session=${session.id}`,
           );
 
+        await deps.mcp?.refreshForPrincipal(actor.id).catch(() => undefined);
+
         const tools = createToolContext({
           preflight: authorizationPreflight,
           sandbox: deps.sandbox,

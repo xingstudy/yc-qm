@@ -3,13 +3,17 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 
-const calls: { method: string; url: string; actor: string | null; signed: boolean }[] = [];
+const calls: { method: string; url: string; body: string; actor: string | null; signed: boolean }[] = [];
 const core = createServer((req: IncomingMessage, res) => {
-  req.on("data", () => {});
+  let body = "";
+  req.on("data", (chunk) => {
+    body += String(chunk);
+  });
   req.on("end", () => {
     calls.push({
       method: req.method ?? "",
       url: req.url ?? "",
+      body,
       actor: (req.headers["x-admin-actor"] as string) ?? null,
       signed: Boolean(req.headers["x-timestamp"] && req.headers["x-signature"]),
     });
@@ -83,6 +87,33 @@ test("GET /api/connector-catalog forwards the live connector catalog signed + at
   assert.equal(c.url, "/v1/connectors/catalog");
   assert.equal(c.actor, "U-admin@acme");
   assert.equal(c.signed, true);
+});
+
+test("MCP server management forwards list, save, and delete requests signed + attributed", async () => {
+  const list = await fetch(`${base}/api/mcp-servers`, { headers: { cookie: ADMIN } });
+  assert.equal(list.status, 200);
+  assert.equal(calls.at(-1)!.url, "/v1/admin/mcp-servers");
+
+  const save = await fetch(`${base}/api/mcp-servers/acme-tools`, {
+    method: "PUT",
+    headers: { cookie: ADMIN, "content-type": "application/json" },
+    body: JSON.stringify({ name: "Acme tools", url: "https://mcp.example.com", auth: "none" }),
+  });
+  assert.equal(save.status, 200);
+  const saved = calls.at(-1)!;
+  assert.equal(saved.method, "PUT");
+  assert.equal(saved.url, "/v1/admin/mcp-servers/acme-tools");
+  assert.equal(saved.body, '{"name":"Acme tools","url":"https://mcp.example.com","auth":"none"}');
+  assert.equal(saved.actor, "U-admin@acme");
+  assert.equal(saved.signed, true);
+
+  const removed = await fetch(`${base}/api/mcp-servers/acme-tools`, {
+    method: "DELETE",
+    headers: { cookie: ADMIN },
+  });
+  assert.equal(removed.status, 200);
+  assert.equal(calls.at(-1)!.method, "DELETE");
+  assert.equal(calls.at(-1)!.url, "/v1/admin/mcp-servers/acme-tools");
 });
 
 test("the scope directory requires a signed-in cookie → 401 (no core hop)", async () => {

@@ -60,7 +60,7 @@ test("setOnboardingStatus rewrites the marker and round-trips through detect", (
   assert.equal(detectOnboardingStatus(setOnboardingStatus("", "pending", "2026-06-22")), "pending");
 });
 
-test("a new personal DM gets the high-priority pending onboarding prompt", async () => {
+test("a new personal DM gets an onboarding prompt that does not block an explicit task", async () => {
   const { app, skills } = freshApp();
   await waitForOnboardingSkill(skills);
 
@@ -72,9 +72,8 @@ test("a new personal DM gets the high-priority pending onboarding prompt", async
   } as TurnRequest);
 
   assert.match(sys.reply ?? "", /## Pending Onboarding/);
-  assert.match(sys.reply ?? "", /high-priority setup task/);
-  assert.match(sys.reply ?? "", /no reason to skip it/);
-  assert.match(sys.reply ?? "", /skills\/onboarding\/SKILL\.md/);
+  assert.match(sys.reply ?? "", /must not delay an explicit user request/);
+  assert.match(sys.reply ?? "", /Finish the user's explicit request first/);
 });
 
 test("completed or dismissed onboarding markers suppress the pending prompt", async () => {

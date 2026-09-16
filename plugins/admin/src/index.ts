@@ -511,6 +511,23 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (!principal) return json(res, 401, { error: "signed_out" });
     return forward(req, res, principal, "GET", "/v1/connectors/catalog");
   }
+  if (method === "GET" && pathname === "/api/mcp-servers") {
+    if (!principal) return json(res, 401, { error: "signed_out" });
+    return forward(req, res, principal, "GET", "/v1/admin/mcp-servers");
+  }
+  const mcpServerMatch = /^\/api\/mcp-servers\/([^/]+)$/.exec(pathname);
+  if (mcpServerMatch && (method === "PUT" || method === "DELETE")) {
+    if (!principal) return json(res, 401, { error: "signed_out" });
+    let id: string;
+    try {
+      id = decodeURIComponent(mcpServerMatch[1]);
+    } catch {
+      req.resume();
+      return json(res, 404, { error: "bad_path" });
+    }
+    const corePath = `/v1/admin/mcp-servers/${encodeURIComponent(id)}`;
+    return forward(req, res, principal, method, corePath, method === "PUT" ? await readBody(req) : undefined);
+  }
   if (pathname.startsWith("/api/scopes/")) {
     if (!principal) return json(res, 401, { error: "signed_out" });
     const rest = pathname.slice("/api/scopes/".length);

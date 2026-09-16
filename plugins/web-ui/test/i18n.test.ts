@@ -96,6 +96,8 @@ test("Chinese translations cover the project management, resource, and skill pag
     ["Navigation", "导航"],
     ["Refresh", "刷新"],
     ["Refresh keychain", "刷新密钥链"],
+    ["Refreshing MCP tools…", "正在刷新 MCP 工具…"],
+    ["MCP tools refreshed.", "MCP 工具已刷新。"],
     [
       "Describe what you want scheduled — what to do, how often, and where the result should go. The agent sets it up and confirms in chat; it will ask if anything is unclear. It should give the cron a short, distinctive title naming what it is for, like Gmail unread digest or GitLab CI watch.",
       "描述你希望安排的任务：做什么、多久执行一次，以及将结果发送到哪里。智能体会进行设置并在对话中确认；如有不清楚之处会询问你。它会为定时任务设置简短且易识别的标题来说明用途，例如 Gmail 未读摘要或 GitLab CI 监控。",

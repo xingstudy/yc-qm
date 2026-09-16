@@ -1106,7 +1106,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     },
 
     mcpToolDefs(): McpToolDescriptor[] {
-      return deps.mcp?.toolDefs() ?? [];
+      return deps.mcp?.toolDefs(deps.createdBy) ?? [];
     },
 
     async callMcpTool(capability: string, args: Record<string, unknown>): Promise<string> {

@@ -182,7 +182,7 @@ function bridgeTools(ref: ToolContextRef, options: AgentToolsOptions): BridgedTo
 
 function bridgeDefinitionSnapshot(opts: OpenCodeHarnessOptions, turn: HarnessTurnInput): BridgeDefinitionSnapshot {
   const ref: ToolContextRef = { current: null };
-  const mcpTools = structuredClone(opts.mcpTools?.() ?? []);
+  const mcpTools = structuredClone(opts.mcpTools ? turn.tools.mcpToolDefs() : []);
   const mcpToolSnapshot = () => mcpTools;
   const toolContract: BridgeToolContract = {
     readOnly: turn.readOnly,

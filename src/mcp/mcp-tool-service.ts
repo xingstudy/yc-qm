@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { fromJSONSchema } from "zod";
 import type { AuditLog } from "../audit/audit-log.ts";
+import type { ConnectorTokenStore } from "../credentials/keychain.ts";
 import { createKeyedQueue } from "../util/async.ts";
 import { createMcpClient, mcpResultText, type McpAuth, type McpClient, type McpFetch } from "./mcp-client.ts";
 import type { McpServer, McpServerStore } from "./mcp-server-store.ts";
@@ -68,9 +69,10 @@ export interface McpToolDescriptor {
 type DiscoveredMcpTool = Omit<McpToolDescriptor, "capability">;
 
 export interface McpToolService {
-  toolDefs(): McpToolDescriptor[];
+  toolDefs(principalId?: string): McpToolDescriptor[];
   call(capability: string, args: Record<string, unknown>, principalId?: string): Promise<string>;
   refresh(): Promise<void>;
+  refreshForPrincipal(principalId: string, force?: boolean): Promise<void>;
   ready(): Promise<void>;
   probe(server: McpServer): Promise<string[]>;
   close(): Promise<void>;
@@ -233,6 +235,7 @@ function localToolName(serverId: string, remoteName: string): string | null {
 
 export function createMcpToolService(opts: {
   servers: McpServerStore;
+  connectorTokens?: ConnectorTokenStore;
   audit?: AuditLog;
   fetchImpl?: McpFetch;
   now?: () => number;
@@ -243,8 +246,14 @@ export function createMcpToolService(opts: {
 }): McpToolService {
   const now = opts.now ?? (() => Date.now());
   const clients = new Map<string, { client: McpClient; server: McpServer }>();
+  const userClients = new Map<string, { client: McpClient; server: McpServer; token: string }>();
   let snapshot: McpToolDescriptor[] = [];
   let capabilities = new Map<string, { descriptor: McpToolDescriptor; server: McpServer; identity: string }>();
+  const userSnapshots = new Map<string, McpToolDescriptor[]>();
+  const userCapabilities = new Map<
+    string,
+    Map<string, { descriptor: McpToolDescriptor; server: McpServer; identity: string }>
+  >();
   let closed = false;
   const closing = Promise.withResolvers<void>();
   let initialized = !opts.initializationReady;
@@ -280,6 +289,27 @@ export function createMcpToolService(opts: {
       ...(opts.requestTimeoutMs ? { requestTimeoutMs: opts.requestTimeoutMs } : {}),
     });
     clients.set(server.id, { client, server });
+    return client;
+  }
+
+  async function clientForUser(server: McpServer, principalId: string): Promise<McpClient> {
+    if (closed) throw new Error("MCP tool service is closed");
+    if (!opts.connectorTokens) throw new Error("user OAuth token store is unavailable");
+    const token = await opts.connectorTokens.connectorAccessToken("mcp.atlassian.com", principalId);
+    if (!token) throw new Error("connect your Atlassian account in Keychain before using this MCP server");
+    const key = `${server.id}\u0000${principalId}`;
+    const cached = userClients.get(key);
+    if (cached && cached.token === token && JSON.stringify(cached.server) === JSON.stringify(server))
+      return cached.client;
+    if (cached) retire(cached.client);
+    const client = createMcpClient({
+      url: server.url,
+      auth: { mode: "bearer", token },
+      ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+      now,
+      ...(opts.requestTimeoutMs ? { requestTimeoutMs: opts.requestTimeoutMs } : {}),
+    });
+    userClients.set(key, { client, server, token });
     return client;
   }
 
@@ -319,7 +349,9 @@ export function createMcpToolService(opts: {
       const deadline = Date.now() + readyTimeoutMs;
       let servers: McpServer[];
       try {
-        servers = (await beforeDeadline(opts.servers.list(), deadline)).filter((s) => s.enabled);
+        servers = (await beforeDeadline(opts.servers.list(), deadline)).filter(
+          (s) => s.enabled && s.auth !== "user-oauth",
+        );
       } catch {
         record("list", "registry", "error");
         throw new Error("MCP registry is unavailable");
@@ -409,6 +441,8 @@ export function createMcpToolService(opts: {
     return pending;
   };
   const scheduleRefresh = () => {
+    userSnapshots.clear();
+    userCapabilities.clear();
     void trackedRefresh().catch(() => record("list", "registry", "error"));
   };
   const unsubscribe = opts.servers.onChange(scheduleRefresh);
@@ -419,19 +453,116 @@ export function createMcpToolService(opts: {
   const initialRefresh = trackedRefresh();
   void initialRefresh.catch(() => record("list", "registry", "error"));
 
+  const refreshForPrincipal = async (principalId: string, force = false): Promise<void> => {
+    if (closed) return;
+    if (!force && userSnapshots.has(principalId)) return;
+    await queue(`mcp-user:${principalId}`, async () => {
+      if (closed) return;
+      if (!force && userSnapshots.has(principalId)) return;
+      const deadline = Date.now() + readyTimeoutMs;
+      let servers: McpServer[];
+      try {
+        servers = (await beforeDeadline(opts.servers.list(), deadline)).filter(
+          (server) => server.enabled && server.auth === "user-oauth",
+        );
+      } catch {
+        record("list", "registry", "error", principalId);
+        throw new Error("MCP registry is unavailable");
+      }
+      const discovered = await Promise.all(
+        servers.map(async (server): Promise<DiscoveredMcpTool[]> => {
+          let client: McpClient;
+          try {
+            client = await clientForUser(server, principalId);
+            const tools = (await beforeDeadline(client.listTools(), deadline)).slice(0, MAX_TOOLS_PER_SERVER);
+            record("list", server.id, `ok tools=${tools.length}`, principalId);
+            return tools.flatMap((tool) => {
+              const name = localToolName(server.id, tool.name);
+              return name
+                ? [
+                    {
+                      name,
+                      serverId: server.id,
+                      remoteName: tool.name,
+                      description: tool.description || `${tool.name} on ${server.name}`,
+                      inputSchema: tool.inputSchema,
+                      readOnly: server.readOnly === true && tool.annotations?.readOnlyHint === true,
+                    },
+                  ]
+                : [];
+            });
+          } catch {
+            record("list", server.id, "error", principalId);
+            return [];
+          }
+        }),
+      );
+      let descriptionBudget = MAX_TOTAL_DESCRIPTION_CHARS;
+      let schemaBudget = MAX_TOTAL_SCHEMA_BYTES;
+      const next: DiscoveredMcpTool[] = [];
+      for (const descriptor of discovered.flat()) {
+        if (next.length >= MAX_TOTAL_MCP_TOOLS) continue;
+        const normalizedSchema = normalizedInputSchema(descriptor.inputSchema);
+        if (
+          !normalizedSchema ||
+          normalizedSchema.bytes > schemaBudget ||
+          !supportsHarnessInputSchema(normalizedSchema.schema)
+        )
+          continue;
+        schemaBudget -= normalizedSchema.bytes;
+        const description = boundedDescription(descriptor.description, descriptionBudget);
+        descriptionBudget -= description.length;
+        next.push({ ...descriptor, description, inputSchema: normalizedSchema.schema });
+      }
+      const prior = userCapabilities.get(principalId) ?? new Map();
+      const previous = new Map([...prior.values()].map((entry) => [entry.identity, entry.descriptor.capability]));
+      const serverById = new Map(servers.map((server) => [server.id, server]));
+      const seen = new Set<string>();
+      const nextSnapshot = next
+        .filter((tool) => (seen.has(tool.name) ? false : (seen.add(tool.name), true)))
+        .map((descriptor) => {
+          const server = serverById.get(descriptor.serverId)!;
+          const stableIdentity = identity(server, descriptor);
+          return { ...descriptor, capability: previous.get(stableIdentity) ?? randomUUID() };
+        });
+      userSnapshots.set(principalId, nextSnapshot);
+      userCapabilities.set(
+        principalId,
+        new Map(
+          nextSnapshot.map((descriptor) => [
+            descriptor.capability,
+            {
+              descriptor,
+              server: serverById.get(descriptor.serverId)!,
+              identity: identity(serverById.get(descriptor.serverId)!, descriptor),
+            },
+          ]),
+        ),
+      );
+    });
+  };
+
   return {
-    toolDefs: () => snapshot.map((descriptor) => ({ ...descriptor })),
+    toolDefs: (principalId) => [
+      ...snapshot.map((descriptor) => ({ ...descriptor })),
+      ...(principalId ? (userSnapshots.get(principalId) ?? []).map((descriptor) => ({ ...descriptor })) : []),
+    ],
     async call(capability, args, principalId) {
       if (closed) throw new Error("MCP tool service is closed");
       activeCalls += 1;
       try {
-        const exposed = capabilities.get(capability);
+        const exposed =
+          capabilities.get(capability) ??
+          (principalId ? userCapabilities.get(principalId)?.get(capability) : undefined);
         if (!exposed) throw new Error("unknown MCP tool capability");
         const { descriptor: def, server: exposedServer } = exposed;
         const server = await beforeDeadline(opts.servers.get(def.serverId), Date.now() + readyTimeoutMs);
         if (closed) throw new Error("MCP tool service is closed");
+        const currentExposed =
+          capabilities.get(capability) ??
+          (principalId ? userCapabilities.get(principalId)?.get(capability) : undefined);
         if (
-          capabilities.get(capability) !== exposed ||
+          currentExposed !== exposed ||
           !server ||
           !server.enabled ||
           JSON.stringify(server) !== JSON.stringify(exposedServer)
@@ -439,7 +570,9 @@ export function createMcpToolService(opts: {
           throw new Error(`MCP server ${def.serverId} is not available`);
         }
         try {
-          const result = await clientFor(server).callTool(def.remoteName, args);
+          const client =
+            server.auth === "user-oauth" ? await clientForUser(server, principalId ?? "") : clientFor(server);
+          const result = await client.callTool(def.remoteName, args);
           record("call", `${def.serverId}/${def.remoteName}`, "ok", principalId);
           const text = mcpResultText(result) || JSON.stringify(result.structuredContent ?? "") || "";
           return text.length > MAX_RESULT_CHARS ? `${text.slice(0, MAX_RESULT_CHARS)}\n[truncated]` : text;
@@ -456,6 +589,7 @@ export function createMcpToolService(opts: {
       }
     },
     refresh: trackedRefresh,
+    refreshForPrincipal,
     async ready() {
       let pending = latestRefresh;
       while (true) {
@@ -492,6 +626,10 @@ export function createMcpToolService(opts: {
       if (activeCalls > 0) await new Promise<void>((resolve) => callDrains.add(resolve));
       await Promise.all([...clients.values()].map((cached) => cached.client.close()));
       clients.clear();
+      await Promise.all([...userClients.values()].map((cached) => cached.client.close()));
+      userClients.clear();
+      userSnapshots.clear();
+      userCapabilities.clear();
       await Promise.all(cleanups);
     },
   };

@@ -4,7 +4,8 @@ import { sendJson } from "../../http.ts";
 import type { ApiCtx } from "../route.ts";
 import { audit, authorizeAdmin, orgScope } from "../shared.ts";
 
-const AUTH_MODES: McpServerAuthMode[] = ["none", "bearer", "client-credentials"];
+const AUTH_MODES: McpServerAuthMode[] = ["none", "bearer", "client-credentials", "user-oauth"];
+const ATLASSIAN_ROVO_MCP_URL = "https://mcp.atlassian.com/v2/mcp";
 
 export function isMcpServerUrlAllowed(url: URL): boolean {
   return url.protocol === "https:";
@@ -90,6 +91,12 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
   if (!isMcpServerUrlAllowed(parsed)) {
     return sendJson(ctx.res, 400, { error: "bad_request", message: "MCP servers must use https" });
   }
+  if (auth === "user-oauth" && parsed.toString() !== ATLASSIAN_ROVO_MCP_URL) {
+    return sendJson(ctx.res, 400, {
+      error: "bad_request",
+      message: `user-oauth is currently available only for ${ATLASSIAN_ROVO_MCP_URL}`,
+    });
+  }
   try {
     await assertMcpUrlPublic(url);
   } catch {
@@ -128,7 +135,7 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
     });
   }
   let toolNames: string[] | undefined;
-  if (b.validate !== false && ctx.deps.mcpToolService) {
+  if (auth !== "user-oauth" && b.validate !== false && ctx.deps.mcpToolService) {
     try {
       toolNames = await ctx.deps.mcpToolService.probe(server);
     } catch {

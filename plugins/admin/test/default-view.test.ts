@@ -85,6 +85,18 @@ test("connector setup uses the live catalog and shows exact provider and callbac
   assert.match(html, /encrypted in durable storage/);
 });
 
+test("MCP server management is available as an admin view and keeps credentials write-only", () => {
+  assert.match(html, /"mcp-servers"/);
+  assert.match(html, /id="view-mcp-servers"/);
+  assert.match(html, /api\("GET", "\/api\/mcp-servers"\)/);
+  assert.match(html, /api\("PUT", "\/api\/mcp-servers\/" \+ encodeURIComponent\(id\), body\)/);
+  assert.match(html, /api\("DELETE", "\/api\/mcp-servers\/" \+ encodeURIComponent\(id\)\)/);
+  assert.match(html, /Credentials are write-only and never displayed after saving\./);
+  assert.match(html, /Validate and discover tools before saving/);
+  assert.match(html, /value="user-oauth">Atlassian user OAuth/);
+  assert.match(html, /Each user connects their own Atlassian account in Keychain/);
+});
+
 test("temporary onboarding covers model credentials, Slack, and OAuth setup", () => {
   assert.match(html, /view-onboarding/);
   assert.match(html, /Model provider/);

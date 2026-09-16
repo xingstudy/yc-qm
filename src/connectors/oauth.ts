@@ -41,6 +41,7 @@ export interface OAuthProviderConfig {
   hosts: string[];
   authUrl: string;
   tokenUrl: string;
+  resource?: string;
   scopes: string[];
   clientIdEnv: string;
   clientSecretEnv: string;
@@ -64,7 +65,7 @@ export type FetchLike = (
   json(): Promise<unknown>;
 }>;
 
-const realFetch: FetchLike = (url, init) => fetch(url, init);
+const realFetch: FetchLike = (url, { body, ...init }) => fetch(url, init.method === "GET" ? init : { ...init, body });
 
 function parseScopes(raw: unknown): string[] | undefined {
   if (Array.isArray(raw)) return raw.map(String);
@@ -94,7 +95,7 @@ function makeTokenAdapters(opts: {
   acceptJson?: boolean;
   rejectErrorBody?: boolean;
   label?: string;
-  clientAuth?: "body" | "basic";
+  clientAuth?: "body" | "basic" | "none";
 }): {
   exchange: (
     args: OAuthAdapterArgs & { code: string },
@@ -103,20 +104,21 @@ function makeTokenAdapters(opts: {
 } {
   const prefix = opts.label ? `${opts.label} ` : "";
   const basic = opts.clientAuth === "basic";
+  const none = opts.clientAuth === "none";
   const headers = (client: ResolvedClient) => ({
     "content-type": "application/x-www-form-urlencoded",
     ...(opts.acceptJson ? { accept: "application/json" } : {}),
     ...(basic ? { authorization: `Basic ${Buffer.from(`${client.id}:${client.secret}`).toString("base64")}` } : {}),
   });
   const clientBody = (client: ResolvedClient): Record<string, string> =>
-    basic ? { client_id: client.id } : { client_id: client.id, client_secret: client.secret };
+    basic || none ? { client_id: client.id } : { client_id: client.id, client_secret: client.secret };
   const checkErrorBody = (raw: Record<string, unknown>): void => {
     if (opts.rejectErrorBody && raw.error)
       throw new Error(`${prefix}oauth error: ${String(raw.error_description ?? raw.error)}`);
   };
   return {
     async exchange({ provider, client, code, redirectUri, fetchImpl, now, codeVerifier }) {
-      const res = await fetchImpl(provider.tokenUrl, {
+      const res = await fetchImpl(client.tokenUrl ?? provider.tokenUrl, {
         method: "POST",
         headers: headers(client),
         body: new URLSearchParams({
@@ -124,6 +126,7 @@ function makeTokenAdapters(opts: {
           code,
           redirect_uri: redirectUri,
           ...clientBody(client),
+          ...(provider.resource ? { resource: provider.resource } : {}),
           ...(codeVerifier ? { code_verifier: codeVerifier } : {}),
         }).toString(),
       });
@@ -133,13 +136,14 @@ function makeTokenAdapters(opts: {
       return { hosts: provider.hosts, token: toToken(raw, undefined, now), raw };
     },
     async refresh({ provider, client, token, fetchImpl, now }) {
-      const res = await fetchImpl(provider.tokenUrl, {
+      const res = await fetchImpl(client.tokenUrl ?? provider.tokenUrl, {
         method: "POST",
         headers: headers(client),
         body: new URLSearchParams({
           grant_type: "refresh_token",
           refresh_token: token.refreshToken ?? "",
           ...clientBody(client),
+          ...(provider.resource ? { resource: provider.resource } : {}),
         }).toString(),
       });
       if (!res.ok) throw new Error(`${prefix}token refresh failed (${res.status})`);
@@ -176,6 +180,8 @@ const googleExchange: OAuthExchangeAdapter = async (args) => {
 const github = makeTokenAdapters({ acceptJson: true, rejectErrorBody: true, label: "github" });
 
 const x = makeTokenAdapters({ acceptJson: true, rejectErrorBody: true, label: "x", clientAuth: "basic" });
+
+const atlassian = makeTokenAdapters({ label: "Atlassian", clientAuth: "none" });
 
 const slackExchange: OAuthExchangeAdapter = async ({ provider, client, code, redirectUri, fetchImpl }) => {
   const res = await fetchImpl(provider.tokenUrl, {
@@ -441,6 +447,39 @@ export const PROVIDERS: Record<string, OAuthProviderConfig> = {
         "tweet.read/users.read back reads; tweet.write lets the connecting user post as themselves; offline.access issues a refresh token so the 2-hour access token renews.",
     },
   },
+  atlassian: {
+    hosts: ["mcp.atlassian.com"],
+    authUrl: "https://mcp.atlassian.com/v1/authorize",
+    tokenUrl: "https://mcp.atlassian.com/v1/token",
+    resource: "https://mcp.atlassian.com/v2/mcp",
+    scopes: [
+      "read:me",
+      "offline_access",
+      "read:jira:agent-interface",
+      "write:jira:agent-interface",
+      "search:jira:agent-interface",
+    ],
+    clientIdEnv: "",
+    clientSecretEnv: "",
+    redirectPath: "atlassian/callback",
+    consentMode: "standard",
+    egressRule: ["mcp.atlassian.com"],
+    pkce: true,
+    authParams: { prompt: "consent" },
+    exchange: atlassian.exchange,
+    refresh: atlassian.refresh,
+    setupGuide: {
+      console: "Atlassian Rovo MCP",
+      url: "https://developer.atlassian.com/cloud/rovo-mcp/guides/configuring-oauth-2-1/",
+      steps: [
+        "An organization admin enables the Atlassian Rovo MCP server in QM.",
+        "Each person opens Keychain and chooses Connect for Atlassian.",
+        "Atlassian asks that person to grant the access their account is allowed to use.",
+      ],
+      scopesRationale:
+        "Atlassian selects the permitted MCP tools from the connecting user's consent, app access, and existing permissions.",
+    },
+  },
 };
 
 export interface ResolvedClient {
@@ -450,6 +489,134 @@ export interface ResolvedClient {
   redirectAllowlist?: string[];
   hostedDomain?: string;
   clientRef: string;
+  authUrl?: string;
+  tokenUrl?: string;
+}
+
+const ATLASSIAN_MCP_RESOURCE_METADATA = "https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp";
+const ATLASSIAN_MCP_CLIENT_REF = "atlassian-dcr:";
+
+type AtlassianOAuthMetadata = {
+  authorizationEndpoint: string;
+  tokenEndpoint: string;
+  registrationEndpoint: string;
+  scopes: string[];
+};
+
+function jsonRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error(`${label} returned an invalid response`);
+  return value as Record<string, unknown>;
+}
+
+function secureOAuthUrl(value: unknown, label: string): string {
+  if (typeof value !== "string") throw new Error(`${label} is missing`);
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${label} is invalid`);
+  }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.hash) {
+    throw new Error(`${label} must be an HTTPS URL without credentials or fragment`);
+  }
+  return parsed.toString();
+}
+
+function authorizationServerMetadataUrl(authorizationServer: string): string {
+  const url = new URL(authorizationServer);
+  url.pathname = `${url.pathname.replace(/\/$/, "")}/.well-known/oauth-authorization-server`;
+  return url.toString();
+}
+
+async function atlassianOAuthMetadata(fetchImpl: FetchLike): Promise<AtlassianOAuthMetadata> {
+  const resourceResponse = await fetchImpl(ATLASSIAN_MCP_RESOURCE_METADATA, {
+    method: "GET",
+    headers: { accept: "application/json" },
+    body: "",
+  });
+  if (!resourceResponse.ok)
+    throw new Error(`Atlassian protected-resource metadata request failed (${resourceResponse.status})`);
+  const resource = jsonRecord(await resourceResponse.json(), "Atlassian protected-resource metadata");
+  if (secureOAuthUrl(resource.resource, "Atlassian protected resource") !== PROVIDERS.atlassian!.resource)
+    throw new Error("Atlassian protected-resource metadata is for a different MCP endpoint");
+  const advertisedScopes = resource.scopes_supported;
+  const scopes = Array.isArray(advertisedScopes)
+    ? advertisedScopes.filter((scope): scope is string => typeof scope === "string" && scope.length > 0)
+    : [];
+  if (!scopes.length || scopes.length !== (Array.isArray(advertisedScopes) ? advertisedScopes.length : 0))
+    throw new Error("Atlassian protected-resource metadata returned invalid scopes");
+  const authorizationServer = secureOAuthUrl(
+    Array.isArray(resource.authorization_servers) ? resource.authorization_servers[0] : undefined,
+    "Atlassian authorization server",
+  );
+  const response = await fetchImpl(authorizationServerMetadataUrl(authorizationServer), {
+    method: "GET",
+    headers: { accept: "application/json" },
+    body: "",
+  });
+  if (!response.ok) throw new Error(`Atlassian OAuth metadata request failed (${response.status})`);
+  const metadata = jsonRecord(await response.json(), "Atlassian OAuth metadata");
+  if (secureOAuthUrl(metadata.issuer, "Atlassian OAuth issuer") !== authorizationServer)
+    throw new Error("Atlassian OAuth issuer does not match the MCP authorization server");
+  const methods = Array.isArray(metadata.code_challenge_methods_supported)
+    ? metadata.code_challenge_methods_supported.map(String)
+    : [];
+  if (!methods.includes("S256")) throw new Error("Atlassian OAuth does not support PKCE S256");
+  return {
+    authorizationEndpoint: secureOAuthUrl(metadata.authorization_endpoint, "Atlassian authorization endpoint"),
+    tokenEndpoint: secureOAuthUrl(metadata.token_endpoint, "Atlassian token endpoint"),
+    registrationEndpoint: secureOAuthUrl(metadata.registration_endpoint, "Atlassian registration endpoint"),
+    scopes,
+  };
+}
+
+function atlassianClientId(clientRef: string | undefined): string | null {
+  if (!clientRef?.startsWith(ATLASSIAN_MCP_CLIENT_REF)) return null;
+  const id = clientRef.slice(ATLASSIAN_MCP_CLIENT_REF.length);
+  return id && id.length <= 512 && /^[A-Za-z0-9._~:-]+$/.test(id) ? id : null;
+}
+
+export function isDynamicOAuthProvider(provider: string): boolean {
+  return provider === "atlassian";
+}
+
+export async function resolveAtlassianMcpClient(opts: {
+  redirectUri: string;
+  clientRef?: string;
+  fetchImpl?: FetchLike;
+}): Promise<ResolvedClient> {
+  const fetchImpl = opts.fetchImpl ?? realFetch;
+  const metadata = await atlassianOAuthMetadata(fetchImpl);
+  let clientId = atlassianClientId(opts.clientRef);
+  if (!clientId) {
+    if (opts.clientRef) throw new Error("invalid Atlassian OAuth client reference");
+    if (!opts.redirectUri) throw new Error("Atlassian OAuth redirect URI is required");
+    const response = await fetchImpl(metadata.registrationEndpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({
+        client_name: "QM",
+        redirect_uris: [opts.redirectUri],
+        response_types: ["code"],
+        grant_types: ["authorization_code", "refresh_token"],
+        token_endpoint_auth_method: "none",
+        scope: metadata.scopes.join(" "),
+      }),
+    });
+    if (!response.ok) throw new Error(`Atlassian OAuth client registration failed (${response.status})`);
+    const registered = jsonRecord(await response.json(), "Atlassian OAuth client registration");
+    clientId = typeof registered.client_id === "string" ? registered.client_id : null;
+  }
+  if (!clientId) throw new Error("Atlassian OAuth registration returned no client_id");
+  return {
+    id: clientId,
+    secret: "",
+    scopes: metadata.scopes,
+    clientRef: `${ATLASSIAN_MCP_CLIENT_REF}${clientId}`,
+    authUrl: metadata.authorizationEndpoint,
+    tokenUrl: metadata.tokenEndpoint,
+  };
 }
 
 export type OAuthClientResolver = (provider: string, ctx: { accountType?: AccountType }) => Promise<ResolvedClient>;
@@ -562,10 +729,11 @@ export function authorizeUrl(
     q.set("code_challenge", opts.codeChallenge);
     q.set("code_challenge_method", "S256");
   }
-  q.set(p.scopeParam ?? "scope", scopes.join(" "));
+  if (p.resource) q.set("resource", p.resource);
+  if (scopes.length) q.set(p.scopeParam ?? "scope", scopes.join(" "));
   for (const [k, v] of Object.entries(p.authParams ?? {})) q.set(k, v);
   if (accountType === "company" && opts.client.hostedDomain) q.set("hd", opts.client.hostedDomain);
-  return `${p.authUrl}?${q.toString()}`;
+  return `${opts.client.authUrl ?? p.authUrl}?${q.toString()}`;
 }
 
 export async function exchangeCode(
@@ -613,7 +781,13 @@ export function makeRefresh(opts: {
     if (match.config.refresh === null) throw new Error(`${match.name} tokens do not refresh — reconnect`);
     if (!token.refreshToken) throw new Error(`cannot refresh ${host} (no refresh token)`);
     const accountType = (ctx?.accountType ?? token.accountType) as AccountType | undefined;
-    const client = await opts.resolveClient(match.name, accountType ? { accountType } : {});
+    const client = isDynamicOAuthProvider(match.name)
+      ? await resolveAtlassianMcpClient({
+          redirectUri: "",
+          clientRef: ctx?.clientRef ?? token.clientRef,
+          ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+        })
+      : await opts.resolveClient(match.name, accountType ? { accountType } : {});
     const adapter = match.config.refresh ?? defaultRefresh;
     const fresh = await adapter({
       provider: match.config,

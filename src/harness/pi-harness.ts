@@ -1493,6 +1493,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
     tapeFold?: unknown[],
     tape?: HarnessTurnInput["tape"],
     turnProviderKeys?: ProviderKeys,
+    turnMcpTools?: () => McpToolDescriptor[],
   ): Promise<{ entry: TurnSession; compileMs: number }> {
     const compileStart = Date.now();
     let reconstructed: PiReplayMessage[] | null;
@@ -1544,7 +1545,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           scratchExec,
           ownerAuthExec,
           reachExec,
-          ...(mcpTools ? { mcpTools } : {}),
+          ...((turnMcpTools ?? mcpTools) ? { mcpTools: turnMcpTools ?? mcpTools } : {}),
           controlTools,
           ...(credentialExecServices?.length ? { credentialExecServices } : {}),
           ...(commandCredentialHandles?.length ? { commandCredentialHandles } : {}),
@@ -1715,6 +1716,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           turn.tapeFold,
           turn.tape,
           turn.providerKeys,
+          mcpTools ? () => turn.tools.mcpToolDefs() : undefined,
         );
         try {
           const turnWallClockMs = turn.turnWallClockMs ?? defaultTurnWallClockMs;
