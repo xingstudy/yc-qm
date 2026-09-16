@@ -9875,7 +9875,11 @@
         $("view-mcp-servers").classList.toggle("hidden", view !== "mcp-servers");
         $("view-data").classList.toggle(
           "hidden",
-          view === "onboarding" || isGovLike(view) || view === "connectors" || view === "design" || view === "mcp-servers",
+          view === "onboarding" ||
+            isGovLike(view) ||
+            view === "connectors" ||
+            view === "design" ||
+            view === "mcp-servers",
         );
         if (view === "onboarding") return void loadOnboarding();
         if (isGovLike(view)) {

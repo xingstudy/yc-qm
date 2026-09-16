@@ -520,7 +520,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (!principal) return json(res, 401, { error: "signed_out" });
     let id: string;
     try {
-      id = decodeURIComponent(mcpServerMatch[1]);
+      id = decodeURIComponent(mcpServerMatch[1]!);
     } catch {
       req.resume();
       return json(res, 404, { error: "bad_path" });

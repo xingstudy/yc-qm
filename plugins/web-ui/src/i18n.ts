@@ -793,7 +793,8 @@ const ZH: Record<string, string> = {
   Refresh: "刷新",
   "Refresh keychain": "刷新密钥链",
   "MCP tools refreshed.": "MCP 工具已刷新。",
-  "No MCP tools were found. Reconnect the account if this is unexpected.": "未发现 MCP 工具。如非预期，请重新连接该账户。",
+  "No MCP tools were found. Reconnect the account if this is unexpected.":
+    "未发现 MCP 工具。如非预期，请重新连接该账户。",
   "Refresh memory": "刷新记忆",
   "Refresh failed:": "刷新失败：",
   expires: "到期时间",

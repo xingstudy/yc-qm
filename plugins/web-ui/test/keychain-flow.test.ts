@@ -198,7 +198,10 @@ test("keychain page renders loading placeholders instead of empty states while l
 });
 
 test("keychain refresh rediscovers MCP tools before reloading the account state", () => {
-  assert.match(connectorsSource, /api<\{ toolCount\?: number \}>\("\/api\/connectors\/mcp\/refresh", \{ method: "POST" \}\)/);
+  assert.match(
+    connectorsSource,
+    /api<\{ toolCount\?: number \}>\("\/api\/connectors\/mcp\/refresh", \{ method: "POST" \}\)/,
+  );
   assert.match(connectorsSource, /connectorNotice = t\("Refreshing MCP tools…"\)/);
   assert.match(connectorsSource, /No MCP tools were found\. Reconnect the account if this is unexpected\./);
 });
