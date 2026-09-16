@@ -64,6 +64,7 @@ import { modelGatewayRequest, type ModelGatewayTransportConfig } from "../model/
 import {
   defineHarness,
   envelopeWithoutMessages,
+  harnessMcpToolDefs,
   type Harness,
   type HarnessCompactInput,
   type HarnessDetectInput,
@@ -1716,7 +1717,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           turn.tapeFold,
           turn.tape,
           turn.providerKeys,
-          mcpTools ? () => turn.tools.mcpToolDefs() : undefined,
+          mcpTools ? () => harnessMcpToolDefs(mcpTools, turn) : undefined,
         );
         try {
           const turnWallClockMs = turn.turnWallClockMs ?? defaultTurnWallClockMs;

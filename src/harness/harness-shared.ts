@@ -8,7 +8,13 @@ import {
 import type { TaskStatus, TaskStore } from "../tasks/task-store.ts";
 import type { ScopeId, SessionEntry } from "../types.ts";
 import { createAgentTools, type AgentToolsOptions, type ToolContextRef } from "./agent-tools.ts";
-import type { HarnessLlmRequestRecord, HarnessModelUtilities, HarnessTurnInput, HarnessTurnResult } from "./harness.ts";
+import {
+  harnessMcpToolDefs,
+  type HarnessLlmRequestRecord,
+  type HarnessModelUtilities,
+  type HarnessTurnInput,
+  type HarnessTurnResult,
+} from "./harness.ts";
 import { sanitizeTitle, TITLE_GENERATION_PROMPT, titleUserPrompt } from "./pi-harness.ts";
 import { tapeCheckpointPayload, tapeEntryMirrorRecord } from "../sessions/session-store.ts";
 import { swallow } from "../util/errors.ts";
@@ -93,7 +99,7 @@ export function harnessToolOptions(
     scratchExec: opts.scratchExec,
     ownerAuthExec: opts.ownerAuthExec,
     reachExec: opts.reachExec,
-    ...(opts.mcpTools ? { mcpTools: () => turn?.tools?.mcpToolDefs() ?? opts.mcpTools!() } : {}),
+    ...(opts.mcpTools ? { mcpTools: () => harnessMcpToolDefs(opts.mcpTools, turn) } : {}),
     controlTools: opts.controlTools,
     sandboxResources: opts.sandboxResources,
     execTimeoutMs: opts.execTimeoutMs,

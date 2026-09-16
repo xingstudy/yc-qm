@@ -117,6 +117,13 @@ export interface HarnessTurnInput {
   screenToolResult?(input: ToolResultScreenInput): Promise<ToolResultScreen>;
 }
 
+export function harnessMcpToolDefs(
+  fallback: (() => ReturnType<ToolContext["mcpToolDefs"]>) | undefined,
+  turn?: Partial<Pick<HarnessTurnInput, "tools">>,
+): ReturnType<ToolContext["mcpToolDefs"]> {
+  return fallback ? (turn?.tools?.mcpToolDefs?.() ?? fallback()) : [];
+}
+
 export interface HarnessTurnResult {
   runtimeHandoff?: RuntimeHandoff;
   reply: string;

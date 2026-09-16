@@ -54,7 +54,7 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
 
   assert.deepEqual(lockedVersions(packages, "brace-expansion"), ["5.0.9"]);
   assert.deepEqual(lockedVersions(packages, "fast-uri").sort(), ["3.1.7", "4.1.4"]);
-  assert.deepEqual(lockedVersions(packages, "hono"), ["4.13.5"]);
+  assert.deepEqual(lockedVersions(packages, "hono"), ["4.13.8"]);
   assert.deepEqual(lockedVersions(packages, "protobufjs"), ["7.6.5"]);
   assert.deepEqual(lockedVersions(packages, "undici"), ["8.9.0"]);
   assert.match(
@@ -78,7 +78,7 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
   assert.equal(dependencyVersion(piManifest, "undici"), "8.9.0");
   assert.equal(dependencyVersion(piManifest, "protobufjs"), "7.6.5");
   assert.equal(installedVersion("@hono/node-server"), "2.0.10");
-  assert.equal(installedVersion("hono"), "4.13.5");
+  assert.equal(installedVersion("hono"), "4.13.8");
 });
 
 test("MCP Streamable HTTP works through the patched Hono major", async (t) => {

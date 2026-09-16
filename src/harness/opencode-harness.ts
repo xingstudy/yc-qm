@@ -22,6 +22,7 @@ import { NonRetryableTurnError } from "../core/turn-error.ts";
 import {
   defineHarness,
   envelopeWithoutMessages,
+  harnessMcpToolDefs,
   type Harness,
   type HarnessTurnInput,
   type HarnessTurnResult,
@@ -182,7 +183,7 @@ function bridgeTools(ref: ToolContextRef, options: AgentToolsOptions): BridgedTo
 
 function bridgeDefinitionSnapshot(opts: OpenCodeHarnessOptions, turn: HarnessTurnInput): BridgeDefinitionSnapshot {
   const ref: ToolContextRef = { current: null };
-  const mcpTools = structuredClone(opts.mcpTools ? turn.tools.mcpToolDefs() : []);
+  const mcpTools = structuredClone(harnessMcpToolDefs(opts.mcpTools, turn));
   const mcpToolSnapshot = () => mcpTools;
   const toolContract: BridgeToolContract = {
     readOnly: turn.readOnly,
