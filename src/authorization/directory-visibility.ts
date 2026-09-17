@@ -28,7 +28,7 @@ export interface ResolvedDirectoryVisibility {
   revision: number;
 }
 
-export interface DirectoryVisibilityExplanation {
+interface DirectoryVisibilityExplanation {
   visibility: ResolvedDirectoryVisibility;
   winningPriority: number | null;
   policies: Array<{
