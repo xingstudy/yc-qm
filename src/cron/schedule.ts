@@ -25,21 +25,22 @@ export function userScheduleFromBody(
   defaultTimezone: string = DEFAULT_CRON_TIMEZONE,
 ): CronSchedule | null {
   if (!isObj(value)) return null;
-  const hasCron = hasOwn(value, "cron");
-  const hasTimezone = hasOwn(value, "timezone");
-  const hasEveryMs = hasOwn(value, "everyMs");
-  const hasFirstFireAt = hasOwn(value, "firstFireAt");
-  if (hasCron) {
-    if (typeof value.cron !== "string" || hasEveryMs || hasFirstFireAt) return null;
-    const timezone = hasTimezone ? value.timezone : defaultTimezone;
-    return typeof timezone === "string" ? { cron: value.cron, timezone } : null;
+  if (hasOwn(value, "cron") && typeof value.cron !== "string") return null;
+  if (hasOwn(value, "timezone") && typeof value.timezone !== "string") return null;
+  if (hasOwn(value, "everyMs") && typeof value.everyMs !== "number") return null;
+  if (hasOwn(value, "firstFireAt") && typeof value.firstFireAt !== "number") return null;
+  const cron = typeof value.cron === "string" && value.cron.trim() ? value.cron.trim() : undefined;
+  const timezone = typeof value.timezone === "string" && value.timezone.trim() ? value.timezone.trim() : undefined;
+  const everyMs = typeof value.everyMs === "number" && value.everyMs !== 0 ? value.everyMs : undefined;
+  const firstFireAt = typeof value.firstFireAt === "number" && value.firstFireAt !== 0 ? value.firstFireAt : undefined;
+  if (cron !== undefined) {
+    if (everyMs !== undefined || firstFireAt !== undefined) return null;
+    return { cron, timezone: timezone ?? defaultTimezone };
   }
-  if (hasTimezone || (!hasEveryMs && !hasFirstFireAt)) return null;
-  if (hasEveryMs && typeof value.everyMs !== "number") return null;
-  if (hasFirstFireAt && typeof value.firstFireAt !== "number") return null;
+  if (timezone !== undefined || (everyMs === undefined && firstFireAt === undefined)) return null;
   return {
-    ...(hasEveryMs ? { everyMs: value.everyMs as number } : {}),
-    ...(hasFirstFireAt ? { firstFireAt: value.firstFireAt as number } : {}),
+    ...(everyMs !== undefined ? { everyMs } : {}),
+    ...(firstFireAt !== undefined ? { firstFireAt } : {}),
   };
 }
 

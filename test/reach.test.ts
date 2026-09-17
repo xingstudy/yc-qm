@@ -163,6 +163,19 @@ describe("Reach: resolveReachTarget (addressing + reachability gate)", () => {
     assert.equal((emptyGroup as any).status, 400);
     assert.equal((emptyGroup as any).error, "bad_request");
   });
+
+  it("ignores empty optional targets while preserving one real destination", async () => {
+    const recipient = await resolveReachTarget(
+      dir,
+      { recipient: " Alice ", channel: " ", participants: [] },
+      "U-carol",
+    );
+    assert.equal(recipient.ok, true);
+    assert.equal((recipient as any).recipient?.principalId, "U-alice");
+    const channel = await resolveReachTarget(dir, { recipient: "", channel: " eng ", participants: [""] }, "U-carol");
+    assert.equal(channel.ok, true);
+    assert.equal((channel as any).channel?.channelId, "C-eng");
+  });
 });
 
 describe("Reach: person-keyed parity (delivery never re-derives it from scope labels)", () => {

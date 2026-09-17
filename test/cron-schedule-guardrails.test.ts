@@ -1,9 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeSchedule, validateUserSchedule } from "../src/cron/schedule.ts";
+import { normalizeSchedule, userScheduleFromBody, validateUserSchedule } from "../src/cron/schedule.ts";
 
 const now = Date.UTC(2026, 6, 1, 12, 0, 0);
 const DAY = 24 * 60 * 60 * 1000;
+
+test("schedule parsing ignores zero and blank Responses placeholders", () => {
+  assert.deepEqual(
+    userScheduleFromBody({ cron: " 0 10 * * * ", timezone: " Asia/Hong_Kong ", everyMs: 0, firstFireAt: 0 }),
+    { cron: "0 10 * * *", timezone: "Asia/Hong_Kong" },
+  );
+  assert.deepEqual(userScheduleFromBody({ cron: "", timezone: "", everyMs: 60_000, firstFireAt: 0 }), {
+    everyMs: 60_000,
+  });
+});
 
 test("rejects a daily (24h) everyMs interval, steering to {cron,timezone}", () => {
   assert.throws(() => normalizeSchedule({ everyMs: DAY }, now), /clock-time schedule in disguise|cron,timezone/);

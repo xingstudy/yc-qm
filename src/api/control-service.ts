@@ -12,7 +12,12 @@ import {
 } from "../cron/scheduler.ts";
 import { DEFAULT_CRON_TIMEZONE } from "../cron/schedule.ts";
 import { resolveCapabilityDestination } from "./capability-destination.ts";
-import { withSlackUnfurlOption, principalDestination } from "../reach/reach.ts";
+import {
+  normalizeReachTarget,
+  normalizeRoutingString,
+  withSlackUnfurlOption,
+  principalDestination,
+} from "../reach/reach.ts";
 import { consentRequiredRecipient } from "../triggers/trigger-store.ts";
 import { sendConsentNotice } from "../triggers/consent-notice.ts";
 import { notifyOwnerOfCronEdit, type CronEditDetail } from "../triggers/edit-notice.ts";
@@ -366,11 +371,13 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
       if (req.action === undefined && req.text === undefined) {
         return { ok: false, code: "bad_request", message: "task (what to do) or text (exact text to send) required" };
       }
-      const hasParticipants = Array.isArray(req.participants);
-      const wantsGroup = hasParticipants && req.participants!.length > 0;
+      const target = normalizeReachTarget(req);
+      const destinationKey = normalizeRoutingString(req.destinationKey);
+      const wantsGroup = target.participants !== undefined;
       const wantsPersonal = req.scope === "personal";
       if (
-        [req.recipient !== undefined, req.channel !== undefined, wantsGroup, wantsPersonal].filter(Boolean).length > 1
+        [target.recipient !== undefined, target.channel !== undefined, wantsGroup, wantsPersonal].filter(Boolean)
+          .length > 1
       ) {
         return {
           ok: false,
@@ -379,7 +386,7 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
             'specify at most one of scope:"personal", recipient (a teammate), channel, or participants (a group DM)',
         };
       }
-      if (wantsPersonal && req.destinationKey !== undefined) {
+      if (wantsPersonal && destinationKey !== undefined) {
         return {
           ok: false,
           code: "bad_request",
@@ -403,15 +410,8 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
       if (wantsPersonal) {
         destination = principalDestination(capability.actorId, capability.actorId);
         ownerScopeId = destination.audienceScopeId ?? ownerScopeId;
-      } else if (req.recipient !== undefined || req.channel !== undefined || hasParticipants) {
-        const r = await app.resolveReachTarget(
-          {
-            ...(req.recipient !== undefined ? { recipient: req.recipient } : {}),
-            ...(req.channel !== undefined ? { channel: req.channel } : {}),
-            ...(hasParticipants ? { participants: req.participants } : {}),
-          },
-          capability.actorId,
-        );
+      } else if (target.recipient !== undefined || target.channel !== undefined || wantsGroup) {
+        const r = await app.resolveReachTarget(target, capability.actorId);
         if (!r.ok) {
           let code:
             | "bad_request"
@@ -426,10 +426,10 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
           if (RESOLVER_CODES.has(r.error)) {
             code = r.error as typeof code;
           } else if (r.status === 404) {
-            if (req.recipient !== undefined) code = "recipient_not_found";
+            if (target.recipient !== undefined) code = "recipient_not_found";
             else code = wantsGroup ? "group_not_found" : "channel_not_found";
           } else if (r.status === 409) {
-            code = req.recipient !== undefined ? "ambiguous_recipient" : "ambiguous_channel";
+            code = target.recipient !== undefined ? "ambiguous_recipient" : "ambiguous_channel";
           } else if (r.status === 403) {
             code = r.error === "identity_unverified" ? "identity_unverified" : "not_a_member";
           }
@@ -437,7 +437,7 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
             ok: false,
             code,
             message:
-              r.error === "not_a_member" && req.channel !== undefined
+              r.error === "not_a_member" && target.channel !== undefined
                 ? "I can only schedule posts to a private channel you're in"
                 : r.message,
             ...(r.candidates
@@ -461,7 +461,7 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
           ownerScopeId = r.destination.audienceScopeId ?? ownerScopeId;
         }
       } else {
-        const resolved = resolveCapabilityDestination(capability, req.destinationKey);
+        const resolved = resolveCapabilityDestination(capability, destinationKey);
         if (!resolved.ok) {
           return {
             ok: false,
