@@ -13,6 +13,7 @@ import {
   withReact,
   withDelete,
   withThread,
+  normalizeReachTarget,
   type ReachResolution,
 } from "../reach/reach.ts";
 import { isVisible } from "../directory/visibility.ts";
@@ -554,8 +555,9 @@ export function createMessagingMethods(
     },
 
     async reachNow(input): Promise<ReachNowResult> {
+      const target = normalizeReachTarget(input);
       const hasNamedTarget =
-        input.recipient !== undefined || input.channel !== undefined || input.participants !== undefined;
+        target.recipient !== undefined || target.channel !== undefined || target.participants !== undefined;
       let baseDestination: Destination;
       const extra: {
         recipient?: { principalId: string; displayName: string };
@@ -573,15 +575,9 @@ export function createMessagingMethods(
           };
         baseDestination = dest;
       } else {
-        const r: ReachResolution = await resolveReachTargetFor(
-          {
-            ...(input.recipient !== undefined ? { recipient: input.recipient } : {}),
-            ...(input.channel !== undefined ? { channel: input.channel } : {}),
-            ...(input.participants !== undefined ? { participants: input.participants } : {}),
-          },
-          input.senderId,
-          { mayOpenGroup: !input.react && !input.delete },
-        );
+        const r: ReachResolution = await resolveReachTargetFor(target, input.senderId, {
+          mayOpenGroup: !input.react && !input.delete,
+        });
         if (!r.ok) return r;
         baseDestination = r.destination;
         if (r.recipient) extra.recipient = r.recipient;

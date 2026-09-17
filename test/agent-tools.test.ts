@@ -1196,6 +1196,46 @@ test("post replies HERE only (placement via ts/broadcast, cross-targets rejected
   assert.deepEqual(reaches, [{ channel: "eng" }, { recipient: "Alice" }, { participants: ["U-a", "U-b"] }]);
 });
 
+test("surface routing ignores empty optional selectors but still rejects multiple real destinations", async () => {
+  const posts: unknown[] = [];
+  const reaches: unknown[] = [];
+  const capturing = {
+    ...fakeToolContext(),
+    async post(_text: string, opts?: unknown) {
+      posts.push(opts);
+      return { ok: true, deliveryId: "d1" };
+    },
+    async reach(_text: string, target?: unknown) {
+      reaches.push(target);
+      return { ok: true, deliveryId: "r1", matched: "#eng" };
+    },
+  };
+  const slack = surfaceTool({ current: capturing, scopeLabel: "channel:C1" });
+
+  assert.equal(
+    textOut(await call(slack, { action: "post", text: "answer", channel: " ", recipient: "", participants: [] })),
+    "[sent]",
+  );
+  assert.equal(
+    textOut(
+      await call(slack, {
+        action: "reach",
+        text: "answer",
+        channel: " eng ",
+        recipient: "",
+        participants: [],
+      }),
+    ),
+    "[sent to #eng]",
+  );
+  const multiple = textOut(
+    await call(slack, { action: "reach", text: "answer", channel: "eng", recipient: "Alice", participants: [] }),
+  );
+  assert.match(multiple, /needs exactly one destination/);
+  assert.deepEqual(posts, [{}]);
+  assert.deepEqual(reaches, [{ channel: "eng" }]);
+});
+
 test("edit/delete surface an own-messages-only failure as a tool_result, not a throw", async () => {
   const emitted: Emitted[] = [];
   const notOurs = {
@@ -2141,6 +2181,40 @@ test("cron create dispatches and reports the created cron + resolved recipient",
   assert.match(out, /Created cron/);
   assert.match(out, /Gmail digest/);
   assert.match(out, /Addressed to Bob \(DM\)/);
+});
+
+test("cron create drops Responses placeholder values before dispatch", async () => {
+  const base = fakeToolContext();
+  let captured: Parameters<ToolContext["cronCreate"]>[0] | undefined;
+  const tc: ToolContext = {
+    ...base,
+    async cronCreate(req) {
+      captured = req;
+      return base.cronCreate(req);
+    },
+  };
+  const out = textOut(
+    await call(tool("cron", tc), {
+      action: "create",
+      title: "Daily report",
+      task: "prepare it",
+      scope: "personal",
+      recipient: "",
+      channel: " ",
+      participants: [],
+      destinationKey: "",
+      runAs: "owner",
+      schedule: { cron: "0 10 * * *", timezone: "Asia/Hong_Kong", everyMs: 0, firstFireAt: 0 },
+    }),
+  );
+  assert.match(out, /Created cron/);
+  assert.deepEqual(captured, {
+    schedule: { cron: "0 10 * * *", timezone: "Asia/Hong_Kong" },
+    title: "Daily report",
+    action: "prepare it",
+    scope: "personal",
+    runAs: "owner",
+  });
 });
 
 test("cron create requires a schedule and a task/text — crisp [error], no throw", async () => {

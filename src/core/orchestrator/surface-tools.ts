@@ -9,6 +9,7 @@ import type {
 } from "../../types.ts";
 import {
   openGroupViaSurface,
+  normalizeReachTarget,
   reachEnqueue,
   resolveReachTarget,
   withReact,
@@ -103,10 +104,8 @@ export function createSurfaceToolDeps(ctx: SurfaceToolsContext): SurfaceToolDeps
     },
     opts?: { mayOpenGroup?: boolean },
   ): Promise<{ ok: true; destination: Destination } | { ok: false; message: string }> => {
-    if (
-      !target ||
-      (target.channel === undefined && target.recipient === undefined && target.participants === undefined)
-    ) {
+    target = normalizeReachTarget(target ?? {});
+    if (target.channel === undefined && target.recipient === undefined && target.participants === undefined) {
       return { ok: true, destination: currentDestination };
     }
     if (
@@ -236,6 +235,7 @@ export function createSurfaceToolDeps(ctx: SurfaceToolsContext): SurfaceToolDeps
     reach: async (postText, target, files) => {
       const seq = postKeys.take();
       if (spine.crossConversationPosts >= 5) return { ok: false, message: "outbound limit reached for this turn" };
+      target = normalizeReachTarget(target);
       const selectors = [
         target.channel !== undefined,
         target.recipient !== undefined,

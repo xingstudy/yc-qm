@@ -7,6 +7,7 @@ import { hasParentPathSegment } from "../../sandbox/sandbox.ts";
 import { resolveEnvironmentId } from "../../environments/environment-store.ts";
 import { errMessage } from "../../util/errors.ts";
 import { scopeId, type OutgoingAttachment } from "../../types.ts";
+import { normalizeReachTarget } from "../../reach/reach.ts";
 
 type ReachBody = {
   recipient?: unknown;
@@ -59,6 +60,7 @@ async function reachNow(ctx: ApiCtx): Promise<void> {
   if (rate && !rate.allowed)
     return sendJson(res, 429, { error: "rate_limited", message: "too many outbound actions; try again later" });
   const b = (isObj(body) ? body : {}) as ReachBody;
+  const target = normalizeReachTarget(b);
   let text: string | undefined;
   if (typeof b.text === "string") text = b.text;
   else if (typeof b.message === "string") text = b.message;
@@ -82,7 +84,7 @@ async function reachNow(ctx: ApiCtx): Promise<void> {
     }
   }
   const hasNamedTarget =
-    typeof b.recipient === "string" || typeof b.channel === "string" || Array.isArray(b.participants);
+    target.recipient !== undefined || target.channel !== undefined || target.participants !== undefined;
   if (react && del) {
     return sendJson(res, 400, {
       error: "bad_request",
@@ -104,7 +106,7 @@ async function reachNow(ctx: ApiCtx): Promise<void> {
       message: "text (the exact message to send), react ({ ts, emoji }), or delete ({ ts }) required",
     });
   }
-  if ((react || del) && typeof b.recipient === "string") {
+  if ((react || del) && target.recipient !== undefined) {
     return sendJson(res, 400, {
       error: "bad_request",
       message:
@@ -128,17 +130,8 @@ async function reachNow(ctx: ApiCtx): Promise<void> {
         message: "file attachments aren't available on this server — the sandbox/blob store isn't wired",
       });
     }
-    const pre = await app.resolveReachTarget(
-      {
-        ...(typeof b.recipient === "string" ? { recipient: b.recipient } : {}),
-        ...(typeof b.channel === "string" ? { channel: b.channel } : {}),
-        ...(Array.isArray(b.participants)
-          ? { participants: b.participants.filter((p): p is string => typeof p === "string") }
-          : {}),
-      },
-      capability.actorId,
-    );
-    const openedAtSend = !pre.ok && pre.error === "group_not_found" && Array.isArray(b.participants);
+    const pre = await app.resolveReachTarget(target, capability.actorId);
+    const openedAtSend = !pre.ok && pre.error === "group_not_found" && target.participants !== undefined;
     if (!pre.ok && !openedAtSend) {
       return sendJson(res, pre.status, {
         error: pre.error,
@@ -189,11 +182,7 @@ async function reachNow(ctx: ApiCtx): Promise<void> {
     ...(threadTs !== undefined ? { threadTs } : {}),
     ...(react ? { react } : {}),
     ...(del ? { delete: del } : {}),
-    ...(typeof b.recipient === "string" ? { recipient: b.recipient } : {}),
-    ...(typeof b.channel === "string" ? { channel: b.channel } : {}),
-    ...(Array.isArray(b.participants)
-      ? { participants: b.participants.filter((p): p is string => typeof p === "string") }
-      : {}),
+    ...target,
     ...(attachments?.length ? { attachments } : {}),
     ...(typeof b.unfurlLinks === "boolean" ? { unfurlLinks: b.unfurlLinks } : {}),
     ...(capability.destination ? { currentDestination: capability.destination } : {}),
