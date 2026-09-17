@@ -331,6 +331,22 @@ databaseTest(
         id: "fork/organization/0003-invited-email-index",
         checksum: "ccee07e8e47b1e81deb08f6b7ccfef2615797943b41712f65490563231fbbe0a",
       },
+      {
+        id: "fork/organization/0004-access-group-subjects",
+        checksum: "4fa7cbdd9cfbf8322b5e1071523ea822e1d8935a7c86dfaf7cb48a34757341c1",
+      },
+      {
+        id: "fork/organization/0005-access-group-subject-index",
+        checksum: "231e106e679b7412b4cbbf53abc822d394cb9aa5906db043b86590fd30b1e0ab",
+      },
+      {
+        id: "fork/organization/0006-access-group-subject-lock",
+        checksum: "144d8ab7902026c27513fd98d4ae34ae2f6acef19262c2a0a4d6203a69dc582f",
+      },
+      {
+        id: "fork/organization/0007-directory-policy-priority",
+        checksum: "18cb6bf8edf8135d9c35a1124c9de0c758524793870780d97048b29c4431d19b",
+      },
     ].sort((a, b) => a.id.localeCompare(b.id));
     const tables = [
       "organization_users",
