@@ -194,6 +194,48 @@ test("restricted grants union subjects for one user and intersect the full audie
   );
 });
 
+test("restricted access groups include nested groups and organization-unit subjects", async () => {
+  const { store, repository, resolver, skill } = await fixture();
+  await store.putGroup({
+    orgId: ORG,
+    id: "combined",
+    name: "Combined",
+    status: "active",
+    createdAt: 1,
+    updatedAt: 1,
+    createdBy: "setup",
+    updatedBy: "setup",
+  });
+  await store.putGroupSubject({
+    orgId: ORG,
+    groupId: "combined",
+    subjectKind: "access_group",
+    subjectId: "analysts",
+    createdAt: 1,
+    createdBy: "setup",
+  });
+  await store.putGroupSubject({
+    orgId: ORG,
+    groupId: "combined",
+    subjectKind: "org_unit",
+    subjectId: "engineering",
+    createdAt: 1,
+    createdBy: "setup",
+  });
+  const access = await repository.setAccess(
+    skill.id,
+    { principalId: "alice", isAdmin: false },
+    {
+      mode: "restricted",
+      subjects: [{ kind: "access_group", id: "combined" }],
+      expectedRevision: 1,
+    },
+  );
+  assert.equal(access.effectiveSummary.activeUsers, 2);
+  assert.equal((await resolver.visibleForUser("bob", [scopeId("personal", "bob")]))[0]?.skill?.id, skill.id);
+  assert.equal((await resolver.visibleForUser("carol", [scopeId("personal", "carol")]))[0]?.skill?.id, skill.id);
+});
+
 test("Skill Access batches organization-unit membership evaluation", async () => {
   const { store, repository, skill } = await fixture();
   const listUnitMembers = store.listUnitMembers.bind(store);

@@ -21,6 +21,7 @@ import {
   organizationAccessSubjectScope,
   type OrganizationAccessSubject,
 } from "./organization-access-subject.ts";
+import { effectiveAccessGroupUsers } from "./access-group-membership.ts";
 
 export const MAX_SKILL_ACCESS_SUBJECTS = 100;
 
@@ -349,7 +350,7 @@ export function createSkillAccessRepository(input: {
         continue;
       }
       if (subject.kind === "access_group") {
-        for (const member of await store.listGroupMembers(orgId, subject.id)) {
+        for (const member of await effectiveAccessGroupUsers(store, orgId, subject.id)) {
           if (activeUsers.has(member.principalId)) users.add(member.principalId);
         }
         continue;

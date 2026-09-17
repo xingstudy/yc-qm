@@ -7054,6 +7054,15 @@
         "Remove organization unit": "移除组织节点",
         "Add access group": "添加访问组",
         "Remove access group": "移除访问组",
+        "Included organization units and access groups": "包含的组织节点和访问组",
+        "Members inherited from these subjects are included recursively.": "将递归包含这些主体中的成员。",
+        "No included subjects yet.": "暂无包含的组织节点或访问组。",
+        "Subject type": "主体类型",
+        "Organization unit": "组织节点",
+        "Choose a subject": "选择主体",
+        "Add subject": "添加主体",
+        "Couldn't add subject.": "无法添加主体。",
+        "Couldn't remove subject.": "无法移除主体。",
         "Suspend members": "暂停成员",
         "Reactivate members": "重新启用成员",
         "Deprovision members": "成员离职",
@@ -8467,6 +8476,7 @@
         "Access group": "访问组",
         "User search": "用户搜索",
         "Directory rule": "目录规则",
+        "Priority (0–1000)": "优先级（0–1000）",
         "Use default rule (all organization)": "使用默认规则（全组织）",
         "All organization": "全组织",
         "Limited roots": "受限范围",
@@ -8478,11 +8488,29 @@
         "Policy loaded.": "策略已加载。",
         "Using default rule.": "正在使用默认规则。",
         "Policy saved.": "策略已保存。",
+        "Priority must be an integer from 0 to 1000.": "优先级必须是 0 到 1000 之间的整数。",
         "Select a subject.": "请选择主体。",
         "Load this subject first.": "请先加载该主体。",
         "Policy changed. Reload before saving again.": "策略已被更改，请重新加载后再保存。",
-        "Personal rules override unit and access-group rules. Limited roots are merged and enforced by the server.":
-          "个人规则会覆盖组织节点和访问组规则；多个受限范围由服务端合并并强制执行。",
+        "Higher priorities win. Only rules at the highest matched priority are evaluated; at the same priority, deny wins over limited roots, and limited roots win over all organization. Limited roots at that priority are merged by the server. Existing and new rules default to priority 100.":
+          "优先级数值越大越优先。只计算匹配规则中的最高优先级层；同一优先级下，不可查看优先于受限范围，受限范围优先于全组织；该优先级下的多个受限范围由服务端合并。现有规则和新规则默认优先级为 100。",
+        "Configured rules": "已配置规则",
+        "All saved directory rules are listed by priority. Edit a rule to create explicit exceptions.":
+          "所有已保存的目录规则按优先级列出。编辑规则可以创建明确的例外。",
+        "No configured rules yet.": "暂无已配置规则。",
+        Rule: "规则",
+        Roots: "范围根节点",
+        Updated: "更新时间",
+        "Delete this directory rule?": "确定删除这条目录规则吗？",
+        "Effective result preview": "生效结果预览",
+        "Choose a user to see every matched rule and the final server-enforced result.":
+          "选择人员后，可查看所有匹配规则及服务端最终强制执行的结果。",
+        "Preview user": "预览人员",
+        "Winning priority": "生效优先级",
+        "Matched rules": "匹配规则",
+        Applied: "已采用",
+        "Lower priority": "较低优先级",
+        "No matched rules; the default is all organization.": "没有匹配规则；默认可查看全组织。",
         "Active units": "活跃节点",
         "Archived units": "已归档节点",
         "Active and archived units. Select one to manage it.": "活跃和已归档节点。选择一个节点进行管理。",
@@ -19975,6 +20003,9 @@
       function renderOrgDirectory(root, d) {
         const units = (d.units || []).filter((unit) => unit.status === "active");
         const groups = (d.groups || []).filter((group) => group.status === "active");
+        let configuredRules = (d.policies || []).slice();
+        const unitById = new Map(units.map((unit) => [unit.id, unit]));
+        const groupById = new Map(groups.map((group) => [group.id, group]));
         defaultShell({
           stats: [
             [units.length, "Active units"],
@@ -20020,6 +20051,12 @@
           option.textContent = adminTr(label);
           policy.appendChild(option);
         });
+        const priority = document.createElement("input");
+        priority.type = "number";
+        priority.min = "0";
+        priority.max = "1000";
+        priority.step = "1";
+        priority.value = "100";
         const roots = document.createElement("div");
         roots.className = "org-tree";
         roots.style.maxHeight = "360px";
@@ -20117,6 +20154,7 @@
           userSearch.classList.toggle("hidden", !user);
           userResults.classList.toggle("hidden", !user);
           policy.value = "default";
+          priority.value = "100";
           revision = 0;
           loadedSubject = "";
           selectedRoots.clear();
@@ -20138,6 +20176,7 @@
           loadedSubject = kind.value + ":" + id;
           revision = Number(value?.revision || 0);
           policy.value = value?.mode || "default";
+          priority.value = String(value?.priority ?? 100);
           selectedRoots.clear();
           (value?.roots || []).forEach((entry) => selectedRoots.set(entry.unitId, entry.includeDescendants !== false));
           drawRoots();
@@ -20173,6 +20212,105 @@
         };
         policy.onchange = drawRoots;
 
+        const rulesBody = document.createElement("div");
+        const subjectType = (value) =>
+          adminTr(value === "user" ? "User" : value === "org_unit" ? "Organization unit" : "Access group");
+        const ruleMode = (value) =>
+          adminTr(
+            value === "all" ? "All organization" : value === "limited" ? "Limited roots" : "No organization directory",
+          );
+        const rootSummary = (rule) =>
+          (rule.roots || [])
+            .map((entry) => {
+              const name = unitById.get(entry.unitId)?.name || entry.unitId;
+              return entry.includeDescendants ? `${name} + ${adminTr("Include descendants")}` : name;
+            })
+            .join(", ") || "—";
+        const selectRule = async (rule) => {
+          kind.value = rule.subjectKind;
+          populateSubjects();
+          if (rule.subjectKind === "user") {
+            userResults.textContent = "";
+            const option = document.createElement("option");
+            option.value = rule.subjectId;
+            option.textContent = rule.subjectDetail
+              ? `${rule.subjectName || rule.subjectId} — ${rule.subjectDetail}`
+              : rule.subjectName || rule.subjectId;
+            userResults.appendChild(option);
+            userResults.disabled = false;
+          } else {
+            subject.value = rule.subjectId;
+          }
+          await loadPolicy();
+        };
+        const drawConfiguredRules = () => {
+          rulesBody.textContent = "";
+          rulesBody.appendChild(
+            actionTable(
+              ["Priority", "Subject type", "Subject", "Rule", "Roots", "Updated", ""],
+              configuredRules,
+              (rule) => {
+                const actions = document.createElement("div");
+                actions.className = "actions";
+                const edit = document.createElement("button");
+                edit.type = "button";
+                edit.className = "link";
+                edit.textContent = adminTr("Edit");
+                edit.onclick = () => selectRule(rule);
+                const remove = document.createElement("button");
+                remove.type = "button";
+                remove.className = "link danger";
+                remove.textContent = adminTr("Delete");
+                remove.onclick = async () => {
+                  if (!confirm(adminTr("Delete this directory rule?"))) return;
+                  remove.disabled = true;
+                  const path =
+                    "/api/org-directory/" +
+                    encodeURIComponent(rule.subjectKind) +
+                    "/" +
+                    encodeURIComponent(rule.subjectId) +
+                    "?expectedRevision=" +
+                    encodeURIComponent(rule.revision);
+                  const response = await api("DELETE", path);
+                  remove.disabled = false;
+                  if (!response.ok) {
+                    if (response.status === 409) {
+                      setStatus("st-org-directory", adminTr("Policy changed. Reload before saving again."), "err");
+                      return refreshConfiguredRules();
+                    }
+                    return setApiStatus(
+                      "st-org-directory",
+                      response.data?.message,
+                      "Couldn't save directory policy.",
+                      "err",
+                    );
+                  }
+                  if (loadedSubject === rule.subjectKind + ":" + rule.subjectId) populateSubjects();
+                  await refreshConfiguredRules();
+                  setStatus("st-org-directory", adminTr("Policy saved."), "ok");
+                };
+                actions.append(edit, remove);
+                return [
+                  { text: String(rule.priority), cls: "num" },
+                  subjectType(rule.subjectKind),
+                  rule.subjectName || rule.subjectId,
+                  ruleMode(rule.mode),
+                  rootSummary(rule),
+                  `${relTime(rule.updatedAt)} · ${rule.updatedBy || "—"}`,
+                  { node: actions },
+                ];
+              },
+              "No configured rules yet.",
+            ),
+          );
+        };
+        const refreshConfiguredRules = async () => {
+          const response = await api("GET", "/api/org-directory");
+          if (!response.ok) return;
+          configuredRules = (response.data?.policies || []).slice();
+          drawConfiguredRules();
+        };
+
         const load = document.createElement("button");
         load.type = "button";
         load.textContent = adminTr("Load policy");
@@ -20186,6 +20324,10 @@
           if (!id) return setStatus("st-org-directory", adminTr("Select a subject."), "err");
           const key = kind.value + ":" + id;
           if (loadedSubject !== key) return setStatus("st-org-directory", adminTr("Load this subject first."), "err");
+          const priorityValue = Number(priority.value);
+          if (!Number.isSafeInteger(priorityValue) || priorityValue < 0 || priorityValue > 1000) {
+            return setStatus("st-org-directory", adminTr("Priority must be an integer from 0 to 1000."), "err");
+          }
           save.disabled = true;
           const path = "/api/org-directory/" + encodeURIComponent(kind.value) + "/" + encodeURIComponent(id);
           const response =
@@ -20193,6 +20335,7 @@
               ? await api("DELETE", path + "?expectedRevision=" + encodeURIComponent(revision))
               : await api("PUT", path, {
                   mode: policy.value,
+                  priority: priorityValue,
                   roots:
                     policy.value === "limited"
                       ? [...selectedRoots].map(([unitId, includeDescendants]) => ({ unitId, includeDescendants }))
@@ -20208,8 +20351,108 @@
             return setApiStatus("st-org-directory", response.data?.message, "Couldn't save directory policy.", "err");
           }
           await loadPolicy();
+          await refreshConfiguredRules();
           setStatus("st-org-directory", adminTr("Policy saved."), "ok");
         };
+
+        const previewBody = document.createElement("div");
+        previewBody.className = "stack";
+        const previewControls = document.createElement("div");
+        previewControls.className = "grant-form";
+        const previewSearch = document.createElement("input");
+        previewSearch.type = "search";
+        previewSearch.placeholder = adminTr("Search by name, email, or principal id");
+        previewSearch.spellcheck = false;
+        previewSearch.autocapitalize = "none";
+        const previewResults = document.createElement("select");
+        const previewOutput = document.createElement("div");
+        let previewTimer = null;
+        let previewSequence = 0;
+        const resetPreviewResults = (label) => {
+          previewResults.textContent = "";
+          const option = document.createElement("option");
+          option.value = "";
+          option.textContent = adminTr(label);
+          previewResults.appendChild(option);
+          previewResults.disabled = true;
+        };
+        const drawEffective = async (principalId) => {
+          if (!principalId) return;
+          previewOutput.textContent = adminTr("Loading");
+          const response = await api("GET", "/api/org-directory/effective/" + encodeURIComponent(principalId));
+          previewOutput.textContent = "";
+          if (!response.ok) {
+            const error = document.createElement("p");
+            error.className = "status err";
+            error.textContent = response.data?.message || adminTr("Couldn't load directory policy.");
+            previewOutput.appendChild(error);
+            return;
+          }
+          const effective = response.data?.effective || {};
+          const summary = document.createElement("p");
+          summary.className = "status ok";
+          summary.textContent =
+            `${adminTr("Effective policy")}: ${ruleMode(effective.mode)} · ` +
+            `${adminTr("Winning priority")}: ${effective.priority == null ? "—" : effective.priority}` +
+            (effective.mode === "limited" ? ` · ${rootSummary(effective)}` : "");
+          previewOutput.appendChild(summary);
+          const matched = response.data?.policies || [];
+          previewOutput.appendChild(
+            actionTable(
+              ["Priority", "Subject type", "Subject", "Rule", "Roots", ""],
+              matched,
+              (rule) => {
+                const name =
+                  rule.subjectKind === "user"
+                    ? response.data?.user?.displayName || rule.subjectId
+                    : rule.subjectKind === "org_unit"
+                      ? unitById.get(rule.subjectId)?.name || rule.subjectId
+                      : groupById.get(rule.subjectId)?.name || rule.subjectId;
+                return [
+                  { text: String(rule.priority), cls: "num" },
+                  subjectType(rule.subjectKind),
+                  name,
+                  ruleMode(rule.mode),
+                  rootSummary(rule),
+                  {
+                    badge: adminTr(rule.effective ? "Applied" : "Lower priority"),
+                    kind: rule.effective ? "info" : "muted",
+                  },
+                ];
+              },
+              "No matched rules; the default is all organization.",
+            ),
+          );
+        };
+        previewSearch.oninput = () => {
+          clearTimeout(previewTimer);
+          const query = previewSearch.value.trim();
+          const request = ++previewSequence;
+          previewOutput.textContent = "";
+          if (query.length < 2) return resetPreviewResults("Type at least 2 characters");
+          previewTimer = setTimeout(async () => {
+            const response = await api("GET", "/api/org-users/search?q=" + encodeURIComponent(query));
+            if (request !== previewSequence) return;
+            if (!response.ok) return resetPreviewResults("Search failed.");
+            previewResults.textContent = "";
+            const users = response.data?.users || [];
+            const placeholder = document.createElement("option");
+            placeholder.value = "";
+            placeholder.textContent = adminTr(users.length ? "Select a user" : "No matching users");
+            previewResults.appendChild(placeholder);
+            users.forEach((user) => {
+              const option = document.createElement("option");
+              option.value = user.principalId;
+              option.textContent = `${user.displayName || user.principalId} — ${user.email || user.principalId}`;
+              previewResults.appendChild(option);
+            });
+            previewResults.disabled = users.length === 0;
+          }, 180);
+        };
+        previewResults.onchange = () => drawEffective(previewResults.value);
+        resetPreviewResults("Type at least 2 characters");
+        previewControls.append(field("Preview user", previewSearch), previewResults);
+        previewBody.append(previewControls, previewOutput);
 
         resetUserResults("Type at least 2 characters");
         populateSubjects();
@@ -20222,16 +20465,31 @@
         );
         const policyRow = document.createElement("div");
         policyRow.className = "grant-form";
-        policyRow.append(field("Directory rule", policy), save);
+        policyRow.append(field("Directory rule", policy), field("Priority (0–1000)", priority), save);
         const status = document.createElement("p");
         status.id = "st-org-directory";
         status.className = "status";
         body.append(subjectRow, policyRow, roots, status);
+        drawConfiguredRules();
         root.appendChild(
           dataCard(
             "Directory visibility",
-            "Personal rules override unit and access-group rules. Limited roots are merged and enforced by the server.",
+            "Higher priorities win. Only rules at the highest matched priority are evaluated; at the same priority, deny wins over limited roots, and limited roots win over all organization. Limited roots at that priority are merged by the server. Existing and new rules default to priority 100.",
             body,
+          ),
+        );
+        root.appendChild(
+          dataCard(
+            "Configured rules",
+            "All saved directory rules are listed by priority. Edit a rule to create explicit exceptions.",
+            rulesBody,
+          ),
+        );
+        root.appendChild(
+          dataCard(
+            "Effective result preview",
+            "Choose a user to see every matched rule and the final server-enforced result.",
+            previewBody,
           ),
         );
       }
@@ -20716,6 +20974,7 @@
 
       function renderOrgGroups(root, d) {
         const all = d.groups || [];
+        const units = (d.units || []).filter((unit) => unit.status === "active");
         const groups = all.filter((g) => g.status === "active").sort((a, b) => a.name.localeCompare(b.name));
         const archivedGroups = all.filter((g) => g.status === "archived").sort((a, b) => a.name.localeCompare(b.name));
         defaultShell({
@@ -20884,10 +21143,10 @@
             detail.appendChild(p);
             return;
           }
-          drawDetail(r.data.group || selected, r.data.members || []);
+          drawDetail(r.data.group || selected, r.data.members || [], r.data.subjects || []);
         }
 
-        function drawDetail(group, members) {
+        function drawDetail(group, members, subjects) {
           setCount(group.id, members);
           const managers = members.filter((m) => m.role === "manager");
           const summary = document.createElement("div");
@@ -20923,6 +21182,34 @@
             ),
           );
           detail.appendChild(dataCard(group.name, "", summary, { titleI18n: false }));
+
+          const subjectBody = document.createElement("div");
+          subjectBody.appendChild(
+            actionTable(
+              ["Subject type", "Name", "Status", ""],
+              subjects,
+              (subject) => [
+                adminTr(subject.subjectKind === "org_unit" ? "Organization unit" : "Access group"),
+                subject.name || subject.subjectId,
+                adminTr(subject.status || "unknown"),
+                {
+                  action: {
+                    label: "Remove",
+                    danger: true,
+                    run: () => removeSubject(group, subject),
+                  },
+                },
+              ],
+              "No included subjects yet.",
+            ),
+          );
+          detail.appendChild(
+            dataCard(
+              "Included organization units and access groups",
+              "Members inherited from these subjects are included recursively.",
+              subjectBody,
+            ),
+          );
 
           if (group.status === "archived") {
             if (managerMode) return;
@@ -20982,12 +21269,58 @@
               if (r.ok) {
                 setStatus("st-org-groups", "", "");
                 detail.textContent = "";
-                drawDetail(r.data.group || group, r.data.members || []);
+                drawDetail(r.data.group || group, r.data.members || [], r.data.subjects || []);
               } else fail(r, "Couldn't add member.");
             }),
           );
           detail.appendChild(
             dataCard("Add members", "Add up to 100 principal ids to this group in one change.", addForm),
+          );
+
+          const subjectKind = selectOf(
+            [
+              ["org_unit", adminTr("Organization unit")],
+              ["access_group", adminTr("Access group")],
+            ],
+            "org_unit",
+          );
+          const subjectTarget = document.createElement("select");
+          const fillSubjectTargets = () => {
+            subjectTarget.textContent = "";
+            const targets = subjectKind.value === "org_unit" ? units : groups.filter((item) => item.id !== group.id);
+            const prompt = document.createElement("option");
+            prompt.value = "";
+            prompt.textContent = adminTr("Choose a subject");
+            subjectTarget.appendChild(prompt);
+            targets.forEach((target) => {
+              const option = document.createElement("option");
+              option.value = target.id;
+              option.textContent = target.name;
+              subjectTarget.appendChild(option);
+            });
+          };
+          subjectKind.onchange = fillSubjectTargets;
+          fillSubjectTargets();
+          const subjectForm = document.createElement("div");
+          subjectForm.className = "grant-form";
+          subjectForm.append(
+            mkField("", "Subject type", subjectKind),
+            mkField("grow", "Choose a subject", subjectTarget),
+            actionBtn("Add subject", "primary", async () => {
+              if (!subjectTarget.value) return setStatus("st-org-groups", "Choose a subject", "err");
+              const r = await api("POST", "/api/org-groups/" + encodeURIComponent(group.id) + "/subjects", {
+                subjectKind: subjectKind.value,
+                subjectId: subjectTarget.value,
+              });
+              if (r.ok) {
+                setStatus("st-org-groups", "", "");
+                detail.textContent = "";
+                drawDetail(r.data.group || group, r.data.members || [], r.data.subjects || []);
+              } else fail(r, "Couldn't add subject.");
+            }),
+          );
+          detail.appendChild(
+            dataCard("Add subject", "Members inherited from these subjects are included recursively.", subjectForm),
           );
 
           if (managerMode) return;
@@ -21044,8 +21377,24 @@
           );
           if (r.ok) {
             detail.textContent = "";
-            drawDetail(r.data.group || group, r.data.members || []);
+            drawDetail(r.data.group || group, r.data.members || [], r.data.subjects || []);
           } else fail(r, "Couldn't remove the member.");
+        }
+
+        async function removeSubject(group, subject) {
+          const r = await api(
+            "DELETE",
+            "/api/org-groups/" +
+              encodeURIComponent(group.id) +
+              "/subjects/" +
+              encodeURIComponent(subject.subjectKind) +
+              "/" +
+              encodeURIComponent(subject.subjectId),
+          );
+          if (r.ok) {
+            detail.textContent = "";
+            drawDetail(r.data.group || group, r.data.members || [], r.data.subjects || []);
+          } else fail(r, "Couldn't remove subject.");
         }
 
         drawList();

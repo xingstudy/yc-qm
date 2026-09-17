@@ -39,12 +39,7 @@ async function projectMemberCandidates(ctx: ApiCtx): Promise<void> {
   if (!principalId || query.length < 2 || query.length > 100) {
     return sendJson(ctx.res, 400, { error: "bad_request", message: "principalId and a 2 to 100 character q required" });
   }
-  const matches = await ctx.app.projectMemberCandidates(
-    ctx.params.id!,
-    principalId,
-    query,
-    (ctx.actor !== null && ctx.actor !== undefined) || ctx.capability?.liveActor === true,
-  );
+  const matches = await ctx.app.projectMemberCandidates(ctx.params.id!, principalId, query);
   return matches ? sendJson(ctx.res, 200, { matches }) : sendJson(ctx.res, 404, { error: "not_found" });
 }
 
@@ -79,15 +74,7 @@ async function addProjectMember(ctx: ApiCtx): Promise<void> {
   const memberId = typeof body.memberId === "string" ? body.memberId.trim() : "";
   if (!principalId || !memberId)
     return sendJson(ctx.res, 400, { error: "bad_request", message: "principalId and memberId required" });
-  return mutationResponse(
-    ctx,
-    await ctx.app.addProjectMember(
-      ctx.params.id!,
-      principalId,
-      memberId,
-      (ctx.actor !== null && ctx.actor !== undefined) || ctx.capability?.liveActor === true,
-    ),
-  );
+  return mutationResponse(ctx, await ctx.app.addProjectMember(ctx.params.id!, principalId, memberId));
 }
 
 async function renameProject(ctx: ApiCtx): Promise<void> {

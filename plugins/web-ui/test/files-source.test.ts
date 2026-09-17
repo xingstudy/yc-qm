@@ -13,6 +13,9 @@ test("Files keeps the clickable drop target without a separate upload button", (
   assert.doesNotMatch(source, /class="btn primary"[\s\S]{0,200}@click=\$\{pickFiles\}/);
   assert.match(source, /"Ownership"/);
   assert.match(source, /"Type"/);
+  assert.match(source, /"Upload to"/);
+  assert.match(source, /filesUploadScope = scopeId/);
+  assert.match(source, /const scope = filesUploadScope \?\? filesScope \?\? personalScopeId\(\)/);
   assert.doesNotMatch(source, /"Sort",\s*filesSort/);
 });
 

@@ -4,6 +4,7 @@ import type { Skill, SkillResolution, SkillStore } from "../skills/skill-store.t
 import { isSafeSkillName } from "../skills/skill-name.ts";
 import type { ScopeId } from "../types.ts";
 import { organizationAccessSubjectFromScope } from "./organization-access-subject.ts";
+import { effectiveAccessGroupIdsForUser, effectiveOrganizationUnitIdsForUser } from "./access-group-membership.ts";
 
 export interface SkillAuthorizationAudienceMember {
   principalId: string;
@@ -134,13 +135,8 @@ export function createSkillAccessResolver(input: {
       const unitIds = new Map<string, Set<string>>();
       const groupIds = new Map<string, Set<string>>();
       for (const member of audience) {
-        const directUnits = await store.listDirectUnitIdsForUser(orgId, member.principalId);
-        const effectiveUnits = new Set<string>();
-        for (const unitId of directUnits) {
-          for (const ancestor of await store.listAncestorUnitIds(orgId, unitId)) effectiveUnits.add(ancestor);
-        }
-        unitIds.set(member.principalId, effectiveUnits);
-        groupIds.set(member.principalId, new Set(await store.listDirectGroupIdsForUser(orgId, member.principalId)));
+        unitIds.set(member.principalId, await effectiveOrganizationUnitIdsForUser(store, orgId, member.principalId));
+        groupIds.set(member.principalId, await effectiveAccessGroupIdsForUser(store, orgId, member.principalId));
       }
       for (const skill of allSkills) {
         if (!skills.verify(skill)) {

@@ -19,6 +19,8 @@ import {
 import {
   type AccessGroup,
   type AccessGroupMember,
+  type AccessGroupSubject,
+  type AccessGroupSubjectKind,
   type DirectorySubjectKind,
   type DirectoryUserCursor,
   type DirectoryViewMode,
@@ -32,6 +34,7 @@ import {
 
 const ORG_UNIT_KINDS: ReadonlyArray<OrgUnitKind> = ["organization", "department", "team"];
 const ORG_MEMBER_ROLES: ReadonlyArray<OrgMemberRole> = ["member", "manager"];
+const ACCESS_GROUP_SUBJECT_KINDS: ReadonlyArray<AccessGroupSubjectKind> = ["org_unit", "access_group"];
 const DIRECTORY_SUBJECT_KINDS: ReadonlyArray<DirectorySubjectKind> = ["user", "org_unit", "access_group"];
 const DIRECTORY_VIEW_MODES: ReadonlyArray<DirectoryViewMode> = ["all", "limited", "none"];
 
@@ -124,6 +127,16 @@ function serializeGroupMember(member: AccessGroupMember): Record<string, unknown
     role: member.role,
     createdAt: member.createdAt,
     createdBy: member.createdBy,
+  };
+}
+
+function serializeGroupSubject(subject: AccessGroupSubject): Record<string, unknown> {
+  return {
+    groupId: subject.groupId,
+    subjectKind: subject.subjectKind,
+    subjectId: subject.subjectId,
+    createdAt: subject.createdAt,
+    createdBy: subject.createdBy,
   };
 }
 
@@ -266,7 +279,10 @@ function serializeDirectoryPolicy(
 ): Record<string, unknown> | null {
   if (!value) return null;
   return {
+    subjectKind: value.policy.subjectKind,
+    subjectId: value.policy.subjectId,
     mode: value.policy.mode,
+    priority: value.policy.priority,
     revision: value.policy.revision,
     updatedAt: value.policy.updatedAt,
     updatedBy: value.policy.updatedBy,
@@ -295,15 +311,76 @@ async function getDirectoryPolicy(ctx: ApiCtx): Promise<void> {
 async function directoryPolicySubjects(ctx: ApiCtx): Promise<void> {
   const authz = await requireOrganizationAdmin(ctx);
   if (!authz) return;
-  const [units, groups, authorizationRevision] = await Promise.all([
+  const [units, groups, policies, authorizationRevision] = await Promise.all([
     authz.organization.listUnits(),
     authz.organization.listGroups(),
+    authz.organization.listDirectoryPolicies(),
     authz.organization.authzRevision(),
   ]);
+  const users = await authz.organization.getOrganizationUsersByIds(
+    policies.filter(({ policy }) => policy.subjectKind === "user").map(({ policy }) => policy.subjectId),
+  );
+  const unitById = new Map(units.map((unit) => [unit.id, unit]));
+  const groupById = new Map(groups.map((group) => [group.id, group]));
+  const userById = new Map(users.map((user) => [user.principalId, user]));
   return sendJson(ctx.res, 200, {
     units: units.filter((unit) => unit.status === "active").map(serializeUnit),
     groups: groups.filter((group) => group.status === "active").map(serializeGroup),
+    policies: policies.map((value) => {
+      const policy = serializeDirectoryPolicy(value) as Record<string, unknown>;
+      if (value.policy.subjectKind === "org_unit") {
+        const unit = unitById.get(value.policy.subjectId);
+        return {
+          ...policy,
+          subjectName: unit?.name ?? value.policy.subjectId,
+          subjectStatus: unit?.status ?? "missing",
+        };
+      }
+      if (value.policy.subjectKind === "access_group") {
+        const group = groupById.get(value.policy.subjectId);
+        return {
+          ...policy,
+          subjectName: group?.name ?? value.policy.subjectId,
+          subjectStatus: group?.status ?? "missing",
+        };
+      }
+      const user = userById.get(value.policy.subjectId);
+      return {
+        ...policy,
+        subjectName: user?.displayName ?? value.policy.subjectId,
+        subjectDetail: user?.email ?? value.policy.subjectId,
+        subjectStatus: user?.status ?? "missing",
+      };
+    }),
     authorizationRevision,
+  });
+}
+
+async function explainDirectoryVisibility(ctx: ApiCtx): Promise<void> {
+  const authz = await requireOrganizationAdmin(ctx);
+  if (!authz) return;
+  const principalId = trimmedString(ctx.params.principalId);
+  if (!principalId) return sendJson(ctx.res, 400, { error: "bad_request" });
+  const [user, explanation] = await Promise.all([
+    authz.organization.getUser(principalId),
+    authz.organization.directory.explain({ principalId, isAdmin: false }),
+  ]);
+  if (!user || !explanation) return sendJson(ctx.res, 404, { error: "not_found" });
+  return sendJson(ctx.res, 200, {
+    user: serializeUser(user),
+    effective: {
+      mode: explanation.visibility.mode,
+      priority: explanation.winningPriority,
+      revision: explanation.visibility.revision,
+      roots: explanation.visibility.roots.map((root) => ({
+        unitId: root.unitId,
+        includeDescendants: root.includeDescendants,
+      })),
+    },
+    policies: explanation.policies.map((value) => ({
+      ...(serializeDirectoryPolicy(value) as Record<string, unknown>),
+      effective: value.effective,
+    })),
   });
 }
 
@@ -313,11 +390,13 @@ async function putDirectoryPolicy(ctx: ApiCtx): Promise<void> {
   const subject = directorySubject(ctx);
   const body = isObj(ctx.body) ? ctx.body : {};
   const mode = typeof body.mode === "string" ? body.mode : "";
+  const priority = body.priority === undefined ? undefined : Number(body.priority);
   const expectedRevision = Number(body.expectedRevision);
   const roots = Array.isArray(body.roots) ? body.roots : [];
   if (
     !subject ||
     !(DIRECTORY_VIEW_MODES as ReadonlyArray<string>).includes(mode) ||
+    (priority !== undefined && (!Number.isSafeInteger(priority) || priority < 0 || priority > 1000)) ||
     !Number.isSafeInteger(expectedRevision) ||
     expectedRevision < 0 ||
     roots.length > 100 ||
@@ -331,6 +410,7 @@ async function putDirectoryPolicy(ctx: ApiCtx): Promise<void> {
     subjectKind: subject.kind,
     subjectId: subject.id,
     mode: mode as DirectoryViewMode,
+    priority,
     roots: roots.map((root) => ({
       unitId: (root as Record<string, unknown>).unitId as string,
       includeDescendants: (root as Record<string, unknown>).includeDescendants as boolean,
@@ -1463,9 +1543,13 @@ async function removeUnitMember(ctx: ApiCtx): Promise<void> {
 async function listGroups(ctx: ApiCtx): Promise<void> {
   const authz = await authorizeOrganizationRead(ctx);
   if (!authz) return;
-  const all = await authz.organization.listGroups();
-  const groups = authz.asManager ? all.filter((group) => authz.groupIds.has(group.id)) : all;
-  return sendJson(ctx.res, 200, { groups: groups.map(serializeGroup) });
+  const [allGroups, allUnits] = await Promise.all([authz.organization.listGroups(), authz.organization.listUnits()]);
+  const groups = authz.asManager ? allGroups.filter((group) => authz.groupIds.has(group.id)) : allGroups;
+  const units = authz.asManager ? allUnits.filter((unit) => authz.unitIds.has(unit.id)) : allUnits;
+  return sendJson(ctx.res, 200, {
+    groups: groups.map(serializeGroup),
+    units: units.map(serializeUnit),
+  });
 }
 
 async function createGroup(ctx: ApiCtx): Promise<void> {
@@ -1483,10 +1567,17 @@ async function createGroup(ctx: ApiCtx): Promise<void> {
 async function groupWithMembers(
   organization: OrganizationService,
   groupId: string,
-): Promise<{ group: Record<string, unknown>; members: Array<Record<string, unknown>> } | null> {
+): Promise<{
+  group: Record<string, unknown>;
+  members: Array<Record<string, unknown>>;
+  subjects: Array<Record<string, unknown>>;
+} | null> {
   const group = await organization.getGroup(groupId);
   if (!group) return null;
-  const members = await organization.listGroupMembers(groupId);
+  const [members, subjects] = await Promise.all([
+    organization.listGroupMembers(groupId),
+    organization.listGroupSubjects(groupId),
+  ]);
   const users = new Map(
     (await organization.getOrganizationUsersByIds(members.map((member) => member.principalId))).map((user) => [
       user.principalId,
@@ -1499,6 +1590,19 @@ async function groupWithMembers(
       ...serializeGroupMember(member),
       user: serializeMemberProfile(users.get(member.principalId)),
     })),
+    subjects: await Promise.all(
+      subjects.map(async (subject) => {
+        const target =
+          subject.subjectKind === "org_unit"
+            ? await organization.getUnit(subject.subjectId)
+            : await organization.getGroup(subject.subjectId);
+        return {
+          ...serializeGroupSubject(subject),
+          name: target?.name ?? subject.subjectId,
+          status: target?.status ?? "missing",
+        };
+      }),
+    ),
   };
 }
 
@@ -1536,7 +1640,7 @@ async function patchGroup(ctx: ApiCtx): Promise<void> {
     if (!archived.ok) {
       return sendJson(ctx.res, 409, {
         error: "conflict",
-        message: "access group is referenced by a directory visibility policy",
+        message: "access group is referenced by another policy or access group",
       });
     }
   } else if (status === "active") {
@@ -1603,6 +1707,72 @@ async function removeGroupMember(ctx: ApiCtx): Promise<void> {
   const result = await authz.organization.removeGroupMember({
     groupId,
     principalId,
+    actor: authz.actorId,
+    asManager: authz.asManager,
+  });
+  if (!result.ok) {
+    if (result.reason === "forbidden") return sendJson(ctx.res, 403, { error: "forbidden" });
+    return sendJson(ctx.res, 404, { error: "not_found", message: "unknown access group" });
+  }
+  return sendJson(ctx.res, 200, (await groupWithMembers(authz.organization, groupId))!);
+}
+
+async function addGroupSubject(ctx: ApiCtx): Promise<void> {
+  const body = isObj(ctx.body) ? ctx.body : {};
+  const subjectKind =
+    typeof body.subjectKind === "string" &&
+    (ACCESS_GROUP_SUBJECT_KINDS as ReadonlyArray<string>).includes(body.subjectKind)
+      ? (body.subjectKind as AccessGroupSubjectKind)
+      : null;
+  const subjectId = trimmedString(body.subjectId);
+  if (!subjectKind || !subjectId) {
+    return sendJson(ctx.res, 400, {
+      error: "bad_request",
+      message: "subjectKind must be org_unit or access_group and subjectId must be a non-empty string",
+    });
+  }
+  const groupId = ctx.params.id ?? "";
+  const authz = await authorizeOrgMembershipWrite(ctx, { kind: "group", groupId });
+  if (!authz) return;
+  const result = await authz.organization.addGroupSubject({
+    groupId,
+    subjectKind,
+    subjectId,
+    actor: authz.actorId,
+    asManager: authz.asManager,
+  });
+  if (!result.ok) {
+    if (result.reason === "missing_group") {
+      return sendJson(ctx.res, 404, { error: "not_found", message: "unknown access group" });
+    }
+    if (result.reason === "missing_subject") {
+      return sendJson(ctx.res, 404, { error: "not_found", message: "unknown or inactive access-group subject" });
+    }
+    if (result.reason === "forbidden") return sendJson(ctx.res, 403, { error: "forbidden" });
+    if (result.reason === "cycle") {
+      return sendJson(ctx.res, 409, {
+        error: "access_group_cycle",
+        message: "adding this access group would create a recursive membership cycle",
+      });
+    }
+    return sendJson(ctx.res, 400, { error: result.reason });
+  }
+  return sendJson(ctx.res, 200, (await groupWithMembers(authz.organization, groupId))!);
+}
+
+async function removeGroupSubject(ctx: ApiCtx): Promise<void> {
+  const groupId = ctx.params.id ?? "";
+  const subjectKind = ctx.params.subjectKind;
+  const subjectId = trimmedString(ctx.params.subjectId);
+  if (!subjectKind || !(ACCESS_GROUP_SUBJECT_KINDS as ReadonlyArray<string>).includes(subjectKind) || !subjectId) {
+    return sendJson(ctx.res, 400, { error: "bad_request" });
+  }
+  const authz = await authorizeOrgMembershipWrite(ctx, { kind: "group", groupId });
+  if (!authz) return;
+  const result = await authz.organization.removeGroupSubject({
+    groupId,
+    subjectKind: subjectKind as AccessGroupSubjectKind,
+    subjectId,
     actor: authz.actorId,
     asManager: authz.asManager,
   });
@@ -1697,6 +1867,12 @@ export const organizationRoutes: ReadonlyArray<Route<ApiCtx>> = [
   },
   {
     method: "GET",
+    path: "/v1/admin/org/directory-visibility/effective/:principalId",
+    auth: "either",
+    handle: explainDirectoryVisibility,
+  },
+  {
+    method: "GET",
     path: "/v1/admin/org/directory-visibility/:subjectKind/:subjectId",
     auth: "either",
     handle: getDirectoryPolicy,
@@ -1730,5 +1906,12 @@ export const organizationRoutes: ReadonlyArray<Route<ApiCtx>> = [
     path: "/v1/admin/org/access-groups/:id/members/:principalId",
     auth: "either",
     handle: removeGroupMember,
+  },
+  { method: "POST", path: "/v1/admin/org/access-groups/:id/subjects", auth: "either", handle: addGroupSubject },
+  {
+    method: "DELETE",
+    path: "/v1/admin/org/access-groups/:id/subjects/:subjectKind/:subjectId",
+    auth: "either",
+    handle: removeGroupSubject,
   },
 ];

@@ -169,6 +169,7 @@ const ZH: Record<string, string> = {
   "All contexts": "所有上下文",
   "All files": "所有文件",
   "All types": "所有类型",
+  "Upload to": "上传到",
   "Allow always": "始终允许",
   "Allow for session": "本会话允许",
   "Allow once": "允许一次",

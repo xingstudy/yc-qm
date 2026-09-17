@@ -44,6 +44,7 @@ const PAGE_SIZE = 60;
 let fileRows: FileRow[] = [];
 let filesNotice = "";
 let filesScope: string | null = null;
+let filesUploadScope: string | null = null;
 let filesQuery = "";
 let filesType: "all" | "image" | "document" | "other" = "all";
 let filesOwnership: "all" | "owned" | "shared" = "all";
@@ -149,7 +150,10 @@ function drawFiles(loading = false): void {
   if (filesDragActive) dropLabel = "Drop files";
   else if (filesUploading) dropLabel = "Uploading…";
   const status = filesNotice || (loading && !fileRows.length ? t("Loading files…") : "");
-  const uploadTarget = filesScope ?? personalScopeId();
+  const uploadTarget = filesUploadScope ?? filesScope ?? personalScopeId();
+  const uploadScopes = contextsState.list.map(
+    (context) => [context.scopeId, scopeTitle(context.scopeId)] as [string, string],
+  );
   const scoped = Boolean(scopedSession.active);
   filesHost.classList.toggle("scoped-view", scoped);
   render(
@@ -172,6 +176,10 @@ function drawFiles(loading = false): void {
         /></label>
       </div>
       <div class="list-toolbar">
+        ${selectControl("Upload to", uploadTarget ?? "", uploadScopes, (scopeId) => {
+          filesUploadScope = scopeId || personalScopeId();
+          drawFiles();
+        })}
         ${selectControl(
           "Ownership",
           filesOwnership,
@@ -257,7 +265,7 @@ async function fileSha256(file: globalThis.File): Promise<string> {
 }
 
 async function uploadOne(file: globalThis.File): Promise<void> {
-  const scope = filesScope ?? personalScopeId();
+  const scope = filesUploadScope ?? filesScope ?? personalScopeId();
   const q = new URLSearchParams();
   if (scope) q.set("scope", scope);
   q.set("sha", await fileSha256(file));
@@ -440,12 +448,14 @@ export async function renderFiles(): Promise<void> {
   if (scopedSession.active) {
     if (filesScope !== scopedSession.active.scopeId) {
       filesScope = scopedSession.active.scopeId;
+      filesUploadScope = scopedSession.active.scopeId;
       fileRows = [];
       filesNextCursor = null;
     }
     contextsState.selected = null;
   } else if (contextsState.selected) {
     filesScope = contextsState.selected;
+    filesUploadScope = contextsState.selected;
     fileRows = [];
     filesNextCursor = null;
     contextsState.selected = null;
@@ -457,5 +467,11 @@ export async function renderFiles(): Promise<void> {
   const seq = appState.viewRenderSeq;
   filesNotice = "";
   filesNextCursor = null;
+  await ensureContexts();
+  const availableScopes = new Set(contextsState.list.map((context) => context.scopeId));
+  const personal = personalScopeId();
+  if (!filesUploadScope || !availableScopes.has(filesUploadScope)) {
+    filesUploadScope = filesScope && availableScopes.has(filesScope) ? filesScope : personal;
+  }
   await loadFiles(seq);
 }

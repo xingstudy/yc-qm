@@ -10,6 +10,11 @@ import type {
   OrgUnit,
 } from "../organization/organization-store.ts";
 import { normDirectoryQuery } from "../directory/directory-store.ts";
+import {
+  effectiveAccessGroupIdsForUser,
+  effectiveAccessGroupUsers,
+  effectiveOrganizationUnitIdsForUser,
+} from "./access-group-membership.ts";
 
 export interface DirectoryActor {
   principalId: string;
@@ -23,8 +28,19 @@ export interface ResolvedDirectoryVisibility {
   revision: number;
 }
 
+export interface DirectoryVisibilityExplanation {
+  visibility: ResolvedDirectoryVisibility;
+  winningPriority: number | null;
+  policies: Array<{
+    policy: DirectoryViewPolicy;
+    roots: DirectoryViewRoot[];
+    effective: boolean;
+  }>;
+}
+
 export interface DirectoryVisibilityResolver {
   resolve(actor: DirectoryActor): Promise<ResolvedDirectoryVisibility | null>;
+  explain(actor: DirectoryActor): Promise<DirectoryVisibilityExplanation | null>;
   visibleUnits(actor: DirectoryActor): Promise<OrgUnit[] | null>;
   visibleUnit(actor: DirectoryActor, unitId: string): Promise<OrgUnit | null>;
   visibleUser(actor: DirectoryActor, principalId: string): Promise<OrganizationUser | null>;
@@ -56,21 +72,18 @@ async function subjectPolicies(
   principalId: string,
 ): Promise<DirectoryViewPolicy[]> {
   const personal = await store.getDirectoryPolicy(orgId, "user", principalId);
-  if (personal) return [personal];
-  const directUnits = await store.listDirectUnitIdsForUser(orgId, principalId);
-  const effectiveUnits = new Set<string>();
-  for (const unitId of directUnits) {
-    for (const ancestorId of await store.listAncestorUnitIds(orgId, unitId)) effectiveUnits.add(ancestorId);
-  }
-  const directGroups = await store.listDirectGroupIdsForUser(orgId, principalId);
+  const [effectiveUnits, effectiveGroups] = await Promise.all([
+    effectiveOrganizationUnitIdsForUser(store, orgId, principalId),
+    effectiveAccessGroupIdsForUser(store, orgId, principalId),
+  ]);
   const subjects: Array<{ kind: DirectorySubjectKind; id: string }> = [
     ...[...effectiveUnits].sort().map((id) => ({ kind: "org_unit" as const, id })),
-    ...directGroups.map((id) => ({ kind: "access_group" as const, id })),
+    ...[...effectiveGroups].sort().map((id) => ({ kind: "access_group" as const, id })),
   ];
   const policies = await Promise.all(
     subjects.map((subject) => store.getDirectoryPolicy(orgId, subject.kind, subject.id)),
   );
-  return policies.filter((policy): policy is DirectoryViewPolicy => policy !== null);
+  return [personal, ...policies].filter((policy): policy is DirectoryViewPolicy => policy !== null);
 }
 
 async function normalizeRoots(
@@ -127,23 +140,77 @@ export function createDirectoryVisibilityResolver(deps: {
 }): DirectoryVisibilityResolver {
   const { store, orgId } = deps;
 
+  async function evaluate(
+    policies: readonly DirectoryViewPolicy[],
+    revision: number,
+  ): Promise<{ visibility: ResolvedDirectoryVisibility; winningPriority: number | null }> {
+    if (policies.length === 0) {
+      return { visibility: { mode: "all", roots: [], unitIds: null, revision }, winningPriority: null };
+    }
+    const winningPriority = Math.max(...policies.map((policy) => policy.priority));
+    const effective = policies.filter((policy) => policy.priority === winningPriority);
+    if (effective.some((policy) => policy.mode === "none")) {
+      return {
+        visibility: { mode: "none", roots: [], unitIds: new Set(), revision },
+        winningPriority,
+      };
+    }
+    const limited = effective.filter((policy) => policy.mode === "limited");
+    if (limited.length === 0) {
+      return { visibility: { mode: "all", roots: [], unitIds: null, revision }, winningPriority };
+    }
+    const rootSets = await Promise.all(limited.map((policy) => store.listDirectoryRoots(orgId, policy.id)));
+    const roots = await normalizeRoots(store, orgId, rootSets.flat());
+    if (roots === null || roots.length === 0) {
+      return {
+        visibility: { mode: "none", roots: [], unitIds: new Set(), revision },
+        winningPriority,
+      };
+    }
+    return {
+      visibility: { mode: "limited", roots, unitIds: await unitsForRoots(store, orgId, roots), revision },
+      winningPriority,
+    };
+  }
+
   async function resolve(actor: DirectoryActor): Promise<ResolvedDirectoryVisibility | null> {
     const user = await store.getUser(orgId, actor.principalId);
     if (!user || user.status !== "active") return null;
     const revision = await store.getAuthzRevision(orgId);
     if (actor.isAdmin) return { mode: "all", roots: [], unitIds: null, revision };
     const policies = await subjectPolicies(store, orgId, actor.principalId);
-    if (policies.length === 0 || policies.some((policy) => policy.mode === "all")) {
-      return { mode: "all", roots: [], unitIds: null, revision };
+    return (await evaluate(policies, revision)).visibility;
+  }
+
+  async function explain(actor: DirectoryActor): Promise<DirectoryVisibilityExplanation | null> {
+    const user = await store.getUser(orgId, actor.principalId);
+    if (!user || user.status !== "active") return null;
+    const revision = await store.getAuthzRevision(orgId);
+    if (actor.isAdmin) {
+      return {
+        visibility: { mode: "all", roots: [], unitIds: null, revision },
+        winningPriority: null,
+        policies: [],
+      };
     }
-    const rootSets = await Promise.all(
-      policies
-        .filter((policy) => policy.mode === "limited")
-        .map((policy) => store.listDirectoryRoots(orgId, policy.id)),
+    const matched = await subjectPolicies(store, orgId, actor.principalId);
+    const { visibility, winningPriority } = await evaluate(matched, revision);
+    const policies = await Promise.all(
+      matched
+        .slice()
+        .sort(
+          (left, right) =>
+            right.priority - left.priority ||
+            left.subjectKind.localeCompare(right.subjectKind) ||
+            left.subjectId.localeCompare(right.subjectId),
+        )
+        .map(async (policy) => ({
+          policy,
+          roots: await store.listDirectoryRoots(orgId, policy.id),
+          effective: policy.priority === winningPriority,
+        })),
     );
-    const roots = await normalizeRoots(store, orgId, rootSets.flat());
-    if (roots === null || roots.length === 0) return { mode: "none", roots: [], unitIds: new Set(), revision };
-    return { mode: "limited", roots, unitIds: await unitsForRoots(store, orgId, roots), revision };
+    return { visibility, winningPriority, policies };
   }
 
   async function visibleUnits(actor: DirectoryActor): Promise<OrgUnit[] | null> {
@@ -231,15 +298,11 @@ export function createDirectoryVisibilityResolver(deps: {
   async function visibleGroupWithScope(visibility: ResolvedDirectoryVisibility, group: AccessGroup): Promise<boolean> {
     if (group.status !== "active") return false;
     if (visibility.unitIds === null) return true;
-    const members = await store.listGroupMembers(orgId, group.id);
-    let activeMembers = 0;
-    for (const member of members) {
-      const user = await store.getUser(orgId, member.principalId);
-      if (!user || user.status !== "active") continue;
-      activeMembers += 1;
-      if (!(await userVisibleInScope(visibility, member.principalId))) return false;
+    const members = await effectiveAccessGroupUsers(store, orgId, group.id);
+    for (const user of members) {
+      if (!(await userVisibleInScope(visibility, user.principalId))) return false;
     }
-    return activeMembers > 0;
+    return members.length > 0;
   }
 
   async function visibleGroups(actor: DirectoryActor): Promise<AccessGroup[] | null> {
@@ -279,7 +342,7 @@ export function createDirectoryVisibilityResolver(deps: {
     const group = await store.getGroup(orgId, groupId);
     if (!group || !(await visibleGroupWithScope(visibility, group))) return null;
     const users: OrganizationUser[] = [];
-    for (const member of await store.listGroupMembers(orgId, groupId)) {
+    for (const member of await effectiveAccessGroupUsers(store, orgId, groupId)) {
       const user = await userVisibleInScope(visibility, member.principalId);
       if (user) users.push(user);
     }
@@ -288,6 +351,7 @@ export function createDirectoryVisibilityResolver(deps: {
 
   return {
     resolve,
+    explain,
     visibleUnits,
     visibleUnit,
     visibleUser,

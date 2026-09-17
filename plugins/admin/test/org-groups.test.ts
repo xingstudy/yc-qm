@@ -116,6 +116,28 @@ test("DELETE /api/org-groups/:id/members/:principalId forwards the parameterized
   assert.equal(c.actor, "U-admin@acme");
 });
 
+test("access group subject routes forward typed organization and group subjects", async () => {
+  const added = await fetch(`${base}/api/org-groups/eng-oncall/subjects`, {
+    method: "POST",
+    headers: { "x-portal-identity": ADMIN, "content-type": "application/json" },
+    body: JSON.stringify({ subjectKind: "org_unit", subjectId: "engineering" }),
+  });
+  assert.equal(added.status, 200);
+  let c = calls.at(-1)!;
+  assert.equal(c.method, "POST");
+  assert.equal(c.url, "/v1/admin/org/access-groups/eng-oncall/subjects");
+  assert.deepEqual(JSON.parse(c.body), { subjectKind: "org_unit", subjectId: "engineering" });
+
+  const removed = await fetch(`${base}/api/org-groups/eng-oncall/subjects/access_group/nested`, {
+    method: "DELETE",
+    headers: { "x-portal-identity": ADMIN },
+  });
+  assert.equal(removed.status, 200);
+  c = calls.at(-1)!;
+  assert.equal(c.method, "DELETE");
+  assert.equal(c.url, "/v1/admin/org/access-groups/eng-oncall/subjects/access_group/nested");
+});
+
 test("org-groups endpoints require a signed-in cookie → 401 when absent (no core hop)", async () => {
   const before = calls.length;
   assert.equal((await fetch(`${base}/api/org-groups`)).status, 401);
@@ -159,6 +181,10 @@ test("the SPA registers the org-groups view", () => {
   assert.match(html, /const selectGroup = \(groupId\) => \{[\s\S]*?setStatus\("st-org-groups", "", ""\)/);
   assert.match(html, /organizationUserSearch\(\s*memberInput,/);
   assert.match(html, /Add up to 100 principal ids to this group in one change/);
+  assert.match(html, /Included organization units and access groups/);
+  assert.match(html, /const units = \(d\.units \|\| \[\]\)\.filter/);
+  assert.match(html, /\/subjects\/"/);
+  assert.match(html, /subjectKind\.value === "org_unit"/);
   assert.match(html, /adminTr\("Archive group"\)/);
   assert.doesNotMatch(html, /const loadCounts =/);
 });

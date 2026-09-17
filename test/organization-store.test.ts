@@ -4,6 +4,7 @@ import {
   createMemoryOrganizationStore,
   type AccessGroup,
   type AccessGroupMember,
+  type AccessGroupSubject,
   type OrganizationUser,
   type OrgUnit,
   type OrgUnitMember,
@@ -148,6 +149,16 @@ const groupMember = (over: Partial<AccessGroupMember> = {}): AccessGroupMember =
   groupId: "grp-a",
   principalId: "alice@acme.com",
   role: "member",
+  createdAt: 1,
+  createdBy: "system:bootstrap",
+  ...over,
+});
+
+const groupSubject = (over: Partial<AccessGroupSubject> = {}): AccessGroupSubject => ({
+  orgId: "default-org",
+  groupId: "grp-a",
+  subjectKind: "org_unit",
+  subjectId: "root",
   createdAt: 1,
   createdBy: "system:bootstrap",
   ...over,
@@ -437,6 +448,20 @@ test("memory organization store: group CRUD and members round-trip, removeGroupM
   assert.equal(remaining[0]?.principalId, "bob@acme.com");
   await s.removeGroupMember("default-org", "grp-a", "nobody@acme.com");
   assert.equal((await s.listGroupMembers("default-org", "grp-a")).length, 1, "removing a non-member is a no-op");
+  await s.putGroupSubject(groupSubject());
+  await s.putGroupSubject(groupSubject({ subjectKind: "access_group", subjectId: "grp-nested" }));
+  assert.deepEqual(
+    (await s.listGroupSubjects("default-org", "grp-a")).map((subject) => [subject.subjectKind, subject.subjectId]),
+    [
+      ["access_group", "grp-nested"],
+      ["org_unit", "root"],
+    ],
+  );
+  await s.removeGroupSubject("default-org", "grp-a", "access_group", "grp-nested");
+  assert.deepEqual(
+    (await s.listGroupSubjects("default-org", "grp-a")).map((subject) => subject.subjectId),
+    ["root"],
+  );
 });
 
 test("memory organization store: unit members round-trip and removeUnitMember removes only the target row", async () => {

@@ -14,12 +14,19 @@ import {
   type DirectoryVisibilityResolver,
 } from "../authorization/directory-visibility.ts";
 import {
+  accessGroupSubjectWouldCycle,
+  effectiveAccessGroupIdsForUser,
+  effectiveOrganizationUnitIdsForUser,
+} from "../authorization/access-group-membership.ts";
+import {
   organizationAccessSubjectFromScope,
   type OrganizationAccessSubject,
 } from "../authorization/organization-access-subject.ts";
 import type {
   AccessGroup,
   AccessGroupMember,
+  AccessGroupSubject,
+  AccessGroupSubjectKind,
   AccessGroupStatus,
   DirectorySubjectKind,
   DirectoryViewMode,
@@ -167,6 +174,9 @@ type AddGroupMemberResult =
 
 type RemoveGroupMemberResult = { ok: true } | { ok: false; reason: "missing_group" | "forbidden" };
 type ArchiveGroupResult = { ok: true } | { ok: false; reason: "conflict" };
+type AddGroupSubjectResult =
+  { ok: true } | { ok: false; reason: "missing_group" | "archived" | "forbidden" | "missing_subject" | "cycle" };
+type RemoveGroupSubjectResult = { ok: true } | { ok: false; reason: "missing_group" | "forbidden" };
 
 type DirectoryPolicyResult =
   | { ok: true; policy: DirectoryViewPolicy; roots: DirectoryViewRoot[]; authzRevision: number }
@@ -315,6 +325,20 @@ export interface OrganizationService {
     actor: string;
     asManager?: boolean;
   }): Promise<RemoveGroupMemberResult>;
+  addGroupSubject(input: {
+    groupId: string;
+    subjectKind: AccessGroupSubjectKind;
+    subjectId: string;
+    actor: string;
+    asManager?: boolean;
+  }): Promise<AddGroupSubjectResult>;
+  removeGroupSubject(input: {
+    groupId: string;
+    subjectKind: AccessGroupSubjectKind;
+    subjectId: string;
+    actor: string;
+    asManager?: boolean;
+  }): Promise<RemoveGroupSubjectResult>;
   unitImpact(unitId: string): Promise<UnitImpact>;
   listManagedSubtreeUnitIds(principalId: string): Promise<string[]>;
   listManagedGroupIds(principalId: string): Promise<string[]>;
@@ -324,14 +348,17 @@ export interface OrganizationService {
   getGroup(groupId: string): Promise<AccessGroup | null>;
   listGroups(): Promise<AccessGroup[]>;
   listGroupMembers(groupId: string): Promise<AccessGroupMember[]>;
+  listGroupSubjects(groupId: string): Promise<AccessGroupSubject[]>;
   getDirectoryPolicy(
     subjectKind: DirectorySubjectKind,
     subjectId: string,
   ): Promise<{ policy: DirectoryViewPolicy; roots: DirectoryViewRoot[] } | null>;
+  listDirectoryPolicies(): Promise<Array<{ policy: DirectoryViewPolicy; roots: DirectoryViewRoot[] }>>;
   setDirectoryPolicy(input: {
     subjectKind: DirectorySubjectKind;
     subjectId: string;
     mode: DirectoryViewMode;
+    priority?: number;
     roots: Array<{ unitId: string; includeDescendants: boolean }>;
     expectedRevision: number;
     actor: string;
@@ -1723,7 +1750,10 @@ export function createOrganizationService(deps: {
       if (!group || group.status === "archived") return { ok: true };
       if (
         (await tx.getDirectoryPolicy(orgId, "access_group", input.groupId)) ||
-        (await tx.countSkillAccessGrantsForSubject(orgId, `access-group:${input.groupId}` as ScopeId)) > 0
+        (await tx.countSkillAccessGrantsForSubject(orgId, `access-group:${input.groupId}` as ScopeId)) > 0 ||
+        (await tx.listGroupSubjects(orgId)).some(
+          (subject) => subject.subjectKind === "access_group" && subject.subjectId === input.groupId,
+        )
       ) {
         return { ok: false, reason: "conflict" };
       }
@@ -1841,6 +1871,84 @@ export function createOrganizationService(deps: {
     });
   }
 
+  async function addGroupSubject(input: {
+    groupId: string;
+    subjectKind: AccessGroupSubjectKind;
+    subjectId: string;
+    actor: string;
+    asManager?: boolean;
+  }): Promise<AddGroupSubjectResult> {
+    return store.transact(orgId, async (tx): Promise<AddGroupSubjectResult> => {
+      const group = await tx.getGroup(orgId, input.groupId);
+      if (!group || (input.asManager && group.status !== "active")) return { ok: false, reason: "missing_group" };
+      if (group.status !== "active") return { ok: false, reason: "archived" };
+      if (input.asManager && !(await managerCanWriteGroup(tx, input.actor, input.groupId))) {
+        return { ok: false, reason: "forbidden" };
+      }
+      if (input.subjectKind === "org_unit") {
+        const unit = await tx.getUnit(orgId, input.subjectId);
+        if (!unit || unit.status !== "active") return { ok: false, reason: "missing_subject" };
+      } else {
+        const nested = await tx.getGroup(orgId, input.subjectId);
+        if (!nested || nested.status !== "active") return { ok: false, reason: "missing_subject" };
+        if (await accessGroupSubjectWouldCycle(tx, orgId, input.groupId, input.subjectId)) {
+          return { ok: false, reason: "cycle" };
+        }
+      }
+      const existing = (await tx.listGroupSubjects(orgId, input.groupId)).some(
+        (subject) => subject.subjectKind === input.subjectKind && subject.subjectId === input.subjectId,
+      );
+      if (existing) return { ok: true };
+      await tx.putGroupSubject({
+        orgId,
+        groupId: input.groupId,
+        subjectKind: input.subjectKind,
+        subjectId: input.subjectId,
+        createdAt: now(),
+        createdBy: input.actor,
+      });
+      await tx.bumpRevision(orgId);
+      await tx.audit(
+        orgEvent("org.group.subject.add", `group:${input.groupId}`, input.actor, {
+          groupId: input.groupId,
+          subjectKind: input.subjectKind,
+          subjectId: input.subjectId,
+        }),
+      );
+      return { ok: true };
+    });
+  }
+
+  async function removeGroupSubject(input: {
+    groupId: string;
+    subjectKind: AccessGroupSubjectKind;
+    subjectId: string;
+    actor: string;
+    asManager?: boolean;
+  }): Promise<RemoveGroupSubjectResult> {
+    return store.transact(orgId, async (tx): Promise<RemoveGroupSubjectResult> => {
+      const group = await tx.getGroup(orgId, input.groupId);
+      if (!group || (input.asManager && group.status !== "active")) return { ok: false, reason: "missing_group" };
+      if (input.asManager && !(await managerCanWriteGroup(tx, input.actor, input.groupId))) {
+        return { ok: false, reason: "forbidden" };
+      }
+      const existing = (await tx.listGroupSubjects(orgId, input.groupId)).some(
+        (subject) => subject.subjectKind === input.subjectKind && subject.subjectId === input.subjectId,
+      );
+      if (!existing) return { ok: true };
+      await tx.removeGroupSubject(orgId, input.groupId, input.subjectKind, input.subjectId);
+      await tx.bumpRevision(orgId);
+      await tx.audit(
+        orgEvent("org.group.subject.remove", `group:${input.groupId}`, input.actor, {
+          groupId: input.groupId,
+          subjectKind: input.subjectKind,
+          subjectId: input.subjectId,
+        }),
+      );
+      return { ok: true };
+    });
+  }
+
   async function refresh(): Promise<void> {
     if (refreshP) return refreshP;
     refreshP = store
@@ -1862,6 +1970,15 @@ export function createOrganizationService(deps: {
     const policy = await store.getDirectoryPolicy(orgId, subjectKind, subjectId);
     if (!policy) return null;
     return { policy, roots: await store.listDirectoryRoots(orgId, policy.id) };
+  }
+
+  async function directoryPolicies(): Promise<Array<{ policy: DirectoryViewPolicy; roots: DirectoryViewRoot[] }>> {
+    return Promise.all(
+      (await store.listDirectoryPolicies(orgId)).map(async (policy) => ({
+        policy,
+        roots: await store.listDirectoryRoots(orgId, policy.id),
+      })),
+    );
   }
 
   async function subjectExists(
@@ -1904,6 +2021,7 @@ export function createOrganizationService(deps: {
     subjectKind: DirectorySubjectKind;
     subjectId: string;
     mode: DirectoryViewMode;
+    priority?: number;
     roots: Array<{ unitId: string; includeDescendants: boolean }>;
     expectedRevision: number;
     actor: string;
@@ -1923,6 +2041,7 @@ export function createOrganizationService(deps: {
           roots: current ? await tx.listDirectoryRoots(orgId, current.id) : [],
         };
       }
+      const priority = input.priority ?? current?.priority ?? 100;
       const at = now();
       const policy: DirectoryViewPolicy = {
         id: current?.id ?? `dir-${randomUUID()}`,
@@ -1930,6 +2049,7 @@ export function createOrganizationService(deps: {
         subjectKind: input.subjectKind,
         subjectId: input.subjectId,
         mode: input.mode,
+        priority,
         revision: currentRevision + 1,
         createdAt: current?.createdAt ?? at,
         updatedAt: at,
@@ -1948,6 +2068,7 @@ export function createOrganizationService(deps: {
           subjectKind: input.subjectKind,
           subjectId: input.subjectId,
           mode: input.mode,
+          priority: String(priority),
         }),
       );
       return { ok: true, policy, roots, authzRevision };
@@ -2007,13 +2128,9 @@ export function createOrganizationService(deps: {
     if (!subject) return false;
     if (subject.kind === "user") return subject.id === principalId;
     if (subject.kind === "access_group") {
-      return (await store.listDirectGroupIdsForUser(orgId, principalId)).includes(subject.id);
+      return (await effectiveAccessGroupIdsForUser(store, orgId, principalId)).has(subject.id);
     }
-    const directUnits = await store.listDirectUnitIdsForUser(orgId, principalId);
-    for (const unitId of directUnits) {
-      if ((await store.listAncestorUnitIds(orgId, unitId)).includes(subject.id)) return true;
-    }
-    return false;
+    return (await effectiveOrganizationUnitIdsForUser(store, orgId, principalId)).has(subject.id);
   }
 
   return {
@@ -2045,6 +2162,8 @@ export function createOrganizationService(deps: {
     addGroupMember,
     addGroupMembers,
     removeGroupMember,
+    addGroupSubject,
+    removeGroupSubject,
     unitImpact: (unitId) => store.unitImpact(orgId, unitId),
     listManagedSubtreeUnitIds: (principalId) => store.listManagedSubtreeUnitIds(orgId, principalId),
     listManagedGroupIds: (principalId) => store.listManagedGroupIds(orgId, principalId),
@@ -2054,7 +2173,9 @@ export function createOrganizationService(deps: {
     getGroup: (groupId) => store.getGroup(orgId, groupId),
     listGroups: () => store.listGroups(orgId),
     listGroupMembers: (groupId) => store.listGroupMembers(orgId, groupId),
+    listGroupSubjects: (groupId) => store.listGroupSubjects(orgId, groupId),
     getDirectoryPolicy: directoryPolicy,
+    listDirectoryPolicies: directoryPolicies,
     setDirectoryPolicy,
     deleteDirectoryPolicy,
     getUser: (principalId) => store.getUser(orgId, principalId),

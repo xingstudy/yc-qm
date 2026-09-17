@@ -351,19 +351,9 @@ export interface App {
   ): Promise<SessionBackgroundOutput | null>;
   listContexts(principalId: string): Promise<ContextSummary[]>;
   listProjects(principalId: string): Promise<ProjectView[]>;
-  projectMemberCandidates(
-    id: string,
-    principalId: string,
-    query: string,
-    allowAdminElevation?: boolean,
-  ): Promise<ProjectMemberCandidate[] | null>;
+  projectMemberCandidates(id: string, principalId: string, query: string): Promise<ProjectMemberCandidate[] | null>;
   createProject(principalId: string, name: string): Promise<ProjectView | null>;
-  addProjectMember(
-    id: string,
-    principalId: string,
-    memberId: string,
-    allowAdminElevation?: boolean,
-  ): Promise<ProjectViewMutation>;
+  addProjectMember(id: string, principalId: string, memberId: string): Promise<ProjectViewMutation>;
   removeProjectMember(id: string, principalId: string, memberId: string): Promise<ProjectViewMutation>;
   setProjectSlackChannel(id: string, principalId: string, channel: string | null): Promise<ProjectViewMutation>;
   renameProject(id: string, principalId: string, name: string): Promise<ProjectViewMutation>;

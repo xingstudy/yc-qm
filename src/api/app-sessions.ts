@@ -568,7 +568,7 @@ export function createSessionMethods(
       return projectsForViewer(principalId);
     },
 
-    async projectMemberCandidates(id, principalId, query, allowAdminElevation) {
+    async projectMemberCandidates(id, principalId, query) {
       if (!deps.projects || !deps.organization) return null;
       const project = await deps.projects.get(id);
       if (!project || project.orgId !== orgIdOf() || !samePerson(project.ownerId, principalId)) {
@@ -596,15 +596,12 @@ export function createSessionMethods(
           email: null,
         }));
       }
-      const page = await deps.organization.directory.searchUsers(
-        await directoryActor(principalId, allowAdminElevation),
-        {
-          query,
-          excludePrincipalIds: project.memberIds,
-          after: null,
-          limit: 50,
-        },
-      );
+      const page = await deps.organization.directory.searchUsers(await directoryActor(principalId), {
+        query,
+        excludePrincipalIds: project.memberIds,
+        after: null,
+        limit: 50,
+      });
       if (!page) return null;
       return page.users.map((user) => ({
         principalId: user.principalId,
@@ -627,7 +624,7 @@ export function createSessionMethods(
       return projectView(project);
     },
 
-    async addProjectMember(id, principalId, memberId, allowAdminElevation) {
+    async addProjectMember(id, principalId, memberId) {
       if (!deps.projects) return { status: "not_found" };
       if (!deps.identity.isInternal(deps.identity.classify(principalId))) return { status: "forbidden" };
       const existing = await deps.projects.get(id);
@@ -635,10 +632,7 @@ export function createSessionMethods(
       if (!deps.organization) return { status: "invalid_member" };
       const member = (await usesLegacyProjectDirectory(principalId))
         ? await legacyProjectMember(memberId)
-        : await deps.organization.directory.visibleUser(
-            await directoryActor(principalId, allowAdminElevation),
-            memberId,
-          );
+        : await deps.organization.directory.visibleUser(await directoryActor(principalId), memberId);
       if (!member) return { status: "invalid_member" };
       if (!deps.identity.isInternal(deps.identity.classify(memberId))) return { status: "invalid_member" };
       const result = await deps.projects.addMember(id, principalId, memberId, async ({ project, changed }) => {

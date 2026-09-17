@@ -9,6 +9,7 @@ import { createOrganizationService } from "../src/organization/organization-serv
 import type {
   AccessGroup,
   AccessGroupMember,
+  AccessGroupSubject,
   AuthIdentity,
   OrganizationUser,
   OrgUnit,
@@ -26,7 +27,7 @@ beforeEach(async () => {
   const pg = (await import("pg")).default;
   const p = new pg.Pool({ connectionString: URL });
   await p.query(
-    "DROP TABLE IF EXISTS directory_view_roots, directory_view_policies, skill_access_policies, acl_grants, acl_grants_version, skills, durable_map_versions, org_unit_members, org_unit_closure, org_units, access_group_members, access_groups, organization_authz_state, auth_identities, organization_users, organization_identity_status, deactivated_principals, organization_operation_results, organization_legacy_runtime_eligible, organization_schema_migrations, organization_database_owner, participants CASCADE",
+    "DROP TABLE IF EXISTS directory_view_roots, directory_view_policies, skill_access_policies, acl_grants, acl_grants_version, skills, durable_map_versions, org_unit_members, org_unit_closure, org_units, access_group_subjects, access_group_members, access_groups, organization_authz_state, auth_identities, organization_users, organization_identity_status, deactivated_principals, organization_operation_results, organization_legacy_runtime_eligible, organization_schema_migrations, organization_database_owner, participants CASCADE",
   );
   await resetPgMigrations(p, "fork/organization");
   await p.end();
@@ -361,6 +362,49 @@ test("pg organization store: rows survive a second store instance", { skip }, as
   assert.equal((await boot2.getUser("org1", "U-durable"))!.principalId, "U-durable");
   assert.equal((await boot2.getIdentity("org1", "https://idp.example.com", "sub-durable"))!.principalId, "U-durable");
 });
+
+test(
+  "pg organization store: directory policy priorities persist, sort, default, and reject invalid values",
+  { skip },
+  async () => {
+    const org = "org-directory-priority";
+    const store = createPostgresOrganizationStore(URL!);
+    await store.ensureOrgRoot({ orgId: org, name: "Acme", actor: "admin", now: 1 });
+    await store.putUser(user({ orgId: org, principalId: "U1" }));
+    await store.putUser(user({ orgId: org, principalId: "U2", email: "u2@example.com" }));
+    await store.transact(org, async (tx) => {
+      await tx.putDirectoryPolicy({
+        id: "priority-explicit",
+        orgId: org,
+        subjectKind: "user",
+        subjectId: "U1",
+        mode: "all",
+        priority: 900,
+        revision: 1,
+        createdAt: 1,
+        updatedAt: 1,
+        updatedBy: "admin",
+      });
+    });
+    await rawRows(
+      `INSERT INTO directory_view_policies
+       (id, org_id, subject_kind, subject_id, mode, revision, created_at, updated_at, updated_by)
+     VALUES ($1, $2, 'user', $3, 'none', 1, 1, 1, 'admin')`,
+      ["priority-default", org, "U2"],
+    );
+    assert.deepEqual(
+      (await store.listDirectoryPolicies(org)).map((policy) => [policy.id, policy.priority]),
+      [
+        ["priority-explicit", 900],
+        ["priority-default", 100],
+      ],
+    );
+    await assert.rejects(
+      rawRows("UPDATE directory_view_policies SET priority = 1001 WHERE org_id = $1", [org]),
+      /directory_view_policies_priority_check/,
+    );
+  },
+);
 
 test("pg organization store: Skill Access policy and grants are durable and guarded", { skip }, async () => {
   const orgId = "org-skill-access";
@@ -850,6 +894,16 @@ const groupMember = (over: Partial<AccessGroupMember> = {}): AccessGroupMember =
   groupId: "grp-a",
   principalId: "U1",
   role: "member",
+  createdAt: 1,
+  createdBy: "admin",
+  ...over,
+});
+
+const groupSubject = (over: Partial<AccessGroupSubject> = {}): AccessGroupSubject => ({
+  orgId: "org1",
+  groupId: "grp-a",
+  subjectKind: "org_unit",
+  subjectId: "root",
   createdAt: 1,
   createdBy: "admin",
   ...over,
@@ -1492,6 +1546,28 @@ test(
     assert.equal(remaining[0]?.principalId, "U2");
     await store.removeGroupMember(org, "grp-a", "U-absent");
     assert.equal((await store.listGroupMembers(org, "grp-a")).length, 1, "removing a non-member is a no-op");
+    await store.putGroupSubject(groupSubject({ orgId: org }));
+    await store.putGroupSubject(groupSubject({ orgId: org, subjectKind: "access_group", subjectId: "grp-nested" }));
+    assert.deepEqual(
+      (await store.listGroupSubjects(org, "grp-a")).map((subject) => [subject.subjectKind, subject.subjectId]),
+      [
+        ["access_group", "grp-nested"],
+        ["org_unit", "root"],
+      ],
+    );
+    assert.equal(
+      (
+        await rawRows(
+          "SELECT 1 FROM pg_trigger WHERE tgname = 'organization_authz_lock_access_group_subjects' AND tgrelid = 'access_group_subjects'::regclass",
+        )
+      ).length,
+      1,
+    );
+    await store.removeGroupSubject(org, "grp-a", "access_group", "grp-nested");
+    assert.deepEqual(
+      (await store.listGroupSubjects(org, "grp-a")).map((subject) => subject.subjectId),
+      ["root"],
+    );
   },
 );
 
