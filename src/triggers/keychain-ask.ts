@@ -2,6 +2,7 @@ import type { Keychain, KeychainAsk, KeychainGrant } from "../credentials/keycha
 import type { AuditLog } from "../audit/audit-log.ts";
 import type { Destination, ScopeId } from "../types.ts";
 import { runTrigger, destinationVisible, type TriggerDeps, type TriggerOutcome } from "./run-trigger.ts";
+import { withWebTranscriptText } from "../reach/reach.ts";
 import { swallow } from "../util/errors.ts";
 import { keychainUseCommand } from "../api/contract.ts";
 
@@ -68,7 +69,7 @@ export async function fireAskResolution(
   }
   if (ask.requesterDestination && (await destinationVisible(deps, ask.requesterId, ask.requesterDestination))) {
     await deps.deliveries.enqueue({
-      destination: ask.requesterDestination,
+      destination: withWebTranscriptText(ask.requesterDestination),
       text: fallbackText(ask),
       idempotencyKey: `ask:${ask.id}:${ask.status}:fallback`,
     });
@@ -125,7 +126,7 @@ export async function fireDropResolution(deps: TriggerDeps, drop: DropResolution
   if (outcome.authzFailed) return outcome;
   if (drop.destination && (await destinationVisible(deps, drop.ownerId, drop.destination))) {
     await deps.deliveries.enqueue({
-      destination: drop.destination,
+      destination: withWebTranscriptText(drop.destination),
       text: dropFallbackText(drop),
       idempotencyKey: `drop:${drop.id}:fallback`,
     });

@@ -11,6 +11,8 @@ export interface OrganizationUser {
   orgId: string;
   principalId: string;
   email: string | null;
+  invitedEmail?: string;
+  externalMembership?: boolean;
   displayName: string;
   jobTitle: string | null;
   mobile: string | null;
@@ -23,6 +25,30 @@ export interface OrganizationUser {
   lastLoginAt: number | null;
   createdBy: string;
   updatedBy: string;
+}
+
+function userForWrite(users: Iterable<OrganizationUser>, input: OrganizationUser): OrganizationUser {
+  const rows = [...users];
+  const existing = rows.find((user) => user.orgId === input.orgId && user.principalId === input.principalId);
+  const user = {
+    ...input,
+    ...(existing?.invitedEmail ? { invitedEmail: existing.invitedEmail } : {}),
+    ...(existing?.externalMembership ? { externalMembership: true } : {}),
+  };
+  const emails = new Set(
+    [user.email, user.invitedEmail].filter((email): email is string => !!email).map((email) => email.toLowerCase()),
+  );
+  if (
+    rows.some(
+      (row) =>
+        row.orgId === user.orgId &&
+        row.principalId !== user.principalId &&
+        ((row.invitedEmail && emails.has(row.invitedEmail.toLowerCase())) ||
+          (user.invitedEmail && row.email?.toLowerCase() === user.invitedEmail.toLowerCase())),
+    )
+  )
+    throw new Error("organization email already belongs to another user");
+  return user;
 }
 
 export interface AuthIdentity {
@@ -92,6 +118,17 @@ export interface AccessGroupMember {
   createdBy: string;
 }
 
+export type AccessGroupSubjectKind = "org_unit" | "access_group";
+
+export interface AccessGroupSubject {
+  orgId: string;
+  groupId: string;
+  subjectKind: AccessGroupSubjectKind;
+  subjectId: string;
+  createdAt: number;
+  createdBy: string;
+}
+
 export type DirectorySubjectKind = "user" | "org_unit" | "access_group";
 export type DirectoryViewMode = "all" | "limited" | "none";
 
@@ -101,6 +138,7 @@ export interface DirectoryViewPolicy {
   subjectKind: DirectorySubjectKind;
   subjectId: string;
   mode: DirectoryViewMode;
+  priority: number;
   revision: number;
   createdAt: number;
   updatedAt: number;
@@ -193,6 +231,7 @@ export interface SubtreeImpact {
 export interface OrganizationTx {
   getUser(orgId: string, principalId: string): Promise<OrganizationUser | null>;
   findUserByEmail(orgId: string, email: string): Promise<OrganizationUser | null>;
+  findUserByInvitedEmail(orgId: string, email: string): Promise<OrganizationUser | null>;
   findUserByEmployeeNumber(orgId: string, employeeNumber: string): Promise<OrganizationUser | null>;
   listUsers(orgId: string): Promise<OrganizationUser[]>;
   insertUser(user: OrganizationUser): Promise<boolean>;
@@ -217,14 +256,23 @@ export interface OrganizationTx {
   getGroup(orgId: string, id: string): Promise<AccessGroup | null>;
   listGroupMembers(orgId: string, groupId: string): Promise<AccessGroupMember[]>;
   listGroupMembersForUser(orgId: string, principalId: string): Promise<AccessGroupMember[]>;
+  listGroupSubjects(orgId: string, groupId?: string): Promise<AccessGroupSubject[]>;
   putGroup(group: AccessGroup): Promise<void>;
   putGroupMember(member: AccessGroupMember): Promise<void>;
   removeGroupMember(orgId: string, groupId: string, principalId: string): Promise<void>;
+  putGroupSubject(subject: AccessGroupSubject): Promise<void>;
+  removeGroupSubject(
+    orgId: string,
+    groupId: string,
+    subjectKind: AccessGroupSubjectKind,
+    subjectId: string,
+  ): Promise<void>;
   getDirectoryPolicy(
     orgId: string,
     subjectKind: DirectorySubjectKind,
     subjectId: string,
   ): Promise<DirectoryViewPolicy | null>;
+  listDirectoryPolicies(orgId: string): Promise<DirectoryViewPolicy[]>;
   putDirectoryPolicy(policy: DirectoryViewPolicy): Promise<void>;
   deleteDirectoryPolicy(orgId: string, subjectKind: DirectorySubjectKind, subjectId: string): Promise<void>;
   listDirectoryRoots(orgId: string, policyId: string): Promise<DirectoryViewRoot[]>;
@@ -254,6 +302,7 @@ export interface OrganizationStore {
   legacyRuntimeAccessEligible(principalId: string): Promise<boolean>;
   getUser(orgId: string, principalId: string): Promise<OrganizationUser | null>;
   findUserByEmail(orgId: string, email: string): Promise<OrganizationUser | null>;
+  findUserByInvitedEmail(orgId: string, email: string): Promise<OrganizationUser | null>;
   findUserByEmployeeNumber(orgId: string, employeeNumber: string): Promise<OrganizationUser | null>;
   listUsers(orgId: string): Promise<OrganizationUser[]>;
   getUsersByPrincipalIds(orgId: string, principalIds: readonly string[]): Promise<OrganizationUser[]>;
@@ -286,13 +335,22 @@ export interface OrganizationStore {
   putGroup(group: AccessGroup): Promise<void>;
   listGroupMembers(orgId: string, groupId: string): Promise<AccessGroupMember[]>;
   listGroupMembersForUsers(orgId: string, principalIds: readonly string[]): Promise<AccessGroupMember[]>;
+  listGroupSubjects(orgId: string, groupId?: string): Promise<AccessGroupSubject[]>;
   putGroupMember(member: AccessGroupMember): Promise<void>;
   removeGroupMember(orgId: string, groupId: string, principalId: string): Promise<void>;
+  putGroupSubject(subject: AccessGroupSubject): Promise<void>;
+  removeGroupSubject(
+    orgId: string,
+    groupId: string,
+    subjectKind: AccessGroupSubjectKind,
+    subjectId: string,
+  ): Promise<void>;
   getDirectoryPolicy(
     orgId: string,
     subjectKind: DirectorySubjectKind,
     subjectId: string,
   ): Promise<DirectoryViewPolicy | null>;
+  listDirectoryPolicies(orgId: string): Promise<DirectoryViewPolicy[]>;
   listDirectoryRoots(orgId: string, policyId: string): Promise<DirectoryViewRoot[]>;
   searchDirectoryUsers(
     orgId: string,
@@ -335,6 +393,12 @@ const unitMemberKey = (orgId: string, unitId: string, principalId: string): stri
   `${orgId}\n${unitId}\n${principalId}`;
 const groupMemberKey = (orgId: string, groupId: string, principalId: string): string =>
   `${orgId}\n${groupId}\n${principalId}`;
+const groupSubjectKey = (
+  orgId: string,
+  groupId: string,
+  subjectKind: AccessGroupSubjectKind,
+  subjectId: string,
+): string => `${orgId}\n${groupId}\n${subjectKind}\n${subjectId}`;
 const directoryPolicyKey = (orgId: string, subjectKind: DirectorySubjectKind, subjectId: string): string =>
   `${orgId}\n${subjectKind}\n${subjectId}`;
 const directoryRootKey = (orgId: string, policyId: string, unitId: string): string =>
@@ -356,6 +420,7 @@ export function createMemoryOrganizationStore(
   const unitMembers = new Map<string, OrgUnitMember>();
   const groups = new Map<string, AccessGroup>();
   const groupMembers = new Map<string, AccessGroupMember>();
+  const groupSubjects = new Map<string, AccessGroupSubject>();
   const directoryPolicies = new Map<string, DirectoryViewPolicy>();
   const directoryRoots = new Map<string, DirectoryViewRoot>();
   const skillBacking = opts.skillBacking;
@@ -476,6 +541,21 @@ export function createMemoryOrganizationStore(
     groupMembers.delete(groupMemberKey(orgId, groupId, principalId));
   };
 
+  const putGroupSubjectRaw = async (subject: AccessGroupSubject): Promise<void> => {
+    groupSubjects.set(groupSubjectKey(subject.orgId, subject.groupId, subject.subjectKind, subject.subjectId), {
+      ...subject,
+    });
+  };
+
+  const removeGroupSubjectRaw = async (
+    orgId: string,
+    groupId: string,
+    subjectKind: AccessGroupSubjectKind,
+    subjectId: string,
+  ): Promise<void> => {
+    groupSubjects.delete(groupSubjectKey(orgId, groupId, subjectKind, subjectId));
+  };
+
   const store: OrganizationStore = {
     async legacyRuntimeAccessEligible() {
       return false;
@@ -487,11 +567,17 @@ export function createMemoryOrganizationStore(
     async findUserByEmail(orgId, email) {
       const needle = email.toLowerCase();
       for (const u of users.values()) {
-        if (u.orgId === orgId && u.email !== null && u.email.toLowerCase() === needle) {
+        if (u.orgId === orgId && (u.email?.toLowerCase() === needle || u.invitedEmail?.toLowerCase() === needle)) {
           return { ...u };
         }
       }
       return null;
+    },
+    async findUserByInvitedEmail(orgId, email) {
+      const found = [...users.values()].find(
+        (user) => user.orgId === orgId && user.invitedEmail?.toLowerCase() === email.toLowerCase(),
+      );
+      return found ? { ...found } : null;
     },
     async findUserByEmployeeNumber(orgId, employeeNumber) {
       const needle = employeeNumber.toLowerCase();
@@ -604,7 +690,7 @@ export function createMemoryOrganizationStore(
     },
     async putUser(user) {
       await enqueue(user.orgId, async () => {
-        users.set(userKey(user.orgId, user.principalId), { ...user });
+        users.set(userKey(user.orgId, user.principalId), userForWrite(users.values(), user));
       });
     },
     async getIdentity(orgId, issuer, subject) {
@@ -743,7 +829,10 @@ export function createMemoryOrganizationStore(
           (grant) => grant.orgId === orgId && (grant.ownerScopeId === unitScope || grant.granteeScopeId === unitScope),
         ).length +
         [...skillPolicies.values()].filter((policy) => policy.orgId === orgId && policy.ownerScopeId === unitScope)
-          .length;
+          .length +
+        [...groupSubjects.values()].filter(
+          (subject) => subject.orgId === orgId && subject.subjectKind === "org_unit" && subject.subjectId === unitId,
+        ).length;
       return {
         activeChildUnits,
         activeMembers,
@@ -828,15 +917,43 @@ export function createMemoryOrganizationStore(
             left.principalId.localeCompare(right.principalId) || left.groupId.localeCompare(right.groupId),
         );
     },
+    async listGroupSubjects(orgId, groupId) {
+      return [...groupSubjects.values()]
+        .filter((subject) => subject.orgId === orgId && (groupId === undefined || subject.groupId === groupId))
+        .map((subject) => ({ ...subject }))
+        .sort(
+          (left, right) =>
+            left.groupId.localeCompare(right.groupId) ||
+            left.subjectKind.localeCompare(right.subjectKind) ||
+            left.subjectId.localeCompare(right.subjectId),
+        );
+    },
     async putGroupMember(member) {
       await enqueue(member.orgId, () => putGroupMemberRaw(member));
     },
     async removeGroupMember(orgId, groupId, principalId) {
       await enqueue(orgId, () => removeGroupMemberRaw(orgId, groupId, principalId));
     },
+    async putGroupSubject(subject) {
+      await enqueue(subject.orgId, () => putGroupSubjectRaw(subject));
+    },
+    async removeGroupSubject(orgId, groupId, subjectKind, subjectId) {
+      await enqueue(orgId, () => removeGroupSubjectRaw(orgId, groupId, subjectKind, subjectId));
+    },
     async getDirectoryPolicy(orgId, subjectKind, subjectId) {
       const found = directoryPolicies.get(directoryPolicyKey(orgId, subjectKind, subjectId));
       return found ? { ...found } : null;
+    },
+    async listDirectoryPolicies(orgId) {
+      return [...directoryPolicies.values()]
+        .filter((policy) => policy.orgId === orgId)
+        .map((policy) => ({ ...policy }))
+        .sort(
+          (left, right) =>
+            right.priority - left.priority ||
+            left.subjectKind.localeCompare(right.subjectKind) ||
+            left.subjectId.localeCompare(right.subjectId),
+        );
     },
     async listDirectoryRoots(orgId, policyId) {
       return [...directoryRoots.values()]
@@ -941,6 +1058,7 @@ export function createMemoryOrganizationStore(
         const draftUnitMembers = snapshotOrgMap(unitMembers, orgId);
         const draftGroups = snapshotOrgMap(groups, orgId);
         const draftGroupMembers = snapshotOrgMap(groupMembers, orgId);
+        const draftGroupSubjects = snapshotOrgMap(groupSubjects, orgId);
         const draftDirectoryPolicies = snapshotOrgMap(directoryPolicies, orgId);
         const draftDirectoryRoots = snapshotOrgMap(directoryRoots, orgId);
         const draftSkillPolicies = snapshotOrgMap(skillPolicies, orgId);
@@ -1007,9 +1125,17 @@ export function createMemoryOrganizationStore(
             assertOrg(scopeOrgId);
             const needle = email.toLowerCase();
             for (const user of draftUsers.values()) {
-              if (user.email !== null && user.email.toLowerCase() === needle) return { ...user };
+              if (user.email?.toLowerCase() === needle || user.invitedEmail?.toLowerCase() === needle)
+                return { ...user };
             }
             return null;
+          },
+          async findUserByInvitedEmail(scopeOrgId, email) {
+            assertOrg(scopeOrgId);
+            const found = [...draftUsers.values()].find(
+              (user) => user.invitedEmail?.toLowerCase() === email.toLowerCase(),
+            );
+            return found ? { ...found } : null;
           },
           async findUserByEmployeeNumber(scopeOrgId, employeeNumber) {
             assertOrg(scopeOrgId);
@@ -1025,13 +1151,13 @@ export function createMemoryOrganizationStore(
           },
           putUser: async (user) => {
             assertOrg(user.orgId);
-            draftUsers.set(userKey(orgId, user.principalId), { ...user });
+            draftUsers.set(userKey(orgId, user.principalId), userForWrite(draftUsers.values(), user));
           },
           insertUser: async (user) => {
             assertOrg(user.orgId);
             const key = userKey(orgId, user.principalId);
             if (draftUsers.has(key)) return false;
-            draftUsers.set(key, { ...user });
+            draftUsers.set(key, userForWrite(draftUsers.values(), user));
             return true;
           },
           async getIdentity(scopeOrgId, issuer, subject) {
@@ -1217,6 +1343,12 @@ export function createMemoryOrganizationStore(
               .filter((member) => member.principalId === principalId)
               .map((member) => ({ ...member }));
           },
+          async listGroupSubjects(scopeOrgId, groupId) {
+            assertOrg(scopeOrgId);
+            return [...draftGroupSubjects.values()]
+              .filter((subject) => groupId === undefined || subject.groupId === groupId)
+              .map((subject) => ({ ...subject }));
+          },
           putGroup: async (group) => {
             assertOrg(group.orgId);
             draftGroups.set(groupKey(orgId, group.id), { ...group });
@@ -1229,10 +1361,31 @@ export function createMemoryOrganizationStore(
             assertOrg(scopeOrgId);
             draftGroupMembers.delete(groupMemberKey(orgId, groupId, principalId));
           },
+          putGroupSubject: async (subject) => {
+            assertOrg(subject.orgId);
+            draftGroupSubjects.set(groupSubjectKey(orgId, subject.groupId, subject.subjectKind, subject.subjectId), {
+              ...subject,
+            });
+          },
+          removeGroupSubject: async (scopeOrgId, groupId, subjectKind, subjectId) => {
+            assertOrg(scopeOrgId);
+            draftGroupSubjects.delete(groupSubjectKey(orgId, groupId, subjectKind, subjectId));
+          },
           async getDirectoryPolicy(scopeOrgId, subjectKind, subjectId) {
             assertOrg(scopeOrgId);
             const found = draftDirectoryPolicies.get(directoryPolicyKey(orgId, subjectKind, subjectId));
             return found ? { ...found } : null;
+          },
+          async listDirectoryPolicies(scopeOrgId) {
+            assertOrg(scopeOrgId);
+            return [...draftDirectoryPolicies.values()]
+              .map((policy) => ({ ...policy }))
+              .sort(
+                (left, right) =>
+                  right.priority - left.priority ||
+                  left.subjectKind.localeCompare(right.subjectKind) ||
+                  left.subjectId.localeCompare(right.subjectId),
+              );
           },
           putDirectoryPolicy: async (policy) => {
             assertOrg(policy.orgId);
@@ -1364,6 +1517,7 @@ export function createMemoryOrganizationStore(
         restoreOrgMap(unitMembers, orgId, draftUnitMembers);
         restoreOrgMap(groups, orgId, draftGroups);
         restoreOrgMap(groupMembers, orgId, draftGroupMembers);
+        restoreOrgMap(groupSubjects, orgId, draftGroupSubjects);
         restoreOrgMap(directoryPolicies, orgId, draftDirectoryPolicies);
         restoreOrgMap(directoryRoots, orgId, draftDirectoryRoots);
         restoreOrgMap(skillPolicies, orgId, draftSkillPolicies);

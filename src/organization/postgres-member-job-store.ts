@@ -1,3 +1,4 @@
+import { definePgMigration } from "../persistence/pg-schema-migrations.ts";
 import { createPgPool, withPgTransaction } from "../persistence/pg-pool.ts";
 import { createSweeper } from "../util/sweeper.ts";
 import type {
@@ -12,7 +13,7 @@ import type {
 } from "./member-job-store.ts";
 import { OrganizationMemberJobConflictError } from "./member-job-store.ts";
 
-const SCHEMA = [
+const PROD_V1_3_0_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS organization_member_jobs(
     id TEXT NOT NULL,
     org_id TEXT NOT NULL,
@@ -50,6 +51,14 @@ const SCHEMA = [
     FOREIGN KEY(org_id, job_id) REFERENCES organization_member_jobs(org_id, id) ON DELETE CASCADE
   )`,
   `CREATE INDEX IF NOT EXISTS organization_member_jobs_expiry ON organization_member_jobs(status, expires_at)`,
+];
+
+const MIGRATIONS = [
+  definePgMigration({
+    id: "fork/member-jobs/0001",
+    statements: PROD_V1_3_0_SCHEMA,
+    expectedChecksum: "19340a85f8dc694a9f400da1e3017b29730c3ca8a852229a6a4304b5cdcff91e",
+  }),
 ];
 
 type Row = Record<string, unknown>;
@@ -90,8 +99,11 @@ function rowToItem(row: Row): OrganizationMemberJobItem {
   };
 }
 
-export function createPostgresOrganizationMemberJobStore(connectionString: string): OrganizationMemberJobStore {
-  const pg = createPgPool(connectionString, SCHEMA);
+export function createPostgresOrganizationMemberJobStore(
+  connectionString: string,
+  options: { autoStart?: boolean } = {},
+): OrganizationMemberJobStore {
+  const pg = createPgPool(connectionString, MIGRATIONS);
   const load = async (orgId: string, jobId: string, actorId: string): Promise<OrganizationMemberJobDetail | null> => {
     const jobs = await pg.q(`SELECT * FROM organization_member_jobs WHERE org_id = $1 AND id = $2 AND actor_id = $3`, [
       orgId,
@@ -266,6 +278,9 @@ export function createPostgresOrganizationMemberJobStore(connectionString: strin
         return expired.rowCount ?? 0;
       });
     },
+    start() {
+      sweeper.start();
+    },
     async close() {
       sweeper.stop();
       await pg.close();
@@ -275,6 +290,6 @@ export function createPostgresOrganizationMemberJobStore(connectionString: strin
     label: "organization-member-jobs",
     immediate: true,
   });
-  sweeper.start();
+  if (options.autoStart !== false) sweeper.start();
   return store;
 }

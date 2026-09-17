@@ -8,6 +8,7 @@ export interface FakeContainer {
   volume?: string;
   network?: string;
   finishedAt?: string;
+  args: string[];
 }
 
 export interface FakeDocker {
@@ -15,26 +16,31 @@ export interface FakeDocker {
   containers: Map<string, FakeContainer>;
   volumes: Set<string>;
   networks: Set<string>;
+  connections: Set<string>;
   runCount: number;
   daemonDown: boolean;
   imageMissing: boolean;
   imageId: string;
   imageFingerprint: string;
+  labelInspectFails: boolean;
 }
 
 export function installFakeDocker(daemonPort: number): FakeDocker {
   const containers = new Map<string, FakeContainer>();
   const volumes = new Set<string>();
   const networks = new Set<string>();
+  const connections = new Set<string>();
   const self: FakeDocker = {
     containers,
     volumes,
     networks,
+    connections,
     runCount: 0,
     daemonDown: false,
     imageMissing: false,
     imageId: "sha256:image-v1",
     imageFingerprint: "",
+    labelInspectFails: false,
     dockerExec: async (args) => exec(args),
   };
 
@@ -42,7 +48,7 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
   const fail = (stderr: string) => ({ code: 1, stdout: "", stderr });
 
   function parseRun(args: string[]): FakeContainer {
-    const c: FakeContainer = { name: "", imageId: self.imageId, running: true, labels: {} };
+    const c: FakeContainer = { name: "", imageId: self.imageId, running: true, labels: {}, args };
     for (let i = 0; i < args.length; i++) {
       const a = args[i]!;
       if (a === "--name") c.name = args[++i]!;
@@ -64,7 +70,9 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
         return ok("29.7.2");
       case "image": {
         if (self.imageMissing) return fail("Error: No such image");
-        return ok(`${self.imageId} ${self.imageFingerprint}`);
+        if (rest.includes("{{.Id}}")) return ok(self.imageId);
+        if (self.labelInspectFails) return fail('map has no entry for key "Labels"');
+        return ok(self.imageFingerprint);
       }
       case "inspect": {
         const name = rest[rest.length - 1]!;
@@ -85,7 +93,11 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
           if (sub === "connect") {
             if (!networks.has(net)) return fail(`network ${net} not found`);
             c.network = net;
-          } else c.network = undefined;
+            self.connections.add(`${net}|${c.name}`);
+          } else {
+            c.network = undefined;
+            self.connections.delete(`${net}|${c.name}`);
+          }
           return ok();
         }
         if (sub === "inspect") return networks.has(name) ? ok(name) : fail(`Error: No such network: ${name}`);
@@ -95,6 +107,15 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
           return ok(name);
         }
         if (sub === "rm") return networks.delete(name) ? ok(name) : fail(`Error: No such network: ${name}`);
+        if (sub === "connect" || sub === "disconnect") {
+          const container = rest[2]!;
+          const key = `${name}|${container}`;
+          if (sub === "connect") {
+            if (connections.has(key)) return fail("endpoint already exists");
+            connections.add(key);
+          } else connections.delete(key);
+          return ok(key);
+        }
         return fail(`unknown network subcommand ${sub}`);
       }
       case "volume": {

@@ -133,6 +133,33 @@ test("governance follows active ancestor units and all access groups without cac
   assert.deepEqual(await organizationGovernanceAncestors(store, "other-tenant", "personal:alice"), []);
 });
 
+test("governance follows access groups inherited from organization units and nested groups", async () => {
+  const { store, reader } = await fixture();
+  await store.removeGroupMember(ORG, "a", actor.id);
+  await store.removeGroupMember(ORG, "b", actor.id);
+  await store.putGroupSubject({
+    orgId: ORG,
+    groupId: "a",
+    subjectKind: "org_unit",
+    subjectId: "team",
+    createdAt: 1,
+    createdBy: "admin",
+  });
+  await store.putGroupSubject({
+    orgId: ORG,
+    groupId: "b",
+    subjectKind: "access_group",
+    subjectId: "a",
+    createdAt: 1,
+    createdBy: "admin",
+  });
+  const inherited = await reader.governanceScopes("personal:alice");
+  assert.ok(inherited.includes("access-group:a"));
+  assert.ok(inherited.includes("access-group:b"));
+  await store.removeGroupSubject(ORG, "a", "org_unit", "team");
+  assert.ok(!(await reader.governanceScopes("personal:alice")).some((scope) => scope.startsWith("access-group:")));
+});
+
 test("member turns receive durable group posture, approvals, commands, instructions and egress", async () => {
   const { writer, reader, resolution, store } = await fixture();
   await writer.setSecurityPosture("org-unit:department", "strict");

@@ -90,12 +90,20 @@ test("directory visibility policy reads and writes forward to the organization p
   const write = await fetch(`${base}/api/org-directory/user/U1`, {
     method: "PUT",
     headers: { "x-portal-identity": ADMIN, "content-type": "application/json" },
-    body: JSON.stringify({ mode: "none", roots: [], expectedRevision: 0 }),
+    body: JSON.stringify({ mode: "none", priority: 200, roots: [], expectedRevision: 0 }),
   });
   assert.equal(write.status, 200);
   const request = calls.at(-1)!;
   assert.equal(request.method, "PUT");
   assert.equal(request.url, "/v1/admin/org/directory-visibility/user/U1");
+});
+
+test("directory visibility effective previews forward to the organization policy API", async () => {
+  const read = await fetch(`${base}/api/org-directory/effective/U1`, {
+    headers: { "x-portal-identity": ADMIN },
+  });
+  assert.equal(read.status, 200);
+  assert.equal(calls.at(-1)!.url, "/v1/admin/org/directory-visibility/effective/U1");
 });
 
 test("POST /api/org-units forwards the create body", async () => {
@@ -210,6 +218,11 @@ test("the SPA registers the directory visibility editor with CAS and multi-root 
   assert.match(html, /function renderOrgDirectory\(root, d\)/);
   assert.match(html, /includeDescendants/);
   assert.match(html, /expectedRevision: revision/);
+  assert.match(html, /priority: priorityValue/);
+  assert.match(html, /Configured rules/);
+  assert.match(html, /Effective result preview/);
+  assert.match(html, /Only rules at the highest matched priority are evaluated/);
+  assert.match(html, /\/api\/org-directory\/effective\//);
   assert.match(html, /\/api\/org-directory\//);
   assert.match(html, /This subject will not see any organization members/);
 });

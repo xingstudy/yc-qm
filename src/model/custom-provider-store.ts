@@ -58,7 +58,9 @@ function strip(saved: StoredCustomProvider): CustomProviderSpec {
 export function createCustomProviderStore(input: {
   backing: DurableMap<StoredCustomProvider>;
   keyMaterial: string | Buffer;
+  write?: <T>(fn: () => Promise<T>) => Promise<T>;
 }): CustomProviderStore {
+  const write = input.write ?? (<T>(fn: () => Promise<T>) => fn());
   const key = deriveConnectorKey(input.keyMaterial, "custom-model-providers");
   const update = input.backing.update?.bind(input.backing);
   const insertIfAbsent = input.backing.insertIfAbsent?.bind(input.backing);
@@ -119,53 +121,58 @@ export function createCustomProviderStore(input: {
     },
 
     async upsert(spec, apiKey, updatedBy) {
-      validateCustomProviderSpec(spec);
-      spec = { ...spec, baseUrl: normalizeProviderBaseUrl(spec.protocol, spec.baseUrl) };
-      const actor = updatedBy.trim();
-      if (!actor) throw new Error("updatedBy is required");
-      const trimmedKey = apiKey?.trim();
-      const saved = (apiKeyEnc: string): StoredCustomProvider => ({
-        ...spec,
-        apiKeyEnc,
-        disabled: false,
-        revision: randomUUID(),
-        updatedAt: Date.now(),
-        updatedBy: actor,
-      });
-      if (trimmedKey) {
-        const next = saved(encryptSecret(trimmedKey, key));
-        if (await insertIfAbsent(spec.id, next)) return;
-        await update(spec.id, () => next);
-        return;
-      }
-      const updated = await update(spec.id, (existing) => {
-        const sameEndpoint =
-          existing &&
-          !existing.disabled &&
-          (existing.protocol === "anthropic") === (spec.protocol === "anthropic") &&
-          normalizeProviderBaseUrl(existing.protocol, existing.baseUrl) === spec.baseUrl;
-        if (!sameEndpoint || !existing.apiKeyEnc) {
-          throw new Error("API key is required when creating, restoring, or changing the provider endpoint");
+      return write(async () => {
+        validateCustomProviderSpec(spec);
+        spec = { ...spec, baseUrl: normalizeProviderBaseUrl(spec.protocol, spec.baseUrl) };
+        const actor = updatedBy.trim();
+        if (!actor) throw new Error("updatedBy is required");
+        const trimmedKey = apiKey?.trim();
+        const saved = (apiKeyEnc: string): StoredCustomProvider => ({
+          ...spec,
+          apiKeyEnc,
+          disabled: false,
+          revision: randomUUID(),
+          updatedAt: Date.now(),
+          updatedBy: actor,
+        });
+        if (trimmedKey) {
+          const next = saved(encryptSecret(trimmedKey, key));
+          if (await insertIfAbsent(spec.id, next)) return;
+          await update(spec.id, () => next);
+          return;
         }
-        return saved(existing.apiKeyEnc);
+        const updated = await update(spec.id, (existing) => {
+          const sameEndpoint =
+            existing &&
+            !existing.disabled &&
+            (existing.protocol === "anthropic") === (spec.protocol === "anthropic") &&
+            normalizeProviderBaseUrl(existing.protocol, existing.baseUrl) === spec.baseUrl;
+          if (!sameEndpoint || !existing.apiKeyEnc) {
+            throw new Error("API key is required when creating, restoring, or changing the provider endpoint");
+          }
+          return saved(existing.apiKeyEnc);
+        });
+        if (!updated)
+          throw new Error("API key is required when creating, restoring, or changing the provider endpoint");
       });
-      if (!updated) throw new Error("API key is required when creating, restoring, or changing the provider endpoint");
     },
 
     async delete(id, updatedBy) {
-      let removed = false;
-      const updated = await update(id, (existing) => {
-        if (existing.disabled) return existing;
-        removed = true;
-        return {
-          ...strip(existing),
-          disabled: true,
-          revision: randomUUID(),
-          updatedAt: Date.now(),
-          updatedBy,
-        };
+      return write(async () => {
+        let removed = false;
+        const updated = await update(id, (existing) => {
+          if (existing.disabled) return existing;
+          removed = true;
+          return {
+            ...strip(existing),
+            disabled: true,
+            revision: randomUUID(),
+            updatedAt: Date.now(),
+            updatedBy,
+          };
+        });
+        return Boolean(updated && removed);
       });
-      return Boolean(updated && removed);
     },
   };
 }

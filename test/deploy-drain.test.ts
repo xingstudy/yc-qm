@@ -169,3 +169,36 @@ test("a failing protection endpoint degrades silently and canClaim stays governe
   await sleep(50);
   assert.equal(drain.canClaim(), true);
 });
+
+test("overlapping drain sweeps serialize protection changes and stop releases an in-flight assertion", async () => {
+  let unblock!: () => void;
+  let started!: () => void;
+  const asserted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    unblock = resolve;
+  });
+  const changes: boolean[] = [];
+  const drain = createDrainController({
+    registry: { beat: async () => false },
+    protection: {
+      set: async (enabled) => {
+        changes.push(enabled);
+        if (enabled) {
+          started();
+          await gate;
+        }
+      },
+    },
+    busy: () => true,
+    sweepMs: 1,
+  });
+  drain.start();
+  await asserted;
+  await sleep(20);
+  drain.stop();
+  unblock();
+  await waitFor(() => changes.at(-1) === false);
+  assert.deepEqual(changes, [true, false]);
+});

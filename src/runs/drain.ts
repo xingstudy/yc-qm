@@ -1,3 +1,4 @@
+import { createKeyedQueue } from "../util/async.ts";
 import type { InstanceRegistry } from "./instance-registry.ts";
 import type { TaskProtection } from "./task-protection.ts";
 import { createSweeper, type Sweeper } from "../util/sweeper.ts";
@@ -19,42 +20,50 @@ export function createDrainController(opts: {
 }): DrainController {
   let superseded = false;
   let protectionOn = false;
+  let stopped = false;
+  let sweeping = false;
+  const queue = createKeyedQueue();
+  const protect = (enabled: boolean, refresh = false): Promise<void> =>
+    queue("protection", async () => {
+      if (!opts.protection || (enabled && stopped) || (protectionOn === enabled && !refresh)) return;
+      await opts.protection.set(enabled);
+      protectionOn = enabled;
+    });
   const sweeper: Sweeper = createSweeper(
     async () => {
-      const wasSuperseded = superseded;
-      superseded = await opts.registry.beat();
-      if (superseded !== wasSuperseded) {
-        console.error(
-          `[drain] ${superseded ? "newer build is live — draining: no new run claims, finishing in-flight turns" : "newer build gone — resuming run claims"}`,
-        );
-      }
-      if (!opts.protection) return;
-      const busy = opts.busy();
-      if (busy) {
-        await opts.protection.set(true);
-        protectionOn = true;
-      } else if (protectionOn) {
-        await opts.protection.set(false);
-        protectionOn = false;
+      if (sweeping || stopped) return;
+      sweeping = true;
+      try {
+        const wasSuperseded = superseded;
+        superseded = await opts.registry.beat();
+        if (superseded !== wasSuperseded) {
+          console.error(
+            `[drain] ${superseded ? "newer build is live — draining: no new run claims, finishing in-flight turns" : "newer build gone — resuming run claims"}`,
+          );
+        }
+        if (stopped) return;
+        const busy = opts.busy();
+        await protect(busy, busy);
+      } finally {
+        sweeping = false;
       }
     },
     opts.sweepMs ?? DRAIN_SWEEP_MS,
     { label: "deploy-drain", immediate: true },
   );
   return {
-    start: () => sweeper.start(),
+    start: () => {
+      stopped = false;
+      sweeper.start();
+    },
     stop: () => {
+      stopped = true;
       sweeper.stop();
-      if (protectionOn && opts.protection) {
-        protectionOn = false;
-        void opts.protection.set(false);
-      }
+      void protect(false);
     },
     canClaim: () => !superseded,
     noteBusy: () => {
-      if (!opts.protection || protectionOn) return;
-      protectionOn = true;
-      void opts.protection.set(true);
+      void protect(true);
     },
   };
 }

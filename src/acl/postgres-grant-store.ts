@@ -14,44 +14,68 @@ function rowToGrant(r: Record<string, unknown>): Grant {
 
 export function createPostgresGrantStore(connectionString: string, orgId = "default-org"): GrantPersistence {
   const configuredOrgId = orgId.replaceAll("'", "''");
-  const db = createPgPool(connectionString, [
-    `CREATE TABLE IF NOT EXISTS acl_grants(
-        org_id          TEXT,
+  const db = createPgPool(
+    connectionString,
+    [
+      {
+        id: "acl/grants/0001",
+        statements: [
+          `CREATE TABLE IF NOT EXISTS acl_grants(
         owner_scope_id   TEXT NOT NULL,
         path             TEXT NOT NULL,
         grantee_scope_id TEXT NOT NULL,
         permission       TEXT NOT NULL,
         granted_by       TEXT NOT NULL,
-        granted_at       BIGINT,
         PRIMARY KEY (owner_scope_id, path, grantee_scope_id, permission)
       )`,
-    `ALTER TABLE acl_grants ADD COLUMN IF NOT EXISTS org_id TEXT`,
-    `ALTER TABLE acl_grants ADD COLUMN IF NOT EXISTS granted_at BIGINT`,
-    `DO $do$
-      BEGIN
-        UPDATE acl_grants SET org_id = '${configuredOrgId}' WHERE org_id IS NULL;
-        UPDATE acl_grants SET granted_at = 0 WHERE granted_at IS NULL;
-      END
-      $do$`,
-    `CREATE UNIQUE INDEX IF NOT EXISTS acl_grants_legacy_identity
-      ON acl_grants(owner_scope_id, path, grantee_scope_id, permission)`,
-    `CREATE TABLE IF NOT EXISTS acl_grants_version(
+        ],
+      },
+      {
+        id: "acl/grants/0002",
+        statements: [
+          `CREATE TABLE IF NOT EXISTS acl_grants_version(
         only_row BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (only_row),
         v        BIGINT NOT NULL
       )`,
-    `INSERT INTO acl_grants_version(only_row, v) VALUES (TRUE, 0) ON CONFLICT (only_row) DO NOTHING`,
-    `CREATE OR REPLACE FUNCTION acl_grants_bump_version() RETURNS trigger LANGUAGE plpgsql AS $fn$
+          `INSERT INTO acl_grants_version(only_row, v) VALUES (TRUE, 0) ON CONFLICT (only_row) DO NOTHING`,
+          `CREATE OR REPLACE FUNCTION acl_grants_bump_version() RETURNS trigger LANGUAGE plpgsql AS $fn$
       BEGIN
         INSERT INTO acl_grants_version(only_row, v) VALUES (TRUE, 1)
         ON CONFLICT (only_row) DO UPDATE SET v = acl_grants_version.v + 1;
         RETURN NULL;
       END
       $fn$`,
-    `DROP TRIGGER IF EXISTS acl_grants_bump ON acl_grants`,
-    `CREATE TRIGGER acl_grants_bump
+          `DROP TRIGGER IF EXISTS acl_grants_bump ON acl_grants`,
+          `CREATE TRIGGER acl_grants_bump
       AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON acl_grants
       FOR EACH STATEMENT EXECUTE FUNCTION acl_grants_bump_version()`,
-  ]);
+        ],
+      },
+      {
+        id: "fork/acl-grants/0001",
+        expectedChecksum: "1cbc32bf6b46265d0b2ec8f542fcef3a3f2b5b4f189f578ffec25512eeb6cda5",
+        statements: [
+          `ALTER TABLE acl_grants ADD COLUMN IF NOT EXISTS org_id TEXT`,
+          `ALTER TABLE acl_grants ADD COLUMN IF NOT EXISTS granted_at BIGINT`,
+          `CREATE UNIQUE INDEX IF NOT EXISTS acl_grants_legacy_identity
+      ON acl_grants(owner_scope_id, path, grantee_scope_id, permission)`,
+        ],
+      },
+    ],
+    [
+      {
+        id: "fork/acl-grants/runtime-maintenance",
+        statements: [
+          `DO $do$
+      BEGIN
+        UPDATE acl_grants SET org_id = '${configuredOrgId}' WHERE org_id IS NULL;
+        UPDATE acl_grants SET granted_at = 0 WHERE granted_at IS NULL;
+      END
+      $do$`,
+        ],
+      },
+    ],
+  );
   const { q } = db;
   let cache: { v: string; grants: readonly Grant[] } | null = null;
 

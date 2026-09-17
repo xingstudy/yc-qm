@@ -349,6 +349,77 @@ test("directory APIs filter tree, search, details, and pagination with a persona
   }
 });
 
+test("directory policy administration lists priorities and explains a user's effective rule", async () => {
+  const srv = await startAdmin();
+  try {
+    await seedActive(srv.built, "priority-viewer");
+    const inherited = await adminFetch(srv.base, "PUT", `${DIRECTORY_POLICY_PATH}/org_unit/root`, "admin-alice", {
+      mode: "none",
+      priority: 100,
+      roots: [],
+      expectedRevision: 0,
+    });
+    assert.equal(inherited.status, 200);
+    const exception = await adminFetch(
+      srv.base,
+      "PUT",
+      `${DIRECTORY_POLICY_PATH}/user/priority-viewer`,
+      "admin-alice",
+      { mode: "all", priority: 200, roots: [], expectedRevision: 0 },
+    );
+    assert.equal(exception.status, 200);
+    assert.equal(((await exception.json()) as any).policy.priority, 200);
+    const legacyUpdate = await adminFetch(
+      srv.base,
+      "PUT",
+      `${DIRECTORY_POLICY_PATH}/user/priority-viewer`,
+      "admin-alice",
+      { mode: "all", roots: [], expectedRevision: 1 },
+    );
+    assert.equal(legacyUpdate.status, 200);
+    assert.equal(((await legacyUpdate.json()) as any).policy.priority, 200);
+
+    const catalog = await adminGet(srv.base, DIRECTORY_POLICY_PATH, "admin-alice");
+    assert.equal(catalog.status, 200);
+    const catalogBody: any = await catalog.json();
+    assert.deepEqual(
+      catalogBody.policies.map((policy: any) => [policy.subjectKind, policy.subjectId, policy.priority]),
+      [
+        ["user", "priority-viewer", 200],
+        ["org_unit", "root", 100],
+      ],
+    );
+    assert.equal(catalogBody.policies[0].subjectName, "priority-viewer");
+
+    const effective = await adminGet(srv.base, `${DIRECTORY_POLICY_PATH}/effective/priority-viewer`, "admin-alice");
+    assert.equal(effective.status, 200);
+    const effectiveBody: any = await effective.json();
+    assert.deepEqual(effectiveBody.effective, {
+      mode: "all",
+      priority: 200,
+      revision: effectiveBody.effective.revision,
+      roots: [],
+    });
+    assert.deepEqual(
+      effectiveBody.policies.map((policy: any) => [policy.subjectKind, policy.priority, policy.effective]),
+      [
+        ["user", 200, true],
+        ["org_unit", 100, false],
+      ],
+    );
+
+    const invalid = await adminFetch(srv.base, "PUT", `${DIRECTORY_POLICY_PATH}/user/priority-viewer`, "admin-alice", {
+      mode: "all",
+      priority: 1001,
+      roots: [],
+      expectedRevision: 2,
+    });
+    assert.equal(invalid.status, 400);
+  } finally {
+    await srv.close();
+  }
+});
+
 test("project member candidates and add validation both use the organization directory", async () => {
   const srv = await startAdmin();
   try {
@@ -394,6 +465,62 @@ test("project member candidates and add validation both use the organization dir
     assert.deepEqual((await after.json()) as any, { matches: [] });
     assert.equal(searches.length, 1);
     assert.deepEqual(new Set(searches[0]?.excludePrincipalIds), new Set(["owner", "candidate"]));
+  } finally {
+    await srv.close();
+  }
+});
+
+test("an entire-organization directory denial hides project member candidates for unassigned owners", async () => {
+  const srv = await startAdmin();
+  try {
+    for (const principalId of ["owner-without-unit", "hidden-person"]) await seedActive(srv.built, principalId);
+    const project = await srv.built.app.createProject("owner-without-unit", "Organization-hidden project");
+    assert.ok(project);
+    const hidden = await srv.built.organization.setDirectoryPolicy({
+      subjectKind: "org_unit",
+      subjectId: "root",
+      mode: "none",
+      roots: [],
+      expectedRevision: 0,
+      actor: "admin-alice",
+    });
+    assert.equal(hidden.ok, true);
+    const path = `/v1/projects/${project!.id}/member-candidates?principalId=owner-without-unit&q=hidden`;
+    const candidates = await adminGet(srv.base, path, "owner-without-unit");
+    assert.equal(candidates.status, 200);
+    assert.deepEqual(await candidates.json(), { matches: [] });
+    assert.equal(
+      (await srv.built.app.addProjectMember(project!.id, "owner-without-unit", "hidden-person")).status,
+      "invalid_member",
+    );
+  } finally {
+    await srv.close();
+  }
+});
+
+test("interactive organization admins cannot elevate project member discovery above directory policy", async () => {
+  const srv = await startAdmin();
+  try {
+    await seedActive(srv.built, "hidden-admin-candidate");
+    const project = await srv.built.app.createProject("admin-alice", "Admin directory policy project");
+    assert.ok(project);
+    const hidden = await srv.built.organization.setDirectoryPolicy({
+      subjectKind: "org_unit",
+      subjectId: "root",
+      mode: "none",
+      roots: [],
+      expectedRevision: 0,
+      actor: "admin-alice",
+    });
+    assert.equal(hidden.ok, true);
+    const path = `/v1/projects/${project!.id}/member-candidates?principalId=admin-alice&q=hidden`;
+    const candidates = await adminGet(srv.base, path, "admin-alice");
+    assert.equal(candidates.status, 200);
+    assert.deepEqual(await candidates.json(), { matches: [] });
+    assert.equal(
+      (await srv.built.app.addProjectMember(project!.id, "admin-alice", "hidden-admin-candidate")).status,
+      "invalid_member",
+    );
   } finally {
     await srv.close();
   }
@@ -1527,6 +1654,7 @@ test("admin creates, lists, and reads access groups with members", async () => {
     assert.equal(list.status, 200);
     const listed: any = await list.json();
     assert.ok(listed.groups.some((g: any) => g.id === group.id));
+    assert.ok(listed.units.some((unit: any) => unit.id === "root"));
     await seedActive(srv.built, "U-grp-member");
     const added = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${group.id}/members`, "admin-alice", {
       principalId: "U-grp-member",
@@ -1548,6 +1676,63 @@ test("admin creates, lists, and reads access groups with members", async () => {
     assert.equal(detailBody.members[0].principalId, "U-grp-member");
     const missing = await adminGet(srv.base, `${GROUPS_PATH}/grp-ghost`, "admin-alice");
     assert.equal(missing.status, 404);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("admin access group subjects include units and nested groups while cycles are rejected", async () => {
+  const srv = await startAdmin();
+  try {
+    const unit = await srv.built.organization.createUnit({
+      parentId: "root",
+      name: "Engineering",
+      kind: "department",
+      actor: "admin-alice",
+    });
+    const nested = await createGroupAsAdmin(srv.base, { name: "Nested" });
+    const parent = await createGroupAsAdmin(srv.base, { name: "Parent" });
+    const unitAdd = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${parent.id}/subjects`, "admin-alice", {
+      subjectKind: "org_unit",
+      subjectId: unit.id,
+    });
+    assert.equal(unitAdd.status, 200);
+    const nestedAdd = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${parent.id}/subjects`, "admin-alice", {
+      subjectKind: "access_group",
+      subjectId: nested.id,
+    });
+    assert.equal(nestedAdd.status, 200);
+    const detailBody: any = await (await adminGet(srv.base, `${GROUPS_PATH}/${parent.id}`, "admin-alice")).json();
+    assert.deepEqual(
+      detailBody.subjects.map((subject: any) => [subject.subjectKind, subject.subjectId, subject.name]),
+      [
+        ["access_group", nested.id, "Nested"],
+        ["org_unit", unit.id, "Engineering"],
+      ],
+    );
+    const cycle = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${nested.id}/subjects`, "admin-alice", {
+      subjectKind: "access_group",
+      subjectId: parent.id,
+    });
+    assert.equal(cycle.status, 409);
+    assert.equal(((await cycle.json()) as any).error, "access_group_cycle");
+    const missing = await adminFetch(srv.base, "POST", `${GROUPS_PATH}/${parent.id}/subjects`, "admin-alice", {
+      subjectKind: "org_unit",
+      subjectId: "missing",
+    });
+    assert.equal(missing.status, 404);
+    const removed = await adminFetch(
+      srv.base,
+      "DELETE",
+      `${GROUPS_PATH}/${parent.id}/subjects/access_group/${nested.id}`,
+      "admin-alice",
+      {},
+    );
+    assert.equal(removed.status, 200);
+    assert.deepEqual(
+      ((await removed.json()) as any).subjects.map((subject: any) => subject.subjectKind),
+      ["org_unit"],
+    );
   } finally {
     await srv.close();
   }

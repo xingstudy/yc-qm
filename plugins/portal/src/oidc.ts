@@ -15,6 +15,14 @@ export interface OidcConfig {
   issuer: string;
   jwksUri: string;
   expectedTeamId?: string;
+  prompt?: string;
+  hostedDomain?: string;
+}
+
+const GOOGLE_ISSUER = "https://accounts.google.com";
+
+export function hostedDomainHint(issuer: string, allowedEmailDomain: string | undefined): string | undefined {
+  return issuer === GOOGLE_ISSUER && allowedEmailDomain ? allowedEmailDomain : undefined;
 }
 
 export function pkcePair(): { verifier: string; challenge: string } {
@@ -33,6 +41,8 @@ export function buildAuthorizeUrl(cfg: OidcConfig, args: { state: string; nonce:
   u.searchParams.set("nonce", args.nonce);
   u.searchParams.set("code_challenge", args.challenge);
   u.searchParams.set("code_challenge_method", "S256");
+  if (cfg.prompt) u.searchParams.set("prompt", cfg.prompt);
+  if (cfg.hostedDomain) u.searchParams.set("hd", cfg.hostedDomain);
   return u.toString();
 }
 
@@ -127,10 +137,29 @@ export interface PrincipalRule {
   allowBrokerPrincipal?: boolean;
 }
 
-export function resolvePrincipal(
+type PrincipalArgs = { sub: string; claims: Record<string, unknown>; userinfo: Record<string, unknown> };
+
+function envRefusal(rule: PrincipalRule, email: string, args: PrincipalArgs): string | null {
+  if (
+    rule.allowedEmails?.length &&
+    !rule.allowedEmails.map((allowed) => allowed.trim().toLowerCase()).includes(email)
+  ) {
+    return "account is not on the permitted email list";
+  }
+  if (rule.allowedEmailDomain) {
+    const domain = rule.allowedEmailDomain.toLowerCase();
+    if (!email.endsWith(`@${domain}`)) return "account is outside the permitted domain";
+    const hd = args.userinfo.hd ?? args.claims.hd;
+    if (typeof hd === "string" && hd.toLowerCase() !== domain) return "account is outside the permitted domain";
+  }
+  return null;
+}
+
+export async function resolvePrincipal(
   rule: PrincipalRule,
-  args: { sub: string; claims: Record<string, unknown>; userinfo: Record<string, unknown> },
-): string {
+  args: PrincipalArgs,
+  invited: (email: string) => Promise<boolean> = async () => false,
+): Promise<string> {
   if (rule.claim === "sub") return args.sub;
   const rawEmail = args.userinfo.email;
   if (typeof rawEmail !== "string" || !rawEmail.includes("@")) {
@@ -144,19 +173,8 @@ export function resolvePrincipal(
   const verified = args.userinfo.email_verified;
   if (verified !== true && verified !== "true") throw new Error("email is not verified by the identity provider");
   const email = rawEmail.trim().toLowerCase();
-  if (
-    rule.allowedEmails?.length &&
-    !rule.allowedEmails.map((allowed) => allowed.trim().toLowerCase()).includes(email)
-  ) {
-    throw new Error("account is not on the permitted email list");
-  }
-  if (rule.allowedEmailDomain) {
-    const domain = rule.allowedEmailDomain.toLowerCase();
-    if (!email.endsWith(`@${domain}`)) throw new Error("account is outside the permitted domain");
-    const hd = args.userinfo.hd ?? args.claims.hd;
-    if (typeof hd === "string" && hd.toLowerCase() !== domain)
-      throw new Error("account is outside the permitted domain");
-  }
+  const refusal = envRefusal(rule, email, args);
+  if (refusal && !(await invited(email))) throw new Error(refusal);
   return email;
 }
 

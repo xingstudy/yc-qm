@@ -12,6 +12,7 @@ import {
   type StoredMcpServer,
 } from "../src/mcp/mcp-server-store.ts";
 import { createMcpToolService } from "../src/mcp/mcp-tool-service.ts";
+import type { ConnectorTokenStore } from "../src/credentials/keychain.ts";
 import {
   canReuseMcpCredentials,
   deleteMcpServer,
@@ -19,6 +20,7 @@ import {
   mcpReadOnly,
 } from "../src/api/routes/admin/mcp-servers.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { createAuditLog } from "../src/audit/audit-log.ts";
 
 function jsonResponse(body: unknown, status = 200, contentType = "application/json") {
   return {
@@ -967,7 +969,7 @@ test("the MCP delete route removes a record encrypted with an unavailable key", 
     deps: {
       mcpServers: store,
       admin: {
-        listGrants: async () => [{ principalId: "internal:admin", role: "org_admin", scopeId: "org:test" }],
+        adminStatusOf: async () => ({ isAdmin: true, role: "org_admin" }),
       },
     },
     res,
@@ -1149,6 +1151,56 @@ test("tool service exposes only annotated read-only MCP tools during a read-only
   const out = await service.call(refreshedQuery.capability, { q: "hello" }, "internal:U1");
   assert.equal(out, "ran query");
   service.close();
+});
+
+test("user OAuth MCP tools and bearer tokens stay isolated to the connecting user", async () => {
+  const store = mcpStore();
+  await store.put(
+    server({
+      id: "atlassian",
+      url: "https://mcp.atlassian.com/v2/mcp",
+      auth: "user-oauth",
+    }),
+  );
+  const tokens: ConnectorTokenStore = {
+    async setConnectorToken() {},
+    async deleteConnectorToken() {},
+    async connectorTokenStatus() {
+      return { connected: true };
+    },
+    async connectorAccessToken(_host, principalId) {
+      if (principalId === "U1") return "token-U1";
+      if (principalId === "U2") return "token-U2";
+      return null;
+    },
+    async connectorDerivedAuth() {
+      return null;
+    },
+  };
+  const seenTokens: string[] = [];
+  const { fetch } = fakeServerFetch();
+  const service = createMcpToolService({
+    servers: store,
+    connectorTokens: tokens,
+    fetchImpl: async (url, init) => {
+      seenTokens.push(init.headers.authorization ?? "");
+      return fetch(url, init);
+    },
+    refreshIntervalMs: 3600_000,
+  });
+  await service.ready();
+  assert.equal(service.toolDefs().length, 0);
+  await service.refreshForPrincipal("U1");
+  await service.refreshForPrincipal("U2");
+  const u1 = service.toolDefs("U1").find((tool) => tool.remoteName === "query")!;
+  const u2 = service.toolDefs("U2").find((tool) => tool.remoteName === "query")!;
+  assert.notEqual(u1.capability, u2.capability);
+  assert.equal(await service.call(u1.capability, { q: "one" }, "U1"), "ran query");
+  assert.equal(await service.call(u2.capability, { q: "two" }, "U2"), "ran query");
+  await assert.rejects(() => service.call(u1.capability, {}, "U2"), /unknown MCP tool capability/);
+  assert.ok(seenTokens.includes("Bearer token-U1"));
+  assert.ok(seenTokens.includes("Bearer token-U2"));
+  await service.close();
 });
 
 test("missing or invalid persisted read-only state is fail-closed", async () => {
@@ -1439,4 +1491,62 @@ test("a registry read failure preserves the previous snapshot without unhandled 
     process.off("unhandledRejection", onUnhandled);
     await service.close();
   }
+});
+
+test("MCP discovery waits for initialization across refresh triggers and closes while initialization is pending", async (t) => {
+  const initialization = Promise.withResolvers<void>();
+  const store = mcpStore();
+  const reads = t.mock.method(store, "list", async () => []);
+  const audit = createAuditLog();
+  const writes = t.mock.method(audit, "record");
+  const service = createMcpToolService({
+    servers: store,
+    audit,
+    initializationReady: initialization.promise,
+    refreshIntervalMs: 5,
+  });
+  const explicit = service.refresh();
+  await store.put(server());
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(reads.mock.callCount(), 0);
+  assert.equal(writes.mock.callCount(), 0);
+  await service.close();
+  await explicit;
+  await service.ready();
+  initialization.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reads.mock.callCount(), 0);
+});
+
+test("failed initialization never reads the MCP registry or writes database audit", async (t) => {
+  const initialization = Promise.withResolvers<void>();
+  const store = mcpStore();
+  const reads = t.mock.method(store, "list", async () => []);
+  const audit = createAuditLog();
+  const writes = t.mock.method(audit, "record");
+  const service = createMcpToolService({
+    servers: store,
+    audit,
+    initializationReady: initialization.promise,
+    refreshIntervalMs: 5,
+  });
+  initialization.reject(new Error("migration failed"));
+  await assert.rejects(service.ready(), /migration failed/);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await assert.rejects(service.refresh(), /migration failed/);
+  await service.close();
+  assert.equal(reads.mock.callCount(), 0);
+  assert.equal(writes.mock.callCount(), 0);
+});
+
+test("MCP discovery begins after successful initialization", async (t) => {
+  const initialization = Promise.withResolvers<void>();
+  const store = mcpStore();
+  const reads = t.mock.method(store, "list", async () => []);
+  const service = createMcpToolService({ servers: store, initializationReady: initialization.promise });
+  assert.equal(reads.mock.callCount(), 0);
+  initialization.resolve();
+  await service.ready();
+  assert.equal(reads.mock.callCount(), 1);
+  await service.close();
 });

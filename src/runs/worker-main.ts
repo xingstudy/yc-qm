@@ -3,6 +3,9 @@ import { buildApp, stopWithBackstop } from "../wiring.ts";
 
 const config = loadConfig();
 const built = buildApp(config);
+await built.migrationsReady;
+await built.deploymentLayerReady;
+await built.sandboxResources.initialize();
 await built.config.hydrate?.();
 await built.identity.hydrate();
 await built.mcpToolService.ready();

@@ -4,6 +4,7 @@ import { join, relative, sep } from "node:path";
 import type { QmConfig } from "./config.ts";
 import { CliError, errMessage, step, warn } from "./log.ts";
 import { deploymentSecretValue, readEnvFile } from "./util.ts";
+import { parseToolDescriptor } from "./sandbox-layer.ts";
 
 interface DeploymentLayerFile {
   path: string;
@@ -84,8 +85,16 @@ export function deploymentLayerBundle(sandboxDir: string): DeploymentLayerBundle
           const descriptor = join(path, "tool.json");
           if (!existsSync(descriptor))
             throw new CliError(`deployment layer tool directory is missing tool.json: ${path}`);
-          return textFile(toolsDir, descriptor, "tools");
+          const parsed = parseToolDescriptor(readFileSync(descriptor, "utf8"), `tools/${entry.name}/tool.json`);
+          const installed = [...new Set((parsed.install?.files ?? []).map((file) => file.from))].map((from) => {
+            const source = join(path, from);
+            if (!existsSync(source))
+              throw new CliError(`tool "${parsed.id}" declares install file ${from} but ${source} does not exist`);
+            return textFile(toolsDir, source, "tools");
+          });
+          return [textFile(toolsDir, descriptor, "tools"), ...installed];
         })
+        .flat()
         .sort(pathOrder)
     : [];
   return { contract: 1, tools, skills: walkText(join(sandboxDir, "skills"), "skills") };
@@ -183,6 +192,7 @@ export function httpDeploymentLayerTransport(
     urlOf?: (config: QmConfig) => URL;
     secretFallback?: (config: QmConfig) => string | undefined;
     timeoutMs?: number;
+    request?: (config: QmConfig, url: URL, init: RequestInit) => Promise<{ status: number; body: string }>;
   } = {},
 ): DeploymentLayerTransport {
   return async (opts) => {
@@ -192,12 +202,15 @@ export function httpDeploymentLayerTransport(
     if (!secret && o.secretFallback) secret = o.secretFallback(opts.config);
     if (!secret) throw new CliError(`CORE_SIGNING_SECRET is required locally to access the deployment layer`);
     const url = (o.urlOf ?? defaultCoreUrl)(opts.config);
-    const response = await fetch(url, {
+    const init: RequestInit = {
       method: opts.method,
       headers: signingHeaders(secret, opts.method, url.pathname + url.search, opts.body),
       ...(opts.method === "PUT" ? { body: opts.body } : {}),
       ...(o.timeoutMs ? { signal: AbortSignal.timeout(o.timeoutMs) } : {}),
-    });
+      redirect: "error",
+    };
+    if (o.request) return o.request(opts.config, url, init);
+    const response = await fetch(url, init);
     return { status: response.status, body: await response.text() };
   };
 }

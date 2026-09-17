@@ -1,9 +1,11 @@
+import { isolatedPgTestDatabase } from "./support/isolated-pg-test-database.ts";
+import { resetPgMigrations } from "./support/reset-pg-migrations.ts";
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 import type { OrganizationMemberJob, OrganizationMemberJobItem } from "../src/organization/member-job-store.ts";
 import { createPostgresOrganizationMemberJobStore } from "../src/organization/postgres-member-job-store.ts";
 
-const URL = process.env.DATABASE_URL;
+const URL = await isolatedPgTestDatabase(process.env.DATABASE_URL);
 const skip = URL ? false : "set DATABASE_URL to run PostgreSQL member-job tests";
 
 beforeEach(async () => {
@@ -11,6 +13,7 @@ beforeEach(async () => {
   const pg = (await import("pg")).default;
   const pool = new pg.Pool({ connectionString: URL });
   await pool.query("DROP TABLE IF EXISTS organization_member_job_items, organization_member_jobs CASCADE");
+  await resetPgMigrations(pool, "fork/member-jobs");
   await pool.end();
 });
 

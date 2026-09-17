@@ -5,15 +5,17 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_FILENAME, loadConfigInDir, type QmConfig } from "../src/config.ts";
-import { currentDeploymentLayerState, deploymentLayerBundle, syncDeploymentLayer } from "../src/deployment-layer.ts";
+import {
+  currentDeploymentLayerState,
+  deploymentLayerBundle,
+  syncDeploymentLayer,
+  httpDeploymentLayerTransport,
+} from "../src/deployment-layer.ts";
 import { dockerDeploymentLayerTransport } from "../src/backends/docker.ts";
 import { flyDeploymentLayerTransport } from "../src/backends/fly.ts";
-import { awsDeploymentLayerTransport } from "../src/backends/aws.ts";
 import { expectedDescriptors, runConformance } from "../src/commands/conformance.ts";
 
 const SECRET = "conformance-test-secret";
-
-const PINNED_SANDBOX_IMAGE = `registry.fly.io/acme-sandboxes@sha256:${"b".repeat(64)}`;
 
 function writeLayer(dir: string): void {
   mkdirSync(join(dir, "sandbox", "skills", "a"), { recursive: true });
@@ -91,7 +93,7 @@ test("the deployment layer sync rejects a bundle over the core's 1 MB limit befo
       skills: [],
       env: {},
       imageOverrides: {},
-      sandbox: { app: "acme-sandboxes", image: PINNED_SANDBOX_IMAGE },
+      sandbox: { app: "acme-sandboxes" },
     };
     process.env.CORE_SIGNING_SECRET = SECRET;
     try {
@@ -182,7 +184,7 @@ function makeConfig(publicUrl: string): QmConfig {
     skills: [],
     env: {},
     imageOverrides: {},
-    sandbox: { app: "acme-sandboxes", image: PINNED_SANDBOX_IMAGE },
+    sandbox: { app: "acme-sandboxes" },
   };
 }
 
@@ -244,10 +246,24 @@ test("the docker sync PUTs the bundle to the base port with verifiable v0 HMAC s
 test("conformance passes against a live core: base-port override, signed request, canonical hash + descriptors", async () => {
   const dir = mkdtempSync(join(tmpdir(), "qm-conf-"));
   const captured: CapturedRequest[] = [];
+  const descriptor = {
+    id: "t",
+    advertise: "runs t",
+    install: {
+      binary: "t",
+      files: [
+        { from: "t", to: "/usr/local/bin/t", mode: "0755" },
+        { from: "release.json", to: "/usr/local/lib/t/release.json", mode: "0644" },
+      ],
+    },
+  };
   const bundle = (() => {
     writeLayer(dir);
+    writeFileSync(join(dir, "sandbox", "tools", "t", "tool.json"), JSON.stringify(descriptor));
+    writeFileSync(join(dir, "sandbox", "tools", "t", "release.json"), JSON.stringify({ version: "1.0.0" }));
     return deploymentLayerBundle(join(dir, "sandbox"));
   })();
+  assert.equal(bundle.tools.length, 3);
   const contentHash = createHash("sha256").update(JSON.stringify(bundle)).digest("hex");
   const { server, port } = await startCoreStub(
     () => ({
@@ -255,7 +271,7 @@ test("conformance passes against a live core: base-port override, signed request
         contentHash,
         status: "applied",
         runtimeContentHash: contentHash,
-        resolved: { tools: [{ install: { binary: "t" }, advertise: "runs t", id: "t" }] },
+        resolved: { tools: [descriptor] },
       }),
     }),
     captured,
@@ -270,7 +286,7 @@ test("conformance passes against a live core: base-port override, signed request
         target: "docker",
         services: ["core"],
         basePort: 1,
-        sandbox: { app: "acme-sandboxes", image: PINNED_SANDBOX_IMAGE },
+        sandbox: { app: "acme-sandboxes" },
       }),
     );
     await withEnv({ CORE_SIGNING_SECRET: SECRET, QM_BASE_PORT: String(port) }, async () => {
@@ -328,7 +344,7 @@ test("conformance fails when the stored layer matches but the core still serves 
         target: "docker",
         services: ["core"],
         basePort: 1,
-        sandbox: { app: "acme-sandboxes", image: PINNED_SANDBOX_IMAGE },
+        sandbox: { app: "acme-sandboxes" },
       }),
     );
     await withEnv({ CORE_SIGNING_SECRET: SECRET, QM_BASE_PORT: String(port) }, async () => {
@@ -372,7 +388,7 @@ test("conformance reports a non-JSON layer response as a contract failure, not a
         target: "docker",
         services: ["core"],
         basePort: 1,
-        sandbox: { app: "acme-sandboxes", image: PINNED_SANDBOX_IMAGE },
+        sandbox: { app: "acme-sandboxes" },
       }),
     );
     await withEnv({ CORE_SIGNING_SECRET: SECRET, QM_BASE_PORT: String(port) }, async () => {
@@ -438,7 +454,7 @@ test("a publicUrl with a base path keeps it in the request path and the signed c
     await withEnv({ CORE_SIGNING_SECRET: SECRET }, () =>
       syncDeploymentLayer({
         config: makeConfig(`http://127.0.0.1:${port}/base`),
-        transport: awsDeploymentLayerTransport,
+        transport: httpDeploymentLayerTransport(),
         configDir: dir,
         sandboxDir: join(dir, "sandbox"),
       }),
@@ -798,6 +814,33 @@ test("a durable record whose bundle is missing still fails the read", async () =
     });
   } finally {
     await new Promise<void>((resolve) => server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the bundle carries every file a tool declares under install.files and fails when one is missing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-layer-install-files-"));
+  try {
+    const toolDir = join(dir, "sandbox", "tools", "acme");
+    mkdirSync(toolDir, { recursive: true });
+    writeFileSync(
+      join(toolDir, "tool.json"),
+      JSON.stringify({ id: "acme", install: { binary: "acme", files: [{ from: "acme", to: "/usr/local/bin/acme" }] } }),
+    );
+    assert.throws(
+      () => deploymentLayerBundle(join(dir, "sandbox")),
+      /declares install file acme but .* does not exist/,
+    );
+    writeFileSync(join(toolDir, "acme"), "#!/bin/sh\necho acme\n");
+    chmodSync(join(toolDir, "acme"), 0o755);
+    const bundle = deploymentLayerBundle(join(dir, "sandbox"));
+    assert.deepEqual(
+      bundle.tools.map((file) => file.path),
+      ["tools/acme/acme", "tools/acme/tool.json"],
+    );
+    assert.equal(bundle.tools[0]!.content, "#!/bin/sh\necho acme\n");
+    assert.equal(bundle.tools[0]!.executable, true);
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

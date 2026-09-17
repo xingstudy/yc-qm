@@ -21,6 +21,7 @@ for (const persistence of ["memory", "postgres"] as const) {
     },
     async () => {
       const config = testConfig({
+        orgBootstrapUsers: ["admin-alice"],
         harness: "pi",
         adminGrants: "admin-alice:org_admin",
         seedSkills: false,
@@ -62,9 +63,13 @@ for (const persistence of ["memory", "postgres"] as const) {
           servers[1]!.base,
           `/v1/runtime-config?principalId=recursive-alice&scopeId=${PERSONAL}`,
         );
-        assert.deepEqual(user.effective, expected);
+        assert.deepEqual(user.effective, { ...expected, effortLevel: "auto", fastMode: false });
         assert.equal(user.scopeOverride !== null, scope === PERSONAL);
-        assert.deepEqual(await resolveRuntimeChoiceDurable(reader.config, ORG, PERSONAL, fallback), expected);
+        assert.deepEqual(await resolveRuntimeChoiceDurable(reader.config, ORG, PERSONAL, fallback), {
+          ...expected,
+          effortLevel: "auto",
+          fastMode: false,
+        });
         return { admin, user };
       };
       try {
@@ -153,7 +158,7 @@ for (const persistence of ["memory", "postgres"] as const) {
           servers[1]!.base,
           "/v1/runtime-config?principalId=unrelated-user&scopeId=personal:unrelated-user",
         );
-        assert.deepEqual(otherUser.effective, fallback);
+        assert.deepEqual(otherUser.effective, { ...fallback, effortLevel: "auto", fastMode: false });
         const forbidden = await fetch(`${servers[0]!.base}/v1/admin/scopes/${PERSONAL}/runtime`, {
           method: "PUT",
           headers: { ...ADMIN, "x-admin-actor": "recursive-alice@default-org" },

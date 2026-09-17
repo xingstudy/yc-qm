@@ -170,7 +170,7 @@ test("processRun heartbeats the lease while the turn runs, and the beat stops wi
 });
 
 test("a retryable turn failure requeues the run, rethrows, and stops the heartbeat", async (t) => {
-  t.mock.timers.enable({ apis: ["setInterval"] });
+  t.mock.timers.enable({ apis: ["setInterval", "Date"], now: Date.now() });
   const store = createMemoryRunStore();
   const { runs, beats } = spyHeartbeats(store.runs);
 
@@ -195,6 +195,7 @@ test("a retryable turn failure requeues the run, rethrows, and stops the heartbe
   assert.equal(requeued?.status, "pending", "an ordinary failure goes back on the queue");
   assert.equal(requeued?.attempts, 1);
 
+  assert.equal(await runs.claim("w2", 9_000), null);
   t.mock.timers.tick(30_000);
   await microtasks();
   assert.equal(beats.length, 1, "no heartbeat leaks past the failure");
@@ -221,7 +222,8 @@ test("a retryable turn failure requeues the run, rethrows, and stops the heartbe
   );
 });
 
-test("finalAttempt marks the attempt whose error would park the run, from the claim-time budget", async () => {
+test("finalAttempt marks the attempt whose error would park the run, from the claim-time budget", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   const { runs } = createMemoryRunStore();
   const seen: OrchestratorInput[] = [];
   const orchestrator = fakeOrchestrator(async (input) => {
@@ -236,6 +238,8 @@ test("finalAttempt marks the attempt whose error would park the run, from the cl
   assert.equal(seen[0]?.finalAttempt, false, "budget remains — the orchestrator must not record a terminal failure");
   assert.equal((await runs.get(first!.id))?.status, "pending");
 
+  assert.equal(await runs.claim("w1", 5_000), null);
+  t.mock.timers.tick(60_000);
   const second = await runs.claim("w1", 5_000);
   await assert.rejects(processRun(deps, second!), /hiccup/);
   assert.equal(seen[1]?.finalAttempt, true, "the last budgeted attempt is marked — an error now is terminal");
@@ -392,4 +396,33 @@ test("a NonRetryableTurnError parks the run even with attempts remaining", async
   assert.equal(parked?.status, "failed", "no retry for an error the turn itself declared permanent");
   assert.equal(parked?.attempts, 1, "parked on the first attempt, not after exhausting maxAttempts");
   assert.equal(parked?.result?.reason, "policy says no");
+});
+
+test("a crashed turn's raw exception text never reaches the stored reason", async () => {
+  const { runs } = createMemoryRunStore();
+  const orchestrator = fakeOrchestrator(async () => {
+    throw new Error("connect ECONNREFUSED db-internal.local:5432 password=hunter2");
+  });
+
+  await runs.enqueue({ sessionId: "s1", request: turn, maxAttempts: 1 });
+  const run = await runs.claim("w1", 5_000);
+  await assert.rejects(processRun({ runs, orchestrator, leaseTtlMs: 5_000 }, run!), /db-internal/);
+
+  const parked = await runs.get(run!.id);
+  assert.equal(parked?.status, "failed");
+  const reason = parked?.result?.reason ?? "";
+  assert.ok(!reason.includes("db-internal"), `raw error leaked into the surfaced reason: ${reason}`);
+  assert.match(reason, /operator error log/, "surfaces point operators at the log instead");
+});
+
+test("a NonRetryableTurnError keeps its human-readable reason on the stored result", async () => {
+  const { runs } = createMemoryRunStore();
+  const orchestrator = fakeOrchestrator(async () => {
+    throw new NonRetryableTurnError("Codex turn exceeded 300s wall clock");
+  });
+
+  await runs.enqueue({ sessionId: "s1", request: turn, maxAttempts: 1 });
+  const run = await runs.claim("w1", 5_000);
+  await assert.rejects(processRun({ runs, orchestrator, leaseTtlMs: 5_000 }, run!));
+  assert.equal((await runs.get(run!.id))?.result?.reason, "Codex turn exceeded 300s wall clock");
 });

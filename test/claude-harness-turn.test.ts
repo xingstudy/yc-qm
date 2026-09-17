@@ -10,6 +10,7 @@ type FakeSdkMessage = Record<string, unknown>;
 type Script = (prompts: AsyncIterable<{ message: { content: unknown } }>) => AsyncGenerator<FakeSdkMessage>;
 
 const capturedOptions: Array<{ model: string; env: NodeJS.ProcessEnv }> = [];
+const toolHandlers = new Map<string, (args: unknown) => Promise<unknown>>();
 
 let currentScript: Script = async function* () {};
 
@@ -39,12 +40,10 @@ mock.module("@anthropic-ai/claude-agent-sdk", {
         },
       };
     },
-    tool: (name: string, description: string, schema: unknown, handler: unknown) => ({
-      name,
-      description,
-      schema,
-      handler,
-    }),
+    tool: (name: string, description: string, schema: unknown, handler: (args: unknown) => Promise<unknown>) => {
+      toolHandlers.set(name, handler);
+      return { name, description, schema, handler };
+    },
     createSdkMcpServer: (config: unknown) => config,
   },
 });
@@ -90,7 +89,7 @@ function harnessTurn(overrides: Partial<HarnessTurnInput> = {}): {
     input: "what is the capital of france?",
     systemPrompt: "be brief",
     history: [],
-    tools: {} as HarnessTurnInput["tools"],
+    tools: {} as unknown as HarnessTurnInput["tools"],
     scopeLabel: scope,
     orgScopeId: scope,
     readOnly: true,
@@ -152,6 +151,29 @@ test("a steered turn persists every reply, not only the last result's", async ()
     .filter((entry) => entry.type === "user")
     .map((entry) => (entry.payload as { text: string }).text);
   assert.deepEqual(userTexts, ["what is the capital of france?", "now do the other three"]);
+});
+
+test("a user stop that surfaces as a non-success SDK result is a clean stop, and the stop stays pending", async () => {
+  const signals = createMemoryRunSignalStore();
+  const runId = "run-stop-error";
+  currentScript = async function* (prompts) {
+    await prompts[Symbol.asyncIterator]().next();
+    await signals.send(runId, { kind: "abort" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    yield resultMessage("", { subtype: "error_during_execution", errors: ["turn interrupted"], is_error: true });
+  };
+
+  const harness = createClaudeHarness({ signals });
+  const { turn } = harnessTurn({ runId });
+  const result = await harness.turns.runTurn(turn);
+
+  assert.equal(result.stopped, true, "an interrupted turn the SDK calls an error is still a user stop");
+  assert.equal(result.reply, "");
+  assert.deepEqual(
+    (await signals.takePending(runId)).map((s) => s.kind),
+    ["abort"],
+    "the stop stays pending for the terminal drain",
+  );
 });
 
 test("model calls are counted per API response and charged their real input tokens", async () => {
@@ -338,7 +360,7 @@ test("Claude native routes custom models and utilities with isolated, refreshed 
   });
   capturedOptions.length = 0;
   try {
-    const { turn, llmRequests } = harnessTurn({ model: qualified });
+    const { turn, llmRequests } = harnessTurn({ runtime: { harnessId: "claude", modelId: qualified } });
     assert.equal((await harness.turns.runTurn(turn)).reply, "OK");
     apiKey = "custom-rotated";
     await harness.models.judge?.("judge", "answer");
@@ -356,7 +378,7 @@ test("Claude native routes custom models and utilities with isolated, refreshed 
     }
     assert.equal(new Set(capturedOptions.map((option) => option.env.HOME)).size, 3);
     assert.equal(JSON.stringify(llmRequests).includes("custom-first"), false);
-    await harness.turns.runTurn(harnessTurn({ model: "claude-opus-5" }).turn);
+    await harness.turns.runTurn(harnessTurn({ runtime: { harnessId: "claude", modelId: "claude-opus-5" } }).turn);
     assert.equal(capturedOptions.at(-1)?.env.ANTHROPIC_API_KEY, "built-in");
     assert.equal(capturedOptions.at(-1)?.env.ANTHROPIC_AUTH_TOKEN, "oauth");
   } finally {
@@ -381,7 +403,10 @@ test("Claude native refuses unavailable custom credentials without launching the
   });
   capturedOptions.length = 0;
   try {
-    await assert.rejects(harness.turns.runTurn(harnessTurn({ model: "missing-model" }).turn), /unavailable/);
+    await assert.rejects(
+      harness.turns.runTurn(harnessTurn({ runtime: { harnessId: "claude", modelId: "missing-model" } }).turn),
+      /unavailable/,
+    );
     assert.equal(capturedOptions.length, 0);
   } finally {
     await harness.turns.close?.();
@@ -406,11 +431,11 @@ test("Claude managed keys rotate per turn and OpenRouter utilities retain their 
   });
   capturedOptions.length = 0;
   try {
-    await harness.turns.runTurn(harnessTurn({ model: "claude-opus-5" }).turn);
+    await harness.turns.runTurn(harnessTurn({ runtime: { harnessId: "claude", modelId: "claude-opus-5" } }).turn);
     assert.equal(capturedOptions.at(-1)?.env.ANTHROPIC_API_KEY, "managed-first");
     assert.equal(capturedOptions.at(-1)?.env.ANTHROPIC_AUTH_TOKEN, undefined);
     key = "router-rotated";
-    await harness.turns.runTurn(harnessTurn({ model: "openrouter/auto" }).turn);
+    await harness.turns.runTurn(harnessTurn({ runtime: { harnessId: "claude", modelId: "openrouter/auto" } }).turn);
     await harness.models.judge?.("judge", "answer");
     for (const option of capturedOptions.slice(1)) {
       assert.equal(option.model, "openrouter/auto");
@@ -420,9 +445,33 @@ test("Claude managed keys rotate per turn and OpenRouter utilities retain their 
     }
     assert.deepEqual(providers, ["anthropic", "openrouter", "openrouter"]);
     key = null;
-    await assert.rejects(harness.turns.runTurn(harnessTurn({ model: "openrouter/auto" }).turn), /not configured/);
+    await assert.rejects(
+      harness.turns.runTurn(harnessTurn({ runtime: { harnessId: "claude", modelId: "openrouter/auto" } }).turn),
+      /not configured/,
+    );
     assert.equal(capturedOptions.length, 3);
   } finally {
     await harness.turns.close?.();
   }
+});
+
+test("Claude preserves a committed runtime handoff when SDK interruption returns an error", async () => {
+  const choice = { harnessId: "codex" as const, modelId: "gpt-6-astra" };
+  currentScript = async function* (prompts) {
+    await prompts[Symbol.asyncIterator]().next();
+    await toolHandlers.get("runtime")!({ action: "set", model: "Astra" });
+    yield resultMessage("", { subtype: "error_during_execution", errors: ["turn interrupted"], is_error: true });
+  };
+  const harness = createClaudeHarness({});
+  const { turn, entries } = harnessTurn({
+    readOnly: false,
+    tools: {
+      runtime: async () => ({ ok: true, handoff: { choice, lifetime: "task" } }),
+    } as unknown as HarnessTurnInput["tools"],
+  });
+  const result = await harness.turns.runTurn(turn);
+  assert.deepEqual(result.runtimeHandoff, { choice, lifetime: "task" });
+  assert.equal(result.stopped, undefined);
+  assert.equal(entries.filter((entry) => entry.type === "assistant").length, 0);
+  assert.ok(entries.some((entry) => entry.type === "tool_result"));
 });

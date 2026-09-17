@@ -1,5 +1,6 @@
 import { sendJson } from "../http.ts";
-import { isObj } from "./shared.ts";
+import { externalMemberActive } from "../../identity/external-members.ts";
+import { isObj, authorizeAdmin, orgScope, audit } from "./shared.ts";
 import { type ApiCtx, type Route } from "./route.ts";
 
 const NAMESPACE = "authbroker:";
@@ -256,7 +257,73 @@ async function resolveDirectoryProfileAuthorizationCode(ctx: ApiCtx): Promise<vo
   }
 }
 
+async function emailAllowed(ctx: ApiCtx): Promise<void> {
+  const { res, deps, url } = ctx;
+  const email = (url.searchParams.get("email") ?? "").trim();
+  if (!email) return sendJson(res, 400, { error: "bad_request", message: "email required" });
+  if (deps.organization) {
+    const allowed = await deps.organization.emailLoginAllowed(email);
+    if (allowed || (await deps.organization.findUserByEmail(email))) return sendJson(res, 200, { allowed });
+  }
+  if (!deps.identity) return sendJson(res, 200, { allowed: false });
+  const member = await deps.identity.readExternalMember(email);
+  const allowed = member != null && externalMemberActive(member) && deps.identity.classify(email).type === "internal";
+  return sendJson(res, 200, { allowed, ...(allowed ? { expiresAt: member.expiresAt } : {}) });
+}
+
+async function brokerSession(ctx: ApiCtx): Promise<void> {
+  const { res, deps, body } = ctx;
+  if (!deps.brokerSessions) return sendJson(res, 503, { error: "not_configured" });
+  const b = isObj(body) ? body : {};
+  if (ctx.pathname.endsWith("/use")) {
+    if (typeof b.token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(b.token))
+      return sendJson(res, 400, { error: "invalid_token" });
+    return sendJson(res, 200, { session: await deps.brokerSessions.use(b.token) });
+  }
+  if (ctx.pathname.endsWith("/revoke")) {
+    let principalId = "";
+    if (typeof b.principalId === "string") principalId = b.principalId;
+    else if (typeof b.email === "string") principalId = b.email.trim().toLowerCase();
+    if (!principalId) return sendJson(res, 400, { error: "invalid_principal" });
+    if (ctx.actor?.p !== principalId && !(await authorizeAdmin(ctx, orgScope()))) return;
+    const detail = await deps.organization?.getOrganizationUserDetail(principalId);
+    const emails = new Set([
+      ...(detail?.user.email ? [detail.user.email] : []),
+      ...(detail?.user.invitedEmail ? [detail.user.invitedEmail] : []),
+      ...(detail?.identities.flatMap((link) => (link.emailAtLink ? [link.emailAtLink] : [])) ?? []),
+      ...(/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(principalId) ? [principalId] : []),
+    ]);
+    for (const email of emails) await deps.brokerSessions.revoke(email.toLowerCase());
+    audit(deps, {
+      principalId: ctx.actor?.p ?? "admin",
+      action: "auth.broker.revoke",
+      resource: principalId,
+      scopeLabel: orgScope(),
+    });
+    return sendJson(res, 200, { ok: true });
+  }
+  if (typeof b.email !== "string" || b.email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(b.email))
+    return sendJson(res, 400, { error: "invalid_email" });
+  const email = b.email.trim().toLowerCase();
+  const idleS = b.idleS;
+  const absoluteS = b.absoluteS;
+  if (
+    typeof idleS !== "number" ||
+    typeof absoluteS !== "number" ||
+    !Number.isInteger(idleS) ||
+    !Number.isInteger(absoluteS) ||
+    idleS < 1 ||
+    absoluteS < idleS ||
+    absoluteS > 90 * 86400
+  )
+    return sendJson(res, 400, { error: "invalid_lifetime" });
+  return sendJson(res, 200, await deps.brokerSessions.create(email, idleS, absoluteS));
+}
+
 export const authBrokerRoutes: ReadonlyArray<Route<ApiCtx>> = [
+  { method: "POST", path: "/v1/auth/broker/sessions", auth: "source", handle: brokerSession },
+  { method: "POST", path: "/v1/auth/broker/sessions/use", auth: "source", handle: brokerSession },
+  { method: "POST", path: "/v1/auth/broker/sessions/revoke", auth: "source", handle: brokerSession },
   { method: "POST", path: "/v1/auth/broker/claim", auth: "source", handle: claimBrokerNonce },
   { method: "POST", path: "/v1/auth/portal-login/create", auth: "source", handle: createPortalLogin },
   { method: "POST", path: "/v1/auth/portal-login/claim", auth: "source", handle: claimPortalLogin },
@@ -281,4 +348,5 @@ export const authBrokerRoutes: ReadonlyArray<Route<ApiCtx>> = [
     auth: "source",
     handle: resolveDirectoryProfileAuthorizationCode,
   },
+  { method: "GET", path: "/v1/auth/broker/email-allowed", auth: "source", handle: emailAllowed },
 ];

@@ -1371,6 +1371,104 @@ test("group members: add and remove round-trip, role update on re-add, and missi
   );
 });
 
+test("access groups include organization units and nested groups without allowing recursive cycles", async () => {
+  const { service, store, auditLog } = setup();
+  await bootstrapRoot(store);
+  for (const account of [
+    orgUser({ principalId: "unassigned@acme.com", email: "unassigned@acme.com" }),
+    orgUser({ principalId: "engineer@acme.com", email: "engineer@acme.com" }),
+    orgUser({ principalId: "nested@acme.com", email: "nested@acme.com" }),
+  ]) {
+    await store.putUser(account);
+  }
+  const engineering = await service.createUnit({
+    parentId: "root",
+    name: "Engineering",
+    kind: "department",
+    actor: "admin@acme.com",
+  });
+  await service.addUnitMember({
+    unitId: engineering.id,
+    principalId: "engineer@acme.com",
+    role: "member",
+    actor: "admin@acme.com",
+  });
+  const nested = await service.createGroup({ name: "Nested", actor: "admin@acme.com" });
+  const parent = await service.createGroup({ name: "Parent", actor: "admin@acme.com" });
+  const everyone = await service.createGroup({ name: "Everyone", actor: "admin@acme.com" });
+  await service.addGroupMember({
+    groupId: nested.id,
+    principalId: "nested@acme.com",
+    role: "member",
+    actor: "admin@acme.com",
+  });
+  assert.deepEqual(
+    await service.addGroupSubject({
+      groupId: parent.id,
+      subjectKind: "org_unit",
+      subjectId: engineering.id,
+      actor: "admin@acme.com",
+    }),
+    { ok: true },
+  );
+  assert.deepEqual(
+    await service.addGroupSubject({
+      groupId: parent.id,
+      subjectKind: "access_group",
+      subjectId: nested.id,
+      actor: "admin@acme.com",
+    }),
+    { ok: true },
+  );
+  assert.equal(await service.accessSubjectIncludes(`access-group:${parent.id}`, "engineer@acme.com"), true);
+  assert.equal(await service.accessSubjectIncludes(`access-group:${parent.id}`, "nested@acme.com"), true);
+  assert.deepEqual(
+    await service.addGroupSubject({
+      groupId: nested.id,
+      subjectKind: "access_group",
+      subjectId: parent.id,
+      actor: "admin@acme.com",
+    }),
+    { ok: false, reason: "cycle" },
+  );
+  assert.deepEqual(
+    await service.addGroupSubject({
+      groupId: parent.id,
+      subjectKind: "access_group",
+      subjectId: parent.id,
+      actor: "admin@acme.com",
+    }),
+    { ok: false, reason: "cycle" },
+  );
+  assert.deepEqual(await service.archiveGroup({ groupId: nested.id, actor: "admin@acme.com" }), {
+    ok: false,
+    reason: "conflict",
+  });
+  await service.addGroupSubject({
+    groupId: everyone.id,
+    subjectKind: "org_unit",
+    subjectId: "root",
+    actor: "admin@acme.com",
+  });
+  assert.equal(await service.accessSubjectIncludes(`access-group:${everyone.id}`, "unassigned@acme.com"), true);
+  assert.deepEqual(
+    await service.removeGroupSubject({
+      groupId: parent.id,
+      subjectKind: "access_group",
+      subjectId: nested.id,
+      actor: "admin@acme.com",
+    }),
+    { ok: true },
+  );
+  assert.equal(await service.accessSubjectIncludes(`access-group:${parent.id}`, "nested@acme.com"), false);
+  assert.deepEqual(
+    (await auditLog.events())
+      .filter((event) => event.action.startsWith("org.group.subject"))
+      .map((event) => event.action),
+    ["org.group.subject.add", "org.group.subject.add", "org.group.subject.add", "org.group.subject.remove"],
+  );
+});
+
 test("addGroupMembers is atomic and archived groups cannot be mutated by managers", async () => {
   const { service, store, auditLog } = setup();
   await bootstrapRoot(store);

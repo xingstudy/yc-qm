@@ -7,13 +7,14 @@ const chat = readFileSync(new URL("../src/chat.ts", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/shell.css", import.meta.url), "utf8");
 
 test("a pane renders one header: the chat's own session topbar stays out of panes", () => {
-  assert.match(chat, /\$\{glanceTier \|\| ctx\.pane \? nothing : sessionTopbar\([^)]*\)\}/);
+  assert.match(chat, /\$\{glanceTier \|\| ctx\.pane \? nothing : sessionTopbar\(\)\}/);
 });
 
 test("the pane tab carries the scope / title breadcrumb", () => {
   assert.match(split, /function paneCrumb\(panel: IDockviewPanel\): string \| null/);
   assert.match(split, /class="split-pane-crumb"/);
-  assert.match(split, /this\.element\.title = crumb \? `\$\{crumb\} \/ \$\{title\}` : title;/);
+  assert.match(split, /attachTooltip\(this\.element, crumb \? `\$\{crumb\} \/ \$\{title\}` : title\);/);
+  // crumb changes must retrigger a header redraw
   assert.match(split, /\$\{paneCrumb\(p\) \?\? ""\}\|\$\{paneTitle\(p\)\}/);
   assert.match(css, /\.split-pane-crumb \{/);
 });
@@ -31,7 +32,8 @@ test("project tools live behind the header overflow menu, left of the split butt
 
 test("the tools menu closes on any click outside the \u22ef control \u2014 sibling buttons included", () => {
   const cls = split.slice(split.indexOf("class GroupActions"), split.indexOf("function notePaneSession"));
-  assert.match(cls, /querySelector\("\.split-tools"\)\?\.contains\(e\.target as Node\)/);
+  assert.match(cls, /e\.composedPath\(\)\.includes\(tools\)/);
+  // the toggle must not swallow the click, or another pane's open menu never hears it
   const toggle = cls.slice(cls.indexOf('class="icon-btn subtle split-tools-btn'), cls.indexOf("MoreHorizontal"));
   assert.doesNotMatch(toggle, /stopPropagation/);
 });

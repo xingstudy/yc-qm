@@ -79,6 +79,14 @@ test("a stopped Docker daemon fails provision with the actionable message", asyn
   );
 });
 
+test("a label-inspection error does not misreport an existing image as missing", async () => {
+  const fake = installFakeDocker(daemonPort);
+  fake.labelInspectFails = true;
+  const sb = makeSandbox(fake);
+  const handle = await sb.provision(rw(scopeId("personal", "attested-image")));
+  await sb.teardown(handle, { destroy: true });
+});
+
 test("a missing sandbox image fails provision with the build hint", async () => {
   const fake = installFakeDocker(daemonPort);
   fake.imageMissing = true;
@@ -454,4 +462,57 @@ test("guarded scratch teardown and deep idle reap remove guards while retaining 
   assert.equal(fake.containers.size, 0);
   assert.equal(fake.networks.size, 0);
   assert.equal(fake.volumes.size, 1);
+});
+
+test("a replacement core reattaches to an already-running sandbox", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const fetchImpl: typeof fetch = (input) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.endsWith("/health")) return Promise.resolve(new Response("", { status: 200 }));
+    return Promise.resolve(new Response(JSON.stringify({ code: 0, stdout: "", stderr: "", timedOut: false })));
+  };
+  fake.containers.set("qm-test-core", {
+    name: "qm-test-core",
+    imageId: "core-image",
+    running: true,
+    labels: {},
+    args: [],
+  });
+  const sb = makeSandbox(fake, { coreContainer: "qm-test-core", fetchImpl });
+  const layers = rw(scopeId("personal", "U39"));
+  const first = await sb.provision(layers);
+  const connection = `${localNetworkName(first.id)}|qm-test-core`;
+  assert.equal(fake.connections.has(connection), true);
+  fake.connections.delete(connection);
+  const second = await sb.provision(layers);
+  assert.equal(second.id, first.id);
+  assert.equal(fake.connections.has(connection), true);
+  await sb.teardown(first);
+  await sb.teardown(second, { destroy: true });
+});
+
+test("containerized core joins each sandbox network and reaches the daemon by container name", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const seen: string[] = [];
+  const fetchImpl: typeof fetch = (input) => {
+    const url = typeof input === "string" ? input : input.toString();
+    seen.push(url);
+    if (url.endsWith("/health")) return Promise.resolve(new Response("", { status: 200 }));
+    return Promise.resolve(new Response(JSON.stringify({ code: 0, stdout: "", stderr: "", timedOut: false })));
+  };
+  fake.containers.set("qm-test-core", {
+    name: "qm-test-core",
+    imageId: "core-image",
+    running: true,
+    labels: {},
+    args: [],
+  });
+  const sb = makeSandbox(fake, { coreContainer: "qm-test-core", fetchImpl });
+  const h = await sb.provision(rw(scopeId("personal", "U40")));
+  const args = fake.containers.get(h.id)!.args;
+  assert.equal(args.includes("-p"), false);
+  assert.equal(fake.connections.has(`${localNetworkName(h.id)}|qm-test-core`), true);
+  assert.ok(seen.includes(`http://${h.id}:8080/health`));
+  await sb.teardown(h, { destroy: true });
+  assert.equal(fake.connections.has(`${localNetworkName(h.id)}|qm-test-core`), false);
 });

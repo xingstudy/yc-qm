@@ -1,14 +1,16 @@
+import { isolatedPgTestDatabase } from "./support/isolated-pg-test-database.ts";
 import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { createPostgresRateLimiter } from "../src/ratelimit/postgres-rate-limiter.ts";
 
-const URL = process.env.DATABASE_URL;
+const URL = await isolatedPgTestDatabase(process.env.DATABASE_URL);
 const skip = URL ? false : "set DATABASE_URL to run the Postgres rate-limiter test";
 
 beforeEach(async () => {
   if (!URL) return;
   const pg = (await import("pg")).default;
   const pool = new pg.Pool({ connectionString: URL });
+  await pool.query("DROP TABLE IF EXISTS qm_schema_migrations CASCADE");
   await pool.query("DROP TABLE IF EXISTS rate_limit_windows CASCADE");
   await pool.end();
 });

@@ -1,6 +1,10 @@
+import { mkdtemp, mkdir, readFile, writeFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { Sandbox, SandboxHandle } from "../src/sandbox/sandbox.ts";
+import { CapabilityUnsupportedError, type Sandbox, type SandboxHandle } from "../src/sandbox/sandbox.ts";
 import type { SkillFile, SkillResolution } from "../src/skills/skill-store.ts";
 import {
   createSkillMaterializer,
@@ -31,6 +35,9 @@ function fakeSandbox() {
   const files = new Map<string, string>();
   const calls = { reads: 0, writes: 0, removes: 0 };
   const sandbox = {
+    async run() {
+      return { code: 0, stdout: "", stderr: "", timedOut: false };
+    },
     async readFile(_h: SandboxHandle, rel: string) {
       calls.reads++;
       return files.has(rel) ? files.get(rel)! : null;
@@ -464,10 +471,27 @@ test("materializeSkillTree removes stale bundle paths but preserves another curr
   assert.equal(files.has("skills/alpha/.tree"), true, "the clean body-only projection remains idempotent");
 });
 
-test("materializeSkillTree uses extractFiles (one batch) when the backend offers it", async () => {
+test("a router-advertised importFiles the handle's backend refuses falls back to per-file writes", async () => {
+  const { sandbox, files } = fakeSandbox();
+  (sandbox as unknown as { importFiles: Sandbox["importFiles"] }).importFiles = async () => {
+    throw new CapabilityUnsupportedError("local", "importFiles");
+  };
+  await materializeSkillTree(
+    sandbox,
+    handle,
+    res("delta", "D", [
+      { path: "a.py", content: "A" },
+      { path: "b.py", content: "B" },
+    ]),
+  );
+  assert.equal(files.get("skills/delta/a.py"), "A");
+  assert.equal(files.get("skills/delta/b.py"), "B");
+});
+
+test("materializeSkillTree uses importFiles (one batch) when the backend offers it", async () => {
   const { sandbox, files } = fakeSandbox();
   let batches = 0;
-  (sandbox as unknown as { extractFiles: Sandbox["extractFiles"] }).extractFiles = async (_h, entries) => {
+  (sandbox as unknown as { importFiles: Sandbox["importFiles"] }).importFiles = async (_h, entries) => {
     batches++;
     for (const e of entries) files.set(e.path, Buffer.from(e.data).toString("utf8"));
   };
@@ -494,7 +518,7 @@ test("binary skill and shared bundle assets materialize as exact bytes with batc
       bytes.set(path, Buffer.from(data));
     };
     if (batch)
-      sandbox.extractFiles = async (_handle, entries) => {
+      sandbox.importFiles = async (_handle, entries) => {
         for (const entry of entries) bytes.set(entry.path, Buffer.from(entry.data));
       };
     await materializeSkillTree(sandbox, handle, res("transcribe", "Instructions", [image], "pack1"), [
@@ -516,4 +540,123 @@ test("changing an asset's encoding invalidates a materialized tree even with ide
   assert.equal(files.get("skills/demo/asset"), "aGVsbG8=");
   await materializeSkillTree(sandbox, handle, res("demo", "Instructions", [{ ...file, encoding: "base64" }]));
   assert.equal(bytes.get("skills/demo/asset")?.toString(), "hello");
+});
+
+test("switching a same-named skill source removes prior private assets before any command", async () => {
+  const { sandbox, files, calls } = fakeSandbox();
+  const privateSkill = res(
+    "deploy",
+    "Same instructions",
+    [{ path: "private.txt", content: "PRIVATE_ASSET" }],
+    "private-pack",
+  );
+  Object.assign(privateSkill.skill!, { id: "private", scopeId: "personal:U1" });
+  const orgSkill = res("deploy", "Same instructions");
+  Object.assign(orgSkill.skill!, { id: "public", scopeId: "org:acme" });
+  await materializeSkillIndex(sandbox, handle, [privateSkill]);
+  await materializeSkillTree(sandbox, handle, privateSkill, [
+    bundle("private-pack", [{ path: "private-lib.txt", content: "PRIVATE_PACK" }]),
+  ]);
+  assert.ok([...files.values()].some((body) => body.includes("PRIVATE_ASSET")));
+  assert.ok([...files.values()].some((body) => body.includes("PRIVATE_PACK")));
+  await materializeSkillIndex(sandbox, handle, [orgSkill]);
+  assert.equal(files.get("skills/deploy/SKILL.md"), "Same instructions");
+  assert.equal(
+    [...files.values()].some((body) => body.includes("PRIVATE_ASSET") || body.includes("PRIVATE_PACK")),
+    false,
+  );
+  const writes = calls.writes;
+  await materializeSkillIndex(sandbox, handle, [orgSkill]);
+  assert.equal(calls.writes, writes);
+});
+
+test("skill and bundle executable modes survive batch and fallback writes, cache upgrades, and flag removal", async () => {
+  for (const batch of [true, false]) {
+    const rootDir = await mkdtemp(join(tmpdir(), "qm-skill-modes-"));
+    const localHandle = { id: rootDir, rootDir };
+    const put = async (_handle: SandboxHandle, path: string, data: string | Uint8Array) => {
+      await mkdir(dirname(join(rootDir, path)), { recursive: true });
+      await writeFile(join(rootDir, path), data);
+    };
+    const sandbox = {
+      readFile: async (_handle: SandboxHandle, path: string) =>
+        readFile(join(rootDir, path), "utf8").catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return null;
+          throw error;
+        }),
+      writeFile: put,
+      writeFileBytes: put,
+      removeDir: async (_handle: SandboxHandle, path: string) =>
+        rm(join(rootDir, path), { recursive: true, force: true }),
+      run: async (_handle: SandboxHandle, command: string) => ({
+        stdout: execFileSync("sh", ["-c", command], { cwd: rootDir, encoding: "utf8" }),
+        stderr: "",
+        code: 0,
+        timedOut: false,
+      }),
+      ...(batch
+        ? {
+            importFiles: async (_handle: SandboxHandle, entries: ReadonlyArray<{ path: string; data: Uint8Array }>) => {
+              for (const entry of entries) await put(_handle, entry.path, entry.data);
+            },
+          }
+        : {}),
+    } as unknown as Sandbox;
+    const script: SkillFile = { path: "scripts/hello.sh", content: "#!/bin/sh\nprintf mode-ok", executable: true };
+    const binary: SkillFile = { path: "icon.png", content: "iVBORwD/", encoding: "base64" };
+    try {
+      await materializeSkillTree(sandbox, localHandle, res("demo", "Instructions", [script, binary], "pack"), [
+        bundle("pack", [script]),
+      ]);
+      for (const path of ["skills/demo/scripts/hello.sh", "skills/.packs/pack/scripts/hello.sh"]) {
+        assert.equal((await stat(join(rootDir, path))).mode & 0o777, 0o755);
+        assert.equal(execFileSync(join(rootDir, path), { encoding: "utf8" }), "mode-ok");
+      }
+      assert.equal((await stat(join(rootDir, "skills/demo/icon.png"))).mode & 0o777, 0o644);
+      assert.deepEqual(await readFile(join(rootDir, "skills/demo/icon.png")), Buffer.from(binary.content, "base64"));
+      const { SKILL_TREE_MARKER } = await import("../src/skills/materialization-paths.ts");
+      const actualMarkerPath = `skills/demo/${SKILL_TREE_MARKER}`;
+      const marker = JSON.parse((await sandbox.readFile(localHandle, actualMarkerPath))!);
+      marker.hash = "legacy-file-modes";
+      await put(localHandle, actualMarkerPath, JSON.stringify(marker));
+      execFileSync("chmod", ["644", join(rootDir, "skills/demo/scripts/hello.sh")]);
+      await materializeSkillTree(sandbox, localHandle, res("demo", "Instructions", [script, binary], "pack"), [
+        bundle("pack", [script]),
+      ]);
+      assert.equal((await stat(join(rootDir, "skills/demo/scripts/hello.sh"))).mode & 0o777, 0o755);
+      await materializeSkillTree(sandbox, localHandle, res("demo", "Instructions", [script, binary], "pack"), [
+        bundle("pack", [{ ...script, executable: false }]),
+      ]);
+      assert.equal((await stat(join(rootDir, "skills/.packs/pack/scripts/hello.sh"))).mode & 0o777, 0o644);
+      await materializeSkillTree(sandbox, localHandle, res("demo", "Instructions", [script, binary], "pack"), [
+        bundle("pack", [script]),
+      ]);
+      assert.equal((await stat(join(rootDir, "skills/.packs/pack/scripts/hello.sh"))).mode & 0o777, 0o755);
+      await materializeSkillTree(
+        sandbox,
+        localHandle,
+        res("demo", "Instructions", [{ ...script, executable: false }], "pack"),
+        [bundle("pack", [{ ...script, executable: false }])],
+      );
+      assert.equal((await stat(join(rootDir, "skills/demo/scripts/hello.sh"))).mode & 0o777, 0o644);
+      assert.equal((await stat(join(rootDir, "skills/.packs/pack/scripts/hello.sh"))).mode & 0o777, 0o644);
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a failed chmod never publishes a completed skill tree marker", async () => {
+  const { sandbox, files } = fakeSandbox();
+  sandbox.run = async () => ({ code: 1, stdout: "", stderr: "denied", timedOut: false });
+  await assert.rejects(
+    materializeSkillTree(
+      sandbox,
+      handle,
+      res("demo", "Instructions", [{ path: "run.sh", content: "exit 0", executable: true }]),
+    ),
+    /permissions/,
+  );
+  const { SKILL_TREE_MARKER } = await import("../src/skills/materialization-paths.ts");
+  assert.equal(files.has(`skills/demo/${SKILL_TREE_MARKER}`), false);
 });

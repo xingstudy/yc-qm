@@ -1,3 +1,4 @@
+import { SkillAccessConflictError } from "../authorization/skill-access-repository.ts";
 import { fetchSkillSource, previewSkillImport, SkillImportError } from "../skills/skill-import.ts";
 import type { ScopeId } from "../types.ts";
 import { parseScopeId, scopeId } from "../types.ts";
@@ -21,7 +22,9 @@ function requireRegistry(deps: AppDeps): { packs: SkillPackStore; fetcher: Skill
 async function nativeNamesFor(deps: AppDeps, packId: string, scope: ScopeId): Promise<Set<string>> {
   const all = await deps.skills.list();
   return new Set(
-    all.filter((s) => s.scopeId === scope && s.createdBy !== `pack:${packId}`).map((s) => s.manifest.name),
+    all
+      .filter((s) => s.scopeId === scope && s.status !== "archived" && s.createdBy !== `pack:${packId}`)
+      .map((s) => s.manifest.name),
   );
 }
 
@@ -240,9 +243,10 @@ export function createSkillMethods(
     if (homeKind !== "personal" && homeKind !== "channel" && homeKind !== "group") {
       throw new Error("a skill cannot be created directly in an org or team scope — promote a published skill instead");
     }
-    const existing = (await deps.skills.list()).find((s) => s.scopeId === homeScope && s.manifest.name === name);
-    if (existing && existing.status !== "archived") return null;
-    if (existing) await deps.skills.delete(existing.id);
+    const existing = (await deps.skills.list()).find(
+      (s) => s.scopeId === homeScope && s.manifest.name === name && s.status !== "archived",
+    );
+    if (existing) return null;
     const manifest: SkillManifest = {
       name,
       description,
@@ -478,7 +482,9 @@ export function createSkillMethods(
           throw new SkillImportError("You cannot import skills into that context", 403);
         }
         const names = new Set(
-          (await deps.skills.list()).filter((skill) => skill.scopeId === homeScope).map((skill) => skill.manifest.name),
+          (await deps.skills.list())
+            .filter((skill) => skill.scopeId === homeScope && skill.status !== "archived")
+            .map((skill) => skill.manifest.name),
         );
         const { preview, manifests } = previewSkillImport(repo, names, kind === "personal");
         if (input.selected === undefined) return preview;
@@ -490,6 +496,19 @@ export function createSkillMethods(
           input.selected.some((path) => typeof path !== "string" || !manifests.has(path))
         ) {
           throw new SkillImportError("Select available skills. Names may already exist; preview again", 409);
+        }
+        if (deps.skillAccessRepository) {
+          try {
+            const imported = await deps.skillAccessRepository.importOwnedBatch({
+              scopeId: homeScope,
+              createdBy: input.principalId,
+              manifests: [...new Set(input.selected)].map((path) => manifests.get(path)!),
+            });
+            return { ...preview, imported: imported.map((skill) => skill.manifest.name) };
+          } catch (error) {
+            if (error instanceof SkillAccessConflictError) throw new SkillImportError(error.message, 409);
+            throw error;
+          }
         }
         const imported: string[] = [];
         const createdIds: string[] = [];

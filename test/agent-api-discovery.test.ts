@@ -39,6 +39,7 @@ const capFor = (
   opts: {
     memory?: { write?: ScopeId; orgWrite?: ScopeId; read: ScopeId[] };
     liveActor?: boolean;
+    liveAuthor?: boolean;
     grants?: string[];
   } = {},
 ) =>
@@ -49,6 +50,7 @@ const capFor = (
       exp: Date.now() + CAPABILITY_TTL_MS,
       ...(opts.memory ? { memory: opts.memory } : {}),
       ...(opts.liveActor ? { liveActor: true } : {}),
+      ...(opts.liveAuthor ? { liveAuthor: true } : {}),
       ...(opts.grants ? { grants: opts.grants } : {}),
     },
     SECRET,
@@ -69,7 +71,7 @@ test("discovery for a regular user: base surface + whoami, no admin rows, no mem
     const p = paths(body);
     assert.ok(p.includes("/v1/apis"));
     assert.ok(!p.includes("/v1/crons"), "cron is a typed tool now, not a discovery row");
-    assert.ok(!p.includes("/v1/webhooks"), "webhooks are gone");
+    assert.ok(!p.includes("/v1/webhooks"), "webhook is a typed tool now, not a discovery row");
     assert.ok(!p.includes("/v1/soul"), "soul is a typed tool now, not a discovery row");
     assert.ok(p.includes("/v1/skills"), "saving a personal skill is a discoverable self-API endpoint");
     assert.ok(p.includes("/v1/keychain/overview"), "the keychain overview gate is represented in discovery");
@@ -80,6 +82,10 @@ test("discovery for a regular user: base surface + whoami, no admin rows, no mem
     assert.match(
       body.endpoints.find((endpoint: any) => endpoint.path === "/v1/connectors/oauth/consent/mint")?.summary ?? "",
       /stays private.*explicit credential grant/i,
+    );
+    assert.match(
+      body.endpoints.find((endpoint: any) => endpoint.path === "/v1/loops")?.summary ?? "",
+      /governor.*staleFireMs/,
     );
   } finally {
     await s.close();
@@ -198,6 +204,9 @@ test("the catalog IS the gate: discovery rows with real paths are admitted, unli
   assert.equal(agentApiMatches("GET", "/v1/skills/abc"), true);
   assert.equal(agentApiMatches("POST", "/v1/skills/abc/restore"), true);
   assert.equal(agentApiMatches("GET", "/v1/crons/abc"), true);
+  assert.equal(agentApiMatches("POST", "/v1/crons/abc/note"), true);
+  assert.equal(agentApiMatches("GET", "/v1/crons/abc/note"), false, "note is POST-only");
+  assert.equal(agentApiMatches("POST", "/v1/webhooks/abc/enable"), true);
   assert.equal(agentApiMatches("PUT", "/v1/memory/self"), true);
   assert.equal(agentApiMatches("PUT", "/v1/admin/memory"), true);
   assert.equal(agentApiMatches("GET", "/v1/admin/whoami"), true);
@@ -208,5 +217,28 @@ test("the catalog IS the gate: discovery rows with real paths are admitted, unli
   );
   assert.equal(agentApiMatches("POST", "/v1/turns"), false, "turn ingress stays source-auth only");
   assert.equal(agentApiMatches("GET", "/v1/sessions/abc"), false);
-  assert.equal(agentApiMatches("POST", "/v1/webhooks"), false, "webhooks are gone");
+  assert.equal(agentApiMatches("DELETE", "/v1/webhooks"), false);
+});
+
+test("discovery includes admin routes for a verified human thread reply", async () => {
+  const s = await start();
+  try {
+    const { body } = await listApis(
+      s.base,
+      await capFor("admin-alice", {
+        liveAuthor: true,
+        grants: ["admin.sessions.read"],
+      }),
+    );
+    const p = paths(body);
+    assert.ok(p.includes("/v1/admin/scopes/:scopeId/:resource"));
+    assert.equal(p.filter((path) => path === "/v1/admin/whoami").length, 1);
+    assert.equal(p.filter((path) => path === "/v1/admin/scopes").length, 1);
+    assert.ok(body.guidance.some((g: string) => g.includes("confirm before any mutation")));
+    assert.ok(!body.guidance.some((g: string) => g.includes("This cron")));
+    const member = await listApis(s.base, await capFor("U1", { liveAuthor: true }));
+    assert.ok(!paths(member.body).includes("/v1/admin/scopes"));
+  } finally {
+    await s.close();
+  }
 });

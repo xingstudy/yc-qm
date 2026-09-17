@@ -1,3 +1,4 @@
+import type { OrganizationTx } from "../src/organization/organization-store.ts";
 import "./support/auto-fake-sprites.ts";
 import type { SkillImportPreview } from "../plugins/chassis/src/skill-import.ts";
 import { skillMarkdown, skillZip } from "./support/skill-upload-fixture.ts";
@@ -52,6 +53,7 @@ async function start() {
   return {
     base,
     skills: built.skills,
+    organizationStore: built.organizationStore,
     directory: built.directory,
     close: () => new Promise<void>((r) => server.close(() => r())),
   };
@@ -264,7 +266,7 @@ test("an archived skill name can be reused for a replacement", async () => {
     assert.equal(replacement.status, 201);
     const created = (await replacement.json()) as { skill: SkillView };
     assert.notEqual(created.skill.id, oldId);
-    assert.equal(await srv.skills.get(oldId), null, "the reused name retires its archived tombstone");
+    assert.equal((await srv.skills.get(oldId))?.status, "archived", "name reuse preserves the archived history");
   } finally {
     await srv.close();
   }
@@ -1209,7 +1211,7 @@ test("skill import enforces creation scopes before reading the source and valida
   }
 });
 
-test("a failed multi-skill import removes every skill created by that attempt", async () => {
+test("a failed multi-skill import removes every skill created by that attempt", async (t) => {
   const s = await start();
   try {
     const source = {
@@ -1229,19 +1231,28 @@ test("a failed multi-skill import removes every skill created by that attempt", 
         body: JSON.stringify({ principalId: "author", source, ...extra }),
       });
     const preview = (await (await post({})).json()) as SkillImportPreview;
-    const publish = s.skills.publish;
-    let count = 0;
-    s.skills.publish = async (...args) => {
-      if (++count === 2) throw new Error("Injected publish failure");
-      return publish(...args);
-    };
+    const transact = s.organizationStore.transact.bind(s.organizationStore);
+    const failing = t.mock.method(
+      s.organizationStore,
+      "transact",
+      <T>(orgId: string, operation: (tx: OrganizationTx) => Promise<T>) =>
+        transact(orgId, async (tx) => {
+          const put = tx.putSkill.bind(tx);
+          let count = 0;
+          tx.putSkill = async (skill) => {
+            if (++count === 4) throw new Error("Injected second skill failure");
+            await put(skill);
+          };
+          return operation(tx);
+        }),
+    );
     const result = await post({
       fingerprint: preview.fingerprint,
       selected: preview.candidates.map((candidate: { path: string }) => candidate.path),
     });
     assert.equal(result.status, 500);
     assert.equal((await s.skills.list()).length, 0);
-    s.skills.publish = publish;
+    failing.mock.restore();
     assert.equal((await post({ fingerprint: preview.fingerprint, selected: ["first/SKILL.md"] })).status, 201);
   } finally {
     await s.close();

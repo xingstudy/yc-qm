@@ -1,6 +1,6 @@
 ---
 name: admin
-description: Act for an org admin — the admin API (scope directory, per-scope config & SOUL, any scope's memory, transcripts & captured prompts, files, user roster, audit/errors/metrics/egress) accepts your token when the user you're talking to is an org admin and started this turn themselves. Use when an admin asks you to inspect or change anything org-wide or in another scope, or anyone asks whether they're an admin.
+description: Act for an org admin — the admin API (scope directory, per-scope config & SOUL, any scope's memory, transcripts & captured prompts, files, user roster & external users, audit/errors/metrics/egress) accepts your token when the user you're talking to is an org admin and started this turn themselves. Use when an admin asks you to inspect or change anything org-wide or in another scope, or anyone asks whether they're an admin.
 ---
 
 # admin — act for an org admin, from chat
@@ -19,13 +19,13 @@ Three limits the API enforces (don't offer what it will refuse):
 - Reads that return private content — transcripts, files, notebooks, logs, another
   scope's config — only work from a **DM** with the admin. Two exceptions: org-targeted
   memory/config reads work anywhere (org content is ambient to every conversation), and
-  session reads work from a scope whose `admin-session-reads` flag an org admin turned
-  on — a per-room delegation: any turn in that room (including autonomous wakes) may
-  read any scope's transcripts and captured prompts, acting and audited as the admin
-  who set the flag (re-checked live — revoking their admin grant closes it). Because
-  it keys the boundary, that one flag is itself settable only from a DM (or the
-  portal). Other mutations work anywhere; the room sees
-  what changed, by design.
+  a cron can carry **unattended read grants** (`unattendedGrants` on the cron:
+  `admin.sessions.read`, `admin.audit.read`, `admin.metrics.read`, `admin.egress.read`,
+  `admin.files.read`) — set only on a live turn by the cron's owner, who must be a
+  current org admin, on a personal-scope cron running as its owner. Each grant opens
+  exactly its own GET routes to that cron's autonomous fires, audited as the owner
+  (re-checked live — revoking their admin grant closes it). Other mutations work
+  anywhere; the room sees what changed, by design.
 - **Grant changes (promote/revoke) are portal-only** through you — see below.
 
 All calls share one shape — only method/path/body vary:
@@ -54,7 +54,7 @@ GET /v1/admin/scopes        → every scope with display labels (#channel names,
 ```bash
 GET /v1/admin/scopes/<scopeId>                → resolved config: commandPolicy, soul (+version), egress, flags, connectors, serviceCredentials
 PUT /v1/admin/scopes/<scopeId>/<resource>     → resource ∈ soul | command-policy | egress |
-                                                admin-session-reads | connectors | service-credentials |
+                                                connectors | service-credentials |
                                                 base-model (org-wide LLM; body { modelId } — e.g. gpt-5.5; empty string clears)
 ```
 
@@ -91,6 +91,24 @@ GET /v1/admin/egress?scope=    GET /v1/admin/retention
 GET /v1/admin/users            → roster + admin status (org-wide)
 ```
 
+## External users
+
+Outside collaborators, admitted by email with a role and an expiry; they sign in at the
+portal with that address until it lapses. Listed alongside the roster:
+
+```bash
+GET /v1/admin/users                          → externalUsers: [{email, role, expiresAt, invitedBy, status: active|expired}]
+POST /v1/admin/external-users                {"email":"ana@partner.com","expiresAt":"2026-12-31"}   role defaults to member; expiresAt required (a bare date means end of that day UTC; ISO date-time or epoch ms also work)
+DELETE /v1/admin/external-users/<email>      → revokes access now; the row stays listed as expired (a DELETE a day after expiry removes it)
+```
+
+Confirm with the admin before inviting or revoking — say who, which role, and until
+when. The invitation email needs Resend configured on core (`RESEND_API_KEY` +
+`AUTH_EMAIL_FROM`); without it the user is still added. When the response has
+`emailSent:false`, tell the admin why (`emailProblem`) and hand them `signInUrl` to pass
+along themselves. The `org_admin` role for externals is portal-only, like every other
+grant change — don't offer it.
+
 ## Admin grants (promote / revoke)
 
 Not available through you: who governs the org changes only in the admin dashboard,
@@ -104,9 +122,16 @@ where the admin acts directly. If asked, point them there — don't try the API
 - `403 … require a turn the admin started themselves` — this is an autonomous run
   (cron/webhook); admin actions only ride turns the admin personally initiated. Say so.
 - `403 … returns private content — ask the agent in a DM` — you're in a shared room;
-  tell the admin to ask again in a DM with you (or, for session reads they want
-  recurring in this room, to turn on this scope's `admin-session-reads` flag — from
+  tell the admin to ask again in a DM with you (or, for reads they want recurring
+  on a schedule, to put an unattended read grant on a personal-scope cron — from
   their DM, never from here).
 - `403 … grant changes (promote/revoke) are portal-only` — point them at the dashboard.
+- `403 granting or removing org admin for an external user is portal-only …` — same
+  answer: the dashboard.
+- `409 that address already belongs to a member of the org …` — org email domain, Slack
+  directory, sign-in allow-list, or someone who has already used the agent. They are not
+  external; point the admin at Users / Admins for that person instead.
+- `409 that address holds an org admin grant of its own …` — the admin manages that grant
+  under Admins in the dashboard first.
 - `403 capability token not valid for this route` — this core predates agent admin
   access; the user must use the admin dashboard.

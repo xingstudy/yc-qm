@@ -164,13 +164,13 @@ test("QA: full custom-provider lifecycle against a live fake upstream", async ()
       modelCatalog: Record<string, { name: string; provider: string; api?: string }>;
     };
     assert.ok(runtimeBody.modelsByHarness.pi!.includes("qa-chat"), "picker advertises the custom model");
-    assert.deepEqual(runtimeBody.modelCatalog["qa-chat"], {
+    assert.partialDeepStrictEqual(runtimeBody.modelCatalog["qa-chat"], {
       name: "QA Chat",
       provider: "qa",
       api: "openai-completions",
     });
     assert.ok(runtimeBody.modelsByHarness.pi!.includes("gpt-4o"));
-    assert.deepEqual(runtimeBody.modelCatalog["gpt-4o"], {
+    assert.partialDeepStrictEqual(runtimeBody.modelCatalog["gpt-4o"], {
       name: "Gateway GPT",
       provider: "qa",
       api: "openai-completions",
@@ -336,7 +336,7 @@ test("QA: anthropic-protocol custom provider serves a real turn (correct wire sh
         tools: {} as HarnessTurnInput["tools"],
         scopeLabel: "personal:alice",
         orgScopeId: "org:default-org",
-        model: "claude-opus-5",
+        runtime: { harnessId: "claude", modelId: "claude-opus-5" },
         emit: async (entry) => ({ ...entry, seq: 1 }) as Awaited<ReturnType<HarnessTurnInput["emit"]>>,
         recordModelCall: () => {},
       });

@@ -11,10 +11,16 @@ import {
   generateCodeVerifier,
   codeChallengeS256,
   PROVIDERS,
+  resolveAtlassianMcpClient,
   type FetchLike,
   type ResolvedClient,
+  type OAuthState,
 } from "../src/connectors/oauth.ts";
 import { createEnvSecretSource } from "../src/credentials/secret-source.ts";
+import { createOAuthFlowStore } from "../src/connectors/oauth-flow-store.ts";
+import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { connectorRawRoutes, connectorRoutes } from "../src/api/routes/connectors.ts";
+import type { ConnectorTokenStore } from "../src/credentials/keychain.ts";
 
 const env = {
   GOOGLE_OAUTH_CLIENT_ID: "gid",
@@ -31,6 +37,32 @@ const env = {
 
 const resolve = createSecretClientResolver(createEnvSecretSource(env));
 const googleClient = (): Promise<ResolvedClient> => resolve("google", {});
+const atlassianScopes = [
+  "read:me",
+  "offline_access",
+  "read:jira:agent-interface",
+  "write:jira:agent-interface",
+  "search:jira:agent-interface",
+];
+
+function routeResponse(): {
+  res: { writeHead(status: number): void; end(body?: string): void };
+  body: () => { status: number; value: Record<string, unknown> };
+} {
+  let status = 0;
+  let value = "";
+  return {
+    res: {
+      writeHead(next) {
+        status = next;
+      },
+      end(body = "") {
+        value = body;
+      },
+    },
+    body: () => ({ status, value: JSON.parse(value) as Record<string, unknown> }),
+  };
+}
 
 test("authorizeUrl builds a consent URL with client id, scopes, redirect, state", async () => {
   const url = authorizeUrl("google", { redirectUri: "https://app/cb", state: "st-1", client: await googleClient() });
@@ -48,6 +80,243 @@ test("authorizeUrl builds a consent URL with client id, scopes, redirect, state"
 test("createSecretClientResolver refuses when the provider isn't configured (creds = the only gap)", async () => {
   const bare = createSecretClientResolver(createEnvSecretSource({} as NodeJS.ProcessEnv));
   await assert.rejects(bare("google", {}), /GOOGLE_OAUTH_CLIENT_ID/);
+});
+
+test("Atlassian uses a dynamically registered public client with PKCE and no client secret", async () => {
+  const calls: Array<{ url: string; body: string }> = [];
+  const fetchImpl: FetchLike = async (url, init) => {
+    calls.push({ url, body: init.body });
+    if (url === "https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          resource: "https://mcp.atlassian.com/v2/mcp",
+          authorization_servers: ["https://auth.atlassian.test/mcp"],
+          scopes_supported: atlassianScopes,
+        }),
+      };
+    }
+    if (url === "https://auth.atlassian.test/mcp/.well-known/oauth-authorization-server") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          issuer: "https://auth.atlassian.test/mcp",
+          authorization_endpoint: "https://auth.atlassian.test/authorize",
+          token_endpoint: "https://auth.atlassian.test/token",
+          registration_endpoint: "https://auth.atlassian.test/register",
+          code_challenge_methods_supported: ["S256"],
+        }),
+      };
+    }
+    if (url === "https://auth.atlassian.test/register") {
+      return { ok: true, status: 200, json: async () => ({ client_id: "client-123" }) };
+    }
+    if (url === "https://auth.atlassian.test/token") {
+      return { ok: true, status: 200, json: async () => ({ access_token: "at", refresh_token: "rt" }) };
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const client = await resolveAtlassianMcpClient({ redirectUri: "https://qm.test/callback", fetchImpl });
+  assert.equal(client.id, "client-123");
+  assert.equal(client.clientRef, "atlassian-dcr:client-123");
+  assert.match(calls[2]!.body, /"redirect_uris":\["https:\/\/qm.test\/callback"\]/);
+  assert.match(
+    calls[2]!.body,
+    /"scope":"read:me offline_access read:jira:agent-interface write:jira:agent-interface search:jira:agent-interface"/,
+  );
+  const url = new URL(
+    authorizeUrl("atlassian", {
+      redirectUri: "https://qm.test/callback",
+      state: "state",
+      client,
+      codeChallenge: "challenge",
+    }),
+  );
+  assert.equal(url.origin + url.pathname, "https://auth.atlassian.test/authorize");
+  assert.equal(url.searchParams.get("resource"), "https://mcp.atlassian.com/v2/mcp");
+  assert.equal(url.searchParams.get("prompt"), "consent");
+  assert.equal(
+    url.searchParams.get("scope"),
+    "read:me offline_access read:jira:agent-interface write:jira:agent-interface search:jira:agent-interface",
+  );
+  assert.equal(url.searchParams.get("code_challenge_method"), "S256");
+  const exchanged = await exchangeCode("atlassian", "code", "https://qm.test/callback", {
+    client,
+    fetchImpl,
+    codeVerifier: "verifier",
+  });
+  assert.equal(exchanged.token.accessToken, "at");
+  const tokenBody = calls.at(-1)!.body;
+  assert.match(tokenBody, /client_id=client-123/);
+  assert.match(tokenBody, /code_verifier=verifier/);
+  assert.doesNotMatch(tokenBody, /client_secret/);
+});
+
+test("Atlassian refresh reconstructs the dynamic client from its stored client reference", async () => {
+  const calls: Array<{ url: string; body: string }> = [];
+  const fetchImpl: FetchLike = async (url, init) => {
+    calls.push({ url, body: init.body });
+    if (url === "https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          resource: "https://mcp.atlassian.com/v2/mcp",
+          authorization_servers: ["https://auth.atlassian.test/mcp"],
+          scopes_supported: atlassianScopes,
+        }),
+      };
+    }
+    if (url === "https://auth.atlassian.test/mcp/.well-known/oauth-authorization-server") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          issuer: "https://auth.atlassian.test/mcp",
+          authorization_endpoint: "https://auth.atlassian.test/authorize",
+          token_endpoint: "https://auth.atlassian.test/token",
+          registration_endpoint: "https://auth.atlassian.test/register",
+          code_challenge_methods_supported: ["S256"],
+        }),
+      };
+    }
+    assert.equal(url, "https://auth.atlassian.test/token");
+    return { ok: true, status: 200, json: async () => ({ access_token: "fresh" }) };
+  };
+  const fresh = await makeRefresh({ resolveClient: resolve, fetchImpl })("mcp.atlassian.com", {
+    accessToken: "old",
+    refreshToken: "refresh",
+    clientRef: "atlassian-dcr:client-123",
+  });
+  assert.equal(fresh.accessToken, "fresh");
+  assert.match(calls.at(-1)!.body, /client_id=client-123/);
+  assert.match(calls.at(-1)!.body, /resource=https%3A%2F%2Fmcp.atlassian.com%2Fv2%2Fmcp/);
+  assert.doesNotMatch(calls.at(-1)!.body, /client_secret/);
+});
+
+test("Atlassian connector routes register a per-user client and refresh only that user's MCP tools", async () => {
+  const saved = new Map<string, Record<string, unknown>>();
+  const refreshed: string[] = [];
+  const tokens: ConnectorTokenStore = {
+    async setConnectorToken(host, principalId, token) {
+      saved.set(`${host}\u0000${principalId}`, token as unknown as Record<string, unknown>);
+    },
+    async deleteConnectorToken() {},
+    async connectorTokenStatus() {
+      return { connected: false };
+    },
+    async connectorAccessToken() {
+      return null;
+    },
+    async connectorDerivedAuth() {
+      return null;
+    },
+  };
+  const oauthFetch: FetchLike = async (url, init) => {
+    if (url === "https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          resource: "https://mcp.atlassian.com/v2/mcp",
+          authorization_servers: ["https://auth.atlassian.test/mcp"],
+          scopes_supported: atlassianScopes,
+        }),
+      };
+    }
+    if (url === "https://auth.atlassian.test/mcp/.well-known/oauth-authorization-server") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          issuer: "https://auth.atlassian.test/mcp",
+          authorization_endpoint: "https://auth.atlassian.test/authorize",
+          token_endpoint: "https://auth.atlassian.test/token",
+          registration_endpoint: "https://auth.atlassian.test/register",
+          code_challenge_methods_supported: ["S256"],
+        }),
+      };
+    }
+    if (url === "https://auth.atlassian.test/register") {
+      assert.match(init.body, /"redirect_uris"/);
+      return { ok: true, status: 200, json: async () => ({ client_id: "route-client" }) };
+    }
+    assert.equal(url, "https://auth.atlassian.test/token");
+    assert.match(init.body, /client_id=route-client/);
+    assert.match(init.body, /resource=https%3A%2F%2Fmcp.atlassian.com%2Fv2%2Fmcp/);
+    assert.doesNotMatch(init.body, /client_secret/);
+    return { ok: true, status: 200, json: async () => ({ access_token: "user-token", refresh_token: "refresh" }) };
+  };
+  const deps = {
+    connectorTokens: tokens,
+    oauthFetch,
+    oauthStateSecret: "route-state-secret",
+    replayDedupe: { claim: async () => true },
+    mcpToolService: { refreshForPrincipal: async (principalId: string) => void refreshed.push(principalId) },
+  };
+  const redirectUri = "https://qm.test/v1/connectors/oauth/atlassian/callback";
+  const startPath = `/v1/connectors/oauth/atlassian/start?principalId=U1&redirectUri=${encodeURIComponent(redirectUri)}`;
+  const started = routeResponse();
+  const startRoute = connectorRoutes.find(
+    (route) => "match" in route && route.match("GET", "/v1/connectors/oauth/atlassian/start"),
+  )!;
+  await startRoute.handle({
+    res: started.res,
+    deps,
+    secret: "route-state-secret",
+    url: new URL(`http://qm.test${startPath}`),
+    pathname: "/v1/connectors/oauth/atlassian/start",
+  } as never);
+  const start = started.body();
+  assert.equal(start.status, 200);
+  const consent = new URL(String(start.value.authorizeUrl));
+  const oauthState = consent.searchParams.get("state") ?? "";
+  assert.equal(consent.origin + consent.pathname, "https://auth.atlassian.test/authorize");
+  assert.equal(consent.searchParams.get("client_id"), "route-client");
+  assert.equal(consent.searchParams.get("redirect_uri"), redirectUri);
+  assert.equal(consent.searchParams.get("resource"), "https://mcp.atlassian.com/v2/mcp");
+  assert.equal(consent.searchParams.get("prompt"), "consent");
+  const callback = routeResponse();
+  const callbackRoute = connectorRawRoutes.find(
+    (route) => "match" in route && route.match("GET", "/v1/connectors/oauth/atlassian/callback"),
+  );
+  if (!callbackRoute || !("match" in callbackRoute)) throw new Error("Atlassian callback route is missing");
+  await callbackRoute.handle({
+    res: callback.res,
+    deps,
+    secret: "route-state-secret",
+    url: new URL(
+      `http://qm.test/v1/connectors/oauth/atlassian/callback?code=code&state=${encodeURIComponent(oauthState)}`,
+    ),
+    pathname: "/v1/connectors/oauth/atlassian/callback",
+  } as never);
+  assert.equal(callback.body().status, 200);
+  assert.equal(saved.get("mcp.atlassian.com\u0000U1")?.accessToken, "user-token");
+  assert.equal(saved.get("mcp.atlassian.com\u0000U2"), undefined);
+  assert.deepEqual(refreshed, ["U1"]);
+});
+
+test("MCP refresh route discovers tools only for the requested principal", async () => {
+  const refreshed: string[] = [];
+  const response = routeResponse();
+  const route = connectorRoutes.find(
+    (candidate) => "path" in candidate && candidate.path === "/v1/connectors/mcp/refresh",
+  )!;
+  await route.handle({
+    res: response.res,
+    deps: {
+      mcpToolService: {
+        refreshForPrincipal: async (principalId: string) => void refreshed.push(principalId),
+        toolDefs: (principalId?: string) => (principalId === "U1" ? [{ name: "atlassian_search" }] : []),
+      },
+    },
+    body: { principalId: "U1" },
+  } as never);
+
+  assert.deepEqual(refreshed, ["U1"]);
+  assert.deepEqual(response.body(), { status: 200, value: { ok: true, principalId: "U1", toolCount: 1 } });
 });
 
 test("the env resolver pins the Google hosted-domain for the company account-type", async () => {
@@ -383,9 +652,9 @@ test("authorizeUrl adds code_challenge + S256 only when a challenge is supplied"
   assert.equal(without.searchParams.get("code_challenge_method"), null);
 });
 
-test("only X opts into PKCE; the other providers leave the seam inert (regression guard)", () => {
+test("providers that require PKCE enable it; the other providers leave the seam inert", () => {
   for (const [name, p] of Object.entries(PROVIDERS)) {
-    if (name === "x") assert.equal(p.pkce, true, "X requires PKCE");
+    if (name === "x" || name === "atlassian") assert.equal(p.pkce, true, `${name} requires PKCE`);
     else assert.notEqual(p.pkce, true, `${name} must not enable PKCE`);
   }
 });
@@ -481,4 +750,24 @@ test("X refresh captures the ROTATED refresh token (single-use) — the connecti
   assert.equal(fresh.accessToken, "xat2");
   assert.equal(fresh.refreshToken, "new-rt", "the rotated refresh token replaces the old one");
   assert.equal(fresh.expiresAt, 5_000 + 7200_000);
+});
+
+test("oauth flow store — a short opaque state resolves once, then expires", async () => {
+  const store = createOAuthFlowStore(createMemoryMap<OAuthState>(), { now: () => 1_000 });
+  const flowId = await store.start({
+    provider: "x",
+    principalId: "person@example.com",
+    redirectUri: "https://example.test/v1/connectors/oauth/x/callback",
+    codeVerifier: "verifier",
+  });
+  assert.equal(flowId.length, 43);
+  assert.equal(await store.finish("nope"), null);
+  const opened = await store.finish(flowId);
+  assert.equal(opened?.codeVerifier, "verifier");
+  assert.equal(opened?.nonce, flowId);
+  assert.equal(await store.finish(flowId), null, "single use");
+
+  const stale = createOAuthFlowStore(createMemoryMap<OAuthState>(), { now: () => 1_000, ttlMs: 10 });
+  const staleId = await stale.start({ provider: "x", principalId: "U1", redirectUri: "https://example.test/cb" }, 0);
+  assert.equal(await stale.finish(staleId), null, "expired");
 });

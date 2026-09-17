@@ -557,15 +557,16 @@ invited 用户的激活不设独立令牌接口：首次 OIDC 登录时，Portal
 组织管理员始终可以查看全组织。普通用户按以下顺序解析：
 
 ```text
-1. 存在用户个人策略：完整使用个人策略，忽略组织节点和权限组策略。
-2. 不存在个人策略：收集用户有效组织节点及权限组上的策略。
-3. 没有任何策略：使用组织默认模式，默认 all。
-4. 任一组策略为 all：结果为全组织。
-5. 否则合并全部 limited roots。
-6. 只有 none 或 limited roots 为空：结果为空。
+1. 收集用户个人、有效组织节点和有效权限组上的全部匹配策略。
+2. 没有任何策略：使用组织默认模式，默认 all。
+3. 只计算匹配策略中的最高优先级层；优先级范围为 0–1000，数值越大越优先，默认 100。
+4. 最高优先级层存在 none：结果为空。
+5. 否则，最高优先级层存在 limited：合并该层的全部 limited roots。
+6. 否则，最高优先级层为 all：结果为全组织。
+7. limited roots 为空或全部失效：结果为空。
 ```
 
-个人策略完整覆盖组策略可以避免多组关系意外扩大某个敏感用户的可见范围。需要为某人增加其他组时，管理员建立个人 `limited` 策略，并在复选器中同时选择原范围和额外范围。
+同一优先级内保持 `none > limited > all`，因此旧规则全部迁移为优先级 100 后，仍维持不可查看优先和受限范围合并的安全默认。需要为个别人创建例外时，管理员必须显式设置更高优先级的个人策略；较低优先级规则继续保留并可审计，但不参与该用户的最终结果。
 
 ### 8.2 复选语义
 
@@ -865,6 +866,8 @@ POST   /v1/admin/org/access-groups/:id/members
 DELETE /v1/admin/org/access-groups/:id/members/:principalId
 
 PATCH  /v1/admin/org/users/:principalId
+GET    /v1/admin/org/directory-visibility
+GET    /v1/admin/org/directory-visibility/effective/:principalId
 PUT    /v1/admin/org/directory-visibility/:subjectKind/:subjectId
 ```
 
@@ -875,6 +878,7 @@ PUT    /v1/admin/org/directory-visibility/:subjectKind/:subjectId
 ```json
 {
   "mode": "limited",
+  "priority": 200,
   "roots": [
     { "unitId": "engineering", "includeDescendants": true },
     { "unitId": "finance-budget", "includeDescendants": false }
@@ -883,7 +887,7 @@ PUT    /v1/admin/org/directory-visibility/:subjectKind/:subjectId
 }
 ```
 
-`roots` 是完整替换，不是增量补丁。服务端归一化、去重并验证每个节点同组织且 active。revision 不匹配返回 `409` 和当前 revision。
+`priority` 必须是 0–1000 的整数；新规则默认 100，旧客户端未提交该字段时保留现有优先级。`roots` 是完整替换，不是增量补丁。服务端归一化、去重并验证每个节点同组织且 active。revision 不匹配返回 `409` 和当前 revision。
 
 首期只有组织管理员可以修改目录可见策略。以后增加委派管理员时，其操作范围必须限制在被授权子树内。
 
@@ -1000,6 +1004,8 @@ POST /v1/internal/auth/users/login
 ```text
 目录可见范围
 
+优先级：200（0–1000，数值越大越优先）
+
 ○ 使用默认规则：全组织
 ○ 全组织
 ○ 受限范围
@@ -1011,7 +1017,7 @@ POST /v1/internal/auth/users/login
 当前有效范围：3 个根节点，预计 64 位 active 用户
 ```
 
-受限范围必须支持复选和搜索。切换为 `limited` 后即使没有选择任何节点，也要明确显示“该用户看不到任何组织成员”，不能静默恢复默认全组织。
+页面必须列出全部已配置规则及其主体、模式、根节点、优先级、更新人和更新时间，并支持编辑、删除。还必须支持选择用户预览全部匹配规则、最高生效优先级和服务端最终结果。受限范围必须支持复选和搜索。切换为 `limited` 后即使没有选择任何节点，也要明确显示“该用户看不到任何组织成员”，不能静默恢复默认全组织。
 
 ### 12.3 Skill Access 页
 
@@ -1172,6 +1178,7 @@ result
 - 服务端在事务中锁定资源和组织授权状态。
 - revision 不一致返回 `409`，不做部分写入。
 - policy、roots/grants、组织 revision 和审计必须原子提交。
+- 目录策略的 priority 与 mode、roots 使用同一个 revision 原子更新。
 
 组织节点移动还必须原子更新：
 
@@ -1335,8 +1342,10 @@ Store 负责持久化和事务原语；Resolver 负责权限计算；Route 只�
 - 多个 root 并集。
 - 重叠 root 去重。
 - `limited` 空 roots 不回退为全组织。
-- 个人策略覆盖组策略。
-- 多个组策略合并。
+- 不同优先级只计算最高层，个人高优先级规则可以显式放宽或收紧继承规则。
+- 同一优先级按 `none > limited > all`，多个 limited roots 合并。
+- 旧规则迁移后默认优先级为 100，行为不变；越界优先级被 API 和数据库拒绝。
+- 生效预览列出全部匹配规则，并标明最高优先级层和最终结果。
 - 挂在祖先节点上的目录策略对该节点的全部后代成员生效。
 - 隐藏人员不出现在树、搜索、详情、计数、分页和自动补全。
 - 用户属于多个节点时只返回一次。

@@ -13,7 +13,7 @@ import { testConfig } from "./support/test-config.ts";
 
 const SECRET = "route-test-secret".repeat(3);
 
-describe("capability-token control plane (crons + SOUL)", () => {
+describe("capability-token control plane (crons + webhooks + SOUL)", () => {
   let server: Server;
   let base: string;
   let built: BuiltApp;
@@ -219,6 +219,32 @@ describe("capability-token control plane (crons + SOUL)", () => {
       ).status,
       403,
     );
+    assert.equal(
+      (
+        await post(
+          `/v1/crons/${cron.id}/note`,
+          { note: "steer the next privileged fire" },
+          { "x-agent-capability": await capFor("admin-alice") },
+        )
+      ).status,
+      403,
+      "an unattended non-fire session cannot note a privileged cron over HTTP either",
+    );
+    assert.equal(
+      (
+        await post(
+          `/v1/crons/${cron.id}/note`,
+          { note: "scan clean, nothing carried over" },
+          {
+            "x-agent-capability": await capFor("admin-alice", scopeId("personal", "admin-alice"), {
+              threadRef: `cron:${cron.id}:fire:abc`,
+            }),
+          },
+        )
+      ).status,
+      200,
+      "the cron's own fire leaves its shift-change note over the agent API",
+    );
   });
 
   it("creates a cron as the TOKEN's actor, ignoring a forged owner in the body", async () => {
@@ -287,6 +313,16 @@ describe("capability-token control plane (crons + SOUL)", () => {
     );
     assert.equal(fallback.status, 200);
     assert.equal(((await fallback.json()) as any).cron.schedule.timezone, "America/Los_Angeles");
+  });
+
+  it("rejects a one-shot firstFireAt in the past under a capability", async () => {
+    const create = await post(
+      "/v1/crons",
+      { schedule: { firstFireAt: Date.now() - 60 * 60 * 1000 }, action: "late" },
+      { "x-agent-capability": await capFor("U1") },
+    );
+    assert.equal(create.status, 400);
+    assert.match(((await create.json()) as any).message, /in the past/);
   });
 
   it("rejects mixed calendar and legacy schedule fields under a capability", async () => {
@@ -667,6 +703,42 @@ describe("capability-token control plane (crons + SOUL)", () => {
     assert.equal((await get(`/v1/crons/${id}`, { "x-agent-capability": await capFor("U1") })).status, 404);
   });
 
+  it("the runs endpoint reads the fire table and strips the legacy fireLog from the cron", async () => {
+    const created = (await (
+      await post(
+        "/v1/crons",
+        { schedule: { everyMs: 60_000 }, action: "count things" },
+        { "x-agent-capability": await capFor("U1") },
+      )
+    ).json()) as any;
+    const id = created.cron.id;
+    await built.crons.recordFire(id, {
+      fireKey: "k1",
+      threadRef: "t1",
+      firedAt: 1_000,
+      endedAt: 2_000,
+      status: "failed",
+      note: "first",
+    });
+    await built.crons.recordFire(id, {
+      fireKey: "k2",
+      threadRef: "t2",
+      firedAt: 3_000,
+      endedAt: 4_000,
+      status: "ok",
+      reply: "second",
+    });
+
+    const res = await get(`/v1/crons/${id}/runs?limit=1`, { "x-agent-capability": await capFor("U1") });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as any;
+    assert.equal(body.total, 2);
+    assert.equal(body.runs.length, 1);
+    assert.equal(body.runs[0].fireKey, "k2");
+    assert.equal(body.runs[0].reply, "second");
+    assert.equal("fireLog" in body.cron, false);
+  });
+
   it("another public-channel user can read an OWNER cron but cannot patch, run, or delete it", async () => {
     const created = (await (
       await post(
@@ -778,6 +850,117 @@ describe("capability-token control plane (crons + SOUL)", () => {
       dmList.visible.some((c: any) => c.id === id),
       "surfaced read-only in visible",
     );
+  });
+
+  it("registers a webhook as the TOKEN's actor, ignoring a forged owner in the body", async () => {
+    const res = await post(
+      "/v1/webhooks",
+      {
+        action: "triage the GitHub event",
+        verification: { scheme: "github", secret: "gh-secret" },
+        owner: "U2",
+        createdBy: "U2",
+        ownerScopeId: "personal:U2",
+        destination: { type: "evil", target: "attacker" },
+      },
+      { "x-agent-capability": await capFor("U1") },
+    );
+    assert.equal(res.status, 200);
+    const { webhook, url } = (await res.json()) as any;
+    assert.equal(webhook.owner, "U1");
+    assert.equal(webhook.createdBy, "U1");
+    assert.equal(webhook.ownerScopeId, "personal:U1");
+    assert.equal(webhook.action, "triage the GitHub event");
+    assert.equal(webhook.verification.scheme, "github");
+    assert.equal(webhook.verification.secret, "gh-secret");
+    assert.equal(webhook.destination.type, "slack");
+    assert.equal(webhook.destination.target, "D-U1");
+    assert.equal(url, `/v1/webhooks/incoming/${webhook.id}`);
+  });
+
+  it("registers a destination-less webhook when the token carries no destination (side-effect-only)", async () => {
+    const noDest = await mintCapabilityToken(
+      { actorId: "U9", scopeId: "personal:U9", exp: Date.now() + CAPABILITY_TTL_MS },
+      SECRET,
+    );
+    const res = await post(
+      "/v1/webhooks",
+      { action: "mirror the event to a file", verification: { scheme: "hmac-sha256", secret: "side-effect-secret" } },
+      { "x-agent-capability": noDest },
+    );
+    assert.equal(res.status, 200);
+    const { webhook } = (await res.json()) as any;
+    assert.equal(webhook.owner, "U9");
+    assert.equal(webhook.destination, undefined);
+  });
+
+  it("registers a webhook at a chosen destinationKey; a forged body destination is ignored", async () => {
+    const res = await post(
+      "/v1/webhooks",
+      {
+        action: "post deploys to the channel",
+        verification: { scheme: "hmac-sha256", secret: "deploy-secret" },
+        destinationKey: "k-root",
+        destination: { type: "slack", target: "C", audienceScopeId: "personal:U1" },
+      },
+      { "x-agent-capability": await capChannel("U1") },
+    );
+    assert.equal(res.status, 200);
+    const { webhook } = (await res.json()) as any;
+    assert.equal(webhook.destination.target, "C");
+    assert.equal(webhook.destination.audienceScopeId, "channel:C");
+    assert.equal(webhook.destination.key, undefined);
+  });
+
+  it("rejects an unknown webhook destinationKey with 400 (no silent escalation)", async () => {
+    const res = await post(
+      "/v1/webhooks",
+      {
+        action: "x",
+        verification: { scheme: "hmac-sha256", secret: "unknown-destination-secret" },
+        destinationKey: "k-not-in-set",
+      },
+      { "x-agent-capability": await capChannel("U1") },
+    );
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as any).error, "unknown_destination");
+  });
+
+  it("lists only the caller's own webhooks under a capability, with secrets redacted", async () => {
+    await post(
+      "/v1/webhooks",
+      { action: "u2 hook", verification: { scheme: "hmac-sha256", secret: "s2" } },
+      { "x-agent-capability": await capFor("U2") },
+    );
+    const mine = (await (await get("/v1/webhooks", { "x-agent-capability": await capFor("U1") })).json()) as any;
+    assert.ok(mine.webhooks.length >= 1);
+    assert.ok(
+      mine.webhooks.every((w: any) => w.owner === "U1"),
+      "a capability must not see other users' webhooks",
+    );
+    assert.ok(mine.webhooks.every((w: any) => !w.verification.secret || w.verification.secret === "***"));
+  });
+
+  it("a capability can disable its OWN webhook but not another user's", async () => {
+    const created = (await (
+      await post(
+        "/v1/webhooks",
+        { action: "u1 owned", verification: { scheme: "hmac-sha256", secret: "owned-secret" } },
+        { "x-agent-capability": await capFor("U1") },
+      )
+    ).json()) as any;
+    const forbidden = await post(
+      `/v1/webhooks/${created.webhook.id}/disable`,
+      {},
+      { "x-agent-capability": await capFor("U2") },
+    );
+    assert.equal(forbidden.status, 403);
+    const ok = await post(
+      `/v1/webhooks/${created.webhook.id}/disable`,
+      {},
+      { "x-agent-capability": await capFor("U1") },
+    );
+    assert.equal(ok.status, 200);
   });
 
   it("a public channel remains available to an active internal principal outside its current roster", async () => {

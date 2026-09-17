@@ -1,3 +1,4 @@
+import { definePgMigration } from "../persistence/pg-schema-migrations.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { createPgPool, withPgTransaction } from "../persistence/pg-pool.ts";
 import { createSweeper } from "../util/sweeper.ts";
@@ -13,6 +14,8 @@ type PortalLoginPublication = { status: "published" | "conflict" | "missing" | "
 
 export interface PortalLoginTransactionStore {
   readonly durable: boolean;
+  start?(): void;
+  close?(): Promise<void>;
   create(
     state: string,
     payload: string,
@@ -125,7 +128,7 @@ export function createMemoryPortalLoginTransactionStore(now: () => number = Date
   };
 }
 
-const SCHEMA = [
+const PROD_V1_3_0_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS portal_login_transactions (
     state_hash TEXT PRIMARY KEY,
     status TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'succeeded', 'failed')),
@@ -143,8 +146,19 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS portal_login_rate_limits_updated_at ON portal_login_rate_limits (updated_at)`,
 ];
 
-export function createPostgresPortalLoginTransactionStore(connectionString: string): PortalLoginTransactionStore {
-  const pg = createPgPool(connectionString, SCHEMA);
+const MIGRATIONS = [
+  definePgMigration({
+    id: "fork/portal-login/0001",
+    statements: PROD_V1_3_0_SCHEMA,
+    expectedChecksum: "b2b48c4f4e689957f81a810e505ccd30f1c668595bbbb5043c89287788967511",
+  }),
+];
+
+export function createPostgresPortalLoginTransactionStore(
+  connectionString: string,
+  options: { autoStart?: boolean } = {},
+): PortalLoginTransactionStore {
+  const pg = createPgPool(connectionString, MIGRATIONS);
   const removeExpired = async (): Promise<void> => {
     await Promise.all([
       pg.query("DELETE FROM portal_login_transactions WHERE expires_at <= NOW()"),
@@ -154,10 +168,11 @@ export function createPostgresPortalLoginTransactionStore(connectionString: stri
       }),
     ]);
   };
-  createSweeper(removeExpired, PRUNE_INTERVAL_MS, {
+  const sweeper = createSweeper(removeExpired, PRUNE_INTERVAL_MS, {
     label: "portal-login-transactions",
     immediate: true,
-  }).start();
+  });
+  if (options.autoStart !== false) sweeper.start();
   let nextPruneAt = Number.NEGATIVE_INFINITY;
   const prune = async (): Promise<void> => {
     const current = Date.now();
@@ -167,6 +182,13 @@ export function createPostgresPortalLoginTransactionStore(connectionString: stri
   };
   return {
     durable: true,
+    start() {
+      sweeper.start();
+    },
+    async close() {
+      sweeper.stop();
+      await pg.close();
+    },
     async create(state, payload, expiresAtMs, clientBucket) {
       await prune();
       return withPgTransaction(await pg.pool(), async (client) => {

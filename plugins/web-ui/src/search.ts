@@ -1,9 +1,11 @@
-import { html, nothing, render, type TemplateResult } from "lit";
+import { nothing, render, type TemplateResult } from "lit";
 import { CornerDownLeft, Search } from "lucide";
-import { api, type CoreSession } from "./core-bridge";
-import { mainConversation } from "./conversations";
-import { t } from "./i18n";
+import { api, userSendMessage, type CoreSession } from "./core-bridge";
+import { startNewChat } from "./sessions";
+import { html, t } from "./i18n";
 import { recencyGroup } from "./session-list";
+import { searchGroup } from "./search-group";
+import { slackWireToPlain, stripSlackDirectives } from "./slack-text";
 import { openSession, refreshSessions, sessionsState, sessionTitle } from "./sessions";
 import { icon } from "./ui";
 
@@ -23,8 +25,7 @@ interface ChatSearchHit {
 
 const MIN_QUERY_LEN = 2;
 const DEBOUNCE_MS = 150;
-const isMac = /Mac|iP(hone|ad|od)/.test(navigator.platform);
-export const SEARCH_HOTKEY_LABEL = isMac ? "⌘K" : "Ctrl+K";
+export const isMac = /Mac|iP(hone|ad|od)/.test(navigator.platform);
 
 const searchState = {
   open: false,
@@ -56,6 +57,7 @@ export function openChatSearch(): void {
   searchState.query = "";
   searchState.hits = [];
   searchState.loading = false;
+  searchState.failed = false;
   searchState.sel = 0;
   draw();
   requestAnimationFrame(() => host?.querySelector<HTMLInputElement>(".chat-search-input")?.focus());
@@ -64,6 +66,7 @@ export function openChatSearch(): void {
 function closeChatSearch(): void {
   if (!searchState.open) return;
   searchState.open = false;
+  fetchSeq++;
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = null;
   inflight?.abort();
@@ -100,12 +103,14 @@ function onQueryInput(e: InputEvent): void {
   searchState.query = (e.currentTarget as HTMLInputElement).value;
   searchState.sel = 0;
   if (debounceTimer) clearTimeout(debounceTimer);
+  debounceTimer = null;
+  fetchSeq++;
+  inflight?.abort();
+  inflight = null;
+  searchState.hits = [];
+  searchState.failed = false;
   const q = searchState.query.trim();
   if (q.length < MIN_QUERY_LEN) {
-    inflight?.abort();
-    inflight = null;
-    searchState.hits = [];
-    searchState.failed = false;
     searchState.loading = false;
     draw();
     return;
@@ -169,6 +174,7 @@ function onPaletteKeydown(e: KeyboardEvent): void {
   if (e.key === "Enter") {
     e.preventDefault();
     if (e.metaKey || e.ctrlKey) return void askQm();
+    if (searchState.loading) return;
     const hit = searchState.hits[searchState.sel];
     if (hit) return void openHit(hit);
     if (askRowShown() && searchState.sel === searchState.hits.length) return void askQm();
@@ -195,10 +201,11 @@ function askQm(): void {
   const q = searchState.query.trim();
   if (!q) return;
   closeChatSearch();
-  const conv = mainConversation();
-  conv.newChat();
-  void conv.state.agent?.prompt(
-    `Find my previous session based on the following search query, give me a link when you've identified it: ${q}`,
+  const conv = startNewChat();
+  void conv?.state.agent?.prompt(
+    userSendMessage(
+      `Find my previous session based on the following search query, give me a link when you've identified it: ${q}`,
+    ),
   );
 }
 
@@ -213,6 +220,10 @@ function highlight(text: string): TemplateResult {
   return html`${parts.map((part, i) => (i % 2 ? html`<mark>${part}</mark>` : html`${part}`))}`;
 }
 
+function hitSnippet(hit: ChatSearchHit): string {
+  return hit.surface === "slack" ? slackWireToPlain(stripSlackDirectives(hit.snippet)) : hit.snippet;
+}
+
 function hitTitle(hit: ChatSearchHit): string {
   if (hit.title?.trim()) return hit.title;
   const session = sessionsState.list.find((s) => s.id === hit.sessionId);
@@ -225,14 +236,7 @@ function resultRows(): TemplateResult[] {
   searchState.hits.forEach((hit, i) => {
     if (hit.sessionId !== lastSession) {
       lastSession = hit.sessionId;
-      rows.push(
-        html`<div class="chat-search-group ${hit.archived ? "archived" : ""}">
-          <b>${hitTitle(hit)}</b
-          >${hit.archived ? html`<em class="chat-search-archived-tag">${t("Archived")}</em>` : nothing}<span
-            >${t(recencyGroup(hit.createdAt))}</span
-          >
-        </div>`,
-      );
+      rows.push(searchGroup(hitTitle(hit), Boolean(hit.archived), recencyGroup(hit.createdAt)));
     }
     rows.push(html`
       <button
@@ -246,13 +250,13 @@ function resultRows(): TemplateResult[] {
           }
         }}
       >
-        <span class="chat-search-who ${hit.entryType === "user" ? "user" : "agent"}"
+        <span class="chat-search-who ${hit.entryType === "user" ? "user" : "agent"}" dir="auto"
           >${(hit.entryType === "user" ? (hit.author ?? t("You")) : "QM").slice(0, 1).toUpperCase()}</span
         >
         <span class="chat-search-text">
-          <span class="chat-search-snippet">${highlight(hit.snippet)}</span>
+          <span class="chat-search-snippet" dir="auto">${highlight(hitSnippet(hit))}</span>
           <span class="chat-search-meta"
-            >${hit.entryType === "user" ? (hit.author ?? t("you")) : t("agent")} ·
+            ><bdi>${hit.entryType === "user" ? (hit.author ?? t("you")) : t("agent")}</bdi> ·
             ${new Date(hit.createdAt).toLocaleDateString()}</span
           >
         </span>
@@ -278,10 +282,8 @@ function askRow(): TemplateResult {
     >
       <span class="chat-search-who ask">+</span>
       <span class="chat-search-text">
-        <span class="chat-search-snippet">${t("Ask QM to find it:")} <b>“${searchState.query.trim()}”</b></span>
-        <span class="chat-search-meta"
-          >${t("starts a new chat where QM hunts down the matching session and links it")}</span
-        >
+        <span class="chat-search-snippet">Ask QM to find it: <b dir="auto">“${searchState.query.trim()}”</b></span>
+        <span class="chat-search-meta">starts a new chat where QM hunts down the matching session and links it</span>
       </span>
       <span class="chat-search-kbd">${isMac ? "⌘" : "Ctrl"}${icon(CornerDownLeft, 11)}</span>
     </button>
@@ -326,6 +328,7 @@ function paletteTpl(): TemplateResult {
             @input=${onQueryInput}
           />
           <span class="chat-search-kbd">esc</span>
+          <button class="chat-search-cancel" type="button" @click=${closeChatSearch}>Cancel</button>
         </div>
         <div class="chat-search-results">${body}</div>
         ${askRowShown() ? html`<div class="chat-search-askbar">${askRow()}</div>` : nothing}

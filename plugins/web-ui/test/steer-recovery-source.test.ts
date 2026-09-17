@@ -33,11 +33,11 @@ test("a message typed mid-turn is never dropped by the run-slot window — it qu
   assert.ok(at >= 0);
   const body = composer.slice(at, composer.indexOf("async function enqueueTurn", at));
   assert.doesNotMatch(body, /hasLiveRun\(\)/, "queueing must not depend on the run slot");
-  assert.match(body, /if \(!text \|\| !threadRef \|\| !currentModelOption\(\)\.value\) return;/);
+  assert.match(body, /if \(\(!text && !staged\.length\) \|\| !threadRef\) return;/);
   assert.match(
     body,
-    /if \(!\(await enqueueTurn\(agent, threadRef, text\)\)\) composerState\.draft = text;/,
-    "a queue core never took goes back in the composer",
+    /if \(!\(await enqueueTurn\(agent, threadRef, text, uploaded, queuedFilesKey\(sendable\)\)\)\) \{\s*if \(stillHere\(\)\) restoreStagedOnFailure\(text, sendable, composerState\.error\);/,
+    "a queue core never took goes back in the composer, files included",
   );
   assert.ok(composer.indexOf("function steerWhenLive") < 0, "the held-steer shim is gone with its window");
 });

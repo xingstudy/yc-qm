@@ -51,7 +51,11 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
   assert.equal(pi?.resolved, piCodingAgentTarball);
   assert.equal(pi?.hasShrinkwrap, true);
   assert.equal(pi?.license, "MIT");
-  assert.deepEqual(lockedVersions(packages, "hono"), ["4.13.5"]);
+
+  assert.deepEqual(lockedVersions(packages, "brace-expansion"), ["5.0.9"]);
+  assert.deepEqual(lockedVersions(packages, "fast-uri").sort(), ["3.1.7", "4.1.4"]);
+  assert.deepEqual(lockedVersions(packages, "hono"), ["4.13.8"]);
+  assert.deepEqual(lockedVersions(packages, "protobufjs"), ["7.6.5"]);
   assert.deepEqual(lockedVersions(packages, "undici"), ["8.9.0"]);
   assert.match(
     readFileSync(new URL(`../${piLicensePath}`, import.meta.url), "utf8"),
@@ -74,7 +78,7 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
   assert.equal(dependencyVersion(piManifest, "undici"), "8.9.0");
   assert.equal(dependencyVersion(piManifest, "protobufjs"), "7.6.5");
   assert.equal(installedVersion("@hono/node-server"), "2.0.10");
-  assert.equal(installedVersion("hono"), "4.13.5");
+  assert.equal(installedVersion("hono"), "4.13.8");
 });
 
 test("MCP Streamable HTTP works through the patched Hono major", async (t) => {
@@ -104,4 +108,30 @@ test("MCP Streamable HTTP works through the patched Hono major", async (t) => {
   const body = (await response.json()) as { error?: { code?: number } };
   assert.equal(response.status, 400);
   assert.equal(body.error?.code, -32700);
+});
+
+test("package lockfiles use portable public tarball URLs without private registry credentials", () => {
+  for (const path of [
+    "package-lock.json",
+    "cli/package-lock.json",
+    "plugins/admin/package-lock.json",
+    "plugins/auth/package-lock.json",
+    "plugins/portal/package-lock.json",
+    "plugins/web-ui/package-lock.json",
+  ]) {
+    const lock = JSON.parse(readFileSync(new URL(`../${path}`, import.meta.url), "utf8")) as {
+      packages: Record<string, { resolved?: string }>;
+    };
+    for (const [name, entry] of Object.entries(lock.packages)) {
+      if (!entry.resolved?.startsWith("http")) continue;
+      const url = new URL(entry.resolved);
+      const origin =
+        path === "plugins/web-ui/package-lock.json" && name === "node_modules/xlsx"
+          ? "https://cdn.sheetjs.com"
+          : "https://registry.npmjs.org";
+      assert.equal(url.origin, origin, `${path}: ${name}`);
+      assert.equal(url.username, "");
+      assert.equal(url.password, "");
+    }
+  }
 });

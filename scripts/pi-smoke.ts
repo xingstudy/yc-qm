@@ -11,7 +11,7 @@ if (!process.env.ANTHROPIC_API_KEY) {
   process.exit(1);
 }
 
-const { app } = buildApp({
+const built = buildApp({
   ...loadConfig(),
   port: 0,
   dataDir: mkdtempSync(join(tmpdir(), "pi-smoke-")),
@@ -19,6 +19,8 @@ const { app } = buildApp({
   runStore: "memory",
   harness: "pi",
 });
+await built.migrationsReady;
+const { app } = built;
 
 const actor = { externalId: "U1" };
 function dm(text: string, thread = "t1"): TurnRequest {

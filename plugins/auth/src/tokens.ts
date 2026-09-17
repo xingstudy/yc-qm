@@ -40,6 +40,7 @@ export interface AuthIdentity {
 }
 
 export interface CodeClaims extends AuthIdentity {
+  authTime?: number;
   clientId: string;
   redirectUri: string;
   nonce: string;
@@ -193,6 +194,7 @@ export class TokenSigner {
         ru: claims.redirectUri,
         no: claims.nonce,
         cc: claims.codeChallenge,
+        at: claims.authTime,
         pr: claims.principal,
         ev: claims.emailVerified,
         ...(claims.email ? { em: claims.email } : {}),
@@ -212,6 +214,7 @@ export class TokenSigner {
   ): Promise<{ claims: CodeClaims; jti: string; expiresAtMs: number } | null> {
     let payload: Record<string, unknown>;
     try {
+      if (token.split(".").some((part) => Buffer.from(part, "base64url").toString("base64url") !== part)) return null;
       const opened = await compactDecrypt(token, this.keyFor("code"));
       if (opened.protectedHeader.alg !== "dir" || opened.protectedHeader.enc !== "A256GCM") return null;
       const parsed = JSON.parse(new TextDecoder().decode(opened.plaintext)) as unknown;
@@ -250,6 +253,7 @@ export class TokenSigner {
         ...(em ? { email: em as string } : {}),
         ...(nm ? { name: nm as string } : {}),
         ...(externalIdentity ? { externalIdentity } : {}),
+        ...(typeof payload.at === "number" ? { authTime: payload.at } : {}),
       },
       jti: payload.jti,
       expiresAtMs: payload.exp * 1000,
@@ -397,6 +401,7 @@ export async function mintIdToken(
     nonce: string;
     ttlS: number;
     nowMs?: number;
+    authTime?: number;
   },
 ): Promise<string> {
   const issuedAt = Math.floor((args.nowMs ?? Date.now()) / 1000);
@@ -408,6 +413,7 @@ export async function mintIdToken(
     ...(args.email ? { email: args.email, email_verified: args.emailVerified } : {}),
     ...(args.name ? { name: args.name } : {}),
     ...(args.externalIdentity ? { qm_external_identity: args.externalIdentity } : {}),
+    ...(args.authTime !== undefined ? { auth_time: args.authTime } : {}),
   })
     .setProtectedHeader({ alg: ID_TOKEN_ALG, kid: key.kid, typ: "JWT" })
     .setIssuer(args.issuer)

@@ -282,7 +282,7 @@ test("shared-core platform guidance reaches both the DM and the spine prompt", a
     await sysprompt(buildOrchestrator(), slackDm("")),
     await sysprompt(buildOrchestrator(), spineChannelTurn("")),
   ]) {
-    assert.match(prompt, /## Your computer/);
+    assert.match(prompt, /## Sandboxes/);
     assert.match(prompt, /## Files/);
     assert.match(prompt, /## Memory/);
     assert.match(prompt, /## Auth/);
@@ -373,8 +373,9 @@ test("a display name containing template tokens cannot break prompt rendering", 
     text: "",
     origin: { kind: "direct" },
   });
-  assert.match(prompt, /1:1 with Alice/);
-  assert.doesNotMatch(prompt, /\{\{/);
+  const systemPrompt = prompt.split("\n\n<environment>")[0]!;
+  assert.match(systemPrompt, /1:1 with Alice/);
+  assert.doesNotMatch(systemPrompt, /\{\{/);
 });
 
 test("template tokens in a stored branding value are stripped, never rendered or thrown", async () => {
@@ -403,17 +404,14 @@ test("Mode 2 (spine channel): static prose stays within the word-count ceiling (
   const orch = buildOrchestrator({ orgSoul: ORG_SOUL });
   const prompt = await sysprompt(orch, spineChannelTurn("", { timezone: "America/New_York" }));
 
-  const VOLATILE_BOUNDARY = "\n\n## The user's local time";
-  const boundaryAt = prompt.indexOf(VOLATILE_BOUNDARY);
-  assert.notEqual(
-    boundaryAt,
-    -1,
-    "expected the cached-prefix/volatile-tail boundary ('## The user's local time') to still exist — " +
-      "if compose renamed or moved this heading, update VOLATILE_BOUNDARY here to match",
+  const systemPrompt = prompt.split("\n\n<environment>")[0]!;
+  assert.match(
+    prompt,
+    /## The user's local time/,
+    "the volatile tail rides the environment note, not the system prompt",
   );
-  const cachedPrefix = prompt.slice(0, boundaryAt);
 
-  const staticProse = cachedPrefix.split(ORG_SOUL).join("");
+  const staticProse = systemPrompt.split(ORG_SOUL).join("");
 
   const wordCount = staticProse.trim().split(/\s+/).filter(Boolean).length;
 
@@ -423,3 +421,22 @@ test("Mode 2 (spine channel): static prose stays within the word-count ceiling (
       "This is expected to fail until the menu deletions in CONTRACT.md S5 land.",
   );
 });
+
+for (const surface of ["web", "slack"]) {
+  for (const mode of ["conversation", "autonomous", "fallback"]) {
+    test(`${surface} ${mode} turns share the Markdown chat contract`, async () => {
+      const prompt = await sysprompt(buildOrchestrator(), {
+        surface,
+        actor,
+        conversation: mode === "conversation" ? dmConversation : channelConversation,
+        surfaceTools: mode === "autonomous",
+        text: "",
+        origin: mode === "fallback" ? { kind: "automation" } : { kind: "direct" },
+      });
+      assert.match(prompt, /Chat uses Markdown/);
+      assert.match(prompt, /\[label\]\(url\)/);
+      assert.equal(countOccurrences(prompt, "Chat uses Markdown"), 1);
+      assertNoTemplateTokens(prompt, `${surface} ${mode}`);
+    });
+  }
+}

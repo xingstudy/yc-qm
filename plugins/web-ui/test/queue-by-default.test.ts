@@ -7,12 +7,13 @@ const composer = readFileSync(new URL("../src/composer.ts", import.meta.url), "u
 const chat = readFileSync(new URL("../src/chat.ts", import.meta.url), "utf8");
 const bridge = readFileSync(new URL("../src/core-bridge.ts", import.meta.url), "utf8");
 const server = readFileSync(new URL("../server/index.ts", import.meta.url), "utf8");
+const shell = readFileSync(new URL("../src/shell.css", import.meta.url), "utf8");
 
 test("a mid-turn Enter queues the message — it no longer steers the running turn", () => {
   assert.match(composer, /if \(agent\.state\.isStreaming\) return queueDraft\(agent\);/);
   assert.doesNotMatch(composer, /isStreaming\) return sendSteer\(/);
   assert.match(composer, /placeholder = t\("Queue a message for after this turn…"\)/);
-  assert.match(composer, /title=\$\{t\("Queue for after this turn"\)\}/);
+  assert.match(composer, /\$\{tip\(t\("Queue for after this turn"\)\)\}/);
 });
 
 test("the queue lives in core, not in the browser", () => {
@@ -29,10 +30,13 @@ test("the queue lives in core, not in the browser", () => {
     /const queuedRuns = new Map<string, QueuedRun\[\]>\(\);/,
     "what the composer holds is a view of core's queue, rebuilt from core — not a store",
   );
-  assert.match(composer, /const queued = await queueTurn\(threadRef, text, agent, ctx\.chat\.currentTurnOptions\);/);
+  assert.match(
+    composer,
+    /const queued = await queueTurn\(threadRef, text, agent, ctx\.chat\.currentTurnOptions, idempotencyKey, attachments\);/,
+  );
   assert.match(
     bridge,
-    /export async function queueTurn\([\s\S]{0,600}?api<\{ runId\?: string \}>\("\/api\/turn"/,
+    /export async function queueTurn\([\s\S]{0,600}?api<\{ status\?: string; runId\?: string; reason\?: string \}>\("\/api\/turn"/,
     "queuing is an ordinary turn submission; core enqueues it behind the live run",
   );
 });
@@ -42,8 +46,14 @@ test("a queued turn carries the same model, effort and scope a typed one would",
   const body = bridge.slice(bridge.indexOf("function turnRequestBody"));
   assert.match(body, /thinkingLevel/);
   assert.match(body, /scopeId: turnOptions\.scopeId/);
-  assert.match(bridge, /\.\.\.turnRequestBody\(threadRef, text, model, agent, getTurnOptions, attachments\),/);
-  assert.match(bridge, /turnRequestBody\(threadRef, text, agent\.state\.model, agent, getTurnOptions\)/);
+  assert.match(
+    bridge,
+    /\.\.\.turnRequestBody\(threadRef, text, model, agent, getTurnOptions, \{ idempotencyKey, attachments \}\),/,
+  );
+  assert.match(
+    bridge,
+    /turnRequestBody\(threadRef, text, agent\.state\.model, agent, getTurnOptions, \{ idempotencyKey, attachments \}\)/,
+  );
 });
 
 test("the Steer control's presence is fixed for the conversation; only enablement changes", () => {
@@ -51,7 +61,11 @@ test("the Steer control's presence is fixed for the conversation; only enablemen
     composer.indexOf("function queuedStrip"),
     composer.indexOf("function composerApprovalPanel"),
   );
-  assert.match(strip, /\?disabled=\$\{!steerable\}/, "an unusable Steer is disabled, never removed");
+  assert.match(
+    strip,
+    /\?disabled=\$\{!steerable \|\| q\.hasAttachments\}/,
+    "an unusable Steer is disabled, never removed",
+  );
   assert.doesNotMatch(
     strip,
     /steerable\s*\?\s*html`<button/,
@@ -69,7 +83,7 @@ test("steering is reachable only as an explicit act on a queued row", () => {
   assert.match(strip, /class="chip-x"[\s\S]{0,240}removeQueued\(agent, q\)/);
   assert.match(
     composer,
-    /const steerable =\s*agent\.state\.isStreaming && ctx\.chat\.hasLiveRun\(\) && harnessSupportsSteer\(currentModelOption\(\)\.harnessId\);/,
+    /const steerable =\s*agent\.state\.isStreaming && ctx\.chat\.hasLiveRun\(\) &&\s*harnessSupportsSteer\(currentModelOption\(\)\?\.harnessId \?\? ""\);/,
     "Steer acts only against a live run on a harness that can fold one in",
   );
 });
@@ -110,8 +124,13 @@ test("Steer withdraws the queued run before it signals, and only then shows the 
   );
   assert.match(
     fn,
-    /catch \(err\) \{[\s\S]{0,600}?Could not steer the running task[\s\S]{0,600}?await enqueueTurn\(agent, threadRef, queued\.text\)/,
+    /catch \(err\) \{[\s\S]{0,1400}?Could not steer the running task[\s\S]{0,600}?await enqueueTurn\(agent, threadRef, queued\.text\)/,
     "a steer that never reached core puts the message back on the queue as its own turn",
+  );
+  assert.match(
+    fn,
+    /if \(steerSessionId && \(await verifySteerDelivered\(steerSessionId, queued\.text, sentAt, undefined, sinceSeq\)\)\)[\s\S]{0,120}?return ctx\.chat\.drawActiveChat\(agent\)/,
+    "an ambiguous failure verifies the steer landed before it would re-enqueue",
   );
 });
 
@@ -151,6 +170,35 @@ test("the strip renders core's queue, refreshed from the same read that names th
   assert.match(server, /json\(res, 200, \{ runId, run, \.\.\.\(waiting\.length \? \{ queued: waiting \} : \{\}\) \}\)/);
 });
 
+test("the queued strip sits behind and outside the composer form", () => {
+  assert.match(
+    chat,
+    /ctx\.composer\.queuedStrip\(agent\)[\s\S]*?ctx\.composer\.composerForm\(agent, html`\$\{glanceTier \? nothing : liveWorkStatus\(agent\)\} \$\{backgroundActivityStrip\(\)\}`\)/,
+  );
+  const composerMarkup = composer.slice(composer.indexOf('<form class="composer-wrap"'), composer.indexOf("</form>"));
+  assert.doesNotMatch(composerMarkup, /queuedStrip\(agent\)/);
+  const queuedRule = shell.match(/(?:^|\n)\.queued-strip \{[^}]*\}/)?.[0] ?? "";
+  const composerRule = shell.match(/(?:^|\n)\.composer-wrap \{[^}]*\}/)?.[0] ?? "";
+  assert.match(queuedRule, /z-index: 0;/);
+  assert.match(queuedRule, /width: min\(calc\(var\(--content-w\) - 24px\), calc\(100% - 56px\)\);/);
+  assert.match(queuedRule, /margin: 0 auto -10px;/);
+  assert.match(composerRule, /position: relative;\s*z-index: 1;/);
+  const midStart = shell.indexOf("@container chat (max-width: 860px)");
+  const narrowStart = shell.indexOf("@container chat (max-width: 470px)", midStart);
+  const midWidth = shell.slice(midStart, narrowStart);
+  const narrow = shell.slice(narrowStart, shell.indexOf('[data-density="card"]', narrowStart));
+  assert.match(
+    midWidth,
+    /\.queued-strip \{[^}]*margin-right: max\(28px, calc\(22px \+ env\(safe-area-inset-right\)\)\);[^}]*margin-left: max\(28px, calc\(22px \+ env\(safe-area-inset-left\)\)\);[^}]*\}/,
+  );
+  assert.match(
+    narrow,
+    /\.queued-strip \{[^}]*margin-right: calc\(22px \+ env\(safe-area-inset-right\)\);[^}]*margin-left: calc\(22px \+ env\(safe-area-inset-left\)\);[^}]*\}/,
+  );
+});
+
+// Nothing is sent when a turn settles: core already started the next queued run. The client's only
+// job is to show it, so a client that never comes back costs the person nothing but the view.
 test("settling a turn follows the next queued run instead of sending it", () => {
   assert.match(chat, /void followNextQueuedRun\(agent, threadRef, normalStreamFn, onWork\);/);
   const fn = chat.slice(
@@ -161,7 +209,7 @@ test("settling a turn follows the next queued run instead of sending it", () => 
   assert.doesNotMatch(fn, /queueTurn/, "it never submits anything");
   assert.match(
     fn,
-    /await \(recorded \? agent\.continue\(\) : agent\.prompt\(next!\.text\)\)/,
+    /await \(next && !recorded \? agent\.prompt\(next\.text\) : agent\.continue\(\)\)/,
     "an already-recorded turn is resumed, never prompted a second time onto the screen",
   );
   assert.match(fn, /await refreshTranscriptFromEntries\(agent\)/);

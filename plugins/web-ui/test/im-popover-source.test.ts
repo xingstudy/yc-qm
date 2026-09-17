@@ -20,7 +20,7 @@ const syncImSdkBridges = server.slice(
   server.indexOf("export async function drainImDeliveries"),
 );
 
-test("the footer user pill opens the IM channel popover", () => {
+test("the footer channel button opens the IM channel popover", () => {
   assert.match(shell, /id: "wechat",\s+label: "WeChat"/);
   assert.match(shell, /id: "feishu",\s+label: "Feishu"/);
   assert.match(shell, /id: "work-wechat",\s+label: "WeCom"/);
@@ -82,7 +82,7 @@ test("the footer user pill opens the IM channel popover", () => {
   assert.match(shell, /function imTenantLabel\(binding: ImBindingRecord \| undefined\): string/);
   assert.match(shell, /class="im-resource-id"><span>\$\{t\("Enterprise"\)\}<\/span><code>\$\{tenantLabel\}<\/code>/);
   assert.match(shell, /class="im-resource-id"><span>Bot ID<\/span><code>\$\{binding\.resourceId\}<\/code>/);
-  assert.match(shell, /class="user-pill"[\s\S]*aria-haspopup="dialog"[\s\S]*@click=\$\{toggleImPanel\}/);
+  assert.match(shell, /aria-label="Open IM channel settings"[\s\S]*@click=\$\{toggleImPanel\}/);
   assert.match(shell, /<div id="im-panel-host"><\/div>/);
   assert.match(shell, /function renderImPanel\(\): void/);
 });

@@ -44,7 +44,7 @@ test("the release is the sole sandbox-base publisher and bakes in the browser en
   assert.equal(existsSync(".github/workflows/publish-images.yml"), false);
 });
 
-test("the release signs private images without requiring anonymous registry access", () => {
+test("the release verifies the sandbox base digest is anonymously pullable", () => {
   const workflow = readFileSync(".github/workflows/release-package.yml", "utf8");
 
   assert.doesNotMatch(workflow, /anonymously pullable|DOCKER_CONFIG="\$probe"/);
@@ -87,7 +87,7 @@ test("publishing the CLI is a separate, attested, main-only operation", () => {
   assert.match(workflow, /^ {2}workflow_call:$/m);
   assert.doesNotMatch(workflow, /^ {2}push:$/m);
   assert.doesNotMatch(workflow, /^ {2}pull_request:$/m);
-  assert.match(workflow, /if: github\.ref == 'refs\/heads\/main'/);
+  assert.match(workflow, /if: github\.repository == 'yc-software\/qm' && github\.ref == 'refs\/heads\/main'/);
   assert.match(workflow, /permissions:\s+contents: read\s+id-token: write/);
   assert.match(workflow, /registry-url: https:\/\/registry\.npmjs\.org/);
   assert.match(workflow, /npm publish --provenance --access public/);
@@ -144,16 +144,24 @@ test("one dispatchable workflow drives the whole release, main-only and in order
     workflow,
     /^ {2}images:\n[\s\S]*?needs: preflight\n[\s\S]*?uses: \.\/\.github\/workflows\/release-package\.yml$/m,
   );
-  assert.match(workflow, /^ {2}cli:\n[\s\S]*?needs: images\n[\s\S]*?uses: \.\/\.github\/workflows\/publish-cli\.yml$/m);
+  assert.match(
+    workflow,
+    /^ {2}cli:\n[\s\S]*?needs:\n {6}- preflight\n {6}- images\n[\s\S]*?uses: \.\/\.github\/workflows\/publish-cli\.yml\n {4}with:\n {6}version: \$\{\{ needs\.preflight\.outputs\.version \}\}$/m,
+  );
   assert.match(workflow, /^ {2}release:\n[\s\S]*?needs:\n {6}- preflight\n {6}- cli$/m);
   assert.match(workflow, /concurrency:\n {2}group: release\n {2}cancel-in-progress: false/);
 });
 
-test("the release refuses a tag it already published and writes the tag last", () => {
+test("the release bumps its own version past everything already released", () => {
   const workflow = readFileSync(".github/workflows/release.yml", "utf8");
 
-  assert.match(workflow, /tag="v\$\(jq -r \.version cli\/package\.json\)"/);
-  assert.match(workflow, /is already released; bump cli\/package\.json before releasing again/);
+  assert.match(workflow, /pkg=\$\(jq -r \.version cli\/package\.json\)/);
+  assert.match(workflow, /cli\/package\.json version must be semver/);
+  assert.match(workflow, /matching-refs\/tags\/v/);
+  assert.match(workflow, /npm view @yc-software\/qm version/);
+  assert.match(workflow, /version="\$major\.\$minor\.\$\(\(patch \+ 1\)\)"/);
+  assert.match(workflow, /tag="v\$version"/);
+  assert.match(workflow, /already exists; refusing to move it/);
   assert.ok(
     workflow.indexOf("already released") < workflow.indexOf("gh release create"),
     "the tag gate runs before anything is published",
@@ -490,4 +498,51 @@ test("a partial production promotion resumes the original signed digest artifact
   assert.match(workflow, /name: production-release-candidate-\$\{\{ inputs\.resume_run_id \}\}/);
   assert.match(workflow, /test "\$\(jq -r \.release_tag release-candidate\.json\)" = "\$RELEASE_TAG"/);
   assert.match(workflow, /retention-days: 30/g);
+});
+
+test("coauthor validation excludes only the fixed imported history and fails closed on invalid Git refs", () => {
+  const workflow = readFileSync(".github/workflows/cicd.yml", "utf8");
+  const job = workflow.slice(workflow.indexOf("  coauthor-trailers:"), workflow.indexOf("\n  lint:"));
+  const body = job.slice(job.indexOf("        run: |\n") + "        run: |\n".length).replace(/^ {10}/gm, "");
+  const cwd = mkdtempSync(join(tmpdir(), "qm-trailers-"));
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: "Test Author",
+    GIT_AUTHOR_EMAIL: "author@example.test",
+    GIT_COMMITTER_NAME: "Test Author",
+    GIT_COMMITTER_EMAIL: "author@example.test",
+  };
+  const git = (...args: string[]) => {
+    const result = spawnSync("git", args, { cwd, env, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  try {
+    git("init", "--quiet");
+    const tree = git("mktree");
+    const commit = (parents: string[], trailer = "") =>
+      git("commit-tree", tree, ...parents.flatMap((parent) => ["-p", parent]), "-m", `QA\n\n${trailer}`);
+    const base = commit([]);
+    const upstream = commit([base], "Co-authored-by: Codex <noreply@openai.com>");
+    const downstream = commit([base], "Co-authored-by: Human <human@example.test>");
+    const merged = commit([downstream, upstream]);
+    const run = (head: string, imported = upstream) =>
+      spawnSync("bash", ["-c", body], {
+        cwd,
+        env: { ...env, BASE_SHA: base, HEAD_SHA: head, UPSTREAM_SYNC_SHA: imported },
+        encoding: "utf8",
+      });
+    assert.equal(run(merged).status, 0);
+    const invalid = "Co-authored-by: Claude Code <noreply@anthropic.com>";
+    assert.equal(run(commit([merged], invalid)).status, 1);
+    const side = commit([base], invalid);
+    assert.equal(run(commit([merged, side])).status, 1);
+    const laterUpstream = commit([upstream], invalid);
+    assert.equal(run(commit([merged, laterUpstream])).status, 1);
+    assert.equal(run(commit([merged], "Co-authored-by: Person <person@users.noreply.github.com>")).status, 1);
+    assert.notEqual(run(merged, "missing-upstream").status, 0);
+    assert.notEqual(run("missing-head").status, 0);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });

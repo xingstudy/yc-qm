@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AuditEvent, AuditLog } from "../audit/audit-log.ts";
 import { personKey } from "../directory/person.ts";
+import { externalMemberActive } from "../identity/external-members.ts";
 import type { IdentityService } from "../identity/identity-service.ts";
 import type {
   EmailIdentityLoginResult,
@@ -13,12 +14,19 @@ import {
   type DirectoryVisibilityResolver,
 } from "../authorization/directory-visibility.ts";
 import {
+  accessGroupSubjectWouldCycle,
+  effectiveAccessGroupIdsForUser,
+  effectiveOrganizationUnitIdsForUser,
+} from "../authorization/access-group-membership.ts";
+import {
   organizationAccessSubjectFromScope,
   type OrganizationAccessSubject,
 } from "../authorization/organization-access-subject.ts";
 import type {
   AccessGroup,
   AccessGroupMember,
+  AccessGroupSubject,
+  AccessGroupSubjectKind,
   AccessGroupStatus,
   DirectorySubjectKind,
   DirectoryViewMode,
@@ -166,6 +174,9 @@ type AddGroupMemberResult =
 
 type RemoveGroupMemberResult = { ok: true } | { ok: false; reason: "missing_group" | "forbidden" };
 type ArchiveGroupResult = { ok: true } | { ok: false; reason: "conflict" };
+type AddGroupSubjectResult =
+  { ok: true } | { ok: false; reason: "missing_group" | "archived" | "forbidden" | "missing_subject" | "cycle" };
+type RemoveGroupSubjectResult = { ok: true } | { ok: false; reason: "missing_group" | "forbidden" };
 
 type DirectoryPolicyResult =
   | { ok: true; policy: DirectoryViewPolicy; roots: DirectoryViewRoot[]; authzRevision: number }
@@ -235,6 +246,10 @@ export interface OrganizationService {
     actor: string;
     idempotencyKey: string;
   }): Promise<ApplyOrganizationMemberMutationsResult>;
+  emailLoginAllowed(email: string): Promise<boolean>;
+  findUserByEmail(email: string): Promise<OrganizationUser | null>;
+  syncExternalMember(email: string): Promise<void>;
+  reserveExternalMember(email: string, principalId: string, actor: string): Promise<void>;
   checkActive(principalId: string): Promise<ActiveCheck | null>;
   checkRuntimeActive(principalId: string): Promise<ActiveCheck | null>;
   deactivatePrincipal(input: { principalId: string; actor: string }): Promise<ManagedStatusResult>;
@@ -310,6 +325,20 @@ export interface OrganizationService {
     actor: string;
     asManager?: boolean;
   }): Promise<RemoveGroupMemberResult>;
+  addGroupSubject(input: {
+    groupId: string;
+    subjectKind: AccessGroupSubjectKind;
+    subjectId: string;
+    actor: string;
+    asManager?: boolean;
+  }): Promise<AddGroupSubjectResult>;
+  removeGroupSubject(input: {
+    groupId: string;
+    subjectKind: AccessGroupSubjectKind;
+    subjectId: string;
+    actor: string;
+    asManager?: boolean;
+  }): Promise<RemoveGroupSubjectResult>;
   unitImpact(unitId: string): Promise<UnitImpact>;
   listManagedSubtreeUnitIds(principalId: string): Promise<string[]>;
   listManagedGroupIds(principalId: string): Promise<string[]>;
@@ -319,14 +348,17 @@ export interface OrganizationService {
   getGroup(groupId: string): Promise<AccessGroup | null>;
   listGroups(): Promise<AccessGroup[]>;
   listGroupMembers(groupId: string): Promise<AccessGroupMember[]>;
+  listGroupSubjects(groupId: string): Promise<AccessGroupSubject[]>;
   getDirectoryPolicy(
     subjectKind: DirectorySubjectKind,
     subjectId: string,
   ): Promise<{ policy: DirectoryViewPolicy; roots: DirectoryViewRoot[] } | null>;
+  listDirectoryPolicies(): Promise<Array<{ policy: DirectoryViewPolicy; roots: DirectoryViewRoot[] }>>;
   setDirectoryPolicy(input: {
     subjectKind: DirectorySubjectKind;
     subjectId: string;
     mode: DirectoryViewMode;
+    priority?: number;
     roots: Array<{ unitId: string; includeDescendants: boolean }>;
     expectedRevision: number;
     actor: string;
@@ -534,7 +566,86 @@ export function createOrganizationService(deps: {
     );
   }
 
+  async function syncExternalMember(email: string): Promise<void> {
+    const next = await store.transact(orgId, async (tx) => {
+      const member = await identity.readExternalMember(email);
+      const user = await tx.findUserByInvitedEmail(orgId, email);
+      if (!user?.externalMembership) return null;
+      const expired = !member || !externalMemberActive(member, now());
+      let status: "suspended" | "invited" | null = null;
+      if (expired && (user.status === "active" || user.status === "invited")) status = "suspended";
+      else if (!expired && user.status === "suspended" && user.updatedBy === "system:external-member-expiry")
+        status = "invited";
+      if (!status) return user.status !== "active" ? user : null;
+      const changed: OrganizationUser = {
+        ...user,
+        status,
+        sessionVersion: user.sessionVersion + 1,
+        updatedAt: Math.max(now(), user.updatedAt),
+        updatedBy: expired ? "system:external-member-expiry" : member!.invitedBy,
+      };
+      await tx.putUser(changed);
+      await tx.bumpRevision(orgId);
+      await tx.audit(userEvent("org.user.external_membership", user.principalId, status, changed.updatedBy));
+      return changed;
+    });
+    if (next) {
+      cacheUser(next);
+      await identity.deactivate(next.principalId, "manual", next.sessionVersion);
+    }
+  }
+
+  async function currentUser(principalId: string): Promise<OrganizationUser | null> {
+    const user = await store.getUser(orgId, principalId);
+    if (!user?.invitedEmail) return user;
+    await syncExternalMember(user.invitedEmail);
+    return store.getUser(orgId, principalId);
+  }
+
+  async function emailLoginAllowed(email: string): Promise<boolean> {
+    await syncExternalMember(email);
+    const user = await store.findUserByInvitedEmail(orgId, email);
+    return user?.status === "active" || user?.status === "invited";
+  }
+
   async function login(input: LoginInput): Promise<LoginResult> {
+    if (!input.externalIdentity && input.email && input.emailVerified) {
+      const email = input.email.toLowerCase();
+      await syncExternalMember(email);
+      const member = await identity.readExternalMember(email);
+      if (member) {
+        if (!externalMemberActive(member, now())) return { status: "denied", reason: "external_inactive" };
+        try {
+          await reserveExternalMember(email, input.principalId, member.invitedBy);
+        } catch {
+          return { status: "denied", reason: "identity_conflict" };
+        }
+        await syncExternalMember(email);
+      }
+    }
+    const result = await resolveLogin(input);
+    if (result.status !== "ok") return result;
+    const active = await currentUser(result.user.principalId);
+    return active?.status === "active"
+      ? { status: "ok", user: active }
+      : { status: "denied", reason: "external_inactive" };
+  }
+
+  async function reserveExternalMember(email: string, principalId: string, actor: string): Promise<void> {
+    const existing = await findUserByEmail(email);
+    if (existing?.externalMembership) {
+      if (existing.invitedEmail?.toLowerCase() !== email.trim().toLowerCase())
+        throw new Error("email already belongs to an organization user");
+      return;
+    }
+    await invite({ principalId, email, displayName: email, actor, externalMembership: true });
+  }
+
+  async function findUserByEmail(email: string): Promise<OrganizationUser | null> {
+    return (await store.findUserByInvitedEmail(orgId, email)) ?? (await store.findUserByEmail(orgId, email));
+  }
+
+  async function resolveLogin(input: LoginInput): Promise<LoginResult> {
     if (input.externalIdentity) {
       if (!deps.externalIdentityLogin) return { status: "denied", reason: "identity_unmatched" };
       const managed = await deps.externalIdentityLogin({
@@ -601,7 +712,8 @@ export function createOrganizationService(deps: {
         return { status: "denied", reason: user.status };
       }
       if (input.email !== null && input.emailVerified) {
-        const matched = await tx.findUserByEmail(orgId, input.email);
+        const matched =
+          (await tx.findUserByInvitedEmail(orgId, input.email)) ?? (await tx.findUserByEmail(orgId, input.email));
         if (matched) {
           const canBind =
             matched.status === "invited" ||
@@ -684,15 +796,38 @@ export function createOrganizationService(deps: {
     email: string | null;
     displayName: string;
     actor: string;
+    externalMembership?: boolean;
   }): Promise<OrganizationUser> {
     const user = await store.transact(orgId, async (tx) => {
       const existing = await tx.getUser(orgId, input.principalId);
-      if (existing) return existing;
+      if (existing) {
+        if (
+          input.externalMembership &&
+          (!existing.externalMembership || existing.invitedEmail !== input.email?.toLowerCase())
+        )
+          throw new Error("email already belongs to an organization user");
+        return existing;
+      }
+      if (input.email) {
+        const owner =
+          (await tx.findUserByInvitedEmail(orgId, input.email)) ?? (await tx.findUserByEmail(orgId, input.email));
+        if (owner) {
+          if (
+            input.externalMembership &&
+            owner.externalMembership &&
+            owner.invitedEmail?.toLowerCase() === input.email.trim().toLowerCase()
+          )
+            return owner;
+          throw new Error("email already belongs to an organization user");
+        }
+      }
       const at = now();
       const created: OrganizationUser = {
         orgId,
         principalId: input.principalId,
         email: input.email,
+        ...(input.email ? { invitedEmail: input.email.toLowerCase() } : {}),
+        ...(input.externalMembership ? { externalMembership: true } : {}),
         displayName: sanitizeDisplayName(input.displayName),
         jobTitle: null,
         mobile: null,
@@ -810,7 +945,7 @@ export function createOrganizationService(deps: {
     const next = await store.transact(orgId, async (tx) => {
       const user = await tx.getUser(orgId, input.principalId);
       if (!user) return null;
-      if (user.status === input.status) return user;
+      if (user.status === input.status && user.updatedBy !== "system:external-member-expiry") return user;
       const changed: OrganizationUser = {
         ...user,
         status: input.status,
@@ -841,8 +976,9 @@ export function createOrganizationService(deps: {
     const result = await store.transact(orgId, async (tx): Promise<ManagedStatusResult> => {
       const user = await tx.getUser(orgId, input.principalId);
       if (!user) return { ok: false, reason: "missing_user" };
-      if (user.status === input.status) return { ok: true, user };
+      if (user.status === input.status && user.updatedBy !== "system:external-member-expiry") return { ok: true, user };
       const allowed =
+        user.status === input.status ||
         (user.status === "active" && (input.status === "suspended" || input.status === "deprovisioned")) ||
         (user.status === "suspended" && (input.status === "active" || input.status === "deprovisioned"));
       if (!allowed) return { ok: false, reason: "invalid_transition", current: user.status };
@@ -920,7 +1056,9 @@ export function createOrganizationService(deps: {
         return { ok: false, reason: "revision_conflict", current: user };
       }
       if (normalized.patch.email) {
-        const duplicate = await tx.findUserByEmail(orgId, normalized.patch.email);
+        const duplicate =
+          (await tx.findUserByInvitedEmail(orgId, normalized.patch.email)) ??
+          (await tx.findUserByEmail(orgId, normalized.patch.email));
         if (duplicate && duplicate.principalId !== user.principalId) {
           return { ok: false, reason: "duplicate_email" };
         }
@@ -1612,7 +1750,10 @@ export function createOrganizationService(deps: {
       if (!group || group.status === "archived") return { ok: true };
       if (
         (await tx.getDirectoryPolicy(orgId, "access_group", input.groupId)) ||
-        (await tx.countSkillAccessGrantsForSubject(orgId, `access-group:${input.groupId}` as ScopeId)) > 0
+        (await tx.countSkillAccessGrantsForSubject(orgId, `access-group:${input.groupId}` as ScopeId)) > 0 ||
+        (await tx.listGroupSubjects(orgId)).some(
+          (subject) => subject.subjectKind === "access_group" && subject.subjectId === input.groupId,
+        )
       ) {
         return { ok: false, reason: "conflict" };
       }
@@ -1730,6 +1871,84 @@ export function createOrganizationService(deps: {
     });
   }
 
+  async function addGroupSubject(input: {
+    groupId: string;
+    subjectKind: AccessGroupSubjectKind;
+    subjectId: string;
+    actor: string;
+    asManager?: boolean;
+  }): Promise<AddGroupSubjectResult> {
+    return store.transact(orgId, async (tx): Promise<AddGroupSubjectResult> => {
+      const group = await tx.getGroup(orgId, input.groupId);
+      if (!group || (input.asManager && group.status !== "active")) return { ok: false, reason: "missing_group" };
+      if (group.status !== "active") return { ok: false, reason: "archived" };
+      if (input.asManager && !(await managerCanWriteGroup(tx, input.actor, input.groupId))) {
+        return { ok: false, reason: "forbidden" };
+      }
+      if (input.subjectKind === "org_unit") {
+        const unit = await tx.getUnit(orgId, input.subjectId);
+        if (!unit || unit.status !== "active") return { ok: false, reason: "missing_subject" };
+      } else {
+        const nested = await tx.getGroup(orgId, input.subjectId);
+        if (!nested || nested.status !== "active") return { ok: false, reason: "missing_subject" };
+        if (await accessGroupSubjectWouldCycle(tx, orgId, input.groupId, input.subjectId)) {
+          return { ok: false, reason: "cycle" };
+        }
+      }
+      const existing = (await tx.listGroupSubjects(orgId, input.groupId)).some(
+        (subject) => subject.subjectKind === input.subjectKind && subject.subjectId === input.subjectId,
+      );
+      if (existing) return { ok: true };
+      await tx.putGroupSubject({
+        orgId,
+        groupId: input.groupId,
+        subjectKind: input.subjectKind,
+        subjectId: input.subjectId,
+        createdAt: now(),
+        createdBy: input.actor,
+      });
+      await tx.bumpRevision(orgId);
+      await tx.audit(
+        orgEvent("org.group.subject.add", `group:${input.groupId}`, input.actor, {
+          groupId: input.groupId,
+          subjectKind: input.subjectKind,
+          subjectId: input.subjectId,
+        }),
+      );
+      return { ok: true };
+    });
+  }
+
+  async function removeGroupSubject(input: {
+    groupId: string;
+    subjectKind: AccessGroupSubjectKind;
+    subjectId: string;
+    actor: string;
+    asManager?: boolean;
+  }): Promise<RemoveGroupSubjectResult> {
+    return store.transact(orgId, async (tx): Promise<RemoveGroupSubjectResult> => {
+      const group = await tx.getGroup(orgId, input.groupId);
+      if (!group || (input.asManager && group.status !== "active")) return { ok: false, reason: "missing_group" };
+      if (input.asManager && !(await managerCanWriteGroup(tx, input.actor, input.groupId))) {
+        return { ok: false, reason: "forbidden" };
+      }
+      const existing = (await tx.listGroupSubjects(orgId, input.groupId)).some(
+        (subject) => subject.subjectKind === input.subjectKind && subject.subjectId === input.subjectId,
+      );
+      if (!existing) return { ok: true };
+      await tx.removeGroupSubject(orgId, input.groupId, input.subjectKind, input.subjectId);
+      await tx.bumpRevision(orgId);
+      await tx.audit(
+        orgEvent("org.group.subject.remove", `group:${input.groupId}`, input.actor, {
+          groupId: input.groupId,
+          subjectKind: input.subjectKind,
+          subjectId: input.subjectId,
+        }),
+      );
+      return { ok: true };
+    });
+  }
+
   async function refresh(): Promise<void> {
     if (refreshP) return refreshP;
     refreshP = store
@@ -1751,6 +1970,15 @@ export function createOrganizationService(deps: {
     const policy = await store.getDirectoryPolicy(orgId, subjectKind, subjectId);
     if (!policy) return null;
     return { policy, roots: await store.listDirectoryRoots(orgId, policy.id) };
+  }
+
+  async function directoryPolicies(): Promise<Array<{ policy: DirectoryViewPolicy; roots: DirectoryViewRoot[] }>> {
+    return Promise.all(
+      (await store.listDirectoryPolicies(orgId)).map(async (policy) => ({
+        policy,
+        roots: await store.listDirectoryRoots(orgId, policy.id),
+      })),
+    );
   }
 
   async function subjectExists(
@@ -1793,6 +2021,7 @@ export function createOrganizationService(deps: {
     subjectKind: DirectorySubjectKind;
     subjectId: string;
     mode: DirectoryViewMode;
+    priority?: number;
     roots: Array<{ unitId: string; includeDescendants: boolean }>;
     expectedRevision: number;
     actor: string;
@@ -1812,6 +2041,7 @@ export function createOrganizationService(deps: {
           roots: current ? await tx.listDirectoryRoots(orgId, current.id) : [],
         };
       }
+      const priority = input.priority ?? current?.priority ?? 100;
       const at = now();
       const policy: DirectoryViewPolicy = {
         id: current?.id ?? `dir-${randomUUID()}`,
@@ -1819,6 +2049,7 @@ export function createOrganizationService(deps: {
         subjectKind: input.subjectKind,
         subjectId: input.subjectId,
         mode: input.mode,
+        priority,
         revision: currentRevision + 1,
         createdAt: current?.createdAt ?? at,
         updatedAt: at,
@@ -1837,6 +2068,7 @@ export function createOrganizationService(deps: {
           subjectKind: input.subjectKind,
           subjectId: input.subjectId,
           mode: input.mode,
+          priority: String(priority),
         }),
       );
       return { ok: true, policy, roots, authzRevision };
@@ -1891,18 +2123,14 @@ export function createOrganizationService(deps: {
   }
 
   async function accessSubjectIncludes(scopeId: ScopeId, principalId: string): Promise<boolean> {
-    if ((await store.getUser(orgId, principalId))?.status !== "active") return false;
+    if ((await currentUser(principalId))?.status !== "active") return false;
     const subject = await resolveAccessSubject(scopeId);
     if (!subject) return false;
     if (subject.kind === "user") return subject.id === principalId;
     if (subject.kind === "access_group") {
-      return (await store.listDirectGroupIdsForUser(orgId, principalId)).includes(subject.id);
+      return (await effectiveAccessGroupIdsForUser(store, orgId, principalId)).has(subject.id);
     }
-    const directUnits = await store.listDirectUnitIdsForUser(orgId, principalId);
-    for (const unitId of directUnits) {
-      if ((await store.listAncestorUnitIds(orgId, unitId)).includes(subject.id)) return true;
-    }
-    return false;
+    return (await effectiveOrganizationUnitIdsForUser(store, orgId, principalId)).has(subject.id);
   }
 
   return {
@@ -1934,6 +2162,8 @@ export function createOrganizationService(deps: {
     addGroupMember,
     addGroupMembers,
     removeGroupMember,
+    addGroupSubject,
+    removeGroupSubject,
     unitImpact: (unitId) => store.unitImpact(orgId, unitId),
     listManagedSubtreeUnitIds: (principalId) => store.listManagedSubtreeUnitIds(orgId, principalId),
     listManagedGroupIds: (principalId) => store.listManagedGroupIds(orgId, principalId),
@@ -1943,7 +2173,9 @@ export function createOrganizationService(deps: {
     getGroup: (groupId) => store.getGroup(orgId, groupId),
     listGroups: () => store.listGroups(orgId),
     listGroupMembers: (groupId) => store.listGroupMembers(orgId, groupId),
+    listGroupSubjects: (groupId) => store.listGroupSubjects(orgId, groupId),
     getDirectoryPolicy: directoryPolicy,
+    listDirectoryPolicies: directoryPolicies,
     setDirectoryPolicy,
     deleteDirectoryPolicy,
     getUser: (principalId) => store.getUser(orgId, principalId),
@@ -1952,9 +2184,13 @@ export function createOrganizationService(deps: {
     resolveAccessSubject,
     accessSubjectIncludes,
     authzRevision: () => store.getAuthzRevision(orgId),
+    emailLoginAllowed,
+    findUserByEmail,
+    syncExternalMember,
+    reserveExternalMember,
     async checkActive(principalId: string): Promise<ActiveCheck | null> {
       await deps.ready?.();
-      const user = await store.getUser(orgId, principalId);
+      const user = await currentUser(principalId);
       if (!user) return null;
       const active = { status: user.status, sessionVersion: user.sessionVersion };
       cache.set(personKey(principalId), active);
@@ -1962,7 +2198,7 @@ export function createOrganizationService(deps: {
     },
     async checkRuntimeActive(principalId: string): Promise<ActiveCheck | null> {
       await deps.ready?.();
-      const user = await store.getUser(orgId, principalId);
+      const user = await currentUser(principalId);
       if (user) {
         const active = { status: user.status, sessionVersion: user.sessionVersion };
         cache.set(personKey(principalId), active);

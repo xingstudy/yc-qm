@@ -9,6 +9,7 @@ import { personKey, samePerson } from "../directory/person.ts";
 import { hashId } from "../util/crypto.ts";
 import { shq } from "../util/shell.ts";
 import { homeRelativePath } from "./paths.ts";
+import type { CredentialPathSpec } from "./resident-paths.ts";
 import { envKey } from "./connector-token.ts";
 
 type CredentialKind = "env" | "file" | "broker";
@@ -16,6 +17,23 @@ type CredentialKind = "env" | "file" | "broker";
 export interface CredentialInjection {
   header?: string;
   scheme?: string;
+  actor?: boolean;
+}
+
+export function credentialInjectionError(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "injection must be an object";
+  const injection = value as CredentialInjection;
+  if (injection.actor !== undefined && typeof injection.actor !== "boolean") return "injection.actor must be boolean";
+  if (
+    injection.header !== undefined &&
+    (typeof injection.header !== "string" || !/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(injection.header))
+  )
+    return "authentication header must be a valid HTTP header name";
+  if (injection.header?.toLowerCase() === "x-qm-actor") return "x-qm-actor is reserved for broker actor attestation";
+  if (injection.scheme !== undefined && (typeof injection.scheme !== "string" || /[\r\n]/.test(injection.scheme)))
+    return "authentication value prefix must be a single line";
+  return undefined;
 }
 
 interface BrokerDelivery {
@@ -25,12 +43,15 @@ interface BrokerDelivery {
   injection?: CredentialInjection;
   allowedMethods?: string[];
   allowedPathPrefixes?: string[];
+  deployments?: boolean;
   enabled: boolean;
   updatedBy?: string;
 }
 
 interface CredentialRefresh {
   refreshTokenEnc?: string;
+  idTokenEnc?: string;
+  accountId?: string;
   accountType?: string;
   clientRef?: string;
   grantedScopes?: string[];
@@ -42,6 +63,11 @@ interface CredentialRefresh {
 export interface CredentialFile {
   path: string;
   contentBase64: string;
+  mode?: number;
+}
+
+export function restoredFileMode(mode?: number): number {
+  return ((mode ?? 0o600) & 0o700) | 0o600;
 }
 
 interface CredentialFieldMeta {
@@ -64,6 +90,7 @@ export interface KeychainCredential {
   envKey?: string;
   target?: string;
   targets?: string[];
+  capturePaths?: CredentialPathSpec[];
   host?: string;
   accountLabel?: string;
   fields?: CredentialFieldMeta[];
@@ -134,6 +161,7 @@ export interface ServiceCredentialInput {
   injection?: CredentialInjection;
   allowedMethods?: string[];
   allowedPathPrefixes?: string[];
+  deployments?: boolean;
   enabled?: boolean;
   updatedBy?: string;
 }
@@ -147,6 +175,7 @@ export interface PublicServiceCredential {
   injection?: CredentialInjection;
   allowedMethods?: string[];
   allowedPathPrefixes?: string[];
+  deployments: boolean;
   enabled: boolean;
   hasSecret: boolean;
   updatedBy?: string;
@@ -163,6 +192,7 @@ export interface DecryptedServiceCredential {
   injection?: CredentialInjection;
   allowedMethods?: string[];
   allowedPathPrefixes?: string[];
+  deployments: boolean;
   enabled: boolean;
 }
 
@@ -199,6 +229,18 @@ export interface OAuthToken {
   clientRef?: string;
   accountType?: string;
   orgId?: string;
+  /** OIDC id token, for providers whose API needs it alongside the access token (e.g. Codex). */
+  idToken?: string;
+  /** Provider-side account identifier carried with the token (e.g. ChatGPT account id). */
+  accountId?: string;
+}
+
+/** Derived, sandbox-safe view of a connector token: never carries the refresh token. */
+export interface DerivedOAuthAuth {
+  accessToken: string;
+  idToken?: string;
+  accountId?: string;
+  expiresAt?: number;
 }
 
 export interface OAuthTokenStatus {
@@ -233,6 +275,12 @@ export interface ConnectorTokenStore {
   deleteConnectorToken(host: string, principalId: string, accountType?: string): Promise<void>;
   connectorTokenStatus(host: string, principalId: string, accountType?: string): Promise<OAuthTokenStatus>;
   connectorAccessToken(host: string, principalId: string, accountType?: string): Promise<string | null>;
+  /**
+   * Fresh derived material for the connector token (access + id token +
+   * account id), refreshing single-flight if stale. The refresh token never
+   * leaves the keychain record.
+   */
+  connectorDerivedAuth(host: string, principalId: string, accountType?: string): Promise<DerivedOAuthAuth | null>;
 }
 
 interface SaveCredentialInput {
@@ -245,7 +293,9 @@ interface SaveCredentialInput {
   files?: CredentialFile[];
   host?: string;
   accountLabel?: string;
+  capturePaths?: CredentialPathSpec[];
   origin?: string;
+  expectedOrigin?: string;
   expiresAt?: number;
 }
 
@@ -305,6 +355,8 @@ interface MaterializedFileCred {
 
 export type MaterializedCred = ({ kind: "env" } & MaterializedEnvCred) | ({ kind: "file" } & MaterializedFileCred);
 
+export const DEVICE_FLOW_ORIGIN = "device-flow-auto-capture";
+
 export class KeychainError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -324,8 +376,16 @@ export interface Keychain extends ServiceCredentialStore, ConnectorTokenStore {
   listAllMetadata(): Promise<KeychainCredentialMeta[]>;
   listByOwner(ownerId: string): Promise<KeychainCredentialMeta[]>;
   listByOwners(ownerIds: string[]): Promise<Map<string, KeychainCredentialMeta[]>>;
+  setCapturePaths(
+    ownerId: string,
+    service: string,
+    capturePaths: CredentialPathSpec[],
+    expectedOrigin: string,
+  ): Promise<boolean>;
   listConnectorsByOwners(ownerIds: string[]): Promise<Map<string, ConnectorMeta[]>>;
   getCredential(id: string): Promise<KeychainCredentialMeta | null>;
+  /** Decrypt an env credential the caller OWNS — no grant machinery, never someone else's. */
+  readOwnSecret(ownerId: string, credentialId: string): Promise<string | null>;
   remove(ownerId: string, id: string): Promise<boolean>;
 
   createGrant(input: CreateGrantInput): Promise<KeychainGrant>;
@@ -362,11 +422,17 @@ function fingerprintOf(secret: string): string {
   return hashId([secret]);
 }
 
+export function credentialHandle(credentialId: string): string {
+  return `kc_${credentialId.slice(0, 12)}`;
+}
+
 export function fileCredentialFingerprint(files: CredentialFile[]): string {
   return fingerprintOf(JSON.stringify(files.map((f) => ({ ...f, path: homeRelativePath(f.path) }))));
 }
 
 function keychainFilePath(path: string): string {
+  if (/[\n\r]/.test(path))
+    throw new KeychainError(400, `file path may not contain line breaks: ${JSON.stringify(path)}`);
   try {
     return homeRelativePath(path);
   } catch {
@@ -402,11 +468,15 @@ function toMeta(rec: KeychainCredential): KeychainCredentialMeta {
   return meta;
 }
 
-function bucketByOwner<T>(
-  creds: Iterable<KeychainCredential>,
+function byOwners(ownerIds: string[]): { field: "ownerId"; anyOfFold: string[] } {
+  return { field: "ownerId", anyOfFold: ownerIds.map((id) => personKey(id)) };
+}
+
+function bucketByOwner<C extends { ownerId: string }, T>(
+  creds: Iterable<C>,
   ownerIds: string[],
-  include: (c: KeychainCredential) => boolean,
-  item: (c: KeychainCredential) => T,
+  include: (c: C) => boolean,
+  item: (c: C) => T,
 ): Map<string, T[]> {
   const byKey = new Map(ownerIds.map((id) => [personKey(id), id]));
   const out = new Map<string, T[]>();
@@ -515,6 +585,7 @@ export function createKeychain(deps: {
       ...(b.injection ? { injection: b.injection } : {}),
       ...(b.allowedMethods ? { allowedMethods: b.allowedMethods } : {}),
       ...(b.allowedPathPrefixes ? { allowedPathPrefixes: b.allowedPathPrefixes } : {}),
+      deployments: b.deployments !== false,
       enabled: b.enabled,
       hasSecret: !!rec.secretEnc,
       ...(b.updatedBy ? { updatedBy: b.updatedBy } : {}),
@@ -531,6 +602,8 @@ export function createKeychain(deps: {
     input: ServiceCredentialInput,
     prior: KeychainCredential | null,
   ): KeychainCredential {
+    const injectionError = credentialInjectionError(input.injection);
+    if (injectionError) throw new Error(injectionError);
     const trimmedSecret = input.secret?.trim();
     const t = Math.max(now(), (prior?.updatedAt ?? 0) + 1);
     const delivery = input.delivery ?? "broker";
@@ -556,6 +629,7 @@ export function createKeychain(deps: {
         ...(input.injection ? { injection: input.injection } : {}),
         ...(input.allowedMethods ? { allowedMethods: input.allowedMethods.map((m) => m.toUpperCase()) } : {}),
         ...(input.allowedPathPrefixes ? { allowedPathPrefixes: input.allowedPathPrefixes } : {}),
+        ...(input.deployments === false ? { deployments: false } : {}),
         enabled: input.enabled !== false,
         ...(input.updatedBy ? { updatedBy: input.updatedBy } : {}),
       },
@@ -595,6 +669,8 @@ export function createKeychain(deps: {
       ...(token.expiresAt !== undefined ? { expiresAt: token.expiresAt } : {}),
       refresh: {
         ...(token.refreshToken ? { refreshTokenEnc: encryptSecret(token.refreshToken, deps.key) } : {}),
+        ...(token.idToken ? { idTokenEnc: encryptSecret(token.idToken, deps.key) } : {}),
+        ...(token.accountId ? { accountId: token.accountId } : {}),
         ...(at ? { accountType: at } : {}),
         ...(token.clientRef ? { clientRef: token.clientRef } : {}),
         ...(token.grantedScopes ? { grantedScopes: token.grantedScopes } : {}),
@@ -619,6 +695,8 @@ export function createKeychain(deps: {
     return {
       accessToken: decryptSecret(rec.secretEnc, deps.key),
       ...(rec.refresh?.refreshTokenEnc ? { refreshToken: decryptSecret(rec.refresh.refreshTokenEnc, deps.key) } : {}),
+      ...(rec.refresh?.idTokenEnc ? { idToken: decryptSecret(rec.refresh.idTokenEnc, deps.key) } : {}),
+      ...(rec.refresh?.accountId ? { accountId: rec.refresh.accountId } : {}),
       ...(rec.expiresAt !== undefined ? { expiresAt: rec.expiresAt } : {}),
       ...(rec.refresh?.grantedScopes ? { grantedScopes: rec.refresh.grantedScopes } : {}),
       ...(rec.refresh?.clientRef ? { clientRef: rec.refresh.clientRef } : {}),
@@ -661,8 +739,17 @@ export function createKeychain(deps: {
         ...(stored.clientRef ? { clientRef: stored.clientRef } : {}),
         ...(stored.accountType ? { accountType: stored.accountType } : {}),
         ...(stored.orgId ? { orgId: stored.orgId } : {}),
+        ...(stored.idToken ? { idToken: stored.idToken } : {}),
+        ...(stored.accountId ? { accountId: stored.accountId } : {}),
         ...fresh,
       };
+      // Compare-and-set: if another flight already rotated this credential,
+      // keep its result rather than clobbering a newer refresh token.
+      const current = await deps.creds.get(rec.id);
+      if (current && (current.updatedAt !== rec.updatedAt || current.fingerprint !== rec.fingerprint)) {
+        const latest = tryDecrypt(current, recToOAuthToken);
+        return latest?.accessToken ?? null;
+      }
       await putConnectorToken(host, principalId, merged, accountType);
       return merged.accessToken;
     } catch (e) {
@@ -679,7 +766,7 @@ export function createKeychain(deps: {
     }
   }
 
-  const oauthExpired = (rec: KeychainCredential, t: number) =>
+  const oauthExpired = (rec: KeychainCredentialMeta, t: number) =>
     rec.expiresAt !== undefined && t >= rec.expiresAt - oauthSkew;
 
   async function connectorTokenForRecord(rec: KeychainCredential): Promise<string | null> {
@@ -698,7 +785,7 @@ export function createKeychain(deps: {
     return tryDecrypt(rec, (r) => decryptSecret(r.secretEnc, deps.key));
   }
 
-  function connectorMeta(rec: KeychainCredential, t: number): ConnectorMeta {
+  function connectorMeta(rec: KeychainCredentialMeta, t: number): ConnectorMeta {
     const hasRefresh = !!rec.refresh?.refreshTokenEnc;
     const refreshFailed = typeof rec.refresh?.refreshFailedAt === "number";
     const tokenExpired = oauthExpired(rec, t);
@@ -758,27 +845,53 @@ export function createKeychain(deps: {
         .sort()
         .join(",")}`;
     const id = credId(input.ownerId, service, slot);
-    const prior = await deps.creds.get(id);
-    const rec: KeychainCredential = {
-      id,
-      ownerId: input.ownerId,
-      orgId: configOrgId(),
-      service,
-      kind,
-      ...(envKey ? { envKey } : {}),
-      ...(fieldsMeta ? { fields: fieldsMeta } : {}),
-      ...(targets ? { targets } : {}),
-      ...(input.host ? { host: input.host } : {}),
-      ...(input.accountLabel ? { accountLabel: input.accountLabel } : {}),
-      secretEnc: encryptSecret(secret, deps.key),
-      fingerprint: fingerprintOf(secret),
-      ...(input.origin ? { origin: input.origin } : {}),
-      ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
-      createdAt: prior?.createdAt ?? t,
-      updatedAt: t,
+    const buildRec = (prior?: KeychainCredential | null): KeychainCredential => {
+      const carriedCapturePaths = input.capturePaths ?? prior?.capturePaths;
+      return {
+        id,
+        ownerId: input.ownerId,
+        orgId: configOrgId(),
+        service,
+        kind,
+        ...(envKey ? { envKey } : {}),
+        ...(fieldsMeta ? { fields: fieldsMeta } : {}),
+        ...(targets ? { targets } : {}),
+        ...(carriedCapturePaths ? { capturePaths: carriedCapturePaths } : {}),
+        ...(input.host ? { host: input.host } : {}),
+        ...(input.accountLabel ? { accountLabel: input.accountLabel } : {}),
+        secretEnc: encryptSecret(secret, deps.key),
+        fingerprint: fingerprintOf(secret),
+        ...(input.origin ? { origin: input.origin } : {}),
+        ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
+        createdAt: prior?.createdAt ?? t,
+        updatedAt: t,
+      };
     };
-    await deps.creds.put(id, rec);
-    return toMeta(rec);
+    const expectedOrigin =
+      input.expectedOrigin ?? (input.origin === DEVICE_FLOW_ORIGIN ? DEVICE_FLOW_ORIGIN : undefined);
+    if (expectedOrigin === undefined) {
+      const prior = await deps.creds.get(id);
+      const rec = buildRec(prior);
+      await deps.creds.put(id, rec);
+      return toMeta(rec);
+    }
+    if (!deps.creds.update || !deps.creds.insertIfAbsent)
+      throw new Error("credential store does not support atomic origin-guarded saves");
+    const guarded = (prior: KeychainCredential): KeychainCredential => {
+      if (prior.origin !== expectedOrigin)
+        throw new KeychainError(
+          409,
+          `a ${prior.origin ?? "manually saved"} credential for ${service} already exists — not overwritten`,
+        );
+      return buildRec(prior);
+    };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const updated = await deps.creds.update(id, guarded);
+      if (updated) return toMeta(updated);
+      const fresh = buildRec();
+      if (await deps.creds.insertIfAbsent(id, fresh)) return toMeta(fresh);
+    }
+    throw new KeychainError(503, `credential for ${service} is being written concurrently — retry`);
   }
 
   async function materializeConnectorEnv(
@@ -877,22 +990,44 @@ export function createKeychain(deps: {
     save: saveCredential,
 
     async listAllMetadata() {
-      return (await deps.creds.all()).filter((c) => !c.managed && c.kind !== "broker").map(toMeta);
+      return (await deps.creds.select({ omit: ["secretEnc"] })).filter((c) => !c.managed && c.kind !== "broker");
     },
 
     async listByOwner(ownerId) {
-      return (await deps.creds.all())
-        .filter((c) => samePerson(c.ownerId, ownerId) && !c.managed && c.kind !== "broker")
-        .map(toMeta);
+      return (await deps.creds.select({ omit: ["secretEnc"], where: byOwners([ownerId]) })).filter(
+        (c) => samePerson(c.ownerId, ownerId) && !c.managed && c.kind !== "broker",
+      );
     },
 
     async listByOwners(ownerIds) {
-      return bucketByOwner(await deps.creds.all(), ownerIds, (c) => !c.managed && c.kind !== "broker", toMeta);
+      return bucketByOwner(
+        await deps.creds.select({ omit: ["secretEnc"], where: byOwners(ownerIds) }),
+        ownerIds,
+        (c) => !c.managed && c.kind !== "broker",
+        (c) => c,
+      );
+    },
+
+    async setCapturePaths(ownerId, service, capturePaths, expectedOrigin) {
+      const id = credId(ownerId, service, "file");
+      if (!deps.creds.update) throw new Error("credential store does not support atomic capture-path updates");
+      const updated = await deps.creds.update(id, (rec) => {
+        if (rec.origin !== expectedOrigin)
+          throw new KeychainError(409, `credential for ${service} was not created by a login capture — not updated`);
+        return { ...rec, capturePaths, updatedAt: now() };
+      });
+      return updated !== null;
     },
 
     async getCredential(id) {
       const rec = await deps.creds.get(id);
       return rec ? toMeta(rec) : null;
+    },
+
+    async readOwnSecret(ownerId, id) {
+      const rec = await getOwned(ownerId, id);
+      if (!rec || rec.kind !== "env") return null;
+      return tryDecrypt(rec, (r) => decryptSecret(r.secretEnc, deps.key));
     },
 
     async remove(ownerId, id) {
@@ -1099,7 +1234,7 @@ export function createKeychain(deps: {
     },
 
     async listServiceCredentials(orgScopeId) {
-      return (await deps.creds.all())
+      return (await deps.creds.select({ where: byOwners([orgScopeId]) }))
         .filter((c) => c.kind === "broker" && c.ownerId === orgScopeId)
         .map(brokerToPublic);
     },
@@ -1130,6 +1265,7 @@ export function createKeychain(deps: {
         ...(b.injection ? { injection: b.injection } : {}),
         ...(b.allowedMethods ? { allowedMethods: b.allowedMethods } : {}),
         ...(b.allowedPathPrefixes ? { allowedPathPrefixes: b.allowedPathPrefixes } : {}),
+        deployments: b.deployments !== false,
         enabled: b.enabled,
       };
     },
@@ -1167,10 +1303,27 @@ export function createKeychain(deps: {
       return connectorTokenForRecord(rec);
     },
 
+    async connectorDerivedAuth(host, principalId, accountType) {
+      const rec = await connectorRecord(host, principalId, accountType);
+      if (!rec) return null;
+      const accessToken = await connectorTokenForRecord(rec);
+      if (accessToken === null) return null;
+      // Re-read: a refresh inside connectorTokenForRecord may have rotated the record.
+      const fresh = (await connectorRecord(host, principalId, accountType)) ?? rec;
+      const token = tryDecrypt(fresh, recToOAuthToken);
+      if (!token) return null;
+      return {
+        accessToken: token.accessToken,
+        ...(token.idToken ? { idToken: token.idToken } : {}),
+        ...(token.accountId ? { accountId: token.accountId } : {}),
+        ...(token.expiresAt !== undefined ? { expiresAt: token.expiresAt } : {}),
+      };
+    },
+
     async listConnectorsByOwners(ownerIds) {
       const t = now();
       return bucketByOwner(
-        await deps.creds.all(),
+        await deps.creds.select({ omit: ["secretEnc"], where: byOwners(ownerIds) }),
         ownerIds,
         (c) => c.managed === "connector",
         (c) => connectorMeta(c, t),
@@ -1220,14 +1373,14 @@ export function createKeychain(deps: {
 
     async materializeOwn(ownerId) {
       const t = now();
-      return (await deps.creds.all())
+      return (await deps.creds.select({ where: byOwners([ownerId]) }))
         .filter((c) => samePerson(c.ownerId, ownerId) && c.kind === "env" && !c.managed && !expired(c, t))
         .map((c) => tryDecrypt(c, decryptToEnv))
         .filter((c): c is MaterializedEnvCred => c !== null);
     },
 
     async materializeOwnFiles(ownerId) {
-      return (await deps.creds.all())
+      return (await deps.creds.select({ where: byOwners([ownerId]) }))
         .filter((c) => samePerson(c.ownerId, ownerId) && c.kind === "file" && !c.managed)
         .map((c) => tryDecrypt(c, decryptToFiles))
         .filter((c): c is MaterializedFileCred => c !== null);
@@ -1300,7 +1453,10 @@ export function renderUseScript(m: MaterializedCred): string {
     const parent = f.path.includes("/") ? f.path.replace(/\/[^/]*$/, "") : "";
     if (parent) lines.push(`mkdir -p ${tempCredentialPath(parent)}`);
     const path = tempCredentialPath(f.path);
-    lines.push(`printf '%s' ${shq(f.contentBase64)} | base64 -d > ${path}`, `chmod 600 ${path}`);
+    lines.push(
+      `printf '%s' ${shq(f.contentBase64)} | base64 -d > ${path}`,
+      `chmod ${restoredFileMode(f.mode).toString(8)} ${path}`,
+    );
   }
   const pointed = new Set<RegExp>();
   for (const f of files) {
@@ -1475,7 +1631,7 @@ export function renderKeychainManifest(input: KeychainManifestInput, now: number
   if (hasOwn) {
     lines.push(
       "",
-      "Their env-style logins are already in your environment each turn; load a file-style bundle (or any of their credentials on demand) with:",
+      "Use the execute tool handle for env-style logins. Load file-style bundles on demand with:",
       `   \`${keychainUseCommand({ credential: "<credential id>" })}\``,
       "That form works only here, in their personal conversation — the same credential in a shared conversation needs a grant.",
     );
@@ -1494,12 +1650,14 @@ export function renderKeychainManifest(input: KeychainManifestInput, now: number
   if (input.injected.length) {
     lines.push(
       "",
-      "Already in your environment this turn (standing grants):",
+      "Available command credentials:",
       ...input.injected.map(
         (m) =>
-          `- ${m.env.map((e) => `\`${e.key}\``).join(" + ")} — owner ${m.ownerId}, purpose: "${m.purpose ?? ""}". ` +
-          "Act within that purpose; for anything outside it, ask the owner first.",
+          `- \`${credentialHandle(m.credentialId)}\` — ${m.service}, owner ${m.ownerId}, provides ${m.env
+            .map((e) => `\`${e.key}\``)
+            .join(" + ")}${m.purpose ? `, purpose: "${m.purpose}"` : ""}.`,
       ),
+      "Pass these exact handles in the execute tool's credentials field. Core exposes them only to that command.",
     );
   }
 

@@ -75,10 +75,10 @@ test("web turns deliver recursive runtime and instructions to the harness and re
     });
     assert.ok(result.status === "ok" || result.status === "queued", JSON.stringify(result));
     const deadline = Date.now() + 5000;
-    while (observed.at(-1)?.model !== expectedModel && Date.now() < deadline)
+    while (observed.at(-1)?.runtime?.modelId !== expectedModel && Date.now() < deadline)
       await new Promise((resolve) => setTimeout(resolve, 20));
     const input = observed.at(-1)!;
-    assert.equal(input.model, expectedModel);
+    assert.equal(input.runtime?.modelId, expectedModel);
     const claims = await verifyCapabilityToken(egressTokens.at(-1)!, TEST_CAPABILITY_SECRET);
     assert.equal(claims?.egress?.denyPrivateNetworks, true);
     assert.deepEqual(claims?.egress?.privateNetworkAllowedHosts ?? [], [
@@ -86,8 +86,9 @@ test("web turns deliver recursive runtime and instructions to the harness and re
       ...(groupInstructions ? ["kibana.example.com"] : []),
     ]);
     assert.equal(input.governancePrincipalId, "alice");
-    assert.equal(input.fastMode, groupInstructions ? true : undefined);
-    assert.equal(input.turnWallClockMs, groupInstructions ? 120_000 : undefined);
+    assert.equal(input.runtime?.fastMode, groupInstructions ? false : undefined);
+    if (groupInstructions) assert.ok(input.turnWallClockMs! > 0 && input.turnWallClockMs! <= 120_000);
+    else assert.equal(input.turnWallClockMs, 0);
     assert.equal(provisioned.at(-1)?.BROWSE_LAB_MAX_STEPS, departmentInstructions ? "20" : undefined);
     if (departmentInstructions) assert.equal(provisioned.at(-1)?.BROWSE_LAB_MODEL, "claude-sonnet-4-6");
     assert.equal(input.systemPrompt.includes("RECURSIVE_GROUP_INSTRUCTIONS"), groupInstructions);

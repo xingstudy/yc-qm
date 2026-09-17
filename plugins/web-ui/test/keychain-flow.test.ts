@@ -135,7 +135,7 @@ test("keychain overview wires managed connector grants into account controls", (
     /keychainConnectorCredentials\.filter\(\(credential\) => hosts\.has\(credential\.host\)\)/,
   );
   assert.match(connectorsSource, /isActiveGrant\(grant, credentialsById\.get\(grant\.credentialId\)\)/);
-  assert.match(connectorsSource, /c\.kind !== "file" && c\.expiresAt/);
+  assert.match(connectorsSource, /isExpiredCredential\(c\)/);
 });
 
 test("destructive controls settle duplicate attempts while a mutation is busy", () => {
@@ -153,11 +153,55 @@ test("keychain rows reserve success badges for actionable states", () => {
   assert.doesNotMatch(connectorsSource, />Connected<\/span>/);
   assert.match(connectorsSource, /expired \? html`<span class="kc-state warning">Expired<\/span>` : ""/);
   assert.match(connectorsSource, /<span class="kc-state warning">Reconnect needed<\/span>/);
-  assert.match(connectorsSource, /\$\{t\(ask\.requestedMode \?\? "one-time"\)\}/);
+  assert.match(connectorsSource, /\$\{t\(accessModeLabel\(ask\.requestedMode\)\)\}/);
+});
+
+test("keychain retains audit recency and operational state while loading each section independently", () => {
+  for (const marker of ["kc-summary", "No audited use yet", "Last used", "connectorsEverLoaded", "keysEverLoaded"])
+    assert.ok(connectorsSource.includes(marker), marker);
+  assert.match(connectorsSource, /usage\?: KeychainUsage\[\]/);
+  assert.match(connectorsSource, /class="kc-access-label">Access/);
+  assert.match(connectorsSource, />\s*Revoke\s*</);
+});
+
+test("keychain access rows retain security-relevant mode and purpose", () => {
+  assert.match(connectorsSource, /accessModeLabel\(ask\.requestedMode\)/);
+  assert.match(connectorsSource, /ask\.purpose/);
+  assert.equal(connectorsSource.match(/accessModeLabel\(grant\.mode\)/g)?.length, 2);
+  assert.equal(connectorsSource.match(/grant\.purpose/g)?.length, 2);
 });
 
 test("keychain actions keep secondary weight and compact mobile sizing", () => {
   assert.match(connectorsSource, /\$\{available \? html`<button class="btn" type="button"/);
   assert.doesNotMatch(shellCssSource, /\.kc-hero-actions \.btn\s*\{\s*flex:\s*1;/);
   assert.doesNotMatch(shellCssSource, /sidebar-closed \.kc-hero-copy/);
+});
+
+test("keychain page renders loading placeholders instead of empty states while loading", () => {
+  assert.match(connectorsSource, /let connectorsLoading = false/);
+  assert.match(connectorsSource, /let keysLoading = false/);
+  assert.match(connectorsSource, /connectorsLoading && !connectorsEverLoaded/);
+  assert.match(connectorsSource, /keysLoading && !keysEverLoaded/);
+  assert.match(connectorsSource, /keysLoading = true;\s*\n\s*drawConnectors\(\)/);
+  assert.match(connectorsSource, /if \(accountsLoading\) accountsContent = loadingPlaceholder\("Loading accounts/);
+  assert.match(
+    connectorsSource,
+    /if \(keysLoadingFresh\) credentialsContent = loadingPlaceholder\("Loading credentials/,
+  );
+
+  assert.match(
+    connectorsSource,
+    /api<\{ providers\?: Record<string, ConnectorProvider> \}>\("\/api\/connectors"\)\.then\(/,
+  );
+  assert.doesNotMatch(connectorsSource, /drawConnectors\((true|false)\)/);
+  assert.match(shellCssSource, /\.kc-loading \.spinner/);
+});
+
+test("keychain refresh rediscovers MCP tools before reloading the account state", () => {
+  assert.match(
+    connectorsSource,
+    /api<\{ toolCount\?: number \}>\("\/api\/connectors\/mcp\/refresh", \{ method: "POST" \}\)/,
+  );
+  assert.match(connectorsSource, /connectorNotice = t\("Refreshing MCP tools…"\)/);
+  assert.match(connectorsSource, /No MCP tools were found\. Reconnect the account if this is unexpected\./);
 });

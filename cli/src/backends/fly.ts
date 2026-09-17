@@ -1,7 +1,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CliError, bold, die, dim, errMessage, header, note, ok, step, warn } from "../log.ts";
 import {
@@ -22,6 +22,8 @@ import {
   brandEnvOf,
   orgEnv,
   runnableServices,
+  hostedServiceEnv,
+  serviceHost,
   serviceDef,
   virtualServiceEnv,
   type ServiceCtx,
@@ -41,11 +43,11 @@ import {
   assertWebUiImCredentialsKeyIsScoped,
   computedSecrets,
   resolveWebUiImCredentialsKey,
+  validatedSecrets,
   runtimeSecretNames,
   secretDestinations,
   secretsForService,
 } from "../secrets.ts";
-import { flySandboxRepository, imageRepository, pinnedByDigest, recordSandboxPin } from "../commands/sandbox.ts";
 import { manifestRef } from "../manifest.ts";
 import { CONNECTIVITY_CODES, CoreUnreachableError, type DeploymentLayerTransport } from "../deployment-layer.ts";
 
@@ -226,6 +228,29 @@ function stageSecret(app: string, name: string, value: string): void {
   if (result.status !== 0) throw new CliError(`failed to stage ${name} on ${app}`);
 }
 
+export function stageFlyEmailAllowlist(
+  config: QmConfig,
+  configDir: string,
+  selectedWorkloads: ReadonlySet<string>,
+): void {
+  const values = readEnvFile(join(configDir, ".env"));
+  const value = deploymentSecretValue("AUTH_ALLOWED_EMAILS", values.get("AUTH_ALLOWED_EMAILS"));
+  if (value === undefined) return;
+  if (isInvalidSecret("AUTH_ALLOWED_EMAILS", value)) {
+    throw new CliError("required secret AUTH_ALLOWED_EMAILS is missing or invalid");
+  }
+  const secret = computedSecrets(config).find((candidate) => candidate.name === "AUTH_ALLOWED_EMAILS");
+  if (!secret) return;
+  const staged: string[] = [];
+  for (const [workload, names] of secretDestinations(secret)) {
+    if (!selectedWorkloads.has(workload)) continue;
+    const app = `${appPrefixOf(config)}-${workload}`;
+    for (const name of names) stageSecret(app, name, value);
+    staged.push(app);
+  }
+  if (staged.length) step(`AUTH_ALLOWED_EMAILS: staged from .env on ${staged.join(", ")}`);
+}
+
 function flySensitive(args: string[], failure: string): string {
   const result = spawnSync(flyBin(), args, { encoding: "utf8" });
   if (result.status !== 0) throw new CliError(failure);
@@ -256,18 +281,9 @@ function deriveToml(ctx: FlyCtx, service: ServiceName): string {
           ...(ctx.config.modelProvider ? { MODEL_PROVIDER: ctx.config.modelProvider } : {}),
         }
       : {};
-  const configuredEnv = { ...ctx.config.env[service] };
-  if (service === "core") {
-    delete configuredEnv.FLY_ORG;
-    delete configuredEnv.FLY_DEPLOY_BASE_IMAGE;
-  }
-  const deploymentEnv =
-    service === "core"
-      ? {
-          ...(ctx.flyOrg ? { FLY_ORG: ctx.flyOrg } : {}),
-          ...(sandboxEnv.FLY_BASE_IMAGE ? { FLY_DEPLOY_BASE_IMAGE: sandboxEnv.FLY_BASE_IMAGE } : {}),
-        }
-      : {};
+  const configuredEnv = hostedServiceEnv(ctx.config.services, ctx.config.env, service);
+  if (service === "core") delete configuredEnv.FLY_ORG;
+  const deploymentEnv: Record<string, string> = service === "core" && ctx.flyOrg ? { FLY_ORG: ctx.flyOrg } : {};
   const overrides: Record<string, string> = {
     ...spec.managed(ctx.serviceCtx),
     ...sandboxEnv,
@@ -513,16 +529,6 @@ function ensureApp(app: string, flyOrg: string, orgId: string, appPrefix: string
   note(`app ${app}: created`);
 }
 
-function assertOwnedApp(app: string, flyOrg: string, orgId: string, appPrefix: string): void {
-  if (!flyOrgApps(flyOrg).has(app)) {
-    throw new CliError(`app ${app} is not present in configured Fly organization ${flyOrg}`);
-  }
-  const marker = flyOwnershipMarker(flyOrg, orgId, appPrefix);
-  if (!secretNames(app)?.has(marker)) {
-    throw new CliError(`app ${app} is not marked as owned by deployment ${flyDeploymentId(flyOrg, orgId, appPrefix)}`);
-  }
-}
-
 function ensurePostgres(ctx: FlyCtx): void {
   const app = `${ctx.appPrefix}-core`;
   const hasDatabaseUrl = secretNames(app)?.has("DATABASE_URL");
@@ -678,7 +684,7 @@ function imageSourceFor(ctx: FlyCtx, opts: FlyUpOpts): ImageSource | undefined {
   return { kind: "manifest" };
 }
 
-const SAFE_AFTER_CORE = new Set<ServiceName>(["web-ui", "admin", "portal", "auth"]);
+const SAFE_AFTER_CORE = new Set<ServiceName>(["web-ui", "admin", "auth"]);
 
 export function flyDeployPhases(services: ServiceName[]): ServiceName[][] {
   const phases: ServiceName[][] = [];
@@ -872,7 +878,7 @@ function pluginTomlContent(
   brand?: BrandEnv,
 ): string {
   const env: Record<string, string> = {
-    CORE_API_URL: `http://${appPrefix}-core.internal:8080`,
+    ...(plugin.coreAccess === false ? {} : { CORE_API_URL: `http://${appPrefix}-core.internal:8080` }),
     ...orgEnv(plugin.name, orgId, publicUrl, hasPortal, brand),
     PORT: "8080",
     ...plugin.env,
@@ -1028,6 +1034,21 @@ function unsetLegacyWebUiConnectorSecret(appPrefix: string): void {
   note(`removed the legacy connector root secret from ${app}`);
 }
 
+function unsetCorelessPluginCoreSecrets(plugins: ResolvedPlugin[], appPrefix: string): string[] {
+  const changed: string[] = [];
+  for (const plugin of plugins) {
+    if (plugin.coreAccess !== false) continue;
+    const app = `${appPrefix}-${plugin.name}`;
+    const existing = secretNames(app);
+    const names = ["CORE_API_URL", "CORE_SIGNING_SECRET"].filter((name) => existing?.has(name));
+    if (!names.length) continue;
+    fly(["secrets", "unset", "--stage", "-a", app, ...names]);
+    changed.push(app);
+    note(`removed core access from ${app}`);
+  }
+  return changed;
+}
+
 export async function flyUp(config: QmConfig, configDir: string, opts: FlyUpOpts = {}): Promise<void> {
   if (opts.imageLabel && opts.imageFrom) {
     throw new CliError("--image-label and --image-from select different image sources and cannot be combined");
@@ -1055,7 +1076,7 @@ export async function flyUp(config: QmConfig, configDir: string, opts: FlyUpOpts
             `--only "${name}": ${name} is a virtual service — it runs in-process on the core, so deploy it with --only core`,
           );
         }
-        svc.push(name as ServiceName);
+        svc.push(serviceHost(name) as ServiceName);
       } else if (pluginSet.has(name)) plg.add(name);
       else {
         throw new CliError(
@@ -1121,6 +1142,10 @@ export async function flyUp(config: QmConfig, configDir: string, opts: FlyUpOpts
       return;
     }
 
+    if (!opts.dryRun) {
+      stageFlyEmailAllowlist(config, configDir, new Set([...services, ...plugins.map((plugin) => plugin.name)]));
+    }
+
     const gateSecrets = (app: string, header: string, path: string, required: string[], timingKey: string): boolean => {
       const existing = timing.time(timingKey, "secret checks", () => secretNames(app)) ?? new Set<string>();
       const missing = required.filter((sec) => !existing.has(sec));
@@ -1155,11 +1180,12 @@ export async function flyUp(config: QmConfig, configDir: string, opts: FlyUpOpts
       ];
       if (gateSecrets(app, app, writeDerived(ctx, s), required, s)) missingAny = true;
     }
+    const corePluginNames = plugins.filter((plugin) => plugin.coreAccess !== false).map((plugin) => plugin.name);
     for (const p of plugins) {
       const app = pluginApp(ctx, p.name);
-      const required = secretsForService(config, p.name, [p.name])
+      const required = secretsForService(config, p.name, corePluginNames)
         .filter((secret) => secret.required)
-        .flatMap((secret) => runtimeSecretNames(p.name, secret, [p.name]));
+        .flatMap((secret) => runtimeSecretNames(p.name, secret, corePluginNames));
       if (gateSecrets(app, `${app} (plugin: ${p.kind})`, writePluginDerived(ctx, p), required, p.name)) {
         missingAny = true;
       }
@@ -1177,6 +1203,7 @@ export async function flyUp(config: QmConfig, configDir: string, opts: FlyUpOpts
       unsetDisabledFlyPublisherToken(config, ctx.appPrefix);
     }
     if (services.includes("web-ui")) unsetLegacyWebUiConnectorSecret(ctx.appPrefix);
+    unsetCorelessPluginCoreSecrets(plugins, ctx.appPrefix);
 
     for (const phase of flyDeployPhases(services)) await deployPhase(ctx, phase, imageSource, timing);
     await deployPlugins(ctx, plugins, imageSource, timing);
@@ -1326,8 +1353,8 @@ export function flyLogs(
   const logArgs = (app: string): string[] => ["logs", "-a", app, ...(opts.follow ? [] : ["--no-tail"])];
 
   if (service) {
-    const resolved = service === "slack" ? "core" : service;
-    if (service === "slack") note("slack is a virtual service; showing core logs");
+    const resolved = serviceHost(service);
+    if (resolved !== service) note(`${service} runs in ${resolved}; showing ${resolved} logs`);
     const app = `${appPrefix}-${resolved}`;
     if (!which(flyBin())) {
       note(`flyctl not found — run:\n  ${flyBin()} ${logArgs(app).join(" ")}`);
@@ -1385,67 +1412,8 @@ export function flyDown(config: QmConfig, configDir: string): void {
   ok("down — all apps scaled to 0.");
 }
 
-export function flyPinSandbox(config: QmConfig, image: string, configDir = process.cwd()): void {
-  const appPrefix = appPrefixOf(config);
-  const app = `${appPrefix}-core`;
-  const flyOrg = config.flyOrg ?? "";
-  if (!flyOrgApps(flyOrg).has(app)) {
-    note(
-      `${app} is not deployed in Fly organization ${flyOrg} — no live core to roll; the pin only takes effect from the config's sandbox.image on the next \`qm up\``,
-    );
-    return;
-  }
-  assertOwnedApp(app, flyOrg, config.orgId, appPrefix);
-  let running: string;
-  try {
-    running = currentImage(app);
-  } catch {
-    note(
-      `${app} is not running — no live core to roll; the pin only takes effect from the config's sandbox.image on the next \`qm up\``,
-    );
-    return;
-  }
-  const pinned: QmConfig = { ...config, sandbox: { ...config.sandbox, image } };
-  const cfgPath = writeDerived(buildCtx(pinned, configDir, {}), "core");
-  if (secretNames(app)?.has("FLY_BASE_IMAGE")) {
-    fly(["secrets", "unset", "--stage", "-a", app, "FLY_BASE_IMAGE"]);
-    note(`removed the stale FLY_BASE_IMAGE secret on ${app}; the derived [env] pin is authoritative`);
-  }
-  fly(["deploy", "--yes", "-c", cfgPath, "--image", running, ...serviceDef("core").fly!.deployFlags]);
-  ok(`${app} now boots sandboxes from ${image}`);
-}
-
-export function flyRollback(config: QmConfig, configPath: string, to?: string): void {
-  if (!to) throw new CliError("Fly rollback requires --to <sandbox-sha-or-image>");
-  if (to.startsWith("sha256:") && !/^sha256:[a-f0-9]{64}$/.test(to)) {
-    throw new CliError(`rollback --to must resolve to an image tag or sha256 digest (got ${JSON.stringify(to)})`);
-  }
-  let image: string;
-  if (to.includes("/")) {
-    image = to;
-  } else {
-    let repository: string | undefined;
-    if (config.sandbox?.image) repository = imageRepository(config.sandbox.image);
-    else if (config.sandbox?.app) repository = flySandboxRepository(config.sandbox.app);
-    if (!repository) {
-      throw new CliError(
-        "rollback cannot derive an image repository: the config has no sandbox.app or sandbox.image — " +
-          "pass a full ref instead (--to <registry/repository@sha256:…>)",
-      );
-    }
-    image = to.startsWith("sha256:") ? `${repository}@${to}` : `${repository}:${to}`;
-  }
-  const digestRef = /^\S+@sha256:[a-f0-9]{64}$/;
-  const slash = image.lastIndexOf("/");
-  const colon = image.lastIndexOf(":");
-  const taggedRef = colon > slash && /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(image.slice(colon + 1));
-  if (image.includes("@") ? !digestRef.test(image) : !taggedRef) {
-    throw new CliError(`rollback --to must resolve to an image tag or sha256 digest (got ${JSON.stringify(image)})`);
-  }
-  const pinned = pinnedByDigest(image);
-  recordSandboxPin(configPath, pinned);
-  note(`recorded sandbox.image = ${pinned} in ${configPath}`);
-  flyPinSandbox(config, pinned, dirname(configPath));
+export function flyRollback(): void {
+  throw new CliError("rollback is not implemented for target fly");
 }
 
 export async function flyDoctor(config: QmConfig, configDir: string, envFile?: string): Promise<void> {
@@ -1455,6 +1423,9 @@ export async function flyDoctor(config: QmConfig, configDir: string, envFile?: s
   requireFlyAuth();
   const prefix = appPrefixOf(config);
   const pluginNames = discovered.plugins.map((plugin) => plugin.name);
+  const corePluginNames = discovered.plugins
+    .filter((plugin) => plugin.coreAccess !== false)
+    .map((plugin) => plugin.name);
   const failures: string[] = [];
   for (const workload of [...runnableServices(config.services), ...pluginNames]) {
     const app = `${prefix}-${workload}`;
@@ -1463,18 +1434,23 @@ export async function flyDoctor(config: QmConfig, configDir: string, envFile?: s
       step(`${app}: not created yet — secret checks run after the first \`qm up\``);
       continue;
     }
-    const declared = secretsForService(config, workload, pluginNames);
+    if (discovered.plugins.some((plugin) => plugin.name === workload && plugin.coreAccess === false)) {
+      for (const name of ["CORE_API_URL", "CORE_SIGNING_SECRET"]) {
+        if (existing.has(name)) failures.push(`${app}: unexpected ${name} on a coreless plugin`);
+      }
+    }
+    const declared = secretsForService(config, workload, corePluginNames);
     const required = new Set([
       ...declared
         .filter((secret) => secret.required)
-        .flatMap((secret) => runtimeSecretNames(workload, secret, pluginNames)),
+        .flatMap((secret) => runtimeSecretNames(workload, secret, corePluginNames)),
       ...flyProviderSecrets(config, workload),
     ]);
     const missing = [...required].filter((name) => !existing.has(name));
     if (missing.length) failures.push(`${app}: missing ${missing.join(", ")}`);
     else step(`${app} required secrets: ok`);
     for (const secret of declared.filter((item) => !item.required)) {
-      for (const name of runtimeSecretNames(workload, secret, pluginNames)) {
+      for (const name of runtimeSecretNames(workload, secret, corePluginNames)) {
         if (existing.has(name)) step(`${app} optional secret ${name}: configured`);
         else warn(`${app} optional secret ${name}: not configured`);
       }
@@ -1505,9 +1481,6 @@ export function verifyLocalFlyTokens(config: QmConfig, secrets: ReadonlyMap<stri
     }
     step(`${name}: live authorization ok`);
   };
-  if (config.sandbox?.app) {
-    verify("FLY_SANDBOX_API_TOKEN", ["machine", "list", "-a", config.sandbox.app, "--json"], config.sandbox.app);
-  }
   if (config.flyOrg && config.env.core?.DEPLOY_PROVIDER === "fly") {
     verify("FLY_DEPLOY_API_TOKEN", ["apps", "list", "-o", config.flyOrg, "--json"], `organization ${config.flyOrg}`);
   }
@@ -1713,10 +1686,13 @@ export async function flyCheckLive(
 }
 
 export async function flySecretsPush(config: QmConfig, configDir: string, envFile?: string): Promise<void> {
+  validatedSecrets(config);
   const path = resolve(envFile ?? join(configDir, ".env"));
   const values = existsSync(path) ? readEnvFile(path) : new Map<string, string>();
   const prefix = appPrefixOf(config);
-  const pluginNames = discoverPlugins(configDir, config).plugins.map((plugin) => plugin.name);
+  const plugins = discoverPlugins(configDir, config).plugins;
+  const pluginNames = plugins.map((plugin) => plugin.name);
+  const corePluginNames = plugins.filter((plugin) => plugin.coreAccess !== false).map((plugin) => plugin.name);
   const operatorSecrets = computedSecrets(config).filter((item) => item.managedBy === "operator");
   for (const secret of operatorSecrets) {
     const supplied = deploymentSecretValue(secret.name, values.get(secret.name));
@@ -1735,6 +1711,7 @@ export async function flySecretsPush(config: QmConfig, configDir: string, envFil
   unsetDisabledSecurityScreenToken(config, prefix);
   unsetDisabledFlyPublisherToken(config, prefix);
   const resolvedValues = new Map<string, string>();
+  unsetCorelessPluginCoreSecrets(plugins, prefix);
   for (const secret of operatorSecrets) {
     const supplied = deploymentSecretValue(secret.name, values.get(secret.name));
     if (!secret.required && !supplied) {
@@ -1763,7 +1740,7 @@ export async function flySecretsPush(config: QmConfig, configDir: string, envFil
     const value = resolvedValues.get(secret.name);
     if (value === undefined) continue;
     const destinations = new Map<string, Set<string>>();
-    for (const [workload, names] of secretDestinations(secret, pluginNames)) {
+    for (const [workload, names] of secretDestinations(secret, corePluginNames)) {
       destinations.set(`${prefix}-${workload}`, names);
     }
     for (const [app, names] of destinations) {

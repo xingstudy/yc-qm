@@ -1,4 +1,5 @@
 import { SKILL_IMPORT_BODY_MAX_BYTES } from "../../chassis/src/skill-import.ts";
+import { sharedSessionHtml } from "./shared-session.ts";
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Readable } from "node:stream";
@@ -27,9 +28,11 @@ import {
 import { findRoute } from "../../chassis/src/router.ts";
 import {
   json,
+  gzipAccepted,
   readBody as readBodyCapped,
   cookie,
   PayloadTooLargeError,
+  sendBuffered,
   serveEmojiFavicon,
 } from "../../chassis/src/http.ts";
 import { mintPortalIdentity, verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
@@ -53,6 +56,26 @@ const ALLOW = (process.env.WEB_UI_PRINCIPALS ?? "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+const INBOX_USERS = new Set(
+  (process.env.INBOX_USERS ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+);
+
+export function isInboxUser(principalId: string): boolean {
+  return INBOX_USERS.has("all") || INBOX_USERS.has(principalId.trim().toLowerCase());
+}
+
+export function isLoopsUser(principalId: string, configuredUsers = process.env.LOOPS_USERS): boolean {
+  const normalizedPrincipalId = principalId.trim().toLowerCase();
+  if (!normalizedPrincipalId) return false;
+  return (configuredUsers ?? "")
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean)
+    .includes(normalizedPrincipalId);
+}
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = join(ROOT, "dist-web");
@@ -64,9 +87,28 @@ const brandingCache = createBrandingCache(async () => {
   return {
     ...(typeof b?.accent === "string" ? { accent: b.accent } : {}),
     ...(typeof b?.mark === "string" ? { mark: b.mark } : {}),
+    ...(typeof b?.markUrl === "string" ? { markUrl: b.markUrl } : {}),
     ...(typeof b?.selfLabel === "string" ? { selfLabel: b.selfLabel } : {}),
   };
 });
+
+async function serveWebManifest(res: ServerResponse): Promise<void> {
+  const branding = await brandingCache.forRender();
+  const name = branding.selfLabel || "QM";
+  const manifest = {
+    name,
+    short_name: name,
+    start_url: "/",
+    scope: "/",
+    display: "standalone",
+    orientation: "any",
+    background_color: "#ffffff",
+    theme_color: "#ffffff",
+    icons: [{ src: "/brand-mark.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }],
+  };
+  res.writeHead(200, { "content-type": "application/manifest+json; charset=utf-8", "cache-control": "no-cache" });
+  res.end(JSON.stringify(manifest));
+}
 
 async function brandIndexHtml(html: string): Promise<string> {
   const branding = await brandingCache.forRender();
@@ -2129,6 +2171,16 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
       maxAuthFailureAttempts: 1,
       maxReconnectAttempts: -1,
     });
+    let stopped = false;
+    let workWechatReady = false;
+    const discardDisconnectedRuntime = (): void => {
+      if (stopped || !workWechatReady || imSdkRuntimes.get(key) !== runtime) return;
+      runtime.stop();
+      imSdkRuntimes.delete(key);
+      void syncImBridges().catch((error: unknown) =>
+        console.error("[web-ui] work-wechat reconnection failed:", String(error)),
+      );
+    };
     type PendingReply = {
       frame: WsFrameHeaders;
       streamId: string;
@@ -2260,6 +2312,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
     };
     client.on("message.text", handleWeComText);
     client.on("event.enter_chat", handleWeComEnter);
+    client.on("disconnected", discardDisconnectedRuntime);
     await waitForImConnection((resolve, reject) => {
       client.on("authenticated", resolve);
       client.on("error", reject);
@@ -2272,6 +2325,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
       resourceId: resource.resourceId,
       fingerprint,
       stop: () => {
+        stopped = true;
         pendingRepliesByRun.clear();
         completedMessageIds.clear();
         inFlightMessageIds.clear();
@@ -2346,12 +2400,12 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         if (idempotencyKey) sentDeliveryKeys.set(idempotencyKey, true);
       },
     };
+    workWechatReady = true;
   } else {
     const clientId = credentials.clientId;
     const clientSecret = credentials.clientSecret;
     if (!clientId || !clientSecret) throw new Error("ClientID 和 ClientSecret 不能为空");
     const client = new DingTalkStreamClient({ clientId, clientSecret, keepAlive: true });
-    let accessToken = "";
     client.registerCallbackListener(DingTalkStream.TOPIC_ROBOT, (frame) => {
       void (async () => {
         try {
@@ -2375,7 +2429,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
     });
     await waitForImConnection((_resolve, reject) => {
       void (async () => {
-        accessToken = String(await client.getAccessToken());
+        await client.getAccessToken();
         await client.connect();
         if (!client.connected) throw new Error("钉钉 Stream 连接失败");
         _resolve();
@@ -2392,6 +2446,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         const latest = await readImBindings(user);
         const webhook = readImSdkSecret(latest.resources.dingtalk)?.replyTargets?.[target];
         if (!webhook) throw new Error("钉钉会话已失效，请先从钉钉向 Bot 发送一条消息");
+        const accessToken = String(await client.getAccessToken());
         const response = await fetch(webhook, {
           method: "POST",
           headers: { "content-type": "application/json", "x-acs-dingtalk-access-token": accessToken },
@@ -3238,7 +3293,7 @@ const SPA_CSP = [
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
   "connect-src 'self'",
-  "frame-src 'self' https:",
+  "frame-src 'self' data: https:",
   "worker-src 'self' blob:",
   "frame-ancestors 'self'",
   "base-uri 'none'",
@@ -3257,7 +3312,35 @@ function withSecurityHeaders(headers: Record<string, string>): Record<string, st
   };
 }
 
+const PLAYGROUND_CSP = [
+  "sandbox allow-scripts allow-pointer-lock",
+  "default-src 'none'",
+  "script-src 'unsafe-inline'",
+  "style-src 'unsafe-inline'",
+  "img-src data: blob:",
+  "media-src data: blob:",
+  "font-src data:",
+  "connect-src 'none'",
+  "worker-src blob:",
+  "base-uri 'none'",
+  "form-action 'none'",
+].join("; ");
+
 const UNTRUSTED_CONTENT_SANDBOX_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads";
+const APPS_FRAME_DOMAIN = (process.env.DEPLOY_APPS_DOMAIN ?? "").toLowerCase();
+const FILE_FRAME_ANCESTORS = APPS_FRAME_DOMAIN
+  ? `frame-ancestors 'self' *.${APPS_FRAME_DOMAIN}`
+  : "frame-ancestors 'self'";
+
+function framedByOwnSurfaces(
+  res: ServerResponse,
+  headers: Record<string, string>,
+  csp: string,
+): Record<string, string> {
+  res.removeHeader("x-frame-options");
+  const { "x-frame-options": _blanketDeny, ...rest } = headers;
+  return { ...rest, "content-security-policy": csp };
+}
 
 interface ViteDevServer {
   middlewares(req: IncomingMessage, res: ServerResponse, next: (err?: unknown) => void): void;
@@ -3267,13 +3350,11 @@ interface ViteDevServer {
 type CreateViteServer = (opts: Record<string, unknown>) => Promise<ViteDevServer>;
 
 function relay(res: ServerResponse, r: { status: number; text: string }): void {
-  res.writeHead(r.status, { "content-type": "application/json", "x-content-type-options": "nosniff" });
-  res.end(r.text);
+  sendBuffered(res, r.status, { "content-type": "application/json", "x-content-type-options": "nosniff" }, r.text);
 }
 
 function sendHtml(res: ServerResponse, status: number, html: string): void {
-  res.writeHead(status, withSecurityHeaders({ "content-type": "text/html; charset=utf-8" }));
-  res.end(html);
+  sendBuffered(res, status, withSecurityHeaders({ "content-type": "text/html; charset=utf-8" }), html);
 }
 
 const SSE_CORE_POLL_MS = 100;
@@ -3327,18 +3408,62 @@ function callbackHtml(query: string): string {
   return `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=../../../?${safe}"><title>Connector</title>`;
 }
 
+type WebConversation = {
+  kind: "dm" | "channel" | "group";
+  threadRef: string;
+  channelRef?: string;
+  channelName?: string;
+};
+
 function conversationForScope(
   user: string,
   threadRef: string,
   scope: string | undefined,
   channelName: string | undefined,
-): { kind: "dm" | "channel" | "group"; threadRef: string; channelRef?: string; channelName?: string } | null {
+): WebConversation | null {
   if (!scope || scope === `personal:${user}`) return { kind: "dm", threadRef };
   const sep = scope.indexOf(":");
   const kind = scope.slice(0, sep);
   const ref = scope.slice(sep + 1);
   if ((kind !== "channel" && kind !== "group") || !ref) return null;
   return { kind, channelRef: ref, threadRef, ...(channelName ? { channelName } : {}) };
+}
+
+function resolveWebConversation(
+  user: string,
+  threadRef: string,
+  scope: string | undefined,
+  channelName: string | undefined,
+): { conversation: WebConversation } | { error: string; message: string } {
+  if (!threadRef.startsWith(`web:${user}:`) && !(scope?.startsWith("channel:") || scope?.startsWith("group:"))) {
+    return { error: "forbidden_thread", message: "this conversation can only be continued from its own context" };
+  }
+  const conversation = conversationForScope(user, threadRef, scope, channelName);
+  if (!conversation) {
+    return {
+      error: "forbidden_scope",
+      message: "you can only chat in your personal context or a shared context you're in",
+    };
+  }
+  return { conversation };
+}
+
+function webTurnBase(
+  req: IncomingMessage,
+  user: string,
+  conversation: WebConversation,
+  threadRef: string,
+  text: string,
+) {
+  const displayName = resolveIdentity(req)?.name ?? null;
+  return {
+    surface: "web",
+    actor: { externalId: user, ...(displayName ? { displayName } : {}) },
+    conversation,
+    liveActor: true,
+    deliveryTarget: threadRef,
+    text,
+  };
 }
 
 interface Identity {
@@ -3425,7 +3550,6 @@ let deliveriesPollInFlight = false;
 
 interface PendingWebDelivery {
   id: string;
-  idempotencyKey: string;
   createdAt: number;
   destination?: { target?: string };
 }
@@ -3445,11 +3569,10 @@ async function drainWebDeliveries(): Promise<void> {
     const now = Date.now();
     for (const d of pending) {
       const target = d.destination?.target ?? "";
-      const isRecovery = d.idempotencyKey.startsWith("run:");
-      const conns = !isRecovery ? deliveryClients.get(ownerOfWebThread(target) ?? "") : undefined;
+      const conns = deliveryClients.get(ownerOfWebThread(target) ?? "");
       if (conns && conns.size) {
         for (const res of conns) sseEvent(res, "delivery", { threadRef: target });
-      } else if (!isRecovery && now - (d.createdAt ?? 0) < WEB_DELIVERY_GIVEUP_MS) {
+      } else if (now - (d.createdAt ?? 0) < WEB_DELIVERY_GIVEUP_MS) {
         continue;
       }
       await coreFetch("POST", `/v1/deliveries/${encodeURIComponent(d.id)}/ack`).catch(() => {});
@@ -3486,19 +3609,23 @@ function forwardSessionState(frame: SessionStateFrame): void {
   }
 }
 
-async function runStateFeed(): Promise<void> {
+async function consumeCoreFeed(
+  path: string,
+  eventName: string,
+  onEvent: (data: unknown) => void,
+  onReconnect?: () => void,
+): Promise<void> {
   let dropped = false;
   for (;;) {
     try {
-      const signedPath = withSourceAuthNonce("/v1/session-state/events", CORE_SIGNING_SECRET);
+      const signedPath = withSourceAuthNonce(path, CORE_SIGNING_SECRET);
       const r = await fetch(`${CORE}${signedPath}`, {
         headers: signedHeaders(CORE_SIGNING_SECRET, "GET", signedPath, ""),
       });
       if (r.status === 200 && r.body) {
         if (dropped) {
           dropped = false;
-          for (const conns of deliveryClients.values())
-            for (const res of conns) sseEvent(res, "session_state_resync", {});
+          onReconnect?.();
         }
         const reader = r.body.getReader();
         const decoder = new TextDecoder();
@@ -3510,14 +3637,16 @@ async function runStateFeed(): Promise<void> {
           const frames = buf.split("\n\n");
           buf = frames.pop() ?? "";
           for (const frame of frames) {
-            if (!frame.split("\n").some((l) => l === "event: session_state")) continue;
-            const data = frame
-              .split("\n")
-              .find((l) => l.startsWith("data: "))
-              ?.slice("data: ".length);
+            const lines = frame.split("\n");
+            if (lines.some((l) => l === `event: ${eventName}_resync`)) {
+              onReconnect?.();
+              continue;
+            }
+            if (!lines.some((l) => l === `event: ${eventName}`)) continue;
+            const data = lines.find((l) => l.startsWith("data: "))?.slice("data: ".length);
             if (!data) continue;
             try {
-              forwardSessionState(JSON.parse(data) as SessionStateFrame);
+              onEvent(JSON.parse(data));
             } catch {
               void 0;
             }
@@ -3530,6 +3659,33 @@ async function runStateFeed(): Promise<void> {
     }
     await new Promise((resolve) => setTimeout(resolve, STATE_FEED_RECONNECT_MS));
   }
+}
+
+function runStateFeed(): Promise<void> {
+  return consumeCoreFeed(
+    "/v1/session-state/events",
+    "session_state",
+    (data) => forwardSessionState(data as SessionStateFrame),
+    () => {
+      for (const conns of deliveryClients.values()) for (const res of conns) sseEvent(res, "session_state_resync", {});
+    },
+  );
+}
+
+function runInboxFeed(): Promise<void> {
+  return consumeCoreFeed(
+    "/v1/loop-items/events",
+    "loop_item",
+    (data) => {
+      const ev = data as { owner?: string; loopId?: string; itemId?: string; op?: string };
+      if (!ev.owner || !ev.loopId || !ev.itemId) return;
+      for (const res of deliveryClients.get(ev.owner) ?? [])
+        sseEvent(res, "inbox_item", { loopId: ev.loopId, itemId: ev.itemId, op: ev.op ?? "" });
+    },
+    () => {
+      for (const conns of deliveryClients.values()) for (const res of conns) sseEvent(res, "inbox_resync", {});
+    },
+  );
 }
 
 async function coreFetch(
@@ -3713,6 +3869,23 @@ async function ackImDelivery(delivery: PendingImDelivery): Promise<void> {
   if (acked.status !== 200) throw new Error(`core delivery ack failed (${acked.status})`);
 }
 
+async function releaseImDeliveryClaim(delivery: PendingImDelivery): Promise<void> {
+  const released = await coreFetch("POST", `/v1/deliveries/${encodeURIComponent(delivery.id)}/release`);
+  if (released.status !== 200) throw new Error(`core delivery claim release failed (${released.status})`);
+}
+
+async function releaseImDeliveryClaims(deliveries: PendingImDelivery[], from: number): Promise<void> {
+  await Promise.all(
+    deliveries
+      .slice(from)
+      .map((delivery) =>
+        releaseImDeliveryClaim(delivery).catch((error: unknown) =>
+          console.error("[web-ui] IM delivery claim release failed:", String(error)),
+        ),
+      ),
+  );
+}
+
 async function ackFailedImLocatorDelivery(
   provider: ImProviderId,
   delivery: PendingImDelivery,
@@ -3893,7 +4066,7 @@ export async function drainWeixinDeliveries(stored?: StoredImBindings[]): Promis
         const deliveries = (JSON.parse(claimed.text) as { deliveries?: PendingImDelivery[] }).deliveries ?? [];
         const secret = readWeixinSecret(resource);
         if (!secret) return;
-        for (const delivery of deliveries) {
+        for (const [deliveryIndex, delivery] of deliveries.entries()) {
           const target = (delivery.destination?.target ?? "").slice(targetPrefix.length);
           if (target !== binding.externalChatId) {
             if (imLocatorDelivery(delivery)) await ackImDelivery(delivery);
@@ -3930,6 +4103,7 @@ export async function drainWeixinDeliveries(stored?: StoredImBindings[]): Promis
             if ((sent.ret ?? 0) !== 0) throw new Error(`Weixin sendmessage failed: ${sent.ret} ${sent.errmsg ?? ""}`);
           } catch (error) {
             if (await ackFailedImLocatorDelivery("wechat", delivery, error)) continue;
+            await releaseImDeliveryClaims(deliveries, deliveryIndex);
             throw error;
           }
           await ackImDelivery(delivery);
@@ -3984,7 +4158,7 @@ export async function drainImSdkDeliveries(
         );
         if (claimed.status !== 200) return;
         const deliveries = (JSON.parse(claimed.text) as { deliveries?: PendingImDelivery[] }).deliveries ?? [];
-        for (const delivery of deliveries) {
+        for (const [deliveryIndex, delivery] of deliveries.entries()) {
           const target = (delivery.destination?.target ?? "").slice(targetPrefix.length);
           const runId = imDeliveryRunId(delivery);
           const progress = runId ? await finishImRunProgress(user, provider, runId) : undefined;
@@ -4002,6 +4176,7 @@ export async function drainImSdkDeliveries(
             );
           } catch (error) {
             if (await ackFailedImLocatorDelivery(provider, delivery, error)) continue;
+            await releaseImDeliveryClaims(deliveries, deliveryIndex);
             throw error;
           }
           await ackImDelivery(delivery);
@@ -4113,6 +4288,14 @@ async function syncImBridges(): Promise<void> {
   }
 }
 
+const SEND_KEY_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
+
+function namespacedSendKey(user: string, raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const key = raw.trim();
+  return SEND_KEY_PATTERN.test(key) ? `web:${encodeURIComponent(user)}:${key}` : undefined;
+}
+
 async function postTurnAndMint(res: ServerResponse, turn: unknown, user: string, threadRef: string): Promise<void> {
   const r = await coreFetch("POST", `/v1/turns?async=1`, JSON.stringify(turn));
   if (r.status >= 200 && r.status < 300) {
@@ -4140,6 +4323,44 @@ async function userPermissions(): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+interface CoreWebhook {
+  id: string;
+  ownerScopeId: string;
+  owner: string;
+  createdBy: string;
+  action: string;
+  verification: { scheme: string; secret?: string };
+  filters?: Array<{ path: string; in: string[] }>;
+  destination?: unknown;
+  enabled: boolean;
+  createdAt: number;
+  lastFiredAt?: number;
+  lastDeliveryId?: string;
+  lastError?: string;
+}
+
+async function setWebhookEnabledViaCore(
+  res: ServerResponse,
+  user: string,
+  id: string,
+  verb: "disable" | "enable",
+): Promise<void> {
+  const r = await coreFetch("GET", `/v1/webhooks?viewer=${encodeURIComponent(user)}`);
+  if (r.status < 200 || r.status >= 300) return relay(res, r);
+  let webhooks: CoreWebhook[] = [];
+  try {
+    webhooks = (JSON.parse(r.text) as { webhooks?: CoreWebhook[] }).webhooks ?? [];
+  } catch {
+    void 0;
+  }
+  if (!webhooks.some((w) => w.id === id)) return json(res, 404, { error: "not_found" });
+  return relayCore(
+    res,
+    "POST",
+    `/v1/webhooks/${encodeURIComponent(id)}/${verb}?principalId=${encodeURIComponent(user)}`,
+  );
 }
 
 interface CoreCron {
@@ -4209,8 +4430,8 @@ async function uploadBlobFromRequest(req: IncomingMessage, res: ServerResponse, 
     return json(res, 400, { error: "bad_request", message: "sha (hex sha-256) required" });
   }
   const staged = await stageUploadStream(req, sha256);
-  res.writeHead(staged.status, { "content-type": staged.headers.get("content-type") ?? "application/json" });
-  return void res.end(await staged.text());
+  const headers = { "content-type": staged.headers.get("content-type") ?? "application/json" };
+  return sendBuffered(res, staged.status, headers, await staged.text());
 }
 
 async function uploadFileFromRequest(
@@ -4228,8 +4449,8 @@ async function uploadFileFromRequest(
   const staged = await stageUploadStream(req, sha256);
   const stagedText = await staged.text();
   if (!staged.ok) {
-    res.writeHead(staged.status, { "content-type": staged.headers.get("content-type") ?? "application/json" });
-    return void res.end(stagedText);
+    const headers = { "content-type": staged.headers.get("content-type") ?? "application/json" };
+    return sendBuffered(res, staged.status, headers, stagedText);
   }
   const stagedBody = JSON.parse(stagedText) as { blobId: string };
   const body = JSON.stringify({
@@ -4241,8 +4462,7 @@ async function uploadFileFromRequest(
     blobId: stagedBody.blobId,
   });
   const registered = await coreFetch("POST", "/v1/files/upload", body);
-  res.writeHead(registered.status, { "content-type": "application/json" });
-  return void res.end(registered.text);
+  return sendBuffered(res, registered.status, { "content-type": "application/json" }, registered.text);
 }
 
 async function serveStatic(res: ServerResponse, urlPath: string): Promise<void> {
@@ -4261,24 +4481,29 @@ async function serveStatic(res: ServerResponse, urlPath: string): Promise<void> 
   }
   if (filePath.endsWith("index.html")) {
     const branded = await brandIndexHtml(readFileSync(filePath, "utf8"));
-    res.writeHead(
-      200,
-      withSecurityHeaders({ "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" }),
-    );
-    return void res.end(branded);
+    const headers = withSecurityHeaders({ "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" });
+    return sendBuffered(res, 200, headers, branded);
   }
-  const type = CONTENT_TYPES[extname(filePath)] ?? "application/octet-stream";
-  res.writeHead(
-    200,
-    withSecurityHeaders({
-      "content-type": type,
-      "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache",
-    }),
-  );
-  createReadStream(filePath).pipe(res);
+  const headers = withSecurityHeaders({
+    "content-type": CONTENT_TYPES[extname(filePath)] ?? "application/octet-stream",
+    "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache",
+    vary: "accept-encoding",
+  });
+  const packed = `${filePath}.gz`;
+  if (gzipAccepted(res.req) && existsSync(packed)) {
+    res.writeHead(200, { ...headers, "content-encoding": "gzip" });
+    return void pipeFile(res, packed);
+  }
+  res.writeHead(200, headers);
+  pipeFile(res, filePath);
 }
 
-const APPS_FRAME_DOMAIN = (process.env.DEPLOY_APPS_DOMAIN ?? "").toLowerCase();
+function pipeFile(res: ServerResponse, filePath: string): void {
+  const stream = createReadStream(filePath);
+  stream.on("error", () => res.destroy());
+  res.on("close", () => stream.destroy());
+  stream.pipe(res);
+}
 
 async function serveAppEditHtml(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
   const slug = (url.searchParams.get("slug") ?? "").toLowerCase();
@@ -4293,14 +4518,8 @@ async function serveAppEditHtml(req: IncomingMessage, res: ServerResponse, url: 
     html = readFileSync(filePath, "utf8");
   }
   const headers = withSecurityHeaders({ "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" });
-  headers["content-security-policy"] = SPA_CSP.replace(
-    "frame-ancestors 'self'",
-    `frame-ancestors 'self' ${slug}.${APPS_FRAME_DOMAIN}`,
-  );
-  delete headers["x-frame-options"];
-  res.removeHeader("x-frame-options");
-  res.writeHead(200, headers);
-  res.end(await brandIndexHtml(html));
+  const csp = SPA_CSP.replace("frame-ancestors 'self'", `frame-ancestors 'self' ${slug}.${APPS_FRAME_DOMAIN}`);
+  sendBuffered(res, 200, framedByOwnSurfaces(res, headers, csp), await brandIndexHtml(html));
   return true;
 }
 
@@ -4368,19 +4587,231 @@ type WebRoute = { handle: (c: WebCtx) => unknown } & (
   { method: string; path: string } | { match: (method: string, pathname: string) => boolean }
 );
 
+function scriptCapableContentType(contentType: string): boolean {
+  const mime = (contentType.split(";")[0] ?? "").trim().toLowerCase();
+  return (
+    mime === "text/html" ||
+    mime === "application/xhtml+xml" ||
+    mime === "image/svg+xml" ||
+    mime === "text/xml" ||
+    mime === "application/xml" ||
+    mime.endsWith("+xml")
+  );
+}
+
+async function serveInboxItemImage(c: WebCtx): Promise<unknown> {
+  const { res, url } = c;
+  const qs = new URLSearchParams({ principalId: c.user });
+  const ctxParam = url.searchParams.get("ctx");
+  const iParam = url.searchParams.get("i");
+  if (ctxParam) qs.set("ctx", ctxParam);
+  if (iParam) qs.set("i", iParam);
+  const corePath = withSourceAuthNonce(
+    `/v1/loops/${encodeURIComponent(c.params.id!)}/items/${encodeURIComponent(c.params.itemId!)}/image?${qs.toString()}`,
+    CORE_SIGNING_SECRET,
+  );
+  const portalTok = portalTokenStore.getStore();
+  const r = await fetch(`${CORE}${corePath}`, {
+    headers: {
+      ...signedHeaders(CORE_SIGNING_SECRET, "GET", corePath, ""),
+      ...(portalTok ? { [PORTAL_IDENTITY_HEADER]: portalTok } : {}),
+    },
+  });
+  if (!r.ok || !r.body) {
+    res.writeHead(r.status === 404 ? 404 : 502, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ error: r.status === 404 ? "not_found" : "upstream_error" }));
+  }
+  const contentType = r.headers.get("content-type") ?? "application/octet-stream";
+  res.writeHead(200, {
+    "content-type": contentType.startsWith("image/") ? contentType : "application/octet-stream",
+    "cache-control": "private, max-age=3600",
+    "content-security-policy": "sandbox",
+    "x-content-type-options": "nosniff",
+  });
+  return res.end(Buffer.from(await r.arrayBuffer()));
+}
+
+async function serveFileContent(c: WebCtx, playground = false): Promise<unknown> {
+  const { res, user, url } = c;
+  const id = c.params.id!;
+  const corePath = withSourceAuthNonce(
+    `/v1/files/${encodeURIComponent(id)}/content?viewer=${encodeURIComponent(user)}`,
+    CORE_SIGNING_SECRET,
+  );
+  const portalTok = portalTokenStore.getStore();
+  const r = await fetch(`${CORE}${corePath}`, {
+    headers: {
+      ...signedHeaders(CORE_SIGNING_SECRET, "GET", corePath, ""),
+      ...(portalTok ? { [PORTAL_IDENTITY_HEADER]: portalTok } : {}),
+    },
+    redirect: "manual",
+  });
+  if (!r.ok || !r.body) {
+    res.writeHead(r.status === 404 ? 404 : 502, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ error: r.status === 404 ? "not_found" : "upstream_error" }));
+  }
+  const contentType = r.headers.get("content-type") ?? "application/octet-stream";
+  if (playground && !contentType.toLowerCase().startsWith("text/html")) {
+    res.writeHead(415, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ error: "not_a_playground" }));
+  }
+  if (playground) {
+    res.writeHead(200, {
+      "content-type": url.searchParams.get("source") === "1" ? "text/plain; charset=utf-8" : contentType,
+      "content-security-policy": PLAYGROUND_CSP,
+      "referrer-policy": "no-referrer",
+      "x-frame-options": "SAMEORIGIN",
+      "x-content-type-options": "nosniff",
+    });
+    return Readable.fromWeb(r.body as Parameters<typeof Readable.fromWeb>[0]).pipe(res);
+  }
+
+  const csp = scriptCapableContentType(contentType)
+    ? `${UNTRUSTED_CONTENT_SANDBOX_CSP}; ${FILE_FRAME_ANCESTORS}`
+    : FILE_FRAME_ANCESTORS;
+  const headers = {
+    "content-type": contentType,
+    ...(r.headers.get("content-length") ? { "content-length": r.headers.get("content-length")! } : {}),
+    ...(r.headers.get("content-disposition") ? { "content-disposition": r.headers.get("content-disposition")! } : {}),
+    "x-content-type-options": "nosniff",
+  };
+  res.writeHead(200, framedByOwnSurfaces(res, headers, csp));
+  return Readable.fromWeb(r.body as Parameters<typeof Readable.fromWeb>[0]).pipe(res);
+}
+
 const apiRoutes: readonly WebRoute[] = [
+  {
+    method: "GET",
+    path: "/api/files/by-name/content",
+    handle: async (c) => {
+      const { res, url, user } = c;
+      const name = url.searchParams.get("name")?.trim();
+      if (!name) return json(res, 400, { error: "bad_request", message: "name required" });
+      let cursor: string | undefined;
+      let match: { id: string; createdAt: number } | undefined;
+      for (let page = 0; page < 50; page++) {
+        const qs = new URLSearchParams({ viewer: user, limit: "200" });
+        if (cursor) qs.set("cursor", cursor);
+        const listed = await coreFetch("GET", `/v1/files?${qs.toString()}`);
+        if (listed.status !== 200) return relay(res, listed);
+        let body: {
+          owned?: Array<{ id?: string; name?: string; createdAt?: number; openable?: boolean }>;
+          shared?: Array<{ id?: string; name?: string; createdAt?: number; openable?: boolean }>;
+          nextCursor?: string;
+        };
+        try {
+          body = JSON.parse(listed.text) as typeof body;
+        } catch {
+          return json(res, 502, { error: "upstream_error" });
+        }
+        for (const file of [...(body.owned ?? []), ...(body.shared ?? [])]) {
+          if (file.name !== name || file.openable === false || typeof file.id !== "string") continue;
+          const createdAt = typeof file.createdAt === "number" ? file.createdAt : 0;
+          if (!match || createdAt > match.createdAt) match = { id: file.id, createdAt };
+        }
+        cursor = body.nextCursor;
+        if (!cursor) break;
+      }
+      if (!match) return json(res, 404, { error: "not_found" });
+      res.writeHead(302, { location: `/api/files/${encodeURIComponent(match.id)}/content` });
+      return res.end();
+    },
+  },
+
+  { method: "GET", path: "/api/playgrounds/:id", handle: (c) => serveFileContent(c, true) },
+  {
+    method: "GET",
+    path: "/api/user-model-auth/status",
+    handle: async (c) =>
+      relayCore(c.res, "GET", `/v1/user-model-auth/status?principalId=${encodeURIComponent(c.user)}`),
+  },
+  {
+    method: "POST",
+    path: "/api/user-model-auth/api-key",
+    handle: async (c) => {
+      const p = JSON.parse((await readBody(c.req)) || "{}") as { provider?: unknown; apiKey?: unknown };
+      const body = JSON.stringify({ principalId: c.user, provider: p.provider, apiKey: p.apiKey });
+      return relayCore(c.res, "POST", "/v1/user-model-auth/api-key", body);
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/user-model-auth/disconnect",
+    handle: async (c) => {
+      const p = JSON.parse((await readBody(c.req)) || "{}") as { provider?: unknown };
+      return relayCore(
+        c.res,
+        "POST",
+        "/v1/user-model-auth/disconnect",
+        JSON.stringify({ principalId: c.user, provider: p.provider }),
+      );
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/user-model-auth/chatgpt/start",
+    handle: async (c) =>
+      relayCore(c.res, "POST", "/v1/user-model-auth/chatgpt/start", JSON.stringify({ principalId: c.user })),
+  },
+  {
+    method: "POST",
+    path: "/api/user-model-auth/chatgpt/poll",
+    handle: async (c) => {
+      const p = JSON.parse((await readBody(c.req)) || "{}") as { deviceAuthId?: unknown; userCode?: unknown };
+      const body = JSON.stringify({ principalId: c.user, deviceAuthId: p.deviceAuthId, userCode: p.userCode });
+      return relayCore(c.res, "POST", "/v1/user-model-auth/chatgpt/poll", body);
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/user-model-auth/claude/start",
+    handle: async (c) =>
+      relayCore(c.res, "POST", "/v1/user-model-auth/claude/start", JSON.stringify({ principalId: c.user })),
+  },
+  {
+    method: "POST",
+    path: "/api/user-model-auth/claude/complete",
+    handle: async (c) => {
+      const p = JSON.parse((await readBody(c.req)) || "{}") as { code?: unknown; verifier?: unknown };
+      const body = JSON.stringify({ principalId: c.user, code: p.code, verifier: p.verifier });
+      return relayCore(c.res, "POST", "/v1/user-model-auth/claude/complete", body);
+    },
+  },
+
   {
     match: (_method, pathname) => pathname === "/me",
     handle: async (c) => {
       const { req, res, user } = c;
       res.setHeader("set-cookie", sessionCookie(user));
-      const permissions = await userPermissions();
+      const [allPermissions, workspaceUrl, authStatus] = await Promise.all([
+        userPermissions(),
+        slackWorkspaceUrl(),
+        coreFetch("GET", `/v1/user-model-auth/status?principalId=${encodeURIComponent(user)}`, "", 5_000).catch(
+          () => null,
+        ),
+      ]);
+      if (authStatus === null || authStatus.status !== 200) {
+        return json(res, 503, {
+          error: "unavailable",
+          message: "the assistant is briefly unavailable — retry shortly",
+        });
+      }
+      const parsed = JSON.parse(authStatus.text) as {
+        individualModelAuth?: boolean;
+        connections?: { provider: string }[];
+      };
+      const permissions = allPermissions.filter((permission) => permission !== "loops" && permission !== "inbox");
+      if (isLoopsUser(user)) permissions.push("loops");
+      if (isInboxUser(user)) permissions.push("inbox");
       return json(res, 200, {
         user,
         org: ORG,
         mode: AUTH_MODE,
-        slackWorkspaceUrl: await slackWorkspaceUrl(),
+        slackWorkspaceUrl: workspaceUrl,
+        individualModelAuth: parsed.individualModelAuth === true,
+        modelAuthConnected: (parsed.connections?.length ?? 0) > 0,
         impersonatedBy: resolveIdentity(req)?.impersonator ?? null,
+        displayName: resolveIdentity(req)?.name ?? null,
         permissions,
       });
     },
@@ -4647,6 +5078,14 @@ const apiRoutes: readonly WebRoute[] = [
     },
   },
   {
+    method: "GET",
+    path: "/api/inbox",
+    handle: async (c) => {
+      const { res, user } = c;
+      return relayCore(res, "GET", `/v1/loops/inbox?principalId=${encodeURIComponent(user)}`);
+    },
+  },
+  {
     method: "POST",
     path: "/api/im-bindings/start",
     handle: async (c) => {
@@ -4760,6 +5199,60 @@ const apiRoutes: readonly WebRoute[] = [
       return json(res, 200, { removed, reusable: Boolean(state.resources[provider]) });
     },
   },
+  {
+    method: "POST",
+    path: "/api/inbox/sync-cron",
+    handle: async (c) => {
+      const { req, res, user } = c;
+      return relayCore(
+        res,
+        "POST",
+        `/v1/loops/inbox/sync-cron?principalId=${encodeURIComponent(user)}`,
+        await readBody(req),
+      );
+    },
+  },
+  {
+    method: "GET",
+    path: "/api/loops/:id/items",
+    handle: async (c) => {
+      const { res, user, url } = c;
+      const qs = new URLSearchParams({ principalId: user });
+      const state = url.searchParams.get("state");
+      if (state) qs.set("state", state);
+      return relayCore(res, "GET", `/v1/loops/${encodeURIComponent(c.params.id!)}/items?${qs.toString()}`);
+    },
+  },
+  {
+    method: "GET",
+    path: "/api/loops/:id/items/:itemId",
+    handle: async (c) => {
+      const { res, user, params } = c;
+      return relayCore(
+        res,
+        "GET",
+        `/v1/loops/${encodeURIComponent(params.id!)}/items/${encodeURIComponent(params.itemId!)}?principalId=${encodeURIComponent(user)}`,
+      );
+    },
+  },
+  {
+    method: "GET",
+    path: "/api/loops/:id/items/:itemId/image",
+    handle: serveInboxItemImage,
+  },
+  ...(["action", "followup"] as const).map((leaf): WebRoute => ({
+    method: "POST",
+    path: `/api/loops/:id/items/:itemId/${leaf}`,
+    handle: async (c) => {
+      const { req, res, user, params } = c;
+      return relayCore(
+        res,
+        "POST",
+        `/v1/loops/${encodeURIComponent(params.id!)}/items/${encodeURIComponent(params.itemId!)}/${leaf}?principalId=${encodeURIComponent(user)}`,
+        await readBody(req),
+      );
+    },
+  })),
   {
     method: "GET",
     path: "/api/runtime-config",
@@ -4962,6 +5455,21 @@ const apiRoutes: readonly WebRoute[] = [
   },
   {
     method: "POST",
+    path: "/api/sessions/:id/share",
+    handle: async ({ req, res, user, params }: WebCtx) => {
+      res.setHeader("Cache-Control", "no-store");
+      const body = await readJson<{ audience?: unknown }>(req, res);
+      if (!body) return;
+      return relayCore(
+        res,
+        "POST",
+        `/v1/sessions/${encodeURIComponent(params.id!)}/share`,
+        JSON.stringify({ principalId: user, audience: body.audience }),
+      );
+    },
+  },
+  {
+    method: "POST",
     path: "/api/sessions/:id/title",
     handle: async (c) => {
       const { res, user } = c;
@@ -5063,36 +5571,12 @@ const apiRoutes: readonly WebRoute[] = [
   {
     method: "GET",
     path: "/api/files/:id/content",
-    handle: async (c) => {
-      const { res, user } = c;
-      const id = c.params.id!;
-      const corePath = withSourceAuthNonce(
-        `/v1/files/${encodeURIComponent(id)}/content?viewer=${encodeURIComponent(user)}`,
-        CORE_SIGNING_SECRET,
-      );
-      const portalTok = portalTokenStore.getStore();
-      const r = await fetch(`${CORE}${corePath}`, {
-        headers: {
-          ...signedHeaders(CORE_SIGNING_SECRET, "GET", corePath, ""),
-          ...(portalTok ? { [PORTAL_IDENTITY_HEADER]: portalTok } : {}),
-        },
-        redirect: "manual",
-      });
-      if (!r.ok || !r.body) {
-        res.writeHead(r.status === 404 ? 404 : 502, { "content-type": "application/json" });
-        return res.end(JSON.stringify({ error: r.status === 404 ? "not_found" : "upstream_error" }));
-      }
-      res.writeHead(200, {
-        "content-type": r.headers.get("content-type") ?? "application/octet-stream",
-        ...(r.headers.get("content-length") ? { "content-length": r.headers.get("content-length")! } : {}),
-        ...(r.headers.get("content-disposition")
-          ? { "content-disposition": r.headers.get("content-disposition")! }
-          : {}),
-        "content-security-policy": UNTRUSTED_CONTENT_SANDBOX_CSP,
-        "x-content-type-options": "nosniff",
-      });
-      return Readable.fromWeb(r.body as Parameters<typeof Readable.fromWeb>[0]).pipe(res);
-    },
+    handle: serveFileContent,
+  },
+  {
+    method: "GET",
+    path: "/api/files/:id/content/:name",
+    handle: serveFileContent,
   },
   {
     method: "GET",
@@ -5216,6 +5700,14 @@ const apiRoutes: readonly WebRoute[] = [
       const params = new URLSearchParams({ principalId: user, redirectUri: callback, returnTo: "/keychain" });
       const corePath = `/v1/connectors/oauth/${encodeURIComponent(provider)}/start?${params.toString()}`;
       return relayCore(res, "GET", corePath);
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/connectors/mcp/refresh",
+    handle: async (c) => {
+      const { res, user } = c;
+      return relayCore(res, "POST", "/v1/connectors/mcp/refresh", JSON.stringify({ principalId: user }));
     },
   },
   {
@@ -5406,20 +5898,16 @@ const apiRoutes: readonly WebRoute[] = [
       const { req, res, user } = c;
       const requestId = c.params.requestId!;
       if (!requestId || requestId.includes("/")) return json(res, 404, { error: "not_found" });
-      let approved = false;
-      let scope: "once" | "session" | "always" | undefined;
-      try {
-        const p = JSON.parse(await readBody(req)) as { approved?: unknown; scope?: unknown };
-        approved = p.approved === true;
-        if (p.scope === "once" || p.scope === "session" || p.scope === "always") scope = p.scope;
-      } catch (e) {
-        if (e instanceof PayloadTooLargeError) throw e;
-      }
+      const p = await readJson<{ approved?: unknown; scope?: unknown; idempotencyKey?: unknown }>(req, res, false);
+      if (!p) return;
+      if (typeof p.approved !== "boolean") return json(res, 400, { error: "bad_request" });
+      const approved = p.approved;
+      const scope = p.scope === "once" || p.scope === "session" || p.scope === "always" ? p.scope : undefined;
+      const idempotencyKey = namespacedSendKey(user, p.idempotencyKey);
 
       const fetched = await coreFetch("GET", `/v1/approvals/${encodeURIComponent(requestId)}`);
       if (fetched.status !== 200) {
-        res.writeHead(fetched.status, { "content-type": "application/json" });
-        return res.end(fetched.text);
+        return sendBuffered(res, fetched.status, { "content-type": "application/json" }, fetched.text);
       }
       let record: CoreApprovalRecord;
       try {
@@ -5445,7 +5933,10 @@ const apiRoutes: readonly WebRoute[] = [
       }
 
       const approval = { requestId, approved, ...(scope ? { scope } : {}) };
-      return postTurnAndMint(res, { ...record.request, approval }, user, threadRef);
+      const replay: Record<string, unknown> = { ...record.request, approval };
+      delete replay.idempotencyKey;
+      if (idempotencyKey) replay.idempotencyKey = idempotencyKey;
+      return postTurnAndMint(res, replay, user, threadRef);
     },
   },
   {
@@ -5466,9 +5957,17 @@ const apiRoutes: readonly WebRoute[] = [
       const attachments: CoreAttachment[] = [];
       let approval: { requestId: string; approved: boolean; scope?: string } | undefined;
       let proactiveOpener = false;
+      let idempotencyKey: string | undefined;
       try {
         const p = JSON.parse(await readBody(req));
         text = String(p.text ?? "");
+        idempotencyKey = namespacedSendKey(user, p.idempotencyKey);
+        if (
+          !idempotencyKey &&
+          typeof p.clientTurnId === "string" &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(p.clientTurnId)
+        )
+          idempotencyKey = `web:${user}:${p.clientTurnId}`;
         if (p.proactiveOpener === true) proactiveOpener = true;
         if (p.approval && typeof p.approval.requestId === "string" && typeof p.approval.approved === "boolean") {
           approval = {
@@ -5506,29 +6005,11 @@ const apiRoutes: readonly WebRoute[] = [
       if (!text.trim() && attachments.length === 0 && !approval && !proactiveOpener)
         return json(res, 400, { error: "empty message" });
 
-      if (!threadRef.startsWith(ownPrefix) && !(scope?.startsWith("channel:") || scope?.startsWith("group:"))) {
-        return json(res, 403, {
-          error: "forbidden_thread",
-          message: "this conversation can only be continued from its own context",
-        });
-      }
+      const resolved = resolveWebConversation(user, threadRef, scope, channelName);
+      if ("error" in resolved) return json(res, 403, resolved);
 
-      const conversation = conversationForScope(user, threadRef, scope, channelName);
-      if (!conversation) {
-        return json(res, 403, {
-          error: "forbidden_scope",
-          message: "you can only chat in your personal context or a shared context you're in",
-        });
-      }
-
-      const displayName = resolveIdentity(req)?.name ?? null;
       const turn = {
-        surface: "web",
-        actor: { externalId: user, ...(displayName ? { displayName } : {}) },
-        conversation,
-        liveActor: true,
-        deliveryTarget: threadRef,
-        text,
+        ...webTurnBase(req, user, resolved.conversation, threadRef, text),
         ...(harness ? { harness } : {}),
         ...(model ? { model } : {}),
         ...(thinkingLevel ? { thinkingLevel } : {}),
@@ -5537,6 +6018,7 @@ const apiRoutes: readonly WebRoute[] = [
         ...(attachments.length ? { attachments } : {}),
         ...(approval ? { approval } : {}),
         ...(proactiveOpener ? { proactiveOpener: true } : {}),
+        ...(idempotencyKey ? { idempotencyKey } : {}),
       };
       return postTurnAndMint(res, turn, user, threadRef);
     },
@@ -5579,7 +6061,7 @@ const apiRoutes: readonly WebRoute[] = [
       const { res, url, user } = c;
       const threadRef = url.searchParams.get("threadRef") ?? "";
       if (!threadRef.startsWith("web:")) return json(res, 404, { error: "not_found" });
-      let queued: Array<{ runId: string; text: string }> = [];
+      let queued: Array<{ runId: string; text: string; hasAttachments?: boolean }> = [];
       let durableRunId: string | null = null;
       const durable = await coreFetch("GET", `/v1/runs?threadRef=${encodeURIComponent(threadRef)}`);
       if (durable.status >= 200 && durable.status < 300) {
@@ -5626,17 +6108,33 @@ const apiRoutes: readonly WebRoute[] = [
     method: "POST",
     path: "/api/runs/:id/signal",
     handle: async (c) => {
-      const { req, res } = c;
+      const { req, res, user } = c;
       const id = c.params.id!;
-      const p = await readJson<{ kind?: unknown; text?: unknown }>(req, res, false);
+      const p = await readJson<{
+        kind?: unknown;
+        text?: unknown;
+        threadRef?: unknown;
+        scopeId?: unknown;
+        channelName?: unknown;
+      }>(req, res, false);
       if (!p) return;
       const kind = typeof p.kind === "string" ? p.kind : "";
       const text = typeof p.text === "string" ? p.text : undefined;
+      const threadRef = typeof p.threadRef === "string" && p.threadRef.startsWith("web:") ? p.threadRef : "";
+      let steerFields: { request: ReturnType<typeof webTurnBase> } | undefined;
+      if (kind === "steer" && text !== undefined && threadRef) {
+        const scope = typeof p.scopeId === "string" && p.scopeId ? p.scopeId : undefined;
+        const channelName =
+          typeof p.channelName === "string" && p.channelName.trim() ? p.channelName.trim().slice(0, 200) : undefined;
+        const resolved = resolveWebConversation(user, threadRef, scope, channelName);
+        if ("error" in resolved) return json(res, 403, resolved);
+        steerFields = { request: webTurnBase(req, user, resolved.conversation, threadRef, text) };
+      }
       return relayCore(
         res,
         "POST",
         `/v1/runs/${encodeURIComponent(id)}/signal`,
-        JSON.stringify({ kind, ...(text !== undefined ? { text } : {}) }),
+        JSON.stringify({ kind, ...(text !== undefined ? { text } : {}), ...steerFields }),
       );
     },
   },
@@ -5787,6 +6285,216 @@ const apiRoutes: readonly WebRoute[] = [
   },
   {
     method: "GET",
+    path: "/api/loops",
+    handle: async (c) => {
+      const { res, user } = c;
+      return relayCore(res, "GET", `/v1/loops?principalId=${encodeURIComponent(user)}`);
+    },
+  },
+  {
+    method: "GET",
+    path: "/api/webhooks",
+    handle: async (c) => {
+      const { res, user } = c;
+      return relay(res, await coreFetch("GET", `/v1/webhooks?viewer=${encodeURIComponent(user)}`));
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/loops",
+    handle: async (c) => {
+      const { req, res, user } = c;
+      return relayCore(res, "POST", `/v1/loops?principalId=${encodeURIComponent(user)}`, await readBody(req));
+    },
+  },
+  {
+    method: "GET",
+    path: "/api/loops/:id",
+    handle: async (c) => {
+      const { res, user } = c;
+      return relayCore(
+        res,
+        "GET",
+        `/v1/loops/${encodeURIComponent(c.params.id!)}?principalId=${encodeURIComponent(user)}`,
+      );
+    },
+  },
+  {
+    method: "PATCH",
+    path: "/api/loops/:id",
+    handle: async (c) => {
+      const { req, res, user } = c;
+      return relayCore(
+        res,
+        "PATCH",
+        `/v1/loops/${encodeURIComponent(c.params.id!)}?principalId=${encodeURIComponent(user)}`,
+        await readBody(req),
+      );
+    },
+  },
+  {
+    method: "DELETE",
+    path: "/api/loops/:id",
+    handle: async (c) => {
+      const { res, user } = c;
+      return relayCore(
+        res,
+        "DELETE",
+        `/v1/loops/${encodeURIComponent(c.params.id!)}?principalId=${encodeURIComponent(user)}`,
+      );
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/loops/:id/fire",
+    handle: async (c) => {
+      const { res, user } = c;
+      return relayCore(
+        res,
+        "POST",
+        `/v1/loops/${encodeURIComponent(c.params.id!)}/fire?principalId=${encodeURIComponent(user)}`,
+      );
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/loops/:id/outputs/:outputId/decide",
+    handle: async (c) => {
+      const { req, res, user } = c;
+      return relayCore(
+        res,
+        "POST",
+        `/v1/loops/${encodeURIComponent(c.params.id!)}/outputs/${encodeURIComponent(c.params.outputId!)}/decide?principalId=${encodeURIComponent(user)}`,
+        await readBody(req),
+      );
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/loops/:id/grants",
+    handle: async (c) => {
+      const { req, res, user } = c;
+      return relayCore(
+        res,
+        "POST",
+        `/v1/loops/${encodeURIComponent(c.params.id!)}/grants?principalId=${encodeURIComponent(user)}`,
+        await readBody(req),
+      );
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/loops/:id/autopilot",
+    handle: async (c) => {
+      const { req, res, user } = c;
+      return relayCore(
+        res,
+        "POST",
+        `/v1/loops/${encodeURIComponent(c.params.id!)}/autopilot?principalId=${encodeURIComponent(user)}`,
+        await readBody(req),
+      );
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/webhooks",
+    handle: async (c) => {
+      const { req, res, user } = c;
+      let action: string;
+      let verification: { scheme: string; secret?: string } = { scheme: "hmac-sha256" };
+      let filters: Array<{ path: string; in: string[] }> | undefined;
+      try {
+        const p = JSON.parse(await readBody(req)) as {
+          action?: unknown;
+          verification?: { scheme?: unknown; secret?: unknown };
+          filters?: unknown;
+          destination?: unknown;
+        };
+        action = String(p.action ?? "").trim();
+        if (p.verification !== undefined) {
+          if (
+            typeof p.verification !== "object" ||
+            p.verification === null ||
+            typeof p.verification.scheme !== "string"
+          ) {
+            return json(res, 400, {
+              error: "unsupported_verification",
+              message: "verification requires a scheme (HMAC-SHA256, GitHub, Slack, or Stripe)",
+            });
+          }
+          verification = {
+            scheme: p.verification.scheme,
+            ...(p.verification.secret ? { secret: String(p.verification.secret) } : {}),
+          };
+        }
+        if (p.filters !== undefined) {
+          if (
+            !Array.isArray(p.filters) ||
+            !p.filters.every((filter: unknown) => {
+              if (!filter || typeof filter !== "object") return false;
+              const candidate = filter as { path?: unknown; in?: unknown };
+              return (
+                typeof candidate.path === "string" &&
+                candidate.path.trim().length > 0 &&
+                Array.isArray(candidate.in) &&
+                candidate.in.length > 0 &&
+                candidate.in.every((value) => typeof value === "string" && value.trim().length > 0)
+              );
+            })
+          )
+            return json(res, 400, {
+              error: "invalid_filters",
+              message: "every filter requires a path and at least one value",
+            });
+          filters = p.filters as Array<{ path: string; in: string[] }>;
+        }
+        if (p.destination !== undefined) {
+          return json(res, 400, {
+            error: "invalid_destination",
+            message: "choose webhook destinations with the agent so teammate and channel names can be resolved safely",
+          });
+        }
+      } catch (e) {
+        if (e instanceof PayloadTooLargeError) throw e;
+        return json(res, 400, { error: "bad_request", message: "expected JSON body" });
+      }
+      if (!action)
+        return json(res, 400, {
+          error: "action_required",
+          message: "an action (the agent's instructions) is required",
+        });
+      if (!["hmac-sha256", "github", "slack", "stripe"].includes(verification.scheme)) {
+        return json(res, 400, {
+          error: "unsupported_verification",
+          message: "choose HMAC-SHA256, GitHub, Slack, or Stripe signature verification",
+        });
+      }
+      if (!verification.secret) {
+        verification = { ...verification, secret: randomBytes(32).toString("hex") };
+      }
+      const reqBody = JSON.stringify({
+        ownerScopeId: `personal:${user}`,
+        owner: user,
+        createdBy: user,
+        action,
+        verification,
+        ...(filters ? { filters } : {}),
+      });
+      return relay(res, await coreFetch("POST", "/v1/webhooks", reqBody));
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/webhooks/:id/disable",
+    handle: (c) => setWebhookEnabledViaCore(c.res, c.user, c.params.id!, "disable"),
+  },
+  {
+    method: "POST",
+    path: "/api/webhooks/:id/enable",
+    handle: (c) => setWebhookEnabledViaCore(c.res, c.user, c.params.id!, "enable"),
+  },
+  {
+    method: "GET",
     path: "/api/crons",
     handle: async (c) => {
       const { res, user } = c;
@@ -5931,6 +6639,7 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
   if (method === "GET" && path === "/favicon.svg") {
     return serveEmojiFavicon(res, process.env.WEB_UI_FAVICON_EMOJI ?? "\u{1F3F4}\u{200D}\u2620\uFE0F", "no-cache");
   }
+  if (method === "GET" && path === "/manifest.webmanifest") return serveWebManifest(res);
 
   if (method === "POST" && path === "/signin") {
     if (!COOKIE_AUTH) return json(res, 404, { error: "not_found" });
@@ -5977,9 +6686,66 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
     return sendHtml(res, ok ? 200 : 400, callbackHtml(q));
   }
 
+  if (method === "GET" && path.startsWith("/share/")) {
+    const match = path.match(/^\/share\/(internal|external)\/([a-f0-9-]{36})(?:\/files\/([a-f0-9-]{36}))?$/);
+    if (!match) return json(res, 404, { error: "not_found" });
+    const external = match[1] === "external";
+    const user = external ? null : cookieUser(req);
+    if (!external && !user) return json(res, 401, { error: "sign in" });
+    const corePath = `/v1/${external ? "public-shares" : "shared-sessions"}/${match[2]}${match[3] ? `/files/${match[3]}` : ""}?${external ? "" : `viewer=${encodeURIComponent(user!)}&`}inline=${url.searchParams.get("inline") === "1" ? "1" : "0"}`;
+    if (match[3]) {
+      const signedPath = withSourceAuthNonce(corePath, CORE_SIGNING_SECRET);
+      const portalTok = external ? null : portalTokenStore.getStore();
+      const response = await fetch(`${CORE}${signedPath}`, {
+        headers: {
+          ...signedHeaders(CORE_SIGNING_SECRET, "GET", signedPath, ""),
+          ...(portalTok ? { [PORTAL_IDENTITY_HEADER]: portalTok } : {}),
+        },
+        redirect: "manual",
+      });
+      const headers: Record<string, string> = {
+        "cache-control": "no-store",
+        "referrer-policy": "no-referrer",
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "default-src 'none'; sandbox",
+      };
+      for (const name of ["content-type", "content-length", "content-disposition"]) {
+        const value = response.headers.get(name);
+        if (value) headers[name] = value;
+      }
+      res.writeHead(response.status, headers);
+      if (!response.body) return res.end();
+      const stream = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]);
+      res.on("close", () => stream.destroy());
+      stream.on("error", () => res.destroy());
+      return stream.pipe(res);
+    }
+    const result = await coreFetch("GET", corePath);
+    const dev = vite && !external;
+    const template = dev
+      ? await vite!.transformIndexHtml("/shared.html", readFileSync(join(ROOT, "shared.html"), "utf8"))
+      : readFileSync(join(DIST, "shared.html"), "utf8");
+    res.writeHead(result.status, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
+      "X-Robots-Tag": "noindex, nofollow",
+      "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self'; connect-src ${dev ? "ws: wss:" : "'none'"}; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
+    });
+    return res.end(
+      sharedSessionHtml(await brandIndexHtml(template), result.status === 200 ? JSON.parse(result.text) : null),
+    );
+  }
+
   if (path === "/me" || path.startsWith("/api/")) {
     const user = await currentBrowserUser(req);
     if (!user) return unauthorized(res, req);
+    const loopsPath = path === "/api/loops" || path.startsWith("/api/loops/");
+    const ledgerPath = /^\/api\/loops\/[^/]+\/items(\/|$)/.test(path);
+    if (loopsPath && !isLoopsUser(user) && !(ledgerPath && isInboxUser(user))) {
+      return json(res, 403, { error: "forbidden" });
+    }
     const found = findRoute(apiRoutes, method, path);
     if (!found) return json(res, 404, { error: "not found" });
     return found.route.handle({ req, res, url, user, params: found.params });
@@ -6015,6 +6781,7 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
   if (method === "GET" && path === "/app-edit" && (await serveAppEditHtml(req, res, url))) return;
 
   if (method === "GET") {
+    if (path.startsWith("/assets/")) return await serveStatic(res, path);
     if (await serveVite(req, res, path)) return;
     return await serveStatic(res, path === "/" ? "/index.html" : path);
   }
@@ -6022,7 +6789,23 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
   json(res, 404, { error: "not found" });
 };
 
+let adminModule: Promise<typeof import("../../admin/src/index.ts")> | undefined;
+
 export const handler = async (req: IncomingMessage, res: ServerResponse) => {
+  const originalUrl = req.url ?? "/";
+  const path = originalUrl.split("?")[0]!;
+  if (process.env.ADMIN_ENABLED !== "0" && (path === "/admin" || path.startsWith("/admin/"))) {
+    req.url = originalUrl.slice("/admin".length) || "/";
+    if (req.url.startsWith("?")) req.url = `/${req.url}`;
+    try {
+      process.env.ADMIN_BASE_PATH ??= "/admin";
+      adminModule ??= import("../../admin/src/index.ts");
+      await (await adminModule).handler(req, res);
+    } finally {
+      req.url = originalUrl;
+    }
+    return;
+  }
   res.setHeader("strict-transport-security", "max-age=63072000; includeSubDomains");
   res.setHeader("referrer-policy", "no-referrer");
   res.setHeader("x-content-type-options", "nosniff");
@@ -6043,7 +6826,7 @@ export const handler = async (req: IncomingMessage, res: ServerResponse) => {
 
 const server = createServer((req, res) => {
   void handler(req, res).catch((err: unknown) => {
-    console.error("[web-ui] 502 %s %s: %s", req.method ?? "?", req.url ?? "?", String(err));
+    console.error("%s", `[web-ui] 502 ${req.method ?? "?"} ${req.url ?? "?"}:`, String(err));
     if (!res.headersSent) json(res, 502, { error: "bad_gateway", message: "upstream error" });
     else res.end();
   });
@@ -6058,9 +6841,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
           `[web-ui] surface on http://localhost:${PORT} → core ${CORE} (org ${ORG})${WEB_UI_DEV ? " [vite hmr]" : ""}`,
         );
         if (!WEB_UI_DEV && !existsSync(join(DIST, "index.html")))
-          console.warn("[web-ui] dist-web/ not built — run `npm run build`");
-        if (COOKIE_AUTH && ALLOW.length === 0)
-          console.warn("[web-ui] WEB_UI_PRINCIPALS unset — any principal id may sign in (dev only)");
+          console.warn("[web-ui] dist-web/ not built, run `npm run build`");
+        if (ALLOW.length === 0)
+          console.warn("[web-ui] WEB_UI_PRINCIPALS unset, any principal id may sign in (dev only)");
         const t = setInterval(() => void drainWebDeliveries(), WEB_DELIVERY_POLL_MS);
         t.unref?.();
         const imBridgeTimer = setInterval(() => {
@@ -6078,6 +6861,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
           console.error("[web-ui] IM delivery failed:", String(error)),
         );
         void runStateFeed();
+        void runInboxFeed();
       });
     })
     .catch((err: unknown) => {

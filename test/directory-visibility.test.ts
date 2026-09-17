@@ -95,6 +95,7 @@ async function policy(
   subjectId: string,
   mode: "all" | "limited" | "none",
   roots: Array<{ unitId: string; includeDescendants: boolean }> = [],
+  priority = 100,
 ): Promise<void> {
   await store.transact(ORG, async (tx) => {
     const id = `policy-${subjectKind}-${subjectId}`;
@@ -104,6 +105,7 @@ async function policy(
       subjectKind,
       subjectId,
       mode,
+      priority,
       revision: 1,
       createdAt: NOW,
       updatedAt: NOW,
@@ -136,6 +138,19 @@ test("directory defaults to all active users and an administrator always sees al
     )?.users.map((account) => account.principalId),
     ["alice", "bob", "carol", "viewer"],
   );
+});
+
+test("a root organization policy applies recursively to every active member", async () => {
+  const store = await seed();
+  await policy(store, "org_unit", "root", "none");
+  const resolver = createDirectoryVisibilityResolver({ store, orgId: ORG });
+  for (const principalId of ["viewer", "alice", "bob", "carol"]) {
+    assert.equal((await resolver.resolve({ principalId, isAdmin: false }))?.mode, "none");
+    assert.deepEqual(
+      await resolver.searchUsers({ principalId, isAdmin: false }, { query: "", after: null, limit: 20 }),
+      { users: [], next: null },
+    );
+  }
 });
 
 test("limited roots merge, honor descendant flags, remove overlap, and filter search before pagination", async () => {
@@ -204,7 +219,7 @@ test("recipient resolution never returns users outside the actor's directory vie
   assert.deepEqual(await resolver.resolveUser({ principalId: "viewer", isAdmin: false }, "Carol"), { kind: "none" });
 });
 
-test("personal policy overrides inherited unit and group policies", async () => {
+test("personal and group policies cannot loosen an inherited directory restriction", async () => {
   const store = await seed();
   await store.putUnitMember({
     orgId: ORG,
@@ -232,11 +247,57 @@ test("personal policy overrides inherited unit and group policies", async () => 
     createdAt: NOW,
     createdBy: "test",
   });
-  await policy(store, "org_unit", "engineering", "limited", [{ unitId: "engineering", includeDescendants: true }]);
+  await policy(store, "org_unit", "root", "none");
   await policy(store, "access_group", "sensitive", "all");
-  await policy(store, "user", "viewer", "none");
+  await policy(store, "user", "viewer", "all");
   const resolver = createDirectoryVisibilityResolver({ store, orgId: ORG });
   assert.equal((await resolver.resolve({ principalId: "viewer", isAdmin: false }))?.mode, "none");
+});
+
+test("a higher-priority personal rule can create an exception to an inherited denial", async () => {
+  const store = await seed();
+  await policy(store, "org_unit", "root", "none", [], 100);
+  await policy(store, "user", "viewer", "all", [], 200);
+  const resolver = createDirectoryVisibilityResolver({ store, orgId: ORG });
+  assert.equal((await resolver.resolve({ principalId: "viewer", isAdmin: false }))?.mode, "all");
+  const explanation = await resolver.explain({ principalId: "viewer", isAdmin: false });
+  assert.equal(explanation?.winningPriority, 200);
+  assert.deepEqual(
+    explanation?.policies.map(({ policy: value, effective }) => [value.subjectKind, value.priority, effective]),
+    [
+      ["user", 200, true],
+      ["org_unit", 100, false],
+    ],
+  );
+});
+
+test("a higher-priority personal denial can exclude one person from an inherited allow rule", async () => {
+  const store = await seed();
+  await policy(store, "org_unit", "root", "all", [], 100);
+  await policy(store, "user", "viewer", "none", [], 200);
+  const resolver = createDirectoryVisibilityResolver({ store, orgId: ORG });
+  assert.equal((await resolver.resolve({ principalId: "viewer", isAdmin: false }))?.mode, "none");
+});
+
+test("limited inherited visibility cannot be widened by an all policy", async () => {
+  const store = await seed();
+  await store.putUnitMember({
+    orgId: ORG,
+    unitId: "platform",
+    principalId: "viewer",
+    role: "member",
+    createdAt: NOW,
+    createdBy: "test",
+  });
+  await policy(store, "org_unit", "engineering", "limited", [{ unitId: "engineering", includeDescendants: true }]);
+  await policy(store, "user", "viewer", "all");
+  const resolver = createDirectoryVisibilityResolver({ store, orgId: ORG });
+  assert.deepEqual(
+    (
+      await resolver.searchUsers({ principalId: "viewer", isAdmin: false }, { query: "", after: null, limit: 20 })
+    )?.users.map((account) => account.principalId),
+    ["alice", "bob", "viewer"],
+  );
 });
 
 test("group visibility requires every active member to be visible", async () => {

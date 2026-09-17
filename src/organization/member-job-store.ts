@@ -75,6 +75,7 @@ export interface OrganizationMemberJobStore {
   ): Promise<OrganizationMemberJobDetail | null>;
   fail(orgId: string, jobId: string, actorId: string, claimToken: string, error: string, now: number): Promise<void>;
   expire(now: number): Promise<number>;
+  start?(): void;
   close?(): Promise<void> | void;
 }
 

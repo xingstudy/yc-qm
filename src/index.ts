@@ -1,20 +1,27 @@
+import { randomBytes } from "node:crypto";
+import { lookup } from "node:dns/promises";
 import { loadConfig } from "./config.ts";
 import { buildApp, serverDeps, stopWithBackstop } from "./wiring.ts";
 import { createServer } from "./api/server.ts";
+import { dockerDaemonFailure } from "./deploy/docker-deploy-provider.ts";
 import { errMessage } from "./util/errors.ts";
-import { slackPluginConfigFromEnv, startSlackPlugin } from "./slack/index.ts";
+import { slackAccountConfigsFromEnv, slackPluginConfigFromEnv, startSlackPlugin } from "./slack/index.ts";
 import { createSlackRuntimeReconciler } from "./surfaces/slack-runtime.ts";
 
 const config = loadConfig();
 
 const built = buildApp(config);
+await built.migrationsReady;
+await built.sandboxResources.initialize();
+const backfilledFires = await built.crons.backfillFires();
+if (backfilledFires > 0) console.log(`[qm] backfilled ${backfilledFires} cron fire log entries into cron_fires`);
 const envSlackConfig = slackPluginConfigFromEnv(process.env);
 const slackConfig = envSlackConfig;
 const envSlackAttempted = Boolean(process.env.SLACK_BOT_TOKEN || process.env.SLACK_APP_TOKEN);
 let slackEnvironmentState: "absent" | "configured" | "partial" = "absent";
 if (slackConfig) slackEnvironmentState = "configured";
 else if (envSlackAttempted) slackEnvironmentState = "partial";
-const server = createServer(built.app, serverDeps(config, built, slackEnvironmentState));
+const server = createServer(built.app, serverDeps(config, built, slackEnvironmentState, envSlackConfig?.botToken));
 
 await built.config.hydrate?.();
 await built.refreshCustomProviders();
@@ -30,6 +37,32 @@ server.listen(config.port, () => {
       `runStore=${config.runStore}, workers=${config.workers}, backgroundWork=${config.backgroundWorkEnabled})`,
   );
 });
+
+if (config.deployAppsDomain) {
+  const domain = config.deployAppsDomain;
+  const probe = `qm-probe-${randomBytes(4).toString("hex")}.${domain}`;
+  void lookup(probe).catch(() => {
+    console.warn(
+      `[qm] app subdomains are configured but *.${domain} does not resolve (probed ${probe}) — ` +
+        `add a wildcard DNS record for *.${domain} pointing at this instance's ingress, or apps will only be reachable at /d/<app>/`,
+    );
+  });
+}
+
+if (config.databaseUrl && !config.adminGrants) {
+  console.warn(
+    "[qm] ADMIN_GRANTS is unset with a durable store — if this deployment has never named an admin, the admin console is unreachable and cannot be unlocked from inside the product; set ADMIN_GRANTS=<email>:org_admin (ignore this if an admin was already promoted in the Users tab).",
+  );
+}
+
+if (config.deployProvider === "docker") {
+  void dockerDaemonFailure().then((failure) => {
+    if (failure)
+      console.warn(
+        `[qm] publishing is unavailable: the docker deploy provider is selected but no Docker daemon is reachable from core (${failure}) — make a daemon reachable, or set DEPLOY_PROVIDER to fly or aws`,
+      );
+  });
+}
 
 if (config.backgroundWorkEnabled) {
   built.scheduler.start(1000);
@@ -56,7 +89,17 @@ const slackRuntime = createSlackRuntimeReconciler({
   startPlugin: (desired) => startSlackPlugin(desired, built.slackCore),
   onError: (error) => console.error(`[qm] slack plugin reconciliation failed: ${errMessage(error)}`),
 });
-slackRuntime.start();
+if (config.backgroundWorkEnabled) slackRuntime.start();
+
+const slackAccountRuntimes = slackAccountConfigsFromEnv(process.env).map((account) =>
+  createSlackRuntimeReconciler({
+    load: () => Promise.resolve({ version: `environment:${account.accountId}`, config: account }),
+    startPlugin: (desired) => startSlackPlugin(desired, built.slackCore),
+    onError: (error) =>
+      console.error(`[qm] slack account "${account.accountId}" reconciliation failed: ${errMessage(error)}`),
+  }),
+);
+if (config.backgroundWorkEnabled) for (const runtime of slackAccountRuntimes) runtime.start();
 
 let shuttingDown = false;
 function shutdown(signal: string): void {
@@ -64,6 +107,8 @@ function shutdown(signal: string): void {
   shuttingDown = true;
   console.log(`[qm] ${signal} received, shutting down`);
   void slackRuntime.stop().catch((e: unknown) => console.error("[qm] slack plugin stop failed:", errMessage(e)));
+  for (const runtime of slackAccountRuntimes)
+    void runtime.stop().catch((e: unknown) => console.error("[qm] slack account stop failed:", errMessage(e)));
   built.scheduler.stop();
   built.deploymentLayerRefresh.stop();
   server.close();

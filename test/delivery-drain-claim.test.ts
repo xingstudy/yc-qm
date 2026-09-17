@@ -59,6 +59,12 @@ async function postDelivery(
   return fetch(`${base}${path}`, { method: "POST", headers: sign("POST", path, body), body });
 }
 
+async function releaseDeliveryClaim(base: string, id: string): Promise<Response> {
+  sourceNonce += 1;
+  const path = `/v1/deliveries/${encodeURIComponent(id)}/release?_sourceAuthNonce=${sourceNonce}`;
+  return fetch(`${base}${path}`, { method: "POST", headers: sign("POST", path, "") });
+}
+
 test("POST /v1/deliveries enqueues a source-auth delivery once", async () => {
   const srv = start();
   try {
@@ -157,6 +163,25 @@ test("an expired claim re-surfaces the row to a later poll (drainer died mid-pos
     );
     await new Promise((r) => setTimeout(r, abandonedClaimTtlMs + 100));
     assert.equal((await fetchPending(srv.base, "type=group&claimMs=15000")).length, 1, "the abandoned row comes back");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a failed drainer can release its claim without waiting for the full claim TTL", async () => {
+  const srv = start();
+  try {
+    await srv.app.enqueueDelivery({
+      destination: { type: "group", target: "C3" },
+      text: "retry after a transient provider failure",
+      idempotencyKey: "post:sess-4:one",
+    });
+    const [claimed] = await fetchPending(srv.base, "type=group&claimMs=60000");
+    assert.ok(claimed);
+    const released = await releaseDeliveryClaim(srv.base, claimed.id);
+    assert.equal(released.status, 200);
+    assert.deepEqual(await released.json(), { ok: true });
+    assert.equal((await fetchPending(srv.base, "type=group&claimMs=60000")).length, 1);
   } finally {
     await srv.close();
   }

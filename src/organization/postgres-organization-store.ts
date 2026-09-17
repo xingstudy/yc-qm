@@ -1,9 +1,18 @@
-import { createPgPool, type Pool, type PoolClient, withPgTransaction } from "../persistence/pg-pool.ts";
+import {
+  createPgPool,
+  pgSchemaMigrations,
+  type Pool,
+  type PoolClient,
+  withPgTransaction,
+} from "../persistence/pg-pool.ts";
+import { definePgMigration } from "../persistence/pg-schema-migrations.ts";
 import { sleep } from "../util/async.ts";
 import type { PostgresAuditLog } from "../admin/postgres-audit-log.ts";
 import type {
   AccessGroup,
   AccessGroupMember,
+  AccessGroupSubject,
+  AccessGroupSubjectKind,
   AuthIdentity,
   DirectorySubjectKind,
   DirectoryUserCursor,
@@ -43,6 +52,8 @@ function rowToUser(r: Record<string, unknown>): OrganizationUser {
     orgId: r.org_id as string,
     principalId: r.principal_id as string,
     email: (r.email as string | null) ?? null,
+    ...(r.invited_email ? { invitedEmail: r.invited_email as string } : {}),
+    ...(r.external_membership ? { externalMembership: true } : {}),
     displayName: r.display_name as string,
     jobTitle: (r.job_title as string | null) ?? null,
     mobile: (r.mobile as string | null) ?? null,
@@ -132,6 +143,17 @@ function rowToGroupMember(r: Record<string, unknown>): AccessGroupMember {
   };
 }
 
+function rowToGroupSubject(r: Record<string, unknown>): AccessGroupSubject {
+  return {
+    orgId: r.org_id as string,
+    groupId: r.group_id as string,
+    subjectKind: r.subject_kind as AccessGroupSubjectKind,
+    subjectId: r.subject_id as string,
+    createdAt: Number(r.created_at),
+    createdBy: r.created_by as string,
+  };
+}
+
 function rowToDirectoryPolicy(r: Record<string, unknown>): DirectoryViewPolicy {
   return {
     id: r.id as string,
@@ -139,6 +161,7 @@ function rowToDirectoryPolicy(r: Record<string, unknown>): DirectoryViewPolicy {
     subjectKind: r.subject_kind as DirectorySubjectKind,
     subjectId: r.subject_id as string,
     mode: r.mode as DirectoryViewMode,
+    priority: Number(r.priority),
     revision: Number(r.revision),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
@@ -181,7 +204,7 @@ function rowToSkillAccessGrant(r: Record<string, unknown>): SkillAccessGrant {
 }
 
 const USER_COLUMNS =
-  "org_id, principal_id, email, display_name, job_title, mobile, employee_number, status, session_version, profile_revision, created_at, updated_at, last_login_at, created_by, updated_by";
+  "org_id, principal_id, email, display_name, job_title, mobile, employee_number, status, session_version, profile_revision, created_at, updated_at, last_login_at, created_by, updated_by, invited_email, external_membership";
 
 const IDENTITY_COLUMNS =
   "org_id, issuer, subject, principal_id, email_at_link, source_id, provider, external_tenant_id, external_subject_id, matched_by, evidence_json, created_at, updated_at";
@@ -195,8 +218,10 @@ const GROUP_COLUMNS = "org_id, id, name, status, created_at, updated_at, created
 
 const GROUP_MEMBER_COLUMNS = "org_id, group_id, principal_id, role, created_at, created_by";
 
+const GROUP_SUBJECT_COLUMNS = "org_id, group_id, subject_kind, subject_id, created_at, created_by";
+
 const DIRECTORY_POLICY_COLUMNS =
-  "id, org_id, subject_kind, subject_id, mode, revision, created_at, updated_at, updated_by";
+  "id, org_id, subject_kind, subject_id, mode, priority, revision, created_at, updated_at, updated_by";
 
 const DIRECTORY_ROOT_COLUMNS = "org_id, policy_id, unit_id, include_descendants";
 
@@ -216,7 +241,7 @@ SELECT $1, up.ancestor_id, sub.descendant_id, up.depth + sub.depth + 1
   JOIN org_unit_closure sub ON sub.org_id = $1
  WHERE up.org_id = $1 AND up.descendant_id = $3 AND sub.ancestor_id = $2`;
 
-const SCHEMA_SQL = [
+const PROD_V1_3_0_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS organization_users(
     org_id TEXT NOT NULL,
     principal_id TEXT NOT NULL,
@@ -1263,6 +1288,106 @@ const SCHEMA_SQL = [
    $do$`,
 ];
 
+const MIGRATIONS = [
+  ...pgSchemaMigrations("fork/organization/0001", PROD_V1_3_0_SCHEMA, [
+    "3f4c9818d8f498024cc127e33e87cf722861498419e64f4d6e454e5e4184bc31",
+    "732ec06407d0230d6f33d8fbec908ba3555ea0208147cf4f3cdfcf93a2f08eff",
+    "a4932291481c9c730f8629b0aa0fbe5fd331dbe46d3fe0feec22538bae508911",
+    "972b7754ca533e9a8ee4dd3c6f8a3743031894da74ebcba6d712b86b2cb85abb",
+    "0a9a88f00d1bc8889c0a4971475c5471f27cbba9a6a2ea9b773dc4162c33d166",
+    "1d4405762012a2d8a1509190b216193fffd6054a8f1e164dfd7362663557d4b8",
+    "0ab9cbf8e221b0102d3ddcfbdb16e18eea67a4fc4a07452e890ef704e834e382",
+    "91e9f774abd86b42edf074c031293ef3a7846b3a7b2dc6de538b26215d4ce265",
+    "594b0676c9425bea44964180f0496ef80df8779e96791403a59c4f2dca971a6f",
+    "291f1553877c7bae88cdf64c262bb03a356dfb13b12a0b3e12b1e287b408eabe",
+    "aebfa4924a2ad6cfc51af30a471eb33494466bc0f4e74d3de25c320361b57b22",
+    "68c9811d18216f1403f6a63224e5d4c2ced7d2b0380f68983dc046db206bffe7",
+    "53c18bed98a0eb484e63a16f3639e95f9b80c5ec62b900d7d9664a475bf58ba0",
+  ]),
+  definePgMigration({
+    id: "fork/organization/0002-invited-email",
+    expectedChecksum: "cdc921633f78a5f23c859f8feb8db802cbe089c9c003e2a69dc2966eab82a0b8",
+    statements: [
+      "ALTER TABLE organization_users ADD COLUMN IF NOT EXISTS invited_email TEXT",
+      "ALTER TABLE organization_users ADD COLUMN IF NOT EXISTS external_membership BOOLEAN NOT NULL DEFAULT FALSE",
+      "UPDATE organization_users SET invited_email = lower(email) WHERE status = 'invited' AND email IS NOT NULL AND invited_email IS NULL",
+    ],
+    transactional: true,
+  }),
+  definePgMigration({
+    id: "fork/organization/0003-invited-email-index",
+    expectedChecksum: "ccee07e8e47b1e81deb08f6b7ccfef2615797943b41712f65490563231fbbe0a",
+    statements: [
+      "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS organization_users_invited_email ON organization_users(org_id, lower(invited_email)) WHERE invited_email IS NOT NULL",
+    ],
+    transactional: false,
+  }),
+  definePgMigration({
+    id: "fork/organization/0004-access-group-subjects",
+    expectedChecksum: "4fa7cbdd9cfbf8322b5e1071523ea822e1d8935a7c86dfaf7cb48a34757341c1",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS access_group_subjects(
+        org_id TEXT NOT NULL,
+        group_id TEXT NOT NULL,
+        subject_kind TEXT NOT NULL CHECK(subject_kind IN ('org_unit', 'access_group')),
+        subject_id TEXT NOT NULL,
+        created_at BIGINT NOT NULL,
+        created_by TEXT NOT NULL,
+        PRIMARY KEY (org_id, group_id, subject_kind, subject_id)
+      )`,
+      `DO $$ BEGIN
+         IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'access_group_subjects_group_fk') THEN
+           ALTER TABLE access_group_subjects ADD CONSTRAINT access_group_subjects_group_fk
+           FOREIGN KEY (org_id, group_id) REFERENCES access_groups(org_id, id);
+         END IF;
+       END $$`,
+    ],
+    transactional: true,
+  }),
+  definePgMigration({
+    id: "fork/organization/0005-access-group-subject-index",
+    expectedChecksum: "231e106e679b7412b4cbbf53abc822d394cb9aa5906db043b86590fd30b1e0ab",
+    statements: [
+      "CREATE INDEX CONCURRENTLY IF NOT EXISTS access_group_subjects_by_subject ON access_group_subjects(org_id, subject_kind, subject_id, group_id)",
+    ],
+    transactional: false,
+  }),
+  definePgMigration({
+    id: "fork/organization/0006-access-group-subject-lock",
+    expectedChecksum: "144d8ab7902026c27513fd98d4ae34ae2f6acef19262c2a0a4d6203a69dc582f",
+    statements: [
+      `DO $$ BEGIN
+         IF NOT EXISTS (
+           SELECT 1 FROM pg_trigger
+            WHERE tgname = 'organization_authz_lock_access_group_subjects'
+              AND tgrelid = 'access_group_subjects'::regclass
+         ) THEN
+           CREATE TRIGGER organization_authz_lock_access_group_subjects
+           BEFORE INSERT OR UPDATE OR DELETE ON access_group_subjects
+           FOR EACH ROW EXECUTE FUNCTION organization_authz_lock_row();
+         END IF;
+       END $$`,
+    ],
+    transactional: true,
+  }),
+  definePgMigration({
+    id: "fork/organization/0007-directory-policy-priority",
+    expectedChecksum: "18cb6bf8edf8135d9c35a1124c9de0c758524793870780d97048b29c4431d19b",
+    statements: [
+      "ALTER TABLE directory_view_policies ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 100",
+      `DO $$ BEGIN
+         IF NOT EXISTS (
+           SELECT 1 FROM pg_constraint WHERE conname = 'directory_view_policies_priority_check'
+         ) THEN
+           ALTER TABLE directory_view_policies ADD CONSTRAINT directory_view_policies_priority_check
+           CHECK(priority BETWEEN 0 AND 1000);
+         END IF;
+       END $$`,
+    ],
+    transactional: true,
+  }),
+];
+
 const ORGANIZATION_CLOSURE_MIGRATION_SQL = `DO $do$
    DECLARE scope_org_id TEXT;
    BEGIN
@@ -1356,10 +1481,23 @@ const ORGANIZATION_LEGACY_RUNTIME_ELIGIBILITY_SQL = `DO $do$
    END
    $do$`;
 
+async function userEmailConflictOn(exec: Exec, user: OrganizationUser): Promise<boolean> {
+  const emails = [user.email, user.invitedEmail]
+    .filter((email): email is string => !!email)
+    .map((email) => email.toLowerCase());
+  if (!emails.length) return false;
+  const result = await exec(
+    `SELECT 1 FROM organization_users WHERE org_id = $1 AND principal_id <> $2 AND (lower(email) = lower($4) OR lower(invited_email) = ANY($3::text[])) LIMIT 1`,
+    [user.orgId, user.principalId, emails, user.invitedEmail ?? null],
+  );
+  return result.rows.length > 0;
+}
+
 async function putUserOn(exec: Exec, u: OrganizationUser): Promise<void> {
+  if (await userEmailConflictOn(exec, u)) throw new Error("organization email already belongs to another user");
   await exec(
     `INSERT INTO organization_users (${USER_COLUMNS})
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
      ON CONFLICT (org_id, principal_id)
      DO UPDATE SET
        email = EXCLUDED.email,
@@ -1374,7 +1512,9 @@ async function putUserOn(exec: Exec, u: OrganizationUser): Promise<void> {
        updated_at = EXCLUDED.updated_at,
        last_login_at = EXCLUDED.last_login_at,
        created_by = EXCLUDED.created_by,
-       updated_by = EXCLUDED.updated_by`,
+       updated_by = EXCLUDED.updated_by,
+       invited_email = COALESCE(organization_users.invited_email, EXCLUDED.invited_email),
+       external_membership = organization_users.external_membership OR EXCLUDED.external_membership`,
     [
       u.orgId,
       u.principalId,
@@ -1391,14 +1531,17 @@ async function putUserOn(exec: Exec, u: OrganizationUser): Promise<void> {
       u.lastLoginAt,
       u.createdBy,
       u.updatedBy,
+      u.invitedEmail ?? null,
+      u.externalMembership ?? false,
     ],
   );
 }
 
 async function insertUserOn(exec: Exec, u: OrganizationUser): Promise<boolean> {
+  if (await userEmailConflictOn(exec, u)) return false;
   const result = await exec(
     `INSERT INTO organization_users (${USER_COLUMNS})
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
      ON CONFLICT DO NOTHING`,
     [
       u.orgId,
@@ -1416,6 +1559,8 @@ async function insertUserOn(exec: Exec, u: OrganizationUser): Promise<boolean> {
       u.lastLoginAt,
       u.createdBy,
       u.updatedBy,
+      u.invitedEmail ?? null,
+      u.externalMembership ?? false,
     ],
   );
   return result.rowCount > 0;
@@ -1598,13 +1743,25 @@ async function getDirectoryPolicyOn(
   return res.rows[0] ? rowToDirectoryPolicy(res.rows[0]) : null;
 }
 
+async function listDirectoryPoliciesOn(exec: Exec, orgId: string): Promise<DirectoryViewPolicy[]> {
+  const res = await exec(
+    `SELECT ${DIRECTORY_POLICY_COLUMNS}
+       FROM directory_view_policies
+      WHERE org_id = $1
+      ORDER BY priority DESC, subject_kind, subject_id`,
+    [orgId],
+  );
+  return res.rows.map(rowToDirectoryPolicy);
+}
+
 async function putDirectoryPolicyOn(exec: Exec, policy: DirectoryViewPolicy): Promise<void> {
   await exec(
     `INSERT INTO directory_view_policies (${DIRECTORY_POLICY_COLUMNS})
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (org_id, subject_kind, subject_id)
      DO UPDATE SET
        mode = EXCLUDED.mode,
+       priority = EXCLUDED.priority,
        revision = EXCLUDED.revision,
        updated_at = EXCLUDED.updated_at,
        updated_by = EXCLUDED.updated_by`,
@@ -1614,11 +1771,47 @@ async function putDirectoryPolicyOn(exec: Exec, policy: DirectoryViewPolicy): Pr
       policy.subjectKind,
       policy.subjectId,
       policy.mode,
+      policy.priority,
       policy.revision,
       policy.createdAt,
       policy.updatedAt,
       policy.updatedBy,
     ],
+  );
+}
+
+async function listGroupSubjectsOn(exec: Exec, orgId: string, groupId?: string): Promise<AccessGroupSubject[]> {
+  const res = await exec(
+    `SELECT ${GROUP_SUBJECT_COLUMNS}
+       FROM access_group_subjects
+      WHERE org_id = $1${groupId === undefined ? "" : " AND group_id = $2"}
+      ORDER BY group_id, subject_kind, subject_id`,
+    groupId === undefined ? [orgId] : [orgId, groupId],
+  );
+  return res.rows.map(rowToGroupSubject);
+}
+
+async function putGroupSubjectOn(exec: Exec, subject: AccessGroupSubject): Promise<void> {
+  await exec(
+    `INSERT INTO access_group_subjects (${GROUP_SUBJECT_COLUMNS})
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (org_id, group_id, subject_kind, subject_id)
+     DO UPDATE SET created_at = EXCLUDED.created_at, created_by = EXCLUDED.created_by`,
+    [subject.orgId, subject.groupId, subject.subjectKind, subject.subjectId, subject.createdAt, subject.createdBy],
+  );
+}
+
+async function removeGroupSubjectOn(
+  exec: Exec,
+  orgId: string,
+  groupId: string,
+  subjectKind: AccessGroupSubjectKind,
+  subjectId: string,
+): Promise<void> {
+  await exec(
+    `DELETE FROM access_group_subjects
+      WHERE org_id = $1 AND group_id = $2 AND subject_kind = $3 AND subject_id = $4`,
+    [orgId, groupId, subjectKind, subjectId],
   );
 }
 
@@ -1868,7 +2061,15 @@ async function getUserOn(exec: Exec, orgId: string, principalId: string): Promis
 
 async function findUserByEmailOn(exec: Exec, orgId: string, email: string): Promise<OrganizationUser | null> {
   const res = await exec(
-    `SELECT ${USER_COLUMNS} FROM organization_users WHERE org_id = $1 AND lower(email) = lower($2)`,
+    `SELECT ${USER_COLUMNS} FROM organization_users WHERE org_id = $1 AND (lower(email) = lower($2) OR lower(invited_email) = lower($2))`,
+    [orgId, email],
+  );
+  return res.rows[0] ? rowToUser(res.rows[0]) : null;
+}
+
+async function findUserByInvitedEmailOn(exec: Exec, orgId: string, email: string): Promise<OrganizationUser | null> {
+  const res = await exec(
+    `SELECT ${USER_COLUMNS} FROM organization_users WHERE org_id = $1 AND lower(invited_email) = lower($2)`,
     [orgId, email],
   );
   return res.rows[0] ? rowToUser(res.rows[0]) : null;
@@ -2061,7 +2262,11 @@ async function unitImpactOn(exec: Exec, orgId: string, unitId: string): Promise<
               OR grant_row.grantee_scope_id = 'org-unit:' || $2))
         + (SELECT count(*) FROM skill_access_policies policy
           WHERE policy.org_id = $1
-            AND policy.owner_scope_id = 'org-unit:' || $2)) AS access_grants`,
+            AND policy.owner_scope_id = 'org-unit:' || $2)
+        + (SELECT count(*) FROM access_group_subjects subject
+          WHERE subject.org_id = $1
+            AND subject.subject_kind = 'org_unit'
+            AND subject.subject_id = $2)) AS access_grants`,
     [orgId, unitId],
   );
   return {
@@ -2184,13 +2389,17 @@ export function createPostgresOrganizationStore(
   connectionString: string,
   opts: { auditLog?: PostgresAuditLog; exclusiveOrgId?: string } = {},
 ): OrganizationStore {
-  const pg = createPgPool(connectionString, [
-    ...SCHEMA_SQL,
-    ...(opts.exclusiveOrgId ? [organizationDatabaseOwnerBindingSql(opts.exclusiveOrgId)] : []),
-    ...(opts.exclusiveOrgId ? [skillAccessColumnMigrationSql(opts.exclusiveOrgId)] : []),
-    ORGANIZATION_CLOSURE_MIGRATION_SQL,
-    ORGANIZATION_LEGACY_RUNTIME_ELIGIBILITY_SQL,
-    ORGANIZATION_IDENTITY_PROJECTION_MIGRATION_SQL,
+  const pg = createPgPool(connectionString, MIGRATIONS, [
+    {
+      id: "fork/organization/runtime-maintenance",
+      statements: [
+        ...(opts.exclusiveOrgId ? [organizationDatabaseOwnerBindingSql(opts.exclusiveOrgId)] : []),
+        ...(opts.exclusiveOrgId ? [skillAccessColumnMigrationSql(opts.exclusiveOrgId)] : []),
+        ORGANIZATION_CLOSURE_MIGRATION_SQL,
+        ORGANIZATION_LEGACY_RUNTIME_ELIGIBILITY_SQL,
+        ORGANIZATION_IDENTITY_PROJECTION_MIGRATION_SQL,
+      ],
+    },
   ]);
   function assertExclusiveOrg(orgId: string): void {
     if (opts.exclusiveOrgId && orgId !== opts.exclusiveOrgId) {
@@ -2212,6 +2421,9 @@ export function createPostgresOrganizationStore(
     },
     async getUser(orgId, principalId) {
       return getUserOn(pg.query, orgId, principalId);
+    },
+    async findUserByInvitedEmail(orgId, email) {
+      return findUserByInvitedEmailOn(pg.query, orgId, email);
     },
     async findUserByEmail(orgId, email) {
       return findUserByEmailOn(pg.query, orgId, email);
@@ -2488,14 +2700,26 @@ export function createPostgresOrganizationStore(
       );
       return rows.map(rowToGroupMember);
     },
+    async listGroupSubjects(orgId, groupId) {
+      return listGroupSubjectsOn(pg.query, orgId, groupId);
+    },
     async putGroupMember(m) {
       await mutate(m.orgId, (exec) => putGroupMemberOn(exec, m));
     },
     async removeGroupMember(orgId, groupId, principalId) {
       await mutate(orgId, (exec) => removeGroupMemberOn(exec, orgId, groupId, principalId));
     },
+    async putGroupSubject(subject) {
+      await mutate(subject.orgId, (exec) => putGroupSubjectOn(exec, subject));
+    },
+    async removeGroupSubject(orgId, groupId, subjectKind, subjectId) {
+      await mutate(orgId, (exec) => removeGroupSubjectOn(exec, orgId, groupId, subjectKind, subjectId));
+    },
     async getDirectoryPolicy(orgId, subjectKind, subjectId) {
       return getDirectoryPolicyOn(pg.query, orgId, subjectKind, subjectId);
+    },
+    async listDirectoryPolicies(orgId) {
+      return listDirectoryPoliciesOn(pg.query, orgId);
     },
     async listDirectoryRoots(orgId, policyId) {
       return listDirectoryRootsOn(pg.query, orgId, policyId);
@@ -2562,6 +2786,10 @@ export function createPostgresOrganizationStore(
           getUser: (scopeOrgId, principalId) => {
             assertOrg(scopeOrgId);
             return getUserOn(exec, scopeOrgId, principalId);
+          },
+          findUserByInvitedEmail: (scopeOrgId, email) => {
+            assertOrg(scopeOrgId);
+            return findUserByInvitedEmailOn(exec, scopeOrgId, email);
           },
           findUserByEmail: (scopeOrgId, email) => {
             assertOrg(scopeOrgId);
@@ -2668,6 +2896,10 @@ export function createPostgresOrganizationStore(
             assertOrg(scopeOrgId);
             return listGroupMembersForUserOn(exec, scopeOrgId, principalId);
           },
+          listGroupSubjects: (scopeOrgId, groupId) => {
+            assertOrg(scopeOrgId);
+            return listGroupSubjectsOn(exec, scopeOrgId, groupId);
+          },
           putGroup: (g) => {
             assertOrg(g.orgId);
             return putGroupOn(exec, g);
@@ -2680,9 +2912,21 @@ export function createPostgresOrganizationStore(
             assertOrg(scopeOrgId);
             return removeGroupMemberOn(exec, scopeOrgId, groupId, principalId);
           },
+          putGroupSubject: (subject) => {
+            assertOrg(subject.orgId);
+            return putGroupSubjectOn(exec, subject);
+          },
+          removeGroupSubject: (scopeOrgId, groupId, subjectKind, subjectId) => {
+            assertOrg(scopeOrgId);
+            return removeGroupSubjectOn(exec, scopeOrgId, groupId, subjectKind, subjectId);
+          },
           getDirectoryPolicy: (scopeOrgId, subjectKind, subjectId) => {
             assertOrg(scopeOrgId);
             return getDirectoryPolicyOn(exec, scopeOrgId, subjectKind, subjectId);
+          },
+          listDirectoryPolicies: (scopeOrgId) => {
+            assertOrg(scopeOrgId);
+            return listDirectoryPoliciesOn(exec, scopeOrgId);
           },
           putDirectoryPolicy: (policy) => {
             assertOrg(policy.orgId);

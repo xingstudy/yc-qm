@@ -6,6 +6,7 @@ import { errMessage } from "../util/errors.ts";
 
 export interface PostgresAuditLog extends AuditLog {
   pool(): Promise<Pool>;
+  close(): Promise<void>;
   recordInTransaction(client: PoolClient, e: AuditEvent): Promise<void>;
 }
 
@@ -54,7 +55,11 @@ function eventParams(e: AuditEvent): unknown[] {
 
 export function createPostgresAuditLog(connectionString: string): PostgresAuditLog {
   const pg = createPgPool(connectionString, [
-    `CREATE TABLE IF NOT EXISTS audit_log(
+    {
+      id: "admin/audit-log/0001",
+      expectedChecksum: "542f2a64d2814b329f2c1ad2eb8ed2728e8044b78efa6343eafb5598bc83cb1d",
+      statements: [
+        `CREATE TABLE IF NOT EXISTS audit_log(
         id BIGSERIAL PRIMARY KEY,
         at BIGINT NOT NULL,
         principal_id TEXT NOT NULL,
@@ -64,18 +69,11 @@ export function createPostgresAuditLog(connectionString: string): PostgresAuditL
         status TEXT,
         detail TEXT
       )`,
-    `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS idempotency_key TEXT`,
-    `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS org_id TEXT`,
-    `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS actor_kind TEXT`,
-    `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS request_id TEXT`,
-    `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS before_digest TEXT`,
-    `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS after_digest TEXT`,
-    `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS source TEXT`,
-    `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS result TEXT`,
-    `CREATE INDEX IF NOT EXISTS audit_log_by_at ON audit_log(at DESC)`,
-    `CREATE INDEX IF NOT EXISTS audit_log_by_scope_at ON audit_log(scope_label, at DESC)`,
-    `CREATE UNIQUE INDEX IF NOT EXISTS audit_log_by_idempotency_key ON audit_log(idempotency_key) WHERE idempotency_key IS NOT NULL`,
-    `DO $$
+        `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS idempotency_key TEXT`,
+        `CREATE INDEX IF NOT EXISTS audit_log_by_at ON audit_log(at DESC)`,
+        `CREATE INDEX IF NOT EXISTS audit_log_by_scope_at ON audit_log(scope_label, at DESC)`,
+        `CREATE UNIQUE INDEX IF NOT EXISTS audit_log_by_idempotency_key ON audit_log(idempotency_key) WHERE idempotency_key IS NOT NULL`,
+        `DO $$
       BEGIN
         PERFORM pg_advisory_xact_lock(hashtext('agent-platform:audit-log-migrate'));
         IF to_regclass('public.audit_events') IS NOT NULL
@@ -88,12 +86,35 @@ export function createPostgresAuditLog(connectionString: string): PostgresAuditL
           ORDER BY (json->>'at')::bigint ASC;
         END IF;
       END $$`,
+      ],
+    },
+    {
+      id: "admin/audit-log/0002",
+      statements: [`CREATE INDEX IF NOT EXISTS audit_log_by_action ON audit_log(action, at DESC)`],
+    },
+    {
+      id: "fork/audit-log/0001",
+      expectedChecksum: "84128b3e91145be968e1178b974c742a633af22bdf1c87b83727b5ae688b8d51",
+      statements: [
+        `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS org_id TEXT`,
+        `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS actor_kind TEXT`,
+        `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS request_id TEXT`,
+        `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS before_digest TEXT`,
+        `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS after_digest TEXT`,
+        `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS source TEXT`,
+        `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS result TEXT`,
+      ],
+    },
   ]);
   const { q } = pg;
 
   const pendingWrites = new Set<Promise<void>>();
   return {
     pool: pg.pool,
+    async close() {
+      await Promise.allSettled(pendingWrites);
+      await pg.close();
+    },
     record(e) {
       const write = q(`INSERT INTO audit_log(${COLS}) VALUES (${VALUES})`, eventParams(e))
         .then(() => undefined)
@@ -124,7 +145,7 @@ export function createPostgresAuditLog(connectionString: string): PostgresAuditL
       const rows = await q(`SELECT ${COLS} FROM audit_log ORDER BY at DESC, id DESC LIMIT $1`, [MAX]);
       return rows.map(rowToEvent).reverse();
     },
-    async tail({ limit, scopeLabel, action, since }) {
+    async tail({ limit, scopeLabel, action, since, resourceContains }) {
       await Promise.allSettled(pendingWrites);
       const params: unknown[] = [];
       const conds: string[] = [];
@@ -140,6 +161,10 @@ export function createPostgresAuditLog(connectionString: string): PostgresAuditL
         params.push(since);
         conds.push(`at >= $${params.length}`);
       }
+      if (resourceContains !== undefined) {
+        params.push(resourceContains);
+        conds.push(`strpos(resource, $${params.length}) > 0`);
+      }
       const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
       params.push(limit);
       const rows = await q(
@@ -147,6 +172,14 @@ export function createPostgresAuditLog(connectionString: string): PostgresAuditL
         params,
       );
       return rows.map(rowToEvent);
+    },
+    async tallyByResource(action) {
+      await Promise.allSettled(pendingWrites);
+      const rows = await q(
+        `SELECT resource, count(*)::bigint AS n FROM audit_log WHERE action = $1 GROUP BY resource`,
+        [action],
+      );
+      return new Map(rows.map((r) => [String(r.resource), Number(r.n)]));
     },
   };
 }

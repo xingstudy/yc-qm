@@ -1,5 +1,9 @@
 import type { OrganizationStore, OrgUnit } from "../organization/organization-store.ts";
 import { organizationAccessSubjectFromScope } from "../authorization/organization-access-subject.ts";
+import {
+  effectiveAccessGroupIdsForUser,
+  effectiveOrganizationUnitIdsForUser,
+} from "../authorization/access-group-membership.ts";
 
 export async function organizationGovernanceAncestors(
   store: OrganizationStore,
@@ -9,10 +13,10 @@ export async function organizationGovernanceAncestors(
   const subject = organizationAccessSubjectFromScope(scope);
   if (!subject || subject.kind === "access_group") return [];
   if (subject.kind === "user" && (await store.getUser(orgId, subject.id))?.status !== "active") return [];
-  const [units, directUnits, directGroups] = await Promise.all([
+  const [units, effectiveUnits, effectiveGroups] = await Promise.all([
     store.listUnits(orgId),
-    subject.kind === "user" ? store.listDirectUnitIdsForUser(orgId, subject.id) : [subject.id],
-    subject.kind === "user" ? store.listDirectGroupIdsForUser(orgId, subject.id) : [],
+    subject.kind === "user" ? effectiveOrganizationUnitIdsForUser(store, orgId, subject.id) : new Set([subject.id]),
+    subject.kind === "user" ? effectiveAccessGroupIdsForUser(store, orgId, subject.id) : new Set<string>(),
   ]);
   const byId = new Map(units.filter((unit) => unit.status === "active").map((unit) => [unit.id, unit]));
   const included = new Map<string, OrgUnit>();
@@ -26,7 +30,7 @@ export async function organizationGovernanceAncestors(
     }
     return visited.size;
   };
-  for (const id of directUnits) {
+  for (const id of effectiveUnits) {
     let current = byId.get(id);
     const visited = new Set<string>();
     while (current) {
@@ -36,7 +40,7 @@ export async function organizationGovernanceAncestors(
       current = current.parentId ? byId.get(current.parentId) : undefined;
     }
   }
-  const groups = await Promise.all(directGroups.map((id) => store.getGroup(orgId, id)));
+  const groups = await Promise.all([...effectiveGroups].map((id) => store.getGroup(orgId, id)));
   return [
     ...[...included.values()]
       .sort((a, b) => depth(a) - depth(b) || a.id.localeCompare(b.id))

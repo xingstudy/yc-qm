@@ -1,3 +1,4 @@
+import { setProviderBaseUrls } from "../src/model/provider-endpoints.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -91,6 +92,7 @@ test("the curated catalog contains only current model families", () => {
   assert.deepEqual(
     SELECTABLE_BASE_MODELS.map((model) => model.id),
     [
+      "claude-fable-5-1",
       "claude-fable-5",
       "claude-opus-5",
       "claude-opus-4-8",
@@ -99,10 +101,12 @@ test("the curated catalog contains only current model families", () => {
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
+      "gpt-6-astra",
       "openrouter/auto",
     ],
   );
   assert.equal(getRequiredModel("gpt-5.6-sol").contextWindow, 1_050_000);
+  assert.equal(getRequiredModel("gpt-6-astra").contextWindow, 1_050_000);
 });
 
 test("auxiliary models come from the configured base model's own provider", () => {
@@ -112,6 +116,7 @@ test("auxiliary models come from the configured base model's own provider", () =
     "the deployment default resolves an Anthropic auxiliary",
   );
   assert.equal(auxiliaryModelFor("claude-opus-4-8"), "claude-haiku-4-5");
+  assert.equal(auxiliaryModelFor("claude-fable-5-1"), "claude-haiku-4-5");
   assert.equal(auxiliaryModelFor("claude-fable-5"), "claude-haiku-4-5");
   assert.equal(
     auxiliaryModelFor("gpt-5.6-sol"),
@@ -165,14 +170,39 @@ test("an auxiliary is never less serviceable than the base model it was derived 
 });
 
 test("context token budget is half of each model's real input room", () => {
+  const fable51 = getRequiredModel("claude-fable-5-1");
+  assert.equal(fable51.contextWindow, 1_000_000);
+  assert.equal(fable51.maxTokens, 128_000);
+  assert.deepEqual(fable51.cost, {
+    input: 10,
+    output: 50,
+    cacheRead: 0.25,
+    cacheWrite: 12.5,
+    tiers: undefined,
+  });
+  assert.equal(contextTokenBudgetForModel("claude-fable-5-1"), 150_000, "a 1M window is capped, not halved");
   assert.equal(getRequiredModel("claude-fable-5").contextWindow, 1_000_000);
-  assert.equal(contextTokenBudgetForModel("claude-fable-5"), Math.floor((1_000_000 - 128_000) * 0.5));
-  const sol = contextTokenBudgetForModel("gpt-5.6-sol");
-  assert.equal(sol, Math.floor((1_050_000 - 128_000) * 0.5));
-  assert.ok(sol !== undefined && sol < 1_050_000 * 0.5, "budget stays below half the window");
+  assert.equal(contextTokenBudgetForModel("claude-fable-5"), 150_000);
+  assert.equal(contextTokenBudgetForModel("gpt-5.6-sol"), 150_000);
   assert.equal(contextTokenBudgetForModel("claude-not-a-real-model"), undefined);
   for (const m of SELECTABLE_BASE_MODELS) {
     const budget = contextTokenBudgetForModel(m.id);
     assert.ok(budget !== undefined && budget >= 60_000, `${m.id} budget ${budget} suspiciously small`);
+    assert.ok(budget <= 150_000, `${m.id} budget ${budget} exceeds the cap`);
+  }
+});
+
+test("personal models retain canonical endpoints when org endpoints are overridden", () => {
+  const ids = ["claude-opus-5", "gpt-5.6-sol", "gpt-6-astra"];
+  const canonical = new Map(ids.map((id) => [id, getRequiredModel(id).baseUrl]));
+  setProviderBaseUrls({ anthropic: "https://org.invalid/anthropic", openai: "https://org.invalid/openai" });
+  try {
+    for (const id of ids) {
+      assert.match(getRequiredModel(id).baseUrl, /^https:\/\/org\.invalid\//);
+      assert.equal(getRequiredModel(id, false).baseUrl, canonical.get(id));
+      assert.equal(resolveModel(id, false)?.baseUrl, canonical.get(id));
+    }
+  } finally {
+    setProviderBaseUrls({});
   }
 });

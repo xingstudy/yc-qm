@@ -31,6 +31,10 @@ export function allConversations(): Conversation[] {
   return [...live];
 }
 
+export function isLiveConversation(conv: Conversation): boolean {
+  return live.has(conv);
+}
+
 export function mainConversation(): Conversation {
   main ??= createConversation({
     pane: false,
@@ -48,15 +52,29 @@ export function mainConversation(): Conversation {
   return main;
 }
 
-export function paneDensity(el: HTMLElement): DensityTier {
+export function paneDensity(el: HTMLElement): DensityTier | null {
   const r = el.getBoundingClientRect();
-  return densityTierFor(r.width || el.clientWidth, r.height || el.clientHeight);
+  const width = r.width || el.clientWidth;
+  const height = r.height || el.clientHeight;
+  return width > 0 && height > 0 ? densityTierFor(width, height) : null;
 }
 
 let exitCanvas: () => void = () => {};
 
 export function onExitCanvas(fn: () => void): void {
   exitCanvas = fn;
+}
+
+let inboxItemHandler: ((event: { loopId: string; itemId: string; op: string }) => void) | null = null;
+
+export function onInboxItemEvent(fn: (event: { loopId: string; itemId: string; op: string }) => void): void {
+  inboxItemHandler = fn;
+}
+
+let inboxResyncHandler: (() => void) | null = null;
+
+export function onInboxResync(fn: () => void): void {
+  inboxResyncHandler = fn;
 }
 
 let deliveryStreamOpen = false;
@@ -84,6 +102,8 @@ export function ensureDeliveryStream(): void {
       if (event.state === "working") for (const conv of live) conv.resumeIfIdle();
     },
     () => void refreshSessions({ silent: true }),
+    (event) => inboxItemHandler?.(event),
+    () => inboxResyncHandler?.(),
   );
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") return;

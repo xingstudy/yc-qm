@@ -288,11 +288,18 @@ export function withDelete(destination: Destination, del: { messageTs: string } 
 }
 
 export function withThread(destination: Destination, threadTs: string | undefined): Destination {
-  return threadTs ? { ...destination, target: `${destination.target}:${threadTs}` } : destination;
+  if (!threadTs) return destination;
+  return destination.type === "principal"
+    ? { ...destination, threadTs }
+    : { ...destination, target: `${destination.target}:${threadTs}` };
 }
 
 export function withEdit(destination: Destination, editRef: string | undefined): Destination {
   return editRef ? { ...destination, editRef } : destination;
+}
+
+export function withWebTranscriptText(destination: Destination): Destination {
+  return destination.type === "web" ? { ...destination, webTranscript: { kind: "reply" } } : destination;
 }
 
 export async function reachEnqueue(input: ReachEnqueueInput): Promise<Delivery> {

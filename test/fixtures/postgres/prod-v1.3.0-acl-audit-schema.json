@@ -1,0 +1,38 @@
+{
+  "revision": "bd1cb20411a69ff7badd95da4d482961b07d4b7b",
+  "schemas": {
+    "acl": {
+      "source": "src/acl/postgres-grant-store.ts",
+      "statements": [
+        "CREATE TABLE IF NOT EXISTS acl_grants(\n        org_id          TEXT,\n        owner_scope_id   TEXT NOT NULL,\n        path             TEXT NOT NULL,\n        grantee_scope_id TEXT NOT NULL,\n        permission       TEXT NOT NULL,\n        granted_by       TEXT NOT NULL,\n        granted_at       BIGINT,\n        PRIMARY KEY (owner_scope_id, path, grantee_scope_id, permission)\n      )",
+        "ALTER TABLE acl_grants ADD COLUMN IF NOT EXISTS org_id TEXT",
+        "ALTER TABLE acl_grants ADD COLUMN IF NOT EXISTS granted_at BIGINT",
+        "DO $do$\n      BEGIN\n        UPDATE acl_grants SET org_id = 'fixture' WHERE org_id IS NULL;\n        UPDATE acl_grants SET granted_at = 0 WHERE granted_at IS NULL;\n      END\n      $do$",
+        "CREATE UNIQUE INDEX IF NOT EXISTS acl_grants_legacy_identity\n      ON acl_grants(owner_scope_id, path, grantee_scope_id, permission)",
+        "CREATE TABLE IF NOT EXISTS acl_grants_version(\n        only_row BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (only_row),\n        v        BIGINT NOT NULL\n      )",
+        "INSERT INTO acl_grants_version(only_row, v) VALUES (TRUE, 0) ON CONFLICT (only_row) DO NOTHING",
+        "CREATE OR REPLACE FUNCTION acl_grants_bump_version() RETURNS trigger LANGUAGE plpgsql AS $fn$\n      BEGIN\n        INSERT INTO acl_grants_version(only_row, v) VALUES (TRUE, 1)\n        ON CONFLICT (only_row) DO UPDATE SET v = acl_grants_version.v + 1;\n        RETURN NULL;\n      END\n      $fn$",
+        "DROP TRIGGER IF EXISTS acl_grants_bump ON acl_grants",
+        "CREATE TRIGGER acl_grants_bump\n      AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON acl_grants\n      FOR EACH STATEMENT EXECUTE FUNCTION acl_grants_bump_version()"
+      ]
+    },
+    "audit": {
+      "source": "src/admin/postgres-audit-log.ts",
+      "statements": [
+        "CREATE TABLE IF NOT EXISTS audit_log(\n        id BIGSERIAL PRIMARY KEY,\n        at BIGINT NOT NULL,\n        principal_id TEXT NOT NULL,\n        action TEXT NOT NULL,\n        resource TEXT NOT NULL,\n        scope_label TEXT NOT NULL,\n        status TEXT,\n        detail TEXT\n      )",
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS idempotency_key TEXT",
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS org_id TEXT",
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS actor_kind TEXT",
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS request_id TEXT",
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS before_digest TEXT",
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS after_digest TEXT",
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS source TEXT",
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS result TEXT",
+        "CREATE INDEX IF NOT EXISTS audit_log_by_at ON audit_log(at DESC)",
+        "CREATE INDEX IF NOT EXISTS audit_log_by_scope_at ON audit_log(scope_label, at DESC)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS audit_log_by_idempotency_key ON audit_log(idempotency_key) WHERE idempotency_key IS NOT NULL",
+        "DO $$\n      BEGIN\n        PERFORM pg_advisory_xact_lock(hashtext('agent-platform:audit-log-migrate'));\n        IF to_regclass('public.audit_events') IS NOT NULL\n           AND NOT EXISTS (SELECT 1 FROM audit_log LIMIT 1) THEN\n          INSERT INTO audit_log (at, principal_id, action, resource, scope_label, status, detail)\n          SELECT (json->>'at')::bigint, json->>'principalId', json->>'action', json->>'resource',\n                 json->>'scopeLabel', json->>'status', json->>'detail'\n          FROM audit_events\n          WHERE json ? 'at'\n          ORDER BY (json->>'at')::bigint ASC;\n        END IF;\n      END $$"
+      ]
+    }
+  }
+}

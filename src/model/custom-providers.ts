@@ -1,5 +1,6 @@
 import { normalizeProviderBaseUrl, parseProviderBaseUrl, PROVIDER_IDS } from "./provider-endpoints.ts";
 
+import { modelIdReserved } from "./pi-models.ts";
 export const CUSTOM_PROVIDER_PROTOCOLS = ["openai", "openai-responses", "anthropic"] as const;
 export type CustomProviderProtocol = (typeof CUSTOM_PROVIDER_PROTOCOLS)[number];
 
@@ -56,6 +57,7 @@ export function validateCustomProviderSpec(spec: CustomProviderSpec): void {
     if (!m.id?.trim() || m.id.length > 200) throw new Error("every model needs an id (<=200 chars)");
     if (m.name !== undefined && (typeof m.name !== "string" || m.name.length > 200))
       throw new Error(`model "${m.id}": name must be a string of 200 chars or fewer`);
+    if (modelIdReserved(`${spec.id}/${m.id}`)) throw new Error(`model id "${m.id}" is already registered`);
     if (seen.has(m.id)) throw new Error(`duplicate model id "${m.id}"`);
     seen.add(m.id);
     for (const [field, v] of [
@@ -126,6 +128,7 @@ export function setCustomProviders(specs: CustomProviderSpec[]): void {
       models: spec.models.map((model) => ({ ...model })),
     }))
     .sort((a, b) => a.id.localeCompare(b.id));
+  if (JSON.stringify(normalized) === JSON.stringify(providers)) return;
   const next = new Map<string, CustomRuntimeModel>();
   const qualified = new Map<string, CustomRuntimeModel>();
   for (const spec of normalized) {

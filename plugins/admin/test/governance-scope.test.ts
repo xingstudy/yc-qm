@@ -12,6 +12,7 @@ function picker(scope: string, rows: unknown[]) {
     title: "",
     label: "",
     children: [] as any[],
+    style: {},
     appendChild(child: unknown) {
       this.children.push(child);
     },
@@ -87,6 +88,7 @@ function runtimeSettings() {
     value: "",
     textContent: "",
     children: [] as any[],
+    style: {},
     hidden: false,
     classList: {
       toggle(name: string, hidden: boolean) {
@@ -220,7 +222,7 @@ test("adding and removing allowed model chips marks the section ready to save", 
   const calls: string[] = [];
   const context = vm.createContext({
     webuiModelIds: [] as string[],
-    addInput: { value: "model-a", setCustomValidity: () => undefined },
+    addSelect: { value: "model-a", setCustomValidity: () => undefined },
     catalogModels: [{ id: "model-a", name: "Model A" }],
     renderChips: () => undefined,
     syncDefault: () => undefined,
@@ -228,14 +230,14 @@ test("adding and removing allowed model chips marks the section ready to save", 
     id: "model-a",
   });
   const addStart = html.indexOf("          const addModel = () => {");
-  const addEnd = html.indexOf("          addInput.onchange", addStart);
+  const addEnd = html.indexOf("          addSelect.onchange", addStart);
   assert.ok(addStart > 0 && addEnd > addStart);
   vm.runInContext(html.slice(addStart, addEnd) + "\naddModel();", context);
   assert.equal(vm.runInContext('webuiModelIds.join(",")', context), "model-a");
   assert.deepEqual(calls, ["webui-models"]);
   const removeStart = html.indexOf(
     "              x.onclick = () => {",
-    html.indexOf('const chips = $("webui-models-chips")'),
+    html.indexOf('const list = $("webui-models-list")'),
   );
   const removeEnd = html.indexOf("              };", removeStart);
   assert.ok(removeStart > 0 && removeEnd > removeStart);
@@ -255,7 +257,7 @@ test("model entry rejects unavailable bare IDs and ambiguous provider names", ()
     let error = "";
     const context = vm.createContext({
       webuiModelIds: [],
-      addInput: {
+      addSelect: {
         value: raw,
         setCustomValidity: (message: string) => {
           error = message;
@@ -271,9 +273,9 @@ test("model entry rejects unavailable bare IDs and ambiguous provider names", ()
       updateSectionDirty: () => assert.fail("unavailable model must not change the saved list"),
     });
     const start = html.indexOf("          const addModel = () => {");
-    const end = html.indexOf("          addInput.oninput", start);
+    const end = html.indexOf("          addSelect.onchange", start);
     vm.runInContext(html.slice(start, end) + "\naddModel();", context);
-    assert.match(error, /full provider\/model ID/);
+    assert.equal(error, "");
     assert.equal(vm.runInContext("webuiModelIds.length", context), 0);
   }
 });

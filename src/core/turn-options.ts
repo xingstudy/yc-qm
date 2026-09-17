@@ -1,5 +1,5 @@
 import {
-  DEFAULT_WEBUI_MODEL_IDS,
+  defaultWebuiModelIds,
   THINKING_LEVELS,
   serviceableModelIds,
   modelServiceable,
@@ -34,22 +34,12 @@ export function turnModelOptions(input: { triggered?: boolean; thinkingLevel?: s
   };
 }
 
-export function webTurnRuntimeModelRefusal(
-  runtimeModelId: string,
-  orgModelId: string,
-  configuredWebuiModels: readonly string[] | null | undefined,
-): string | null {
-  if (!configuredWebuiModels?.length) return null;
-  if (runtimeModelId === orgModelId) return null;
-  return configuredWebuiModels.includes(runtimeModelId) ? null : "that model is not enabled for the web UI";
-}
-
 export function validateWebTurnModelOptions(
   input: { model?: string; thinkingLevel?: string },
   enabledModels: readonly string[] | null,
   providers: ModelProviderAvailability = ALL_PROVIDERS_AVAILABLE,
 ): string | null {
-  const enabled = enabledModels?.length ? enabledModels : DEFAULT_WEBUI_MODEL_IDS;
+  const enabled = enabledModels ?? defaultWebuiModelIds();
   const allowedModels = serviceableModelIds(enabled, providers);
   if (input.model && !allowedModels.includes(input.model)) {
     return resolveModel(input.model) && !modelServiceable(input.model, providers)

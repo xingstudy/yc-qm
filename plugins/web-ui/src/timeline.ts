@@ -1,3 +1,4 @@
+import { postCallText, postResultOk } from "./surface-post.ts";
 import type { PendingApproval, ToolActivity, WorkBlock } from "./core-bridge.ts";
 
 export interface ToolPayload {
@@ -8,6 +9,7 @@ export interface ToolPayload {
   name?: string;
   url?: string;
   query?: string;
+  seq?: number;
   count?: number;
   found?: boolean;
   blocked?: string;
@@ -18,8 +20,12 @@ export interface ToolPayload {
   stderr?: string;
   code?: number;
   timedOut?: boolean;
+  isError?: boolean;
+  result?: string;
+  unscreened?: boolean;
   action?: string;
   process_id?: string;
+  sandbox_id?: string | null;
   monitor_id?: string;
   added?: number;
 }
@@ -44,18 +50,44 @@ function isTerminalWorkStatus(status: WorkBlock["status"]): boolean {
 
 export type ToolRowKind = "running" | "ok" | "failed" | "attempted" | "approval";
 
+export function toolCategory(payload: ToolPayload): string {
+  if (payload.tool !== "sandbox") return payload.tool ?? "unknown";
+  if (payload.action === "exec") return "execute";
+  if (
+    [
+      "start_process",
+      "read_process",
+      "write_stdin",
+      "signal_process",
+      "list_processes",
+      "watch_process",
+      "unwatch_process",
+    ].includes(payload.action ?? "")
+  )
+    return "background";
+  return "sandbox";
+}
+
+export function toolExecutionOutput(result: ToolPayload): string | null {
+  if (result.unscreened && typeof result.result === "string") return result.result;
+  if (typeof result.stdout === "string" || typeof result.stderr === "string")
+    return [result.stdout ?? "", result.stderr ? `[stderr]\n${result.stderr}` : ""].filter(Boolean).join("\n");
+  return null;
+}
+
 export function toolRowKind(row: ToolRowModel, status: WorkBlock["status"]): ToolRowKind {
   const result = (row.result?.payload ?? {}) as ToolPayload;
-  const tool = ((row.call?.payload ?? row.result?.payload ?? {}) as ToolPayload).tool ?? "unknown";
+  const tool = toolCategory({ ...result, ...((row.call?.payload ?? {}) as ToolPayload) });
   if (result.blocked === "needs_approval") return "approval";
   if (!row.result) {
     if (!isTerminalWorkStatus(status)) return "running";
     return status === "failed" ? "failed" : "attempted";
   }
   const failed =
+    result.isError === true ||
     !!result.error ||
     result.denied === true ||
-    (tool === "execute" && typeof result.code === "number" && result.code !== 0);
+    (tool === "execute" && (result.timedOut === true || (typeof result.code === "number" && result.code !== 0)));
   return failed ? "failed" : "ok";
 }
 
@@ -64,10 +96,29 @@ function callIdOf(a: ToolActivity): string | undefined {
   return typeof id === "string" && id ? id : undefined;
 }
 
+export function postSpeechText(row: ToolRowModel, allowInFlight = false): string | null {
+  const text = postCallText(row.call?.payload);
+  if (!text?.trim()) return null;
+  if (row.result) return postResultOk(row.result.payload) ? text : null;
+  return allowInFlight && !row.approval && !row.pending ? text : null;
+}
+
 function orphanCallSignature(row: ToolRowModel): string | null {
   if (!row.call || row.result || row.approval) return null;
   const p = (row.call.payload ?? {}) as ToolPayload;
-  return [p.tool ?? "unknown", p.command ?? "", p.path ?? "", p.name ?? "", p.url ?? "", p.query ?? ""].join("");
+  return [
+    p.tool ?? "unknown",
+    p.action ?? "",
+    p.sandbox_id ?? "",
+    p.process_id ?? "",
+    p.monitor_id ?? "",
+    p.command ?? "",
+    p.path ?? "",
+    p.name ?? "",
+    p.url ?? "",
+    p.query ?? "",
+    p.seq !== undefined ? String(p.seq) : "",
+  ].join("");
 }
 
 const timelineMemo = new WeakMap<

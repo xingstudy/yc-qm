@@ -13,7 +13,7 @@ import {
   type DirectoryStore,
 } from "./directory-store.ts";
 
-const SCHEMA = [
+const INITIAL_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS directory_members(
     org_id          TEXT NOT NULL,
     principal_id    TEXT NOT NULL,
@@ -42,8 +42,6 @@ const SCHEMA = [
     name       TEXT NOT NULL,
     name_lc    TEXT NOT NULL,
     is_private BOOLEAN NOT NULL DEFAULT FALSE,
-    is_external BOOLEAN NOT NULL DEFAULT FALSE,
-    roster_known BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (org_id, channel_id)
   )`,
   `CREATE INDEX IF NOT EXISTS directory_channels_name
@@ -62,15 +60,6 @@ const SCHEMA = [
     principal_id TEXT NOT NULL,
     PRIMARY KEY (org_id, group_id, principal_id)
   )`,
-  `CREATE TABLE IF NOT EXISTS directory_groups(
-    org_id       TEXT NOT NULL,
-    group_id     TEXT NOT NULL,
-    roster_known BOOLEAN NOT NULL DEFAULT FALSE,
-    PRIMARY KEY (org_id, group_id)
-  )`,
-  `INSERT INTO directory_groups (org_id, group_id, roster_known)
-    SELECT DISTINCT org_id, group_id, TRUE FROM directory_group_members
-    ON CONFLICT (org_id, group_id) DO NOTHING`,
   `CREATE INDEX IF NOT EXISTS directory_group_members_principal
     ON directory_group_members (org_id, principal_id, group_id)`,
   `CREATE TABLE IF NOT EXISTS directory_sync(
@@ -96,9 +85,14 @@ const SCHEMA = [
       ALTER TABLE directory_sync ADD COLUMN channel_members_synced BOOLEAN NOT NULL DEFAULT FALSE;
     END IF;
   END $$`,
-  `ALTER TABLE directory_sync ADD COLUMN IF NOT EXISTS members_synced_at BIGINT`,
-  `ALTER TABLE directory_sync ADD COLUMN IF NOT EXISTS channels_synced_at BIGINT`,
-  `ALTER TABLE directory_sync ADD COLUMN IF NOT EXISTS groups_synced_at BIGINT`,
+  `CREATE TABLE IF NOT EXISTS directory_meta(
+    org_id        TEXT PRIMARY KEY,
+    workspace_url TEXT,
+    updated_at    BIGINT NOT NULL
+  )`,
+];
+
+const EXTERNAL_ROSTER_SCHEMA = [
   `ALTER TABLE directory_channels ADD COLUMN IF NOT EXISTS is_external BOOLEAN NOT NULL DEFAULT FALSE`,
   `DO $$
   BEGIN
@@ -111,11 +105,43 @@ const SCHEMA = [
       FROM directory_sync s WHERE c.org_id = s.org_id AND s.channel_members_synced = TRUE;
     END IF;
   END $$`,
-  `CREATE TABLE IF NOT EXISTS directory_meta(
-    org_id        TEXT PRIMARY KEY,
-    workspace_url TEXT,
-    updated_at    BIGINT NOT NULL
+  `CREATE TABLE IF NOT EXISTS directory_groups(
+    org_id       TEXT NOT NULL,
+    group_id     TEXT NOT NULL,
+    roster_known BOOLEAN NOT NULL DEFAULT FALSE,
+    PRIMARY KEY (org_id, group_id)
   )`,
+  `INSERT INTO directory_groups (org_id, group_id, roster_known)
+    SELECT DISTINCT org_id, group_id, TRUE FROM directory_group_members
+    ON CONFLICT (org_id, group_id) DO NOTHING`,
+];
+
+const SCOPED_COLUMN_REPAIR = [
+  `DO $$
+  BEGIN
+    IF to_regclass('directory_members') IS NOT NULL THEN
+      ALTER TABLE directory_members ADD COLUMN IF NOT EXISTS slack_id TEXT;
+    END IF;
+    IF to_regclass('directory_sync') IS NOT NULL THEN
+      ALTER TABLE directory_sync ADD COLUMN IF NOT EXISTS groups_hash TEXT;
+      ALTER TABLE directory_sync ADD COLUMN IF NOT EXISTS channel_members_synced BOOLEAN NOT NULL DEFAULT FALSE;
+    END IF;
+    IF to_regclass('directory_channels') IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('directory_channels') AND attname = 'roster_known' AND NOT attisdropped
+    ) THEN
+      ALTER TABLE directory_channels ADD COLUMN roster_known BOOLEAN NOT NULL DEFAULT FALSE;
+      IF to_regclass('directory_sync') IS NOT NULL THEN
+        UPDATE directory_channels c SET roster_known = TRUE
+        FROM directory_sync s WHERE c.org_id = s.org_id AND s.channel_members_synced = TRUE;
+      END IF;
+    END IF;
+  END $$`,
+];
+
+const SYNC_STAMP_SCHEMA = [
+  `ALTER TABLE directory_sync ADD COLUMN IF NOT EXISTS members_synced_at BIGINT`,
+  `ALTER TABLE directory_sync ADD COLUMN IF NOT EXISTS channels_synced_at BIGINT`,
+  `ALTER TABLE directory_sync ADD COLUMN IF NOT EXISTS groups_synced_at BIGINT`,
 ];
 
 function memberRow(r: Record<string, unknown>): DirectoryMember {
@@ -169,8 +195,18 @@ function dedupMemberships(rows: ChannelMembership[]): ChannelMembership[] {
 }
 
 export function createPostgresDirectoryStore(connectionString: string): DirectoryStore {
-  const { q, pool } = createPgPool(connectionString, SCHEMA);
   const orgId = configOrgId();
+  const { q, pool } = createPgPool(connectionString, [
+    { id: "directory/store/0000-scoped-columns", statements: SCOPED_COLUMN_REPAIR },
+    {
+      id: "directory/store/0001",
+      expectedChecksum: "c47a45848f9d225ff601c9df13dc272349c7df7525e7e2417f33d68be7672cc1",
+      statements: INITIAL_SCHEMA,
+    },
+    { id: "directory/store/0002", statements: SYNC_STAMP_SCHEMA },
+    { id: "directory/store/0003", statements: EXTERNAL_ROSTER_SCHEMA },
+    { id: "directory/store/0004-scoped-columns", statements: SCOPED_COLUMN_REPAIR },
+  ]);
 
   async function pick<T>(
     query: string,
@@ -551,6 +587,38 @@ export function createPostgresDirectoryStore(connectionString: string): Director
         [orgId, principalId],
       );
       return rows.map((row) => row.group_id as string);
+    },
+
+    async conversationMembers(kind, id) {
+      const rows =
+        kind === "channel"
+          ? await q(
+              `SELECT channel.roster_known, channel.is_external, roster.principal_id AS roster_principal_id,
+                      member.principal_id, member.display_name, member.type, member.slack_id
+               FROM directory_channels channel
+               LEFT JOIN directory_channel_members roster
+                 ON roster.org_id = channel.org_id AND roster.channel_id = channel.channel_id
+               LEFT JOIN directory_members member
+                 ON member.org_id = roster.org_id AND member.principal_id = roster.principal_id
+               WHERE channel.org_id = $1 AND channel.channel_id = $2
+               ORDER BY roster.principal_id`,
+              [orgId, id],
+            )
+          : await q(
+              `SELECT group_row.roster_known, FALSE AS is_external, roster.principal_id AS roster_principal_id,
+                      member.principal_id, member.display_name, member.type, member.slack_id
+               FROM directory_groups group_row
+               LEFT JOIN directory_group_members roster
+                 ON roster.org_id = group_row.org_id AND roster.group_id = group_row.group_id
+               LEFT JOIN directory_members member
+                 ON member.org_id = roster.org_id AND member.principal_id = roster.principal_id
+               WHERE group_row.org_id = $1 AND group_row.group_id = $2
+               ORDER BY roster.principal_id`,
+              [orgId, id],
+            );
+      if (!rows.length || rows[0]?.roster_known !== true || rows[0]?.is_external === true) return undefined;
+      if (rows.some((row) => !row.roster_principal_id || !row.principal_id)) return undefined;
+      return rows.map(memberRow);
     },
 
     async listChannelsFor(principalId) {

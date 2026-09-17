@@ -8,12 +8,19 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { createInsecureTestServer } from "../src/api/server.ts";
 import { buildApp, serverDeps } from "../src/wiring.ts";
+import { providerKeysPresent } from "../src/config.ts";
+import { modelProviderAvailabilityFor } from "../src/model/pi-models.ts";
 import { testConfig } from "./support/test-config.ts";
 
 const ADMIN = { "content-type": "application/json", "x-admin-actor": "admin-alice@default-org" };
 
 function start(overrides: Parameters<typeof testConfig>[0] = { anthropicApiKey: "deployment-anthropic-key" }) {
-  const config = testConfig({ dataDir: mkdtempSync(join(tmpdir(), "base-model-svc-")), harness: "pi", ...overrides });
+  const config = testConfig({
+    orgBootstrapUsers: ["admin-alice"],
+    dataDir: mkdtempSync(join(tmpdir(), "base-model-svc-")),
+    harness: "pi",
+    ...overrides,
+  });
   const built = buildApp(config);
   const server = createInsecureTestServer(built.app, serverDeps(config, built));
   server.listen(0);
@@ -99,6 +106,27 @@ test("base-model set rejects a model whose provider key is absent (would fail pr
   } finally {
     await srv.close();
   }
+});
+
+test("ChatGPT OAuth is serviceable for Codex without advertising OpenAI to Pi", () => {
+  const config = testConfig({
+    orgBootstrapUsers: ["admin-alice"],
+    harness: "codex",
+    codexAuthFile: "/tmp/codex-auth.json",
+  });
+  const configured = providerKeysPresent(config);
+  assert.equal(configured.openai, false);
+  assert.equal(
+    modelProviderAvailabilityFor("codex", configured).openai,
+    true,
+    "Codex can use its harness OAuth session",
+  );
+  assert.equal(modelProviderAvailabilityFor("opencode", configured).openai, false);
+  assert.equal(
+    modelProviderAvailabilityFor("pi", configured, { anthropic: false, openai: false, openrouter: false }).openai,
+    false,
+    "Pi still requires an API-key credential",
+  );
 });
 
 test("a deployment that declares a provider runs that provider's base model", async () => {
