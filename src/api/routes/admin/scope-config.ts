@@ -545,12 +545,12 @@ export async function getScopeConfig(ctx: ApiCtx): Promise<void> {
     const credentials = serviceCredentials ?? [];
     const userIds = [
       ...new Set(
-        credentials.flatMap((credential) => [
-          ...credential.grantees.flatMap((grantee) => {
+        credentials.flatMap((credential) =>
+          credential.grantees.flatMap((grantee) => {
             const granteeSubject = organizationAccessSubjectFromScope(grantee);
             return granteeSubject?.kind === "user" ? [granteeSubject.id] : [];
           }),
-        ]),
+        ),
       ),
     ];
     const [users, units, groups] = await Promise.all([
