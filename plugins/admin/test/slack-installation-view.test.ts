@@ -24,6 +24,7 @@ async function render(data: Record<string, unknown>) {
       return elements.get(id);
     },
     api: async () => ({ ok: true, data }),
+    adminTr: (text: string) => text,
     slackLinkStarted: false,
     URLSearchParams,
     location: { search: "" },
@@ -49,7 +50,7 @@ test("hosted connection offers re-add and keeps custom setup secondary", async (
   const el = await render({ configured: true, source: "service", installAvailable: true, teamName: "Development YC" });
   assert.equal(el("slack-installation-start-label").textContent, "Re-add to Slack");
   assert.equal(el("slack-installation-start").disabled, false);
-  assert.equal(el("slack-installation-state").textContent, "Development YC");
+  assert.equal(el("slack-installation-state").textContent, "Connected to Development YC");
   assert.equal(el("slack-own-app-label").textContent, "Use your own Slack app");
   assert.equal(el("slack-own-app-guide"), undefined);
 });

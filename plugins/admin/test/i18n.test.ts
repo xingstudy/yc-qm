@@ -50,7 +50,7 @@ test("admin exposes a bilingual control and translates only explicit UI sinks", 
   assert.match(html, /b\.textContent = adminTr\(it\.label\)/);
   assert.match(html, /btn\.setAttribute\("aria-label", adminTr\("Actions"\)\)/);
   assert.match(html, /b\.textContent = adminTr\(label\)/);
-  assert.match(html, /adminTr\(activeRows\.length \+ \(activeRows\.length === 1/);
+  assert.match(html, /count: plural\(activeRows\.length, "active scope"\)/);
   assert.match(html, /document\.title = `\$\{brandSelfLabel\(\)\} \$\{adminTr\("Admin"\)\}`/);
   assert.match(html, /adminTr\(Number\(background\)\.toLocaleString\(adminLocaleCode\(\)\) \+ " background"\)/);
   assert.match(html, /card\.title = adminTr\(expanded \? "Click to collapse tool text"/);
