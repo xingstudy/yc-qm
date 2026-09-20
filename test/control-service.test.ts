@@ -454,6 +454,29 @@ test('scope:"personal" ignores an empty participants array (tool callers often s
   assert.equal(bad.ok ? "" : bad.code, "bad_request");
 });
 
+test('scope:"personal" ignores empty routing strings but retains real target conflicts', async () => {
+  const { control } = setup();
+  const ok = await control.createCron(
+    {
+      schedule: { everyMs: 3_600_000 },
+      action: "x",
+      scope: "personal",
+      recipient: "",
+      channel: " ",
+      destinationKey: "",
+    },
+    claims("U1", scopeId("channel", "C9")),
+  );
+  assert.ok(ok.ok, JSON.stringify(ok));
+  assert.equal(ok.cron.ownerScopeId, scopeId("personal", "U1"));
+  const bad = await control.createCron(
+    { schedule: { everyMs: 3_600_000 }, action: "x", scope: "personal", recipient: " U2 ", channel: "" },
+    claims("U1"),
+  );
+  assert.equal(bad.ok, false);
+  assert.equal(bad.ok ? "" : bad.code, "bad_request");
+});
+
 test("recipient AND channel together is rejected", async () => {
   const { control } = setup();
   const r = await control.createCron(

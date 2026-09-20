@@ -76,6 +76,30 @@ export interface ReachTarget {
   participants?: readonly string[];
 }
 
+export function normalizeRoutingString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+export function normalizeReachTarget(target: { recipient?: unknown; channel?: unknown; participants?: unknown }): {
+  recipient?: string;
+  channel?: string;
+  participants?: string[];
+} {
+  const recipient = normalizeRoutingString(target.recipient);
+  const channel = normalizeRoutingString(target.channel);
+  const participants = Array.isArray(target.participants)
+    ? target.participants
+        .filter((participant): participant is string => typeof participant === "string")
+        .map((participant) => participant.trim())
+        .filter(Boolean)
+    : [];
+  return {
+    ...(recipient !== undefined ? { recipient } : {}),
+    ...(channel !== undefined ? { channel } : {}),
+    ...(participants.length ? { participants } : {}),
+  };
+}
+
 export type ReachResolution =
   | {
       ok: true;
@@ -102,6 +126,7 @@ export async function resolveReachTarget(
   authorityId: string,
   opts: ReachOpts = {},
 ): Promise<ReachResolution> {
+  target = normalizeReachTarget(target);
   const wantsRecipient = typeof target.recipient === "string";
   const wantsChannel = typeof target.channel === "string";
   const wantsGroup = Array.isArray(target.participants);

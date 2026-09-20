@@ -10,6 +10,7 @@ import { decideRecipientConsent } from "../../triggers/trigger-store.ts";
 import { canAdministerCron } from "../control-service.ts";
 import { CRON_PATCH_NOTHING_TO_CHANGE } from "../control-service.ts";
 import { type ApiCtx, type Route } from "./route.ts";
+import { normalizeReachTarget, normalizeRoutingString } from "../../reach/reach.ts";
 
 function defaultTimezoneFor(capability: CapabilityClaims | null): string {
   return typeof capability?.timezone === "string" && capability.timezone.trim()
@@ -169,6 +170,8 @@ async function createCron(ctx: ApiCtx): Promise<void> {
   const { res, app, body, capability } = ctx;
   if (capability) {
     const b = body as CapabilityCronBody;
+    const target = normalizeReachTarget(b);
+    const destinationKey = normalizeRoutingString(b.destinationKey);
     if (
       b.unattendedGrants !== undefined &&
       (!Array.isArray(b.unattendedGrants) || !b.unattendedGrants.every((grant) => typeof grant === "string"))
@@ -194,13 +197,9 @@ async function createCron(ctx: ApiCtx): Promise<void> {
         ...(task !== undefined ? { action: task } : {}),
         ...(text !== undefined ? { text } : {}),
         ...(typeof b.title === "string" ? { title: b.title } : {}),
-        ...(typeof b.recipient === "string" ? { recipient: b.recipient } : {}),
-        ...(typeof b.channel === "string" ? { channel: b.channel } : {}),
-        ...(Array.isArray(b.participants)
-          ? { participants: b.participants.filter((p): p is string => typeof p === "string") }
-          : {}),
+        ...target,
         ...(b.scope === "personal" ? { scope: "personal" as const } : {}),
-        ...(typeof b.destinationKey === "string" ? { destinationKey: b.destinationKey } : {}),
+        ...(destinationKey !== undefined ? { destinationKey } : {}),
         ...(b.runAs === "owner" || b.runAs === "scopeFloor" || b.runAs === "scopeShared" ? { runAs: b.runAs } : {}),
         ...(typeof b.unfurlLinks === "boolean" ? { unfurlLinks: b.unfurlLinks } : {}),
         ...(Array.isArray(b.unattendedGrants) ? { unattendedGrants: b.unattendedGrants } : {}),

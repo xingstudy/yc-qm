@@ -29,6 +29,23 @@ import {
 import { CAPABILITY_TTL_MS } from "../auth/capability-token.ts";
 import { CRON_FIRE_NOTE_MAX_CHARS } from "../api/control-service.ts";
 import { utcMinute } from "../util/time.ts";
+import { normalizeReachTarget, normalizeRoutingString } from "../reach/reach.ts";
+
+function normalizeToolCronSchedule(schedule: {
+  cron?: string;
+  timezone?: string;
+  everyMs?: number;
+  firstFireAt?: number;
+}) {
+  const cron = normalizeRoutingString(schedule.cron);
+  const timezone = normalizeRoutingString(schedule.timezone);
+  return {
+    ...(cron !== undefined ? { cron } : {}),
+    ...(timezone !== undefined ? { timezone } : {}),
+    ...(schedule.everyMs !== undefined && schedule.everyMs !== 0 ? { everyMs: schedule.everyMs } : {}),
+    ...(schedule.firstFireAt !== undefined && schedule.firstFireAt !== 0 ? { firstFireAt: schedule.firstFireAt } : {}),
+  };
+}
 
 function describePublishAudience(a: PublishAudienceDescriptor | undefined): string {
   if (!a) return "Owned by you.";
@@ -2084,16 +2101,16 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
               true,
             );
           }
+          const target = normalizeReachTarget(params);
+          const destinationKey = normalizeRoutingString(params.destinationKey);
           const r = await tc.cronCreate({
-            schedule: params.schedule,
+            schedule: normalizeToolCronSchedule(params.schedule),
             ...(params.title !== undefined ? { title: params.title } : {}),
             ...(params.task !== undefined ? { action: params.task } : {}),
             ...(params.text !== undefined ? { text: params.text } : {}),
-            ...(params.recipient !== undefined ? { recipient: params.recipient } : {}),
-            ...(params.channel !== undefined ? { channel: params.channel } : {}),
+            ...target,
             ...(params.scope !== undefined ? { scope: params.scope } : {}),
-            ...(Array.isArray(params.participants) ? { participants: params.participants } : {}),
-            ...(params.destinationKey !== undefined ? { destinationKey: params.destinationKey } : {}),
+            ...(destinationKey !== undefined ? { destinationKey } : {}),
             ...(params.runAs !== undefined ? { runAs: params.runAs } : {}),
             ...(params.unfurlLinks !== undefined ? { unfurlLinks: params.unfurlLinks } : {}),
           });
@@ -2803,14 +2820,15 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           text(`[error] the "${params.action}" action requires \`${field}\`.`),
           true,
         );
+      const target = normalizeReachTarget(params);
       const routing = {
-        ...(params.channel !== undefined ? { channel: params.channel } : {}),
-        ...(params.participants !== undefined ? { participants: params.participants } : {}),
+        ...(target.channel !== undefined ? { channel: target.channel } : {}),
+        ...(target.participants !== undefined ? { participants: target.participants } : {}),
       };
       switch (params.action) {
         case "post": {
           if (params.text === undefined) return missing("text");
-          if (params.channel !== undefined || params.recipient !== undefined || params.participants !== undefined) {
+          if (target.channel !== undefined || target.recipient !== undefined || target.participants !== undefined) {
             return recordResult(
               callId,
               { tool: surfaceName, action: "post", error: "post_cannot_address" },
@@ -2848,9 +2866,9 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         case "reach": {
           if (params.text === undefined) return missing("text");
           const selectors = [
-            params.channel !== undefined,
-            params.recipient !== undefined,
-            params.participants !== undefined,
+            target.channel !== undefined,
+            target.recipient !== undefined,
+            target.participants !== undefined,
           ].filter(Boolean).length;
           if (selectors !== 1) {
             return recordResult(
@@ -2862,11 +2880,6 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
               true,
             );
           }
-          const target = {
-            ...(params.channel !== undefined ? { channel: params.channel } : {}),
-            ...(params.recipient !== undefined ? { recipient: params.recipient } : {}),
-            ...(params.participants !== undefined ? { participants: params.participants } : {}),
-          };
           await recordCall(callId, {
             tool: surfaceName,
             action: "reach",
