@@ -1,4 +1,4 @@
-import { localNetworkName } from "../src/sandbox/local-resource-names.ts";
+import { localGuardName, localNetworkName } from "../src/sandbox/local-resource-names.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -28,12 +28,13 @@ test("Local scope deletion removes deterministic resources without provisioning,
   await sandbox.destroyScope!("missing");
   assert.deepEqual(calls, [
     ["rm", "-f", localContainerName("missing")],
+    ["rm", "-f", localGuardName(localContainerName("missing"))],
     ["network", "rm", localNetworkName(localContainerName("missing"))],
     ["volume", "rm", localVolumeName("missing")],
   ]);
   fail = true;
   await assert.rejects(sandbox.destroyScope!("missing"), /daemon unavailable/);
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 5);
 });
 
 test("Sprites scope deletion sends only DELETE, retries provider errors, and accepts missing bodies", async () => {
@@ -103,8 +104,8 @@ test("Local deletion retries remaining disk cleanup after partial failure withou
   await assert.rejects(sandbox.destroyScope!("scope"), /volume is in use/);
   volumeBusy = false;
   await sandbox.destroyScope!("scope");
-  assert.deepEqual(calls.slice(0, 3), calls.slice(3));
-  assert.equal(calls.length, 6);
+  assert.deepEqual(calls.slice(0, 4), calls.slice(4));
+  assert.equal(calls.length, 8);
   assert.equal(calls.at(-1)?.at(-1), localVolumeName("scope"));
 });
 

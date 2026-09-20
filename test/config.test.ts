@@ -486,6 +486,22 @@ test("local sandbox egress settings are opt-in and read the configured image", (
   assert.equal(config.localSandbox.egressImage, "qm-egress-proxy:verified");
 });
 
+test("local sandbox lifecycle settings are parsed and reject unsafe values", () => {
+  const config = loadConfig({
+    LOCAL_SANDBOX_LIFECYCLE_MODE: "enforce",
+    LOCAL_SANDBOX_LEASE_TTL_MS: "900000",
+    LOCAL_SANDBOX_MIGRATION_WAIT_MS: "300000",
+    LOCAL_SANDBOX_LEGACY_OBSERVE_MS: "60000",
+  });
+  assert.equal(config.localSandbox.lifecycleMode, "enforce");
+  assert.equal(config.localSandbox.lifecycleLeaseTtlMs, 900000);
+  assert.equal(config.localSandbox.lifecycleMigrationWaitMs, 300000);
+  assert.equal(config.localSandbox.lifecycleLegacyObserveMs, 60000);
+  assert.throws(() => loadConfig({ LOCAL_SANDBOX_LIFECYCLE_MODE: "replace" }), /must be observe or enforce/);
+  assert.throws(() => loadConfig({ LOCAL_SANDBOX_LEASE_TTL_MS: "0" }), /must be greater than zero/);
+  assert.throws(() => loadConfig({ LOCAL_SANDBOX_LEGACY_OBSERVE_MS: "-1" }), /must not be negative/);
+});
+
 test("DEPLOY_PROVIDER=porter selects the Porter deploy provider and reads its env", () => {
   const config = loadConfig({
     DEPLOY_PROVIDER: "porter",

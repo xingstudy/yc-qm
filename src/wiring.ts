@@ -1,5 +1,9 @@
 import { migrateRegisteredPgSchemas } from "./persistence/pg-pool.ts";
 import { createRuntimeService } from "./harness/runtime-control.ts";
+import {
+  createMemorySandboxLifecycleStore,
+  createPostgresSandboxLifecycleStore,
+} from "./sandbox/sandbox-lifecycle-store.ts";
 import { createPostgresBrokerSessions, type BrokerSessionStore } from "./auth/broker-sessions.ts";
 import { createDirectFileUploads, type DirectFileUploads } from "./files/direct-file-upload.ts";
 import { createPostgresFileUploadStore } from "./files/file-upload-store.ts";
@@ -969,11 +973,25 @@ export function buildApp(
       message: e.message,
       scopeLabel: (e.scopeLabel ?? "unknown") as ScopeId,
     });
-  const buildLocal = (): Sandbox =>
-    createLocalSandbox(workspace, {
+  const localLifecycleStore = config.databaseUrl
+    ? createPostgresSandboxLifecycleStore(config.databaseUrl)
+    : createMemorySandboxLifecycleStore();
+  const localLiveWork = { check: async (_scopeId: string): Promise<boolean> => false };
+  const localLifecycleRuntime: { sandbox?: Sandbox } = {};
+  const buildLocal = (): Sandbox => {
+    const local = createLocalSandbox(workspace, {
       ...config.localSandbox,
+      lifecycleStore: localLifecycleStore,
+      lifecycleMode: config.localSandbox.lifecycleMode ?? (config.production ? "observe" : "enforce"),
+      production: config.production,
+      holderId: `${config.buildSha ?? "development"}:${randomUUID()}`,
+      advisoryLock,
+      hasLiveWork: (scopeId) => localLiveWork.check(scopeId),
       onError: sandboxOnError,
     });
+    localLifecycleRuntime.sandbox = local;
+    return local;
+  };
   const buildSprites = (): Sandbox =>
     createSpritesSandbox(workspace, {
       ...config.spritesSandbox,
@@ -1504,6 +1522,7 @@ export function buildApp(
   let processes: ProcessRegistry | undefined;
   if (supportsProcessSessions(sandbox)) {
     processes = config.databaseUrl ? createPostgresProcessRegistry(config.databaseUrl) : createMemoryProcessRegistry();
+    localLiveWork.check = async (scopeId) => (await processes!.liveByScope(scopeId)).length > 0;
   }
 
   const brokerSessions = config.databaseUrl ? createPostgresBrokerSessions(config.databaseUrl) : undefined;
@@ -2279,6 +2298,13 @@ export function buildApp(
     ? createProcessReaper(processes, {
         intervalMs: config.processReaperIntervalMs,
         ...(supportsProcessSessions(sandbox) ? { kill: createReaperKillHook(sandbox) } : {}),
+        ...(localLifecycleRuntime.sandbox?.reapDeepIdle
+          ? {
+              onReaped: async () => {
+                await localLifecycleRuntime.sandbox!.reapDeepIdle!(config.deepIdleMachineMs, config.devIdleMachineMs);
+              },
+            }
+          : {}),
         leaderLease,
       })
     : null;
@@ -2379,6 +2405,8 @@ export function buildApp(
       await organizationMemberJobs?.close?.();
       await portalLoginTransactions.close?.();
       await directorySourceStore.close();
+      await localLifecycleRuntime.sandbox?.close?.();
+      await localLifecycleStore.close?.();
     },
   };
 

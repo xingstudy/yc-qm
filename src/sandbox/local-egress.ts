@@ -41,7 +41,7 @@ export function createLocalEgress(dexec: DockerExec, proxyUrl: string, image: st
       throw new Error(`Cannot remove local network guard: ${result.stderr.trim()}`);
   }
 
-  async function create(name: string, network: string): Promise<void> {
+  async function create(name: string, network: string, generation?: string): Promise<void> {
     await imageId();
     await remove(name);
     const result = await dexec(
@@ -54,6 +54,7 @@ export function createLocalEgress(dexec: DockerExec, proxyUrl: string, image: st
         "qm.egress-guard=1",
         "--label",
         `qm.org=${org}`,
+        ...(generation ? ["--label", `qm.sandbox-generation=${generation}`] : []),
         "--network",
         network,
         "-p",
@@ -87,5 +88,5 @@ export function createLocalEgress(dexec: DockerExec, proxyUrl: string, image: st
     );
   }
 
-  return { label, ready, remove, create };
+  return { label, imageId, ready, remove, create };
 }

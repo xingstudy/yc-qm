@@ -10,6 +10,8 @@ export interface SandboxHandle {
   scratch?: boolean;
   backend?: string;
   scopeId?: string;
+  lifecycleScopeId?: string;
+  lifecycleLeaseId?: string;
 }
 
 export function hasParentPathSegment(path: string): boolean {
@@ -207,6 +209,7 @@ export interface Sandbox {
   teardown(handle: SandboxHandle, opts?: TeardownOptions): Promise<void>;
   destroyScope?(scopeId: string): Promise<void>;
   reapDeepIdle?(idleMs: number, devIdleMs?: number): Promise<{ reaped: number }>;
+  close?(): void | Promise<void>;
 }
 
 export class CapabilityUnsupportedError extends Error {
