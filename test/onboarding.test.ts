@@ -80,8 +80,6 @@ test("a new personal DM gets an onboarding prompt that does not block an explici
   assert.match(sys.reply ?? "", /## Pending Onboarding/);
   assert.match(sys.reply ?? "", /must not delay an explicit user request/);
   assert.match(sys.reply ?? "", /Finish the user's explicit request first/);
-  assert.match(sys.reply ?? "", /high-priority setup task/);
-  assert.match(sys.reply ?? "", /no reason to skip it/);
   assert.match(sys.reply ?? "", /skill:\/\/onboarding\/SKILL\.md/);
 });
 

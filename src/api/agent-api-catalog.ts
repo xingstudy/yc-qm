@@ -468,6 +468,7 @@ const FAMILIES: AgentApiFamily[] = [
       (m === "GET" && /^\/v1\/deployments\/[^/]+$/.test(p)) ||
       (m === "GET" && /^\/v1\/deployments\/[^/]+\/fetch$/.test(p)) ||
       (m === "GET" && /^\/v1\/deployments\/[^/]+\/logs$/.test(p)) ||
+      (m === "GET" && /^\/v1\/deployments\/[^/]+\/owner-url$/.test(p)) ||
       (m === "GET" && /^\/v1\/deployments\/[^/]+\/(git-url|share)$/.test(p)) ||
       (m === "POST" && /^\/v1\/deployments\/[^/]+\/(share|archive|restore|name|display-name|always-on)$/.test(p)),
     guidance:
@@ -502,6 +503,11 @@ const FAMILIES: AgentApiFamily[] = [
         path: "/v1/deployments/:id/git-url",
         summary:
           "get an authed git remote URL for a deployment you can reach (clone its source; push a new version if you have write access) — returns {url, permission}",
+      },
+      {
+        method: "GET",
+        path: "/v1/deployments/:id/owner-url",
+        summary: "get an owner-authenticated browser URL for a deployment you manage",
       },
       {
         method: "GET",

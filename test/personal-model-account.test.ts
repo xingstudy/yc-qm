@@ -90,7 +90,9 @@ test("account API binds choice to the signed-in person, preserves connections, a
 });
 
 test("personal provider choice is durable and controls the submitted run independently of the company model", async () => {
-  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "personal-routing-")) }));
+  const built = buildApp(
+    testConfig({ dataDir: mkdtempSync(join(tmpdir(), "personal-routing-")), orgBootstrapUsers: ["U1"] }),
+  );
   await built.userModelCredentials.setApiKey("U1", "anthropic", "test-anthropic-key");
   await built.userModelCredentials.setApiKey("U1", "openai", "test-openai-key");
   await built.config.setPersonalModelAuth("U1", true, "openai");
@@ -117,7 +119,9 @@ test("personal provider choice is durable and controls the submitted run indepen
 });
 
 test("shared chat messages queue instead of borrowing another person's account", async () => {
-  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "personal-steering-")) }));
+  const built = buildApp(
+    testConfig({ dataDir: mkdtempSync(join(tmpdir(), "personal-steering-")), orgBootstrapUsers: ["U1", "U2"] }),
+  );
   const message = (user: string) => ({
     surface: "slack",
     actor: { externalId: user },

@@ -5,6 +5,7 @@ import { parse, toClientConfig, type ConnectionOptions } from "pg-connection-str
 import {
   applyPgMigrations,
   definePgMigration as defineMigration,
+  pgMigrationChecksum,
   type PgMigration,
   type PgMigrationDefinition,
   type PgMaintenanceDefinition,
@@ -165,7 +166,25 @@ export function definePgMigration(
   expectedChecksum?: string,
   legacyId?: string,
 ): PgMigration {
-  return defineMigration({ id, statements, expectedChecksum, legacyId });
+  const concurrent = statements.filter((statement) =>
+    /^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\b/i.test(statement),
+  );
+  if (concurrent.length && (concurrent.length !== statements.length || statements.length !== 1))
+    return {
+      id,
+      statements,
+      expectedChecksum,
+      legacyId,
+      transactional: false,
+      checksum: pgMigrationChecksum(statements),
+    };
+  return defineMigration({
+    id,
+    statements,
+    expectedChecksum,
+    legacyId,
+    ...(concurrent.length ? { transactional: false } : {}),
+  });
 }
 
 export function resolvePgCaTrust(opts: { cert?: string; certFile?: string }): { ssl?: { ca: string } } {

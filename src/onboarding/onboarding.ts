@@ -91,7 +91,7 @@ export function renderPendingOnboardingPrompt(status: OnboardingStatus, version 
     "",
     "Onboarding is available for setup, but it must not delay an explicit user request.",
     "",
-    "Finish the user's explicit request first. Then offer onboarding; read `skills/onboarding/SKILL.md` only when starting that setup flow.",
+    "Finish the user's explicit request first. Then offer onboarding; read `skill://onboarding/SKILL.md` only when starting that setup flow.",
     "",
     `Use the \`memory\` tool as the source of truth. On completion or an explicit stop, preserve the notebook and add \`- Onboarding: completed ${version} on YYYY-MM-DD.\` so onboarding does not recur.`,
   ].join("\n");

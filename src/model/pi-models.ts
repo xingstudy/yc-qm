@@ -203,7 +203,7 @@ export function modelOfferedInWebui(id: string): boolean {
 }
 
 export function modelUnavailableReason(id: string): string | undefined {
-  if (isGatewayModelId(id) && !resolveGatewayModel(id))
+  if (isGatewayModelId(id) && !resolveGatewayModel(id) && !isCustomModelId(id))
     return "Gateway model is unavailable; select another model or retry after discovery recovers";
   return unavailableOverlays.get(id);
 }
@@ -399,7 +399,8 @@ export function resolveBuiltinModel(id: string): PiModel | undefined {
 }
 
 function resolveBaseModel(id: string): PiModel | undefined {
-  if (isGatewayModelId(id)) return resolveGatewayModel(id);
+  const gateway = resolveGatewayModel(id);
+  if (gateway) return gateway;
   if (unavailableOverlays.has(id)) return undefined;
   const builtin = resolveBuiltinModel(id);
   if (REGISTRY_BY_ID.has(id) || id.startsWith(CODEX_SUBSCRIPTION_PREFIX)) return builtin;
@@ -407,7 +408,10 @@ function resolveBaseModel(id: string): PiModel | undefined {
   if (overlay) {
     return modelFromOverlay(overlay, false);
   }
-  return (resolveCustomModel(id) as unknown as PiModel | undefined) ?? builtin ?? OPENROUTER_CATALOG_MODELS.get(id);
+  const custom = resolveCustomModel(id) as unknown as PiModel | undefined;
+  if (custom) return custom;
+  if (isGatewayModelId(id)) return undefined;
+  return builtin ?? OPENROUTER_CATALOG_MODELS.get(id);
 }
 
 export function modelFromOverlay(spec: ModelOverlay, useOrgEndpoints = true): PiModel | undefined {

@@ -187,14 +187,14 @@ test("the model picker remembers compatible harnesses without duplicating or cha
     };
     const pick = (label: string): HTMLButtonElement => {
       const target = [...host.querySelectorAll<HTMLButtonElement>(".loadout-pick")].find(
-        (row) => row.querySelector(".loadout-name")?.textContent === label,
+        (row) => row.querySelector(".loadout-name")?.textContent?.split(" · ")[0] === label,
       );
       assert.ok(target, `saved model exists: ${label}`);
       return target;
     };
     const saved = (): LoadoutEntry[] => JSON.parse(localStorage.getItem("web-ui:loadout") ?? "[]");
     const names = (): Array<string | null> =>
-      [...host.querySelectorAll(".loadout-pick .loadout-name")].map((row) => row.textContent);
+      [...host.querySelectorAll(".loadout-pick .loadout-name")].map((row) => row.textContent?.split(" · ")[0] ?? null);
 
     await mount();
     assert.match(composer!.state.error, /Could not load runtime settings/);
@@ -219,7 +219,10 @@ test("the model picker remembers compatible harnesses without duplicating or cha
     await siblingComposer!.refreshRuntimeSelection(null, siblingAgent);
     siblingHost.querySelector<HTMLButtonElement>(".loadout-button")!.click();
     failNextPut = true;
-    siblingHost.querySelector<HTMLButtonElement>('[aria-label="Make Beta default"]')!.click();
+    [...siblingHost.querySelectorAll<HTMLButtonElement>(".loadout-row")]
+      .find((row) => row.querySelector(".loadout-name")?.textContent?.startsWith("Beta · "))!
+      .querySelector<HTMLButtonElement>(".loadout-make-default")!
+      .click();
     await tick();
     assert.match(siblingComposer!.state.error, /default save failed/);
     assert.equal(siblingComposer!.currentModelOption()?.value, "claude:alpha");
@@ -257,9 +260,9 @@ test("the model picker remembers compatible harnesses without duplicating or cha
       ["Pi", "Claude Code", "OpenCode", "Codex"],
     );
     assert.equal(choices[3]!.getAttribute("aria-disabled"), "true");
-    assert.equal(choices[3]!.getAttribute("aria-description"), "Codex cannot run Alpha.");
+    assert.equal(choices[3]!.getAttribute("aria-description"), "Codex cannot run Alpha · anthropic.");
     choices[3]!.dispatchEvent(new MouseEvent("mouseenter"));
-    assert.equal(document.querySelector(".qm-tooltip.visible")?.textContent, "Codex cannot run Alpha.");
+    assert.equal(document.querySelector(".qm-tooltip.visible")?.textContent, "Codex cannot run Alpha · anthropic.");
     const beforeDisabledClick = saved();
     const beforeDisabledUpdates = updates.length;
     choices[3]!.click();
@@ -301,7 +304,7 @@ test("the model picker remembers compatible harnesses without duplicating or cha
     );
     const claude = betaChoices[1]!;
     claude.focus();
-    assert.equal(document.querySelector(".qm-tooltip.visible")?.textContent, "Claude Code cannot run Beta.");
+    assert.equal(document.querySelector(".qm-tooltip.visible")?.textContent, "Claude Code cannot run Beta · openai.");
     claude.click();
     assert.equal(composer!.currentModelOption()?.value, "codex:beta");
     button(".loadout-back").click();

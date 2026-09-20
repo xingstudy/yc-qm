@@ -9,7 +9,7 @@ import { buildApp } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";
 
 function freshApp() {
-  return buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "document-turn-")) }));
+  return buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "document-turn-")), orgBootstrapUsers: ["U1"] }));
 }
 
 test("document uploads survive follow-up turns and stay isolated to their conversation", async () => {

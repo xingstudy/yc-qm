@@ -48,6 +48,8 @@ async function fixture(t: test.TestContext) {
     admin: {
       listGrants: async () => [{ principalId: "admin", role: "org_admin", scopeId: "org:test" }],
       resolveActor: (id: string) => ({ id, type: "internal" }),
+      adminStatusOf: async (principal: { id: string }) =>
+        principal.id === "admin" ? { isAdmin: true, role: "org_admin" as const } : { isAdmin: false },
     },
   };
   const server = createServer(async (req, res) => {

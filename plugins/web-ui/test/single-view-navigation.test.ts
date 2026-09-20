@@ -129,6 +129,7 @@ test("single and multiview headers render mutually exclusive tools and pane cont
     dockApi,
     html,
     nothing: "",
+    t: (value: string) => value,
     render: (value: string) => {
       output = value;
     },

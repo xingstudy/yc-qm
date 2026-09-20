@@ -26,6 +26,7 @@ export function createPostgresCredentialUsageSink(connectionString: string): Cre
       followUps: [
         {
           id: "admin/scoped-events/credential_usage/0002",
+          transactional: false,
           statements: [
             "CREATE INDEX CONCURRENTLY IF NOT EXISTS credential_usage_by_slug_ts_id ON credential_usage(slug, ts DESC, id DESC)",
           ],

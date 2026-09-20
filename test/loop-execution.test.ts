@@ -10,7 +10,7 @@ import { testConfig } from "./support/test-config.ts";
 
 for (const checkResult of ["passed", "failed", "missing"] as const) {
   test(`loop intake executes with granted credentials and ${checkResult} checks gate held outputs`, async () => {
-    const built = buildApp(testConfig());
+    const built = buildApp(testConfig({ orgBootstrapUsers: ["U1"] }));
     const org = scopeId("org", "default-org");
     await built.serviceCreds.setServiceCredential(org, {
       slug: "error-source",

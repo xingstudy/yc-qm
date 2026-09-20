@@ -29,7 +29,10 @@ const { buildApp } = await import("../src/wiring.ts");
 for (const provider of ["anthropic", "openai"] as const) {
   test(`queued personal ${provider} turns use only that provider's credentials after switching to company`, async () => {
     turns.length = 0;
-    const built = buildApp(testConfig({ anthropicApiKey: "company-anthropic", openaiApiKey: "company-openai" }));
+    const built = buildApp(
+      testConfig({ anthropicApiKey: "company-anthropic", openaiApiKey: "company-openai", orgBootstrapUsers: ["U1"] }),
+    );
+    built.config.setApprovedHarnesses(["pi", "mock"]);
     await built.userModelCredentials.setApiKey("U1", "anthropic", "personal-anthropic");
     await built.userModelCredentials.setApiKey("U1", "openai", "personal-openai");
     await built.config.setPersonalModelAuth("U1", true, provider);
@@ -58,7 +61,10 @@ for (const provider of ["anthropic", "openai"] as const) {
 
 test("disconnecting a queued personal account fails without invoking any main harness or another connected provider", async () => {
   turns.length = 0;
-  const built = buildApp(testConfig({ anthropicApiKey: "company-anthropic", openaiApiKey: "company-openai" }));
+  const built = buildApp(
+    testConfig({ anthropicApiKey: "company-anthropic", openaiApiKey: "company-openai", orgBootstrapUsers: ["U1"] }),
+  );
+  built.config.setApprovedHarnesses(["pi", "mock"]);
   await built.userModelCredentials.setApiKey("U1", "anthropic", "personal-anthropic");
   await built.userModelCredentials.setApiKey("U1", "openai", "personal-openai");
   await built.config.setPersonalModelAuth("U1", true, "openai");

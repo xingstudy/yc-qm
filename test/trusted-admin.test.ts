@@ -22,6 +22,7 @@ function start(enabled = true) {
     testConfig({
       dataDir: mkdtempSync(join(tmpdir(), "trusted-admin-")),
       orgId: "default-org",
+      orgBootstrapUsers: [trustedPrincipal(issuer, "founder-7")],
       ...(enabled ? { trustedOidcAdminIssuer: issuer } : {}),
     }),
   );
@@ -120,7 +121,8 @@ test("provisioning needs core opt-in and never reactivates a deactivated founder
   const s = start();
   t.after(s.close);
   const id = trustedPrincipal(issuer, "founder-7");
-  await s.built.identity.deactivate(id);
+  await s.built.organization.checkActive(id);
+  await s.built.organization.deactivatePrincipal({ principalId: id, actor: "admin-alice" });
   assert.equal((await send(s.base, claims())).status, 403);
   assert.equal((await s.built.admin.adminStatusOf({ id, type: "internal" })).isAdmin, false);
 });

@@ -25,6 +25,7 @@ function load(api: (path: string) => Promise<unknown> = async () => ({})) {
       api,
       html,
       nothing,
+      t: (value: string) => value,
       icon: () => nothing,
       tip: () => nothing,
       closeFormMenus: () => {},

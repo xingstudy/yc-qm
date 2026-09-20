@@ -496,7 +496,7 @@ test("child specs disable environment Slack tokens when no Slack tokens are supp
   inputs.web = true;
   assert.deepEqual(
     buildChildSpecs(inputs).map((spec) => spec.name),
-    ["core", "web", "portal"],
+    ["core", "web", "admin", "portal"],
   );
 });
 

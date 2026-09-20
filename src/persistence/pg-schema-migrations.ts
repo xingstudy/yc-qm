@@ -36,6 +36,11 @@ export function concurrentIndexName(stmt: string): string | undefined {
   return /^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\s+IF\s+NOT\s+EXISTS\s+([a-z_][a-z0-9_$]*)\b/i.exec(stmt)?.[1];
 }
 
+function concurrentIndexRef(stmt: string, indexName: string): string {
+  const schema = /\bON\s+([a-z_][a-z0-9_$]*)\s*\./i.exec(stmt)?.[1];
+  return schema ? `${schema}.${indexName}` : indexName;
+}
+
 export function pgMigrationChecksum(statements: readonly string[]): string {
   return createHash("sha256")
     .update(JSON.stringify(statements.map((statement) => statement.trim())))
@@ -52,7 +57,9 @@ export function definePgMigration(definition: PgMigrationDefinition): PgMigratio
   const concurrent = statements.some((statement) => /^CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\b/i.test(statement));
   if (definition.transactional === false) {
     if (statements.length !== 1 || !concurrentIndexName(statements[0]!)) {
-      throw new Error("pg-pool: nontransactional migrations require one idempotent concurrent index");
+      throw new Error(
+        "pg-pool: migration must contain only concurrent indexes; nontransactional migrations require one idempotent concurrent index",
+      );
     }
     if (legacyId) throw new Error("pg-pool: concurrent index migrations cannot adopt a legacy record");
   } else if (concurrent) {
@@ -170,11 +177,12 @@ export async function applyPgStatements(client: PoolClient, statements: readonly
   for (const statement of statements) {
     const indexName = concurrentIndexName(statement);
     if (indexName) {
+      const indexRef = concurrentIndexRef(statement, indexName);
       const existing = await client.query<{ invalid: boolean }>(
         "SELECT NOT indisvalid OR NOT indisready AS invalid FROM pg_index WHERE indexrelid = to_regclass($1)",
-        [indexName],
+        [indexRef],
       );
-      if (existing.rows[0]?.invalid) await client.query(`DROP INDEX CONCURRENTLY ${indexName}`);
+      if (existing.rows[0]?.invalid) await client.query(`DROP INDEX CONCURRENTLY ${indexRef}`);
     }
     await client.query(statement);
   }

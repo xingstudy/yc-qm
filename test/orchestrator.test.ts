@@ -531,7 +531,10 @@ test("live bot attestation reaches control, OAuth, and egress capabilities", asy
 });
 
 test("granted env credentials are announced without secrets and disappear after revocation", async () => {
-  const { app, serviceCreds, acl } = freshApp({ apiBaseUrl: "https://core.example.com" });
+  const { app, serviceCreds, acl } = freshApp({
+    apiBaseUrl: "https://core.example.com",
+    orgBootstrapUsers: ["U1"],
+  });
   const org = scopeId("org", "default-org");
   await serviceCreds.setServiceCredential(org, {
     slug: "composio",
@@ -748,6 +751,7 @@ test("a channel cron receives env credentials only when the directory proves an 
     dataDir: mkdtempSync(join(tmpdir(), "ap-")),
     signingSecret: "test-secret",
     apiBaseUrl: "https://core.example.com",
+    orgBootstrapUsers: ["U1", "U2"],
   });
   const { app, sandbox, serviceCreds, acl, deliveries, identity } = buildApp(config);
   const org = scopeId("org", "default-org");
@@ -1414,6 +1418,7 @@ test("an org admin's turn carries org-notebook write (token claim + prompt hint)
     dataDir: mkdtempSync(join(tmpdir(), "ap-")),
     signingSecret: "test-secret",
     apiBaseUrl: "https://core.example.com",
+    orgBootstrapUsers: ["admin-alice", "U1"],
   });
   const { app, sandbox } = buildApp(config);
   let captured: ProvisionOptions | undefined;
@@ -1442,7 +1447,7 @@ test("an org admin's turn carries org-notebook write (token claim + prompt hint)
     adminTurn({ text: "!sysprompt", conversation: { kind: "dm", threadRef: "dm:admin-alice:t2" } }),
   );
   assert.match(adminPrompt.reply ?? "", /## Acting for an org admin/);
-  assert.match(adminPrompt.reply ?? "", /person-owned keychain metadata and admin grant changes are portal-only/);
+  assert.match(adminPrompt.reply ?? "", /admin grant changes and impersonation are portal-only/);
   assert.match(
     adminPrompt.reply ?? "",
     /private-content reads require a DM or an Open conversation on a live admin turn/,

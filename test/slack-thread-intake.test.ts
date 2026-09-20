@@ -19,7 +19,7 @@ function message(threadTs?: string, text = "Continue", key = crypto.randomUUID()
 }
 
 async function fixture() {
-  const built = buildApp(testConfig());
+  const built = buildApp(testConfig({ orgBootstrapUsers: ["U1"] }));
   const first = await built.app.turn(message("10.1", "Investigate job"));
   const root = (await built.runs.get(first.runId!))!;
   async function legacy(name: string, target = "D1:20.1", actorId = root.request.actor.id) {

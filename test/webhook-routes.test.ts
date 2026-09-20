@@ -16,7 +16,7 @@ const SECRET = "core-signing-secret".repeat(3);
 const HOOK_SECRET = "hook-secret";
 
 function start(signingSecret?: string, publicUrl?: string): { base: string; close: () => Promise<void> } {
-  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "wh-")) }));
+  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "wh-")), orgBootstrapUsers: ["U1"] }));
   const deps = { ...(publicUrl ? { publicUrl } : {}), webhookReceiver: built.webhookReceiver };
   const server = signingSecret
     ? createServer(built.app, { ...deps, signingSecret })

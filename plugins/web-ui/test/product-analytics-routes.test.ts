@@ -43,7 +43,7 @@ const base = `http://127.0.0.1:${(surface.address() as AddressInfo).port}`;
 const headers = (imp?: string) => ({
   "content-type": "application/json",
   [PORTAL_IDENTITY_HEADER]: mintPortalIdentity(
-    { p: "alice@example.com", exp: Date.now() + 60_000, ...(imp ? { imp } : {}) },
+    { p: "alice@example.com", exp: Date.now() + 60_000, ...(imp ? { imp, isv: 1 } : {}) },
     secret,
   ),
 });
@@ -64,7 +64,7 @@ test("analytics config is authenticated, company-scoped and omitted during imper
   assert.equal(body.user, "alice@example.com");
   assert.equal((await (await fetch(`${base}/me`, { headers: headers("admin") })).json()).analytics, undefined);
   coreStatus = 503;
-  assert.equal((await fetch(`${base}/me`, { headers: headers() })).status, 503);
+  assert.equal((await fetch(`${base}/me`, { headers: headers() })).status, 401);
 });
 
 test("authenticated impersonation suppresses analytics on turns and approval replay", async () => {

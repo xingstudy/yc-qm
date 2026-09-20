@@ -136,7 +136,7 @@ test("gateway choices display model names and brands without changing serving id
   }
 });
 
-test("gateway display preserves explicit labels and leaves unknown families alone", () => {
+test("gateway display preserves explicit labels and identifies unknown providers", () => {
   const id = "gateway/anthropic/claude-sonnet-5";
   const custom = { ...metadata(id, "Writing model", "qm:gateway"), buttonLabel: "Writer" };
   const unknownId = "gateway/vendor/special-model";
@@ -149,6 +149,6 @@ test("gateway display preserves explicit labels and leaves unknown families alon
   assert.equal(knownOption?.label, "Writing model");
   assert.equal(knownOption?.buttonLabel, "Writer");
   assert.equal(knownOption?.displayProvider, "anthropic");
-  assert.equal(unknownOption?.label, "Special");
+  assert.equal(unknownOption?.label, "Special · qm:gateway");
   assert.equal(unknownOption?.displayProvider, undefined);
 });

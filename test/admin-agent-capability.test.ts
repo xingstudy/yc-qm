@@ -30,6 +30,7 @@ function start(withConfig = true) {
       signingSecret: SECRET,
       capabilitySecret: SECRET,
       apiBaseUrl: "http://core.example.test",
+      orgBootstrapUsers: ["admin-alice", "U1"],
     }),
   );
   void built.directory.replaceChannels(
@@ -511,8 +512,7 @@ test("content reads need a DM-scoped token", async () => {
       headers: { "x-agent-capability": fromChannel, "content-type": "application/json" },
       body: JSON.stringify({}),
     });
-    assert.equal(importFromChannel.status, 404);
-    assert.match(((await importFromChannel.json()) as { message: string }).message, /unknown admin resource/);
+    assert.equal(importFromChannel.status, 403);
     const ackPicksFromChannel = await fetch(`${s.base}/v1/admin/ack-emoji-picks`, {
       headers: { "x-agent-capability": fromChannel },
     });
@@ -687,9 +687,10 @@ for (const room of [scopeId("channel", "C1"), scopeId("group", "G1")]) {
       assert.equal(reads.length, 1);
       assert.equal(reads[0]!.principalId, "admin-alice");
       assert.equal(reads[0]!.scopeLabel, target);
-      for (const route of [`/v1/admin/sessions?scope=${target}`, "/v1/admin/keychain", `/v1/admin/scopes/${target}`]) {
+      for (const route of [`/v1/admin/sessions?scope=${target}`, `/v1/admin/scopes/${target}`]) {
         assert.equal((await fetch(`${s.base}${route}`, { headers })).status, 200, route);
       }
+      assert.equal((await fetch(`${s.base}/v1/admin/keychain`, { headers })).status, 403);
       const write = (token = cap) =>
         fetch(`${s.base}/v1/admin/scopes/${target}/soul`, {
           method: "PUT",
@@ -796,8 +797,10 @@ for (const room of [scopeId("personal", "admin-alice"), scopeId("channel", "C1")
           headers: { "x-agent-capability": cap, "content-type": "application/json" },
           body: JSON.stringify({ soul: "must not be imported" }),
         });
-        assert.equal(response.status, 404, posture);
-        assert.deepEqual(await response.json(), { error: "not_found", message: "unknown admin resource: import" });
+        const shared = room.startsWith("channel:") || room.startsWith("group:");
+        assert.equal(response.status, shared ? 403 : 404, posture);
+        if (!shared)
+          assert.deepEqual(await response.json(), { error: "not_found", message: "unknown admin resource: import" });
         assert.notEqual(await s.built.config.getSoul(ORG), "must not be imported");
       }
     } finally {

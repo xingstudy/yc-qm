@@ -8,7 +8,7 @@ const css = readFileSync(new URL("../src/shell.css", import.meta.url), "utf8");
 test("live and completed work share one chronological duration fold", () => {
   assert.match(chat, /class=\$\{stopped \? "stopped-work" : `work work-fold work-\$\{work.status\}`\}/);
   assert.match(chat, /messageWorkTimeline\(work, active \? "" : text\)/);
-  assert.match(chat, /let label = stopping \? "Stopping…" : workLabel\(work\)/);
+  assert.match(chat, /let label = stopping \? t\("Stopping…"\) : workLabel\(work\)/);
   assert.match(chat, /\?open=\$\{active \|\| !!work.pendingApprovals\?\.length\}/);
   assert.doesNotMatch(chat, /function segmentSummaryLabel/);
 });
@@ -37,10 +37,15 @@ test("expanded tool activity uses a compact log rhythm", () => {
   assert.match(chat, /icon\(Wrench, 13\)/);
 });
 
-test("execution shows only its command while other tools disclose input and result", () => {
+test("execution shows its command and structured output while other tools disclose input and result", () => {
   assert.match(chat, /function toolDisclosure\(/);
-  assert.match(chat, /const output = execution \? "" : toolPayloadText\(result\);/);
+  assert.match(chat, /const hasExecOutput = execution && toolExecutionOutput\(result\) !== null;/);
+  assert.match(
+    chat,
+    /const output = toolPayloadText\(result, hasExecOutput \? \["stdout", "stderr", "code", "timedOut", "result"\] : \[\]\);/,
+  );
   assert.match(chat, /toolPayloadCard\(execution \? null : "Input", input,/);
+  assert.match(chat, /hasExecOutput \? execOutputCard\(result, work, row\.result\) : nothing/);
   assert.match(chat, /toolPayloadCard\("Result", output,/);
   assert.match(chat, /<details\s+class="\$\{classes\} tool-expandable"/);
   assert.match(css, /\.tool-payload-body \{[\s\S]{0,300}?white-space: pre-wrap;/);

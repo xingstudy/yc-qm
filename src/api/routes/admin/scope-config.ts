@@ -332,21 +332,10 @@ async function scopeServiceCredentials(deps: ApiCtx["deps"], targetScope: string
     scopes.push(grant.granteeScopeId);
     grantees.set(grant.ref, scopes);
   }
-  return Promise.all(
-    credentials.map(async (credential) => {
-      const usage = (await deps.credentialUsage?.list({ slug: credential.slug, limit: 5000 })) ?? [];
-      const successful = usage.filter((entry) => entry.status === "ok");
-      return {
-        ...credential,
-        grantees: grantees.get(encodeRef(serviceCredRef(credential.slug))) ?? [],
-        usageCount: successful.length,
-        usageTruncated: usage.length === 5000,
-        usageSince: successful.length ? Math.min(...successful.map((entry) => entry.ts)) : null,
-        lastUsedAt: successful.length ? Math.max(...successful.map((entry) => entry.ts)) : null,
-        recentUsagePrincipals: [...new Set(successful.map((entry) => entry.principalId))].slice(0, 12),
-      };
-    }),
-  );
+  return credentials.map((credential) => ({
+    ...credential,
+    grantees: grantees.get(encodeRef(serviceCredRef(credential.slug))) ?? [],
+  }));
 }
 
 export async function getCredentialUsageSummary(ctx: ApiCtx): Promise<void> {
@@ -399,6 +388,7 @@ async function scopeModelOptions(
   values: Record<string, unknown>,
   nonblocking: boolean,
 ) {
+  const configuredHarness = deps.harnessId === "mock" ? "pi" : (deps.harnessId ?? "pi");
   const configuredKeys = deps.providerKeys ?? ALL_PROVIDERS_AVAILABLE;
   const managedKeys = deps.modelCredentials ? await deps.modelCredentials.availability() : configuredKeys;
   const providersFor = (harnessId: string) =>
@@ -418,7 +408,7 @@ async function scopeModelOptions(
   let runtimeEffective = null;
   let runtimeUnavailable = false;
   try {
-    const harnessId = isHarnessId(deps.harnessId) ? deps.harnessId : "pi";
+    const harnessId = isHarnessId(configuredHarness) ? configuredHarness : "pi";
     runtimeEffective = await resolveRuntimeChoiceDurable(deps.config!, orgScope(deps), targetScope, {
       harnessId,
       modelId: defaultModelForHarness(harnessId, deps.baseModelDefault),
@@ -430,14 +420,14 @@ async function scopeModelOptions(
   const runtime = (values.runtime ??
     effectiveRuntime ??
     runtimeEffective ?? {
-      harnessId: deps.harnessId ?? "pi",
+      harnessId: configuredHarness,
       modelId: effectiveModel ?? deps.baseModelDefault,
     }) as { harnessId?: unknown; modelId?: unknown };
-  const approvedHarnesses = (await deps.config!.getApprovedHarnessesDurable(targetScope)) ?? [deps.harnessId ?? "pi"];
-  let currentId = effectiveModel ?? defaultModelForHarness(deps.harnessId ?? "pi", deps.baseModelDefault);
+  const approvedHarnesses = (await deps.config!.getApprovedHarnessesDurable(targetScope)) ?? [configuredHarness];
+  let currentId = effectiveModel ?? defaultModelForHarness(configuredHarness, deps.baseModelDefault);
   if (typeof values.baseModel === "string") currentId = values.baseModel;
   if (typeof runtime.modelId === "string") currentId = runtime.modelId;
-  const currentHarness = typeof runtime.harnessId === "string" ? runtime.harnessId : (deps.harnessId ?? "pi");
+  const currentHarness = typeof runtime.harnessId === "string" ? runtime.harnessId : configuredHarness;
   const resolvedCurrent = resolveModel(currentId);
   const preserveCurrent =
     !!effectiveRuntime ||
@@ -465,9 +455,9 @@ async function scopeModelOptions(
     runtimeScope,
     runtimeEffective,
     runtimeUnavailable,
-    baseModelDefault: effectiveModel ?? defaultModelForHarness(deps.harnessId ?? "pi", deps.baseModelDefault),
-    baseModelOptions: modelsFor(deps.harnessId ?? "pi"),
-    harnessDefault: effectiveRuntime?.harnessId ?? deps.harnessId ?? "pi",
+    baseModelDefault: effectiveModel ?? defaultModelForHarness(configuredHarness, deps.baseModelDefault),
+    baseModelOptions: modelsFor(configuredHarness),
+    harnessDefault: effectiveRuntime?.harnessId ?? configuredHarness,
     harnessOptions: HARNESS_IDS.filter(
       (id) => id !== "mock" && (approvedHarnesses.includes(id) || runtime.harnessId === id) && modelsFor(id).length > 0,
     ),
@@ -479,7 +469,7 @@ async function scopeModelOptions(
     fastModeHarnessIds: HARNESS_IDS.filter(harnessSupportsFastMode),
     autoFlaggerDefault: defaultAutoFlaggerConfig(deps),
     browseModelOptions: selectableBaseModels().filter((model) =>
-      modelServiceable(model.id, providersFor(deps.harnessId ?? "pi")),
+      modelServiceable(model.id, providersFor(configuredHarness)),
     ),
   };
 }
@@ -560,7 +550,6 @@ export async function getScopeConfig(ctx: ApiCtx): Promise<void> {
             const granteeSubject = organizationAccessSubjectFromScope(grantee);
             return granteeSubject?.kind === "user" ? [granteeSubject.id] : [];
           }),
-          ...credential.recentUsagePrincipals,
         ]),
       ),
     ];

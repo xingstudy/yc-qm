@@ -53,7 +53,11 @@ test.after(() => fake.cleanup());
 for (const kind of ["command", "security-screen"] as const) {
   test(`workers require their own approval instead of inheriting root-session ${kind} grants`, async () => {
     const built = buildApp(
-      testConfig({ sandboxResourcesEnabled: true, modalSandbox: { tokenId: "test", tokenSecret: "test" } }),
+      testConfig({
+        sandboxResourcesEnabled: true,
+        modalSandbox: { tokenId: "test", tokenSecret: "test" },
+        orgBootstrapUsers: ["U1", "U2"],
+      }),
     );
     const request: TurnRequest = {
       surface: "swarm",
@@ -65,6 +69,7 @@ for (const kind of ["command", "security-screen"] as const) {
         : {}),
     };
     try {
+      await built.organization.checkActive("U1");
       const rootComputer = await built.sandboxResources.create("U1", "personal:U1", "sprites", "Root");
       await built.sandboxResources.setDefault("U1", "personal:U1", rootComputer.id);
       await built.app.turn({
@@ -121,6 +126,7 @@ test("wired swarm outbox drives the real orchestrator, durable runs, and authent
     testConfig({
       sandboxResourcesEnabled: true,
       modalSandbox: { tokenId: "test-id", tokenSecret: "test-secret", nativeSnapshotsEnabled: true },
+      orgBootstrapUsers: ["U1", "U2"],
     }),
   );
   try {
@@ -219,6 +225,7 @@ for (const storage of ["memory", "postgres"] as const) {
         signingSecret: "swarm-http-source-signing-key-distinct",
         portalIdentitySecret: "swarm-http-portal-identity-key-distinct",
         apiBaseUrl: "http://core.test",
+        orgBootstrapUsers: ["U1", "U2"],
       });
       if (storage === "postgres") {
         for (const overrides of [{ runStore: "memory" as const }, { sessionStore: "memory" as const }]) {
@@ -420,7 +427,7 @@ for (const storage of ["memory", "postgres"] as const) {
 }
 
 test("unbound request fields cannot claim verified swarm provenance", async () => {
-  const built = buildApp(testConfig());
+  const built = buildApp(testConfig({ orgBootstrapUsers: ["U1"] }));
   const before = screenedPayloads.length;
   try {
     const request: TurnRequest & { verifiedSwarm: boolean } = {
@@ -447,7 +454,7 @@ test("unbound request fields cannot claim verified swarm provenance", async () =
 });
 
 test("a resolved command approval informs the model without changing its requested command", async () => {
-  const built = buildApp(testConfig());
+  const built = buildApp(testConfig({ orgBootstrapUsers: ["U1"] }));
   const request: TurnRequest = {
     surface: "web",
     actor: { externalId: "U1" },
@@ -492,7 +499,7 @@ test("a resolved command approval informs the model without changing its request
 });
 
 test("disabled swarms park queued notifications once without running the model or writing failures", async () => {
-  const built = buildApp(testConfig({ swarmsEnabled: false }));
+  const built = buildApp(testConfig({ swarmsEnabled: false, orgBootstrapUsers: ["U1"] }));
   try {
     const rootTurn = await built.app.turn({
       surface: "test",

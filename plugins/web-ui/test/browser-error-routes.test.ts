@@ -26,7 +26,7 @@ const base = `http://127.0.0.1:${(surface.address() as AddressInfo).port}`;
 const headers = (imp?: string) => ({
   "content-type": "application/json",
   [PORTAL_IDENTITY_HEADER]: mintPortalIdentity(
-    { p: "alice@example.com", exp: Date.now() + 60_000, ...(imp ? { imp } : {}) },
+    { p: "alice@example.com", exp: Date.now() + 60_000, ...(imp ? { imp, isv: 1 } : {}) },
     secret,
   ),
 });
@@ -51,5 +51,5 @@ test("browser error config requires authentication and excludes impersonation", 
   );
   assert.equal((await (await fetch(`${base}/me`, { headers: headers("admin") })).json()).browserErrors, undefined);
   coreStatus = 503;
-  assert.equal((await fetch(`${base}/me`, { headers: headers() })).status, 503);
+  assert.equal((await fetch(`${base}/me`, { headers: headers() })).status, 401);
 });

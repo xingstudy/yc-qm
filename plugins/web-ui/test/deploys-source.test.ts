@@ -231,6 +231,8 @@ for (const count of [0, 7, 23, 150]) {
     const context = createContext({
       d: deployment,
       nothing: "",
+      localeCode: () => "en-US",
+      t: (value: string) => value,
       drawDeployDetail: (value: unknown) => redraws.push(value),
       html(strings: TemplateStringsArray, ...values: unknown[]) {
         const text = (value: unknown): string => {
@@ -295,6 +297,8 @@ test("detail redraws reuse the scroll container and retain focus", () => {
       deployToast: null,
       visibleVersionCount: 10,
       nothing: "",
+      localeCode: () => "en-US",
+      t: (value: string) => value,
       html: () => "",
       render(_template: unknown, host: HTMLElement) {
         if (!host.firstChild) host.append(dom.window.document.createElement("button"));
