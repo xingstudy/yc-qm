@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { createPgPool } from "../persistence/pg-pool.ts";
 
-export type SandboxLifecycleState =
-  "legacy_unknown" | "observing" | "ready" | "draining" | "migrating" | "parked" | "error";
+type SandboxLifecycleState = "legacy_unknown" | "observing" | "ready" | "draining" | "migrating" | "parked" | "error";
 
-export interface SandboxRuntimeInstance {
+interface SandboxRuntimeInstance {
   orgId: string;
   backend: string;
   scopeId: string;
@@ -21,7 +20,7 @@ export interface SandboxRuntimeInstance {
   lastError?: string;
 }
 
-export interface SandboxRuntimeLease {
+interface SandboxRuntimeLease {
   leaseId: string;
   orgId: string;
   backend: string;
@@ -32,7 +31,7 @@ export interface SandboxRuntimeLease {
   createdAt: number;
 }
 
-export interface ObserveSandboxInput {
+interface ObserveSandboxInput {
   orgId: string;
   backend: string;
   scopeId: string;
