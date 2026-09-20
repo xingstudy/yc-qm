@@ -152,6 +152,14 @@ test("the production Compose stack is image-only and exposes only the edge", () 
   assert.match(serviceBlock(compose, "postgres"), /profiles:[\s\S]*?bundled-postgres/);
   assert.match(serviceBlock(compose, "core"), /postgres:[\s\S]*?required: false/);
   assert.match(
+    serviceBlock(compose, "core"),
+    /LOCAL_SANDBOX_LIFECYCLE_MODE: \$\{LOCAL_SANDBOX_LIFECYCLE_MODE:-observe\}/,
+  );
+  assert.match(
+    serviceBlock(developmentCompose, "core"),
+    /LOCAL_SANDBOX_LIFECYCLE_MODE: \$\{LOCAL_SANDBOX_LIFECYCLE_MODE:-enforce\}/,
+  );
+  assert.match(
     serviceBlock(compose, "web-ui"),
     /WEB_UI_IM_CREDENTIALS_KEY: \$\{WEB_UI_IM_CREDENTIALS_KEY:\?Set WEB_UI_IM_CREDENTIALS_KEY in \.env\.production\}/,
   );

@@ -12,6 +12,8 @@ import { supportsProcessSessions } from "../src/sandbox/sandbox.ts";
 import { sleep } from "../src/util/async.ts";
 import { scopeId } from "../src/types.ts";
 import { installFakeDocker, type FakeDocker } from "./support/fake-docker.ts";
+import { createMemorySandboxLifecycleStore } from "../src/sandbox/sandbox-lifecycle-store.ts";
+import { createMemoryAdvisoryLock } from "../src/persistence/advisory-lock.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "local-sbx-"));
 const guestHome = join(tmp, "home");
@@ -56,6 +58,7 @@ function makeSandbox(fake: FakeDocker, opts: Record<string, unknown> = {}) {
     dockerExec: fake.dockerExec,
     homeDir: guestHome,
     repoRoot: tmp,
+    lifecycleLegacyObserveMs: 0,
     ...opts,
   });
 }
@@ -109,7 +112,9 @@ test("cold provision creates volume + container, run() execs over the daemon, by
   assert.equal(c.labels["qm.sandbox"], "1");
   assert.equal(c.labels["qm.scope"], scope);
   assert.equal(c.labels["qm.org"], "default-org");
+  assert.equal(c.labels["qm.environment"], "development");
   assert.equal(c.labels["agent_env"], "dev");
+  assert.ok(c.labels["qm.sandbox-generation"]);
   assert.equal(c.volume, localVolumeName(scope));
 
   const r = await sb.run(h, "echo hello");
@@ -127,9 +132,16 @@ test("teardown parks the container and the next provision restarts it warm", asy
   const sb = makeSandbox(fake);
   const layers = rw(scopeId("personal", "U2"));
   const h1 = await sb.provision(layers);
+  const runningStatus = await sb.computerStatus!(layers[0]!.scopeId);
+  assert.equal(runningStatus.lifecycleState, "running");
+  assert.equal(runningStatus.machine, h1.id);
+  assert.match(runningStatus.listed ?? "", /ready; current=/);
+  assert.equal(runningStatus.provisioned, true);
+  assert.equal(runningStatus.guestResponsive, true);
   await sb.teardown(h1);
   assert.equal(fake.containers.get(h1.id)!.running, false);
   assert.equal(fake.networks.has(localNetworkName(h1.id)), false);
+  assert.equal((await sb.computerStatus!(layers[0]!.scopeId)).lifecycleState, "paused");
 
   const h2 = await sb.provision(layers);
   assert.equal(h2.id, h1.id, "same container reused");
@@ -162,9 +174,11 @@ test("running a parked handle reconnects its network", async () => {
   assert.equal(fake.networks.size, 0);
   assert.equal((await sb.run(handle, "echo resumed")).stdout.trim(), "resumed");
   assert.equal(fake.runCount, 1);
+  await sb.teardown(handle);
+  assert.equal(fake.containers.get(handle.id)!.running, false);
 });
 
-test("deep idle reaping releases only old stopped owned networks and preserves containers and volumes", async () => {
+test("deep idle reaping parks orphaned running containers and removes expired compute while preserving volumes", async () => {
   const fake = installFakeDocker(daemonPort);
   const sb = makeSandbox(fake);
   const handles = [];
@@ -180,10 +194,50 @@ test("deep idle reaping releases only old stopped owned networks and preserves c
   const fresh = makeSandbox(fake);
   assert.deepEqual(await fresh.reapDeepIdle!(10_000), { reaped: 1 });
   assert.equal(fake.networks.has(localNetworkName(handles[0]!.id)), false);
-  assert.equal(fake.containers.size, 4);
+  assert.equal(fake.containers.size, 3);
   assert.equal(fake.volumes.size, 4);
   assert.equal(fake.networks.size, 3);
+  assert.equal(fake.containers.get(handles[2]!.id)!.running, false);
   assert.deepEqual(await fresh.reapDeepIdle!(10_000), { reaped: 0 });
+});
+
+test("deep idle reaping continues after one cleanup failure and retries its orphaned network", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const lifecycleStore = createMemorySandboxLifecycleStore();
+  const errors: string[] = [];
+  let blockedNetwork = "";
+  let failCleanup = true;
+  const sb = makeSandbox(fake, {
+    lifecycleStore,
+    onError: (error: { code: string }) => errors.push(error.code),
+    dockerExec: async (args: string[]) => {
+      if (failCleanup && args[0] === "network" && args[1] === "rm" && args[2] === blockedNetwork) {
+        return { code: 1, stdout: "", stderr: "network cleanup failed" };
+      }
+      return fake.dockerExec(args);
+    },
+  });
+  const failed = await sb.provision(rw(scopeId("personal", "reap-failure")));
+  const healthy = await sb.provision(rw(scopeId("personal", "reap-healthy")));
+  await sb.teardown(failed, { keepWarm: true });
+  await sb.teardown(healthy, { keepWarm: true });
+  blockedNetwork = localNetworkName(failed.id);
+  for (const handle of [failed, healthy]) {
+    const container = fake.containers.get(handle.id)!;
+    container.running = false;
+    container.finishedAt = new Date(Date.now() - 100_000).toISOString();
+  }
+
+  assert.deepEqual(await sb.reapDeepIdle!(1000), { reaped: 1 });
+  assert.ok(errors.includes("compute_cleanup_failed"));
+  assert.ok(errors.includes("orphan_cleanup_failed"));
+  assert.equal(fake.containers.has(healthy.id), false);
+  assert.equal(fake.networks.has(blockedNetwork), true);
+
+  failCleanup = false;
+  assert.deepEqual(await sb.reapDeepIdle!(1000), { reaped: 1 });
+  assert.equal(fake.networks.has(blockedNetwork), false);
+  assert.equal(fake.volumes.size, 2);
 });
 
 test("Docker 29 networks request small dynamically allocated subnets", async () => {
@@ -257,6 +311,25 @@ test("a scratch box has no volume and is removed on teardown", async () => {
   assert.equal(fake.containers.has(h.id), false, "scratch container destroyed");
 });
 
+test("a stale scratch box is replaced automatically after its active handle is released", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const key = "stale-scratch";
+  const lifecycleStore = createMemorySandboxLifecycleStore();
+  const advisoryLock = createMemoryAdvisoryLock();
+  const firstSandbox = makeSandbox(fake, { lifecycleStore, advisoryLock });
+  const first = await firstSandbox.provision([], { scratch: { key } });
+  fake.imageId = "sha256:image-v2";
+  const nextSandbox = makeSandbox(fake, { lifecycleStore, advisoryLock, lifecycleMigrationWaitMs: 2000 });
+  const replacement = nextSandbox.provision([], { scratch: { key } });
+  await sleep(50);
+  assert.equal(fake.runCount, 1);
+  await firstSandbox.teardown(first);
+  const next = await replacement;
+  assert.equal(fake.runCount, 2);
+  assert.equal(fake.containers.get(next.id)!.imageId, "sha256:image-v2");
+  await nextSandbox.teardown(next);
+});
+
 test("teardown destroy removes both the container and its volume", async () => {
   const fake = installFakeDocker(daemonPort);
   const sb = makeSandbox(fake);
@@ -285,6 +358,51 @@ test("refcounted teardown: the container parks only after the last concurrent us
   assert.equal(fake.containers.get(a.id)!.running, true, "still held by the sibling");
   await sb.teardown(b);
   assert.equal(fake.containers.get(b.id)!.running, false, "parked after the last release");
+});
+
+test("persisted leases prevent one core from parking another core's active sandbox", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const lifecycleStore = createMemorySandboxLifecycleStore();
+  const advisoryLock = createMemoryAdvisoryLock();
+  const firstCore = makeSandbox(fake, { lifecycleStore, advisoryLock });
+  const secondCore = makeSandbox(fake, { lifecycleStore, advisoryLock });
+  const layers = rw(scopeId("personal", "multi-core-lease"));
+  const first = await firstCore.provision(layers);
+  const second = await secondCore.provision(layers);
+  await firstCore.teardown(first);
+  assert.equal(fake.containers.get(first.id)!.running, true);
+  await secondCore.teardown(second);
+  assert.equal(fake.containers.get(second.id)!.running, false);
+  await firstCore.destroyScope!(layers[0]!.scopeId);
+});
+
+test("active lifecycle leases are heartbeated so a reconciler cannot park in-use compute", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const lifecycleStore = createMemorySandboxLifecycleStore();
+  const layers = rw(scopeId("personal", "lease-heartbeat"));
+  const owner = makeSandbox(fake, { lifecycleStore, lifecycleLeaseTtlMs: 80 });
+  const handle = await owner.provision(layers);
+  await sleep(250);
+  const reconciler = makeSandbox(fake, { lifecycleStore, lifecycleLeaseTtlMs: 80 });
+  assert.deepEqual(await reconciler.reapDeepIdle!(1), { reaped: 0 });
+  assert.equal(fake.containers.get(handle.id)!.running, true);
+  await owner.teardown(handle, { destroy: true });
+});
+
+test("closing a core releases its lifecycle leases for immediate takeover", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const lifecycleStore = createMemorySandboxLifecycleStore();
+  const layers = rw(scopeId("personal", "core-close"));
+  const owner = makeSandbox(fake, { lifecycleStore });
+  const handle = await owner.provision(layers);
+  assert.equal((await lifecycleStore.activeLeases("default-org", "local-docker", handle.id, Date.now())).length, 1);
+  await owner.close!();
+  assert.equal((await lifecycleStore.activeLeases("default-org", "local-docker", handle.id, Date.now())).length, 0);
+  const reconciler = makeSandbox(fake, { lifecycleStore });
+  assert.deepEqual(await reconciler.reapDeepIdle!(100_000), { reaped: 0 });
+  assert.equal(fake.containers.get(handle.id)!.running, false);
+  assert.equal(fake.volumes.has(localVolumeName(layers[0]!.scopeId)), true);
+  await reconciler.destroyScope!(layers[0]!.scopeId);
 });
 
 test("process sessions: start, read output, signal to exit", async () => {
@@ -383,6 +501,7 @@ test("enforced sandboxes join a ready guard and pass signed proxy settings to co
   });
   const guard = fake.containers.get(`${handle.id}-egress`)!;
   assert.ok(guard.running);
+  assert.equal(guard.labels["qm.sandbox-generation"], fake.containers.get(handle.id)!.labels["qm.sandbox-generation"]);
   assert.equal(fake.containers.get(handle.id)!.network, `container:${guard.name}`);
   const launches = calls.filter((call) => call[0] === "run");
   assert.ok(launches[0]!.includes(guard.name));
@@ -414,16 +533,25 @@ test("maintenance provisions without a token retain isolation and cannot receive
   await sb.teardown(handle, { destroy: true });
 });
 
-test("enabling enforcement requires stopping an old running sandbox, preserves its home and supports disabling later", async () => {
+test("enabling enforcement drains an active sandbox then migrates automatically without deleting its home", async () => {
   const fake = installFakeDocker(daemonPort);
   const layers = rw(scopeId("personal", "guard-migration"));
-  const open = makeSandbox(fake);
+  const lifecycleStore = createMemorySandboxLifecycleStore();
+  const advisoryLock = createMemoryAdvisoryLock();
+  const open = makeSandbox(fake, { lifecycleStore, advisoryLock });
   const original = await open.provision(layers);
   await open.writeFile(original, "guard-preserved.txt", "keep");
-  const guarded = makeSandbox(fake, { egressProxyUrl: "http://host.docker.internal:48080" });
-  await assert.rejects(guarded.provision(layers), /Drain active turns/);
+  const guarded = makeSandbox(fake, {
+    egressProxyUrl: "http://host.docker.internal:48080",
+    lifecycleStore,
+    advisoryLock,
+    lifecycleMigrationWaitMs: 2000,
+  });
+  const migration = guarded.provision(layers, { egressToken: "token" });
+  await sleep(50);
+  assert.equal(fake.runCount, 1, "active lease prevents replacement");
   await open.teardown(original);
-  const migrated = await guarded.provision(layers, { egressToken: "token" });
+  const migrated = await migration;
   assert.equal(migrated.coldStart, false);
   assert.equal(await guarded.readFile(migrated, "guard-preserved.txt"), "keep");
   await guarded.teardown(migrated);
@@ -432,6 +560,25 @@ test("enabling enforcement requires stopping an old running sandbox, preserves i
   assert.ok(!fake.containers.has(`${restored.id}-egress`));
   assert.equal(await open.readFile(restored, "guard-preserved.txt"), "keep");
   await open.teardown(restored, { destroy: true });
+});
+
+test("observe mode records an incompatible running sandbox without mutating it", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const lifecycleStore = createMemorySandboxLifecycleStore();
+  const layers = rw(scopeId("personal", "observe-migration"));
+  const open = makeSandbox(fake, { lifecycleStore });
+  const original = await open.provision(layers);
+  await open.teardown(original, { keepWarm: true });
+  const observer = makeSandbox(fake, {
+    egressProxyUrl: "http://host.docker.internal:48080",
+    lifecycleStore,
+    lifecycleMode: "observe",
+  });
+  await assert.rejects(observer.provision(layers), /lifecycle mode is observe/);
+  assert.equal((await lifecycleStore.get("default-org", "local-docker", layers[0]!.scopeId))?.state, "observing");
+  assert.equal(fake.runCount, 1);
+  assert.equal(fake.containers.get(original.id)!.running, true);
+  await open.teardown(original, { destroy: true });
 });
 
 test("guard loss fails closed for existing handles and recovers stopped sandboxes without deleting data", async () => {

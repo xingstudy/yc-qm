@@ -27,16 +27,11 @@ QM_EGRESS_BIND_ADDRESS=172.17.0.1
 
 不要填写 `127.0.0.1`：沙箱内的回环地址指向沙箱自身。不要把代理发布到公网。若 Docker 配置了 `host-gateway-ip`，使用该配置对应的宿主 IPv4 地址，而不是默认 bridge 网关。
 
-结束活动任务后，停止需要迁移的旧沙箱，使用页面或错误信息中的具体容器名称：
-
-```bash
-docker stop <sandbox-container-name>
-docker compose up -d --build egress-proxy core
-```
+直接运行 `docker compose up -d --build egress-proxy core`。生命周期控制器会等待活动任务和后台进程结束，再自动重建需要升级的沙箱容器、网络与守卫。
 
 命令显式指定了 `egress-proxy`，Compose 会自动启用该服务，因此这里无需额外传 `--profile egress`。日常执行不指定服务的 `docker compose up -d` 时，`COMPOSE_PROFILES=auth,egress` 会启用这两组可选服务；没有 profile 的服务默认启用。
 
-下一轮会自动创建受保护的沙箱网络，保留工作目录。不要运行 `docker compose down -v` 或删除 `qm-home-*` 卷。正在运行且网络配置不匹配的旧沙箱会拒绝新任务，并提示先完成活动任务、停止容器。
+下一轮会自动创建受保护的沙箱网络，保留工作目录。不要运行 `docker compose down -v` 或删除 `qm-home-*` 卷。迁移过程只替换计算容器、守卫和网络；详情见[本地 Docker 沙箱生命周期](./local-docker-lifecycle.md)。
 
 Compose 会自动给 core 设置 `LOCAL_SANDBOX_EGRESS_IMAGE=qm-egress-proxy:latest`。代理的 `CAPABILITY_SECRET`、`CORE_SIGNING_SECRET` 与 core 使用同一组现有值，无需生成或更换密钥；`CORE_API_URL=http://host.docker.internal:8080` 用于成员会话校验和审计回传。core 的 `AGENT_API_URL` 供沙箱通过代理调用控制平面。
 
@@ -44,7 +39,7 @@ Compose 会自动给 core 设置 `LOCAL_SANDBOX_EGRESS_IMAGE=qm-egress-proxy:lat
 
 在 `.env.production` 设置相同的三个变量，再使用正常的生产发布脚本部署支持该功能的版本。代理镜像已加入生产构建、漏洞扫描、签名验证和 `images.production.env`，变量名为 `QM_EGRESS_PROXY_IMAGE`。部署脚本保留环境文件中已配置的 profiles，检测到代理 URL 后追加启用 `egress` profile。core 和网络守卫使用同一个已验证的代理镜像摘要；不要手写可变标签替代生产镜像清单。
 
-旧版生产镜像不包含此功能，需要先发布当前代码。启用或更改网络配置前同样需要结束任务并停止旧沙箱。已有工作目录卷、数据库和凭据保持不变。
+旧版生产镜像不包含此功能，需要先发布当前代码。首次部署保持 `LOCAL_SANDBOX_LIFECYCLE_MODE=observe` 完成旧资源登记；确认管理面状态和错误日志正常后改为 `enforce`。此后启用或更改网络配置不需要人工停止旧沙箱，已有工作目录卷、数据库和凭据保持不变。
 
 ## 直接运行 core / 本地开发实例
 

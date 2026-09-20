@@ -78,9 +78,20 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
         const name = rest[rest.length - 1]!;
         const c = containers.get(name);
         if (!c) return fail(`Error: No such object: ${name}`);
-        if (rest.includes("{{.State.Running}}")) return ok(String(c.running));
         if (rest.includes("{{.State.Running}} {{.State.FinishedAt}}"))
           return ok(`${c.running} ${c.finishedAt ?? "0001-01-01T00:00:00Z"}`);
+        if (rest.some((value) => value.includes("qm.sandbox-generation")))
+          return ok(
+            [
+              c.running,
+              c.imageId,
+              c.labels["qm.egress"] ?? "",
+              c.labels["qm.sandbox-generation"] ?? "",
+              c.labels["qm.scope"] ?? "",
+              c.finishedAt ?? "0001-01-01T00:00:00Z",
+            ].join("|"),
+          );
+        if (rest.includes("{{.State.Running}}")) return ok(String(c.running));
         return ok(`${c.running} ${c.imageId} ${c.labels["qm.egress"] ?? ""}`);
       }
       case "network": {

@@ -313,9 +313,29 @@ interface LocalSandboxEnv {
   memoryMb?: number;
   coreContainer?: string;
   defaultTimeoutSec?: number;
+  lifecycleMode?: "observe" | "enforce";
+  lifecycleLeaseTtlMs?: number;
+  lifecycleMigrationWaitMs?: number;
+  lifecycleLegacyObserveMs?: number;
 }
 
 function localSandboxEnv(env: NodeJS.ProcessEnv): LocalSandboxEnv {
+  const lifecycleMode = env.LOCAL_SANDBOX_LIFECYCLE_MODE?.trim() as LocalSandboxEnv["lifecycleMode"];
+  const lifecycleLeaseTtlMs = numEnvStrict("LOCAL_SANDBOX_LEASE_TTL_MS", env.LOCAL_SANDBOX_LEASE_TTL_MS);
+  const lifecycleMigrationWaitMs = numEnvStrict("LOCAL_SANDBOX_MIGRATION_WAIT_MS", env.LOCAL_SANDBOX_MIGRATION_WAIT_MS);
+  const lifecycleLegacyObserveMs = numEnvStrict("LOCAL_SANDBOX_LEGACY_OBSERVE_MS", env.LOCAL_SANDBOX_LEGACY_OBSERVE_MS);
+  if (lifecycleMode && lifecycleMode !== "observe" && lifecycleMode !== "enforce") {
+    throw new Error("LOCAL_SANDBOX_LIFECYCLE_MODE must be observe or enforce");
+  }
+  if (lifecycleLeaseTtlMs !== undefined && lifecycleLeaseTtlMs <= 0) {
+    throw new Error("LOCAL_SANDBOX_LEASE_TTL_MS must be greater than zero");
+  }
+  for (const [name, value] of [
+    ["LOCAL_SANDBOX_MIGRATION_WAIT_MS", lifecycleMigrationWaitMs],
+    ["LOCAL_SANDBOX_LEGACY_OBSERVE_MS", lifecycleLegacyObserveMs],
+  ] as const) {
+    if (value !== undefined && value < 0) throw new Error(`${name} must not be negative`);
+  }
   return {
     ...(env.LOCAL_SANDBOX_EGRESS_PROXY_URL ? { egressProxyUrl: env.LOCAL_SANDBOX_EGRESS_PROXY_URL } : {}),
     ...(env.LOCAL_SANDBOX_EGRESS_IMAGE ? { egressImage: env.LOCAL_SANDBOX_EGRESS_IMAGE } : {}),
@@ -330,6 +350,10 @@ function localSandboxEnv(env: NodeJS.ProcessEnv): LocalSandboxEnv {
     ...(numEnvStrict("SANDBOX_TIMEOUT_SEC", env.SANDBOX_TIMEOUT_SEC) !== undefined
       ? { defaultTimeoutSec: numEnvStrict("SANDBOX_TIMEOUT_SEC", env.SANDBOX_TIMEOUT_SEC) }
       : {}),
+    ...(lifecycleMode ? { lifecycleMode } : {}),
+    ...(lifecycleLeaseTtlMs !== undefined ? { lifecycleLeaseTtlMs } : {}),
+    ...(lifecycleMigrationWaitMs !== undefined ? { lifecycleMigrationWaitMs } : {}),
+    ...(lifecycleLegacyObserveMs !== undefined ? { lifecycleLegacyObserveMs } : {}),
   };
 }
 
