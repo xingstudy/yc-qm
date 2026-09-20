@@ -34,3 +34,12 @@ test("the sandbox base builds a patched GitHub CLI", () => {
   assert.match(dockerfile, /go get "golang\.org\/x\/mod@v\$\{X_MOD_VERSION\}"/);
   assert.match(dockerfile, /go version -m \/usr\/local\/bin\/gh \| grep -Eq/);
 });
+
+test("the sandbox base replaces browser-use's vulnerable anyio pin", () => {
+  const dockerfile = readFileSync(new URL("../fly/Dockerfile", import.meta.url), "utf8");
+  const browserRuntime = dockerfile.match(/ARG BROWSER_USE_VERSION=[\s\S]*?(?=\nRUN agent_site=)/)?.[0];
+
+  assert.ok(browserRuntime);
+  assert.match(browserRuntime, /s\/anyio==4\.12\.1\/anyio==4\.14\.2\/g/);
+  assert.match(browserRuntime, /importlib\.metadata\.version\('anyio'\) == '4\.14\.2'/);
+});
