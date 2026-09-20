@@ -225,6 +225,7 @@ for (const protocol of ["openai", "anthropic", "unknown"] as const)
         harness: "pi",
         piSystemCacheSplit: true,
         modelId: "gateway/acme/future",
+        orgBootstrapUsers: ["U1"],
       }),
     );
     await built.refreshModels();

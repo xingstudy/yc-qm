@@ -403,7 +403,8 @@ test("sharing e2e: complete notebooks retain provenance without truncating late 
 
 test("sharing e2e: screening off preserves carried skills without model calls", async (t) => {
   const b = await fixture(t, { securityScreenBackend: "off" });
-  await b.skill("personal:U1", "unscreened-helper", "SHARED_SKILL_OK");
+  const skill = await b.skill("personal:U1", "unscreened-helper", "SHARED_SKILL_OK");
+  await b.access(skill.id, ["U1", "U2", "U3"]);
   await b.turn("!read skill://unscreened-helper/SKILL.md", true);
   assert.equal(await b.turn("!run python3 skills/unscreened-helper/scripts/value.py", true), "SHARED_SKILL_OK");
   assert.equal(b.modelGateway.audit().filter((rec) => rec.model === "mock-security").length, 0);

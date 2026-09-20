@@ -6,7 +6,7 @@ import { testConfig } from "./support/test-config.ts";
 import type { TurnRequest } from "../src/types.ts";
 
 async function fixture(t: TestContext) {
-  const built = buildApp(testConfig());
+  const built = buildApp(testConfig({ orgBootstrapUsers: ["U1", "U2"] }));
   await built.deploymentLayerReady;
   t.after(async () => {
     built.scheduler.stop();

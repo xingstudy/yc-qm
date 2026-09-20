@@ -388,7 +388,6 @@ async function scopeModelOptions(
   values: Record<string, unknown>,
   nonblocking: boolean,
 ) {
-  const configuredHarness = deps.harnessId === "mock" ? "pi" : (deps.harnessId ?? "pi");
   const configuredKeys = deps.providerKeys ?? ALL_PROVIDERS_AVAILABLE;
   const managedKeys = deps.modelCredentials ? await deps.modelCredentials.availability() : configuredKeys;
   const providersFor = (harnessId: string) =>
@@ -408,7 +407,7 @@ async function scopeModelOptions(
   let runtimeEffective = null;
   let runtimeUnavailable = false;
   try {
-    const harnessId = isHarnessId(configuredHarness) ? configuredHarness : "pi";
+    const harnessId = isHarnessId(deps.harnessId) ? deps.harnessId : "pi";
     runtimeEffective = await resolveRuntimeChoiceDurable(deps.config!, orgScope(deps), targetScope, {
       harnessId,
       modelId: defaultModelForHarness(harnessId, deps.baseModelDefault),
@@ -420,19 +419,20 @@ async function scopeModelOptions(
   const runtime = (values.runtime ??
     effectiveRuntime ??
     runtimeEffective ?? {
-      harnessId: configuredHarness,
+      harnessId: deps.harnessId ?? "pi",
       modelId: effectiveModel ?? deps.baseModelDefault,
     }) as { harnessId?: unknown; modelId?: unknown };
-  const approvedHarnesses = (await deps.config!.getApprovedHarnessesDurable(targetScope)) ?? [configuredHarness];
-  let currentId = effectiveModel ?? defaultModelForHarness(configuredHarness, deps.baseModelDefault);
+  const approvedHarnesses = (await deps.config!.getApprovedHarnessesDurable(targetScope)) ?? [deps.harnessId ?? "pi"];
+  let currentId = effectiveModel ?? defaultModelForHarness(deps.harnessId ?? "pi", deps.baseModelDefault);
   if (typeof values.baseModel === "string") currentId = values.baseModel;
   if (typeof runtime.modelId === "string") currentId = runtime.modelId;
-  const currentHarness = typeof runtime.harnessId === "string" ? runtime.harnessId : configuredHarness;
+  const currentHarness = typeof runtime.harnessId === "string" ? runtime.harnessId : (deps.harnessId ?? "pi");
+  const baseModelHarness = effectiveRuntime ? currentHarness : (deps.harnessId ?? "pi");
   const resolvedCurrent = resolveModel(currentId);
   const preserveCurrent =
     !!effectiveRuntime ||
     !!effectiveModel ||
-    typeof values.runtime === "object" ||
+    (values.runtime !== null && typeof values.runtime === "object") ||
     (nonblocking && !resolvedCurrent && currentId.includes("/"));
   const currentModel: ModelCatalogEntry = {
     id: currentId,
@@ -455,9 +455,9 @@ async function scopeModelOptions(
     runtimeScope,
     runtimeEffective,
     runtimeUnavailable,
-    baseModelDefault: effectiveModel ?? defaultModelForHarness(configuredHarness, deps.baseModelDefault),
-    baseModelOptions: modelsFor(configuredHarness),
-    harnessDefault: effectiveRuntime?.harnessId ?? configuredHarness,
+    baseModelDefault: effectiveModel ?? defaultModelForHarness(deps.harnessId ?? "pi", deps.baseModelDefault),
+    baseModelOptions: modelsFor(baseModelHarness),
+    harnessDefault: effectiveRuntime?.harnessId ?? deps.harnessId ?? "pi",
     harnessOptions: HARNESS_IDS.filter(
       (id) => id !== "mock" && (approvedHarnesses.includes(id) || runtime.harnessId === id) && modelsFor(id).length > 0,
     ),
@@ -469,7 +469,7 @@ async function scopeModelOptions(
     fastModeHarnessIds: HARNESS_IDS.filter(harnessSupportsFastMode),
     autoFlaggerDefault: defaultAutoFlaggerConfig(deps),
     browseModelOptions: selectableBaseModels().filter((model) =>
-      modelServiceable(model.id, providersFor(configuredHarness)),
+      modelServiceable(model.id, providersFor(deps.harnessId ?? "pi")),
     ),
   };
 }

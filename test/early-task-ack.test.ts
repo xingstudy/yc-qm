@@ -30,7 +30,7 @@ for (const scenario of [
   { name: "bot", enabled: false, botActor: true },
 ] as const) {
   test(`queued ${scenario.name} closes acknowledgement at tool start=${scenario.enabled}`, async () => {
-    const built = buildApp(testConfig({ workers: 1 }));
+    const built = buildApp(testConfig({ workers: 1, orgBootstrapUsers: ["U1"] }));
     let release!: () => void;
     let started!: () => void;
     const block = new Promise<void>((r) => {
@@ -77,7 +77,7 @@ for (const scenario of [
 
 for (const action of ["read", "react", "post"] as const) {
   test(`surface ${action} defers early acknowledgement until the parsed action`, async () => {
-    const built = buildApp(testConfig({ workers: 1 }));
+    const built = buildApp(testConfig({ workers: 1, orgBootstrapUsers: ["U1"] }));
     let release!: () => void;
     let started!: () => void;
     const block = new Promise<void>((resolve) => {

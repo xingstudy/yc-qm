@@ -233,6 +233,7 @@ for (const persistence of ["memory", "postgres"] as const) {
         assert.equal(cleared.turnWallClockSec, 0);
       } finally {
         await Promise.all(servers.map(({ server }) => new Promise<void>((resolve) => server.close(() => resolve()))));
+        await Promise.all([...new Set([writer, reader])].map((built) => built.runtime.stop()));
       }
     },
   );

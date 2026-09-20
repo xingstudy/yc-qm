@@ -498,6 +498,10 @@ test("Claude native routes custom models and utilities with isolated, refreshed 
     assert.equal((await harness.turns.runTurn(turn)).reply, "OK");
     apiKey = "custom-rotated";
     await harness.models.judge?.("judge", "answer");
+    currentScript = async function* (prompts) {
+      await prompts[Symbol.asyncIterator]().next();
+      yield resultMessage("Custom route title");
+    };
     await harness.models.generateTitle?.("title");
     assert.equal(capturedOptions.length, 3);
     assert.deepEqual(
