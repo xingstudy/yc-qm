@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { EntryType, ScopeId, Session, SessionEntry, SessionType } from "../types.ts";
+import type { EntryType, ScopeId, Session, SessionEntry, SessionType, SpawnMeta } from "../types.ts";
 import { sleep } from "../util/async.ts";
 
 export function promptEnvelopeBody(envelope: unknown): { hash: string; body: string } | null {
@@ -180,6 +180,44 @@ export function tapeEntryMirrorRecord(entry: {
   };
 }
 
+export function tapeTranscriptEntryRecord(entry: SessionEntry): NewTapeRecord {
+  return {
+    kind: "annotation",
+    payload: {
+      event: "transcript_entry",
+      entry: { type: entry.type, payload: entry.payload, at: entry.createdAt, parentSeq: entry.parentSeq },
+    },
+    scopeLabel: entry.scopeLabel,
+    entrySeq: entry.seq,
+  };
+}
+
+export function transcriptEntryFromTape(row: TapeRecord): SessionEntry | null {
+  if (row.kind !== "annotation" || row.entrySeq === undefined) return null;
+  const payload = row.payload as {
+    event?: unknown;
+    entry?: { type?: unknown; payload?: unknown; at?: unknown; parentSeq?: unknown };
+  } | null;
+  const entry = payload?.entry;
+  if (
+    payload?.event !== "transcript_entry" ||
+    !entry ||
+    typeof entry.type !== "string" ||
+    typeof entry.at !== "number" ||
+    (entry.parentSeq !== null && typeof entry.parentSeq !== "number")
+  )
+    return null;
+  return {
+    sessionId: row.sessionId,
+    seq: row.entrySeq,
+    parentSeq: entry.parentSeq,
+    type: entry.type as EntryType,
+    payload: entry.payload ?? null,
+    scopeLabel: row.scopeLabel,
+    createdAt: entry.at,
+  };
+}
+
 export type TranscriptAppendSessions = Pick<SessionStore, "append" | "appendTape" | "latestEntrySeq" | "tapeCoverage">;
 
 export async function appendEntryOutsideTurn(
@@ -217,6 +255,7 @@ export interface TapeMeta {
   changeTime?: string;
   hidden?: boolean;
   overheard?: boolean;
+  sourceRole?: "agent";
   author?: string;
   attachments?: unknown[];
   display?: string;
@@ -247,6 +286,7 @@ export interface GetTapeOptions {
 
 export interface GetEntriesOptions {
   sinceSeq?: number;
+  beforeSeq?: number;
   limit?: number;
 }
 
@@ -656,6 +696,9 @@ export interface SessionStore {
   get(sessionId: string): Promise<Session | null>;
 
   updateTitle(sessionId: string, title: string): Promise<void>;
+  setParentSession(sessionId: string, parentSessionId: string | null): Promise<void>;
+  setSpawnMeta(sessionId: string, meta: SpawnMeta): Promise<void>;
+  childrenOf(parentSessionId: string): Promise<Session[]>;
   updateForkProvenance(
     sessionId: string,
     provenance: { forkedFrom: { sessionId: string; title?: string | null }; forkBoundarySeq: number },
@@ -670,6 +713,7 @@ export interface SessionStore {
 
   append(lease: Lease, entry: NewEntry): Promise<SessionEntry>;
   getEntries(sessionId: string, opts?: GetEntriesOptions): Promise<SessionEntry[]>;
+  getTranscriptEntries(sessionId: string, opts?: GetEntriesOptions): Promise<SessionEntry[]>;
   getContextWindow(sessionId: string): Promise<ContextWindow>;
   getEntry(sessionId: string, seq: number): Promise<SessionEntry | undefined>;
   latestEntrySeq(sessionId: string): Promise<number>;
@@ -714,6 +758,8 @@ export interface SessionStore {
   listByScope(scope: ScopeId): Promise<Session[]>;
 
   scopeHasSessions(scope: ScopeId): Promise<boolean>;
+
+  countPersonalConversations(scope: ScopeId, limit?: number): Promise<number>;
 
   sessionsByThreadRefs(threadRefs: readonly string[]): Promise<SessionRef[]>;
 

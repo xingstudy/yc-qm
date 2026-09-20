@@ -5,7 +5,7 @@ import { createTranscriptViewport } from "../src/transcript-viewport.ts";
 
 function fixture() {
   const dom = new JSDOM(
-    `<section class="chat-scroll"><div class="message-stack"><article class="user-row" data-index="1"><div class="user-bubble"><div class="pin-content">Example prompt</div><button class="pin-toggle" hidden>Show more</button></div></article></div></section>`,
+    `<section class="chat-scroll"><div class="pinned-strip"></div><div class="message-stack"><article class="user-row" data-index="1"><div class="user-bubble"><div class="pin-content">Example prompt</div><button class="pin-toggle" hidden>Show more</button></div></article></div></section>`,
   );
   const scroller = dom.window.document.querySelector<HTMLElement>("section")!;
   const row = scroller.querySelector<HTMLElement>("article")!;
@@ -13,16 +13,23 @@ function fixture() {
   const toggle = row.querySelector<HTMLButtonElement>("button")!;
   let height = 300;
   let fullHeight = 600;
+  let pinsHeight = 0;
+  scroller.querySelector<HTMLElement>(".pinned-strip")!.getBoundingClientRect = () =>
+    ({ height: pinsHeight }) as DOMRect;
   Object.defineProperties(scroller, { clientHeight: { get: () => height }, scrollHeight: { value: 2000 } });
   Object.defineProperties(content, {
     scrollHeight: { get: () => fullHeight },
     clientHeight: {
-      get: () =>
-        row.classList.contains("pin-expanded") || row.classList.contains("pin-fits")
-          ? fullHeight
-          : Math.min(fullHeight, parseFloat(row.style.getPropertyValue("--pin-clamp")) || 320),
+      get: () => {
+        if (row.classList.contains("pin-expanded")) {
+          const limit = row.style.getPropertyValue("--pin-expanded-max");
+          return Math.min(fullHeight, limit ? parseFloat(limit) : fullHeight);
+        }
+        return Math.min(fullHeight, 139.5);
+      },
     },
   });
+  content.getBoundingClientRect = () => ({ height: content.clientHeight }) as DOMRect;
   scroller.getBoundingClientRect = () => ({ top: 0 }) as DOMRect;
   row.getBoundingClientRect = () => ({ top: 0, height: content.clientHeight + 24 }) as DOMRect;
   const observed = new Set<Element>();
@@ -60,6 +67,10 @@ function fixture() {
       height = next;
       resize();
     },
+    setPins: (next: number) => {
+      pinsHeight = next;
+      resize();
+    },
     grow: (next: number) => {
       fullHeight = next;
       resize();
@@ -78,7 +89,7 @@ function fixture() {
 test("long prompts clamp to the pane and expand or collapse through their button", () => {
   const f = fixture();
   try {
-    assert.equal(f.row.style.getPropertyValue("--pin-clamp"), "105px");
+    assert.equal(f.content.clientHeight, 139.5);
     assert.equal(f.toggle.hidden, false);
     f.toggle.click();
     assert.equal(f.row.classList.contains("pin-expanded"), true);
@@ -92,13 +103,13 @@ test("long prompts clamp to the pane and expand or collapse through their button
   }
 });
 
-test("pane resizes respect the minimum and maximum preview heights", () => {
+test("pane resizes keep the compact preview height", () => {
   const f = fixture();
   try {
     f.resize(100);
-    assert.equal(f.row.style.getPropertyValue("--pin-clamp"), "96px");
+    assert.equal(f.content.clientHeight, 139.5);
     f.resize(2000);
-    assert.equal(f.row.style.getPropertyValue("--pin-clamp"), "320px");
+    assert.equal(f.content.clientHeight, 139.5);
   } finally {
     f.close();
   }
@@ -123,10 +134,12 @@ test("a reused row resets expansion when its message index changes", () => {
   try {
     f.toggle.click();
     assert.equal(f.row.classList.contains("pin-expanded"), true);
+    f.content.scrollTop = 200;
     f.row.dataset.index = "2";
     f.viewport.sync(f.scroller);
     assert.equal(f.row.classList.contains("pin-expanded"), false);
     assert.equal(f.toggle.textContent, "Show more");
+    assert.equal(f.content.scrollTop, 0);
   } finally {
     f.close();
   }
@@ -184,6 +197,104 @@ test("switching to a new scroller resets expansion even when the message index i
     assert.equal(row.classList.contains("pin-expanded"), false);
     assert.equal(row.querySelector(".pin-toggle")!.getAttribute("aria-expanded"), "false");
     assert.equal(f.row.classList.contains("pin-expanded"), false);
+  } finally {
+    f.close();
+  }
+});
+
+test("expanding a scrolled prompt stays sticky with a bounded scrollable body", () => {
+  const f = fixture();
+  try {
+    f.scroller.scrollTop = 500;
+    f.scroller.dispatchEvent(new f.scroller.ownerDocument.defaultView!.Event("scroll"));
+    assert.equal(f.row.classList.contains("stuck"), true);
+    f.toggle.click();
+    assert.equal(f.row.classList.contains("sticky-disabled"), false);
+    assert.equal(f.row.classList.contains("stuck"), true);
+    assert.equal(f.content.clientHeight, 276);
+    assert.ok(f.content.scrollHeight > f.content.clientHeight);
+    assert.equal(f.scroller.scrollTop, 500);
+    f.content.scrollTop = 200;
+    f.toggle.click();
+    assert.equal(f.content.scrollTop, 0);
+    assert.equal(f.row.classList.contains("stuck"), true);
+    assert.equal(f.content.clientHeight, 139.5);
+    assert.equal(f.scroller.scrollTop, 500);
+  } finally {
+    f.close();
+  }
+});
+
+test("expanded prompts reserve pins and chrome when panes resize or content grows", () => {
+  const f = fixture();
+  try {
+    f.setPins(60);
+    f.scroller.style.paddingTop = "8px";
+    f.scroller.style.paddingBottom = "20px";
+    f.row.style.marginBottom = "12px";
+    f.toggle.click();
+    assert.equal(f.content.clientHeight, 176);
+    assert.equal(f.row.classList.contains("sticky-disabled"), false);
+    f.resize(220);
+    assert.equal(f.content.clientHeight, 96);
+    assert.equal(f.row.classList.contains("sticky-disabled"), false);
+    f.setPins(80);
+    assert.equal(f.content.clientHeight, 76);
+    f.grow(1200);
+    assert.equal(f.content.clientHeight, 76);
+    f.resize(1600);
+    assert.equal(f.content.clientHeight, 1200);
+    f.viewport.dispose();
+    assert.equal(f.row.style.getPropertyValue("--pin-expanded-max"), "");
+  } finally {
+    f.close();
+  }
+});
+
+test("an expanded prompt stays in flow when its chrome alone cannot fit", () => {
+  const f = fixture();
+  try {
+    f.setPins(290);
+    f.toggle.click();
+    assert.equal(f.row.style.getPropertyValue("--pin-expanded-max"), "0px");
+    assert.equal(f.row.classList.contains("sticky-disabled"), true);
+    f.setPins(30);
+    assert.equal(f.row.classList.contains("sticky-disabled"), false);
+  } finally {
+    f.close();
+  }
+});
+
+test("repeated prompt measurement preserves the disclosure text node", () => {
+  const f = fixture();
+  try {
+    const label = f.toggle.firstChild;
+    for (const height of [300, 200, 500]) {
+      f.resize(height);
+      assert.equal(f.toggle.firstChild, label);
+    }
+    f.toggle.click();
+    const expandedLabel = f.toggle.firstChild;
+    assert.notEqual(expandedLabel, label);
+    f.resize(400);
+    assert.equal(f.toggle.firstChild, expandedLabel);
+  } finally {
+    f.close();
+  }
+});
+
+test("ordinary multi-line prompts stay fully visible without a disclosure", () => {
+  const f = fixture();
+  try {
+    for (const height of [70, 100, 139]) {
+      f.grow(height);
+      assert.equal(f.content.clientHeight, height);
+      assert.equal(f.toggle.hidden, true);
+    }
+    f.grow(250);
+    assert.equal(f.toggle.hidden, false);
+    f.toggle.click();
+    assert.equal(f.content.clientHeight, 250);
   } finally {
     f.close();
   }

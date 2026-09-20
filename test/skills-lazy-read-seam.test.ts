@@ -62,13 +62,13 @@ test("a leading ./ on the SKILL.md path still triggers materialization", async (
   assert.deepEqual(seen, ["taste-skill"]);
 });
 
-test("reading an asset inside a skill dir does NOT trigger materialization (only SKILL.md does)", async () => {
+test("reading assets inside skill directories materializes their trees", async () => {
   const seen: string[] = [];
   const tc = ctx((d) => seen.push(d));
   await tc.read("skills/popular-web-designs/scripts/render.py");
   await tc.read("skills/foo/references/notes.md");
   await tc.read("reports/report.md");
-  assert.deepEqual(seen, [], "no lazy trigger for non-SKILL.md reads");
+  assert.deepEqual(seen, ["popular-web-designs", "foo"]);
 });
 
 test("executing a skill's script on a cold box (no prior SKILL.md read) materializes its tree first", async () => {
@@ -101,4 +101,13 @@ test("a background job that runs a skill's script materializes its tree first to
   assert.deepEqual(seen, ["google-workspace"], "background materialized the referenced skill tree");
   assert.equal(r.status.state, "exited");
   assert.equal(r.output, "ran", "the job ran cleanly because the assets were laid before it started");
+});
+
+test("pack file access selects only the named pack", async () => {
+  const seen: string[] = [];
+  const tc = ctx((dir) => seen.push(dir));
+  await tc.read("skills/.packs/selected/reference.txt");
+  await tc.execute("python skills/.packs/selected/script.py");
+  await tc.backgroundStart("sh skills/.packs/selected/job.sh");
+  assert.deepEqual(seen, [".packs/selected", ".packs/selected", ".packs/selected"]);
 });

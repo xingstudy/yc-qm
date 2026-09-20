@@ -23,7 +23,6 @@ import {
 import type { SlackCoreClient } from "../api/slack-core-client.ts";
 import type { Delivery } from "../types.ts";
 import type { TurnFlow } from "./turn-flow.ts";
-import type { Mirror } from "./mirror.ts";
 import { cleanAgentReplyForSlack, stripSlackDirectives } from "./messaging.ts";
 import { cronIdOf } from "../sessions/session-store.ts";
 import { slackErrorCode } from "./payloads.ts";
@@ -54,19 +53,17 @@ export function createDeliveryPoller(deps: {
   core: SlackCoreClient;
   webUiPublicUrl?: string;
   flow: TurnFlow;
-  mirror: Mirror;
   threads: ReturnType<typeof createThreadTracker>;
   clientForIdentity(identity: string): any;
   claimMs?: number;
   slowDrainMs?: number;
 }): { pollDeliveries(client: any): Promise<boolean> } {
-  const { core, flow, mirror, threads, clientForIdentity } = deps;
+  const { core, flow, threads, clientForIdentity } = deps;
   const claimMs = deps.claimMs ?? DELIVERY_CLAIM_MS;
   const slowDrainMs = deps.slowDrainMs ?? SLOW_DRAIN_ALARM_MS;
   const claimMargin = Math.min(DELIVERY_CLAIM_MARGIN_MS, Math.floor(claimMs / 3));
   const recoveredRow = (d: Delivery): boolean => typeof d.createdAt === "number" && Date.now() - d.createdAt > claimMs;
   const { inFlightRuns } = flow;
-  const { mirrorSelfPost } = mirror;
 
   async function drainClaimed(
     types: string[],
@@ -145,15 +142,20 @@ export function createDeliveryPoller(deps: {
   const ackDelivery = (id: string, body?: unknown): Promise<void> =>
     core.ackDelivery(id, body as { recipientThreadRef?: string; slackApiMs?: number } | undefined);
 
-  function cronFooter(d: Delivery): Array<Record<string, unknown>> {
+  function deliveryFooter(d: Delivery): Array<Record<string, unknown>> {
     const base = deps.webUiPublicUrl?.trim().replace(/\/+$/, "");
     const id = d.provenance?.trigger === "cron" ? cronIdOf(d.provenance.sourceThreadRef) : null;
-    if (!base || !id) return [];
+    const sender = d.destination.relaySender?.trim().replace(/^@+/, "");
+    const attribution = sender ? [{ type: "plain_text", text: `Sent for @${sender}`, emoji: false }] : [];
+    if (!base || !id) return attribution;
     const title = (d.provenance?.sourceTitle?.trim() || "Cron")
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;");
-    return [{ type: "mrkdwn", text: `${title} · <${base}/crons/${encodeURIComponent(id)}|Settings>`, verbatim: true }];
+    return [
+      ...attribution,
+      { type: "mrkdwn", text: `${title} · <${base}/crons/${encodeURIComponent(id)}|Settings>`, verbatim: true },
+    ];
   }
 
   const deliveryTracker = createDeliveryTracker();
@@ -242,9 +244,9 @@ export function createDeliveryPoller(deps: {
                     .catch(swallowAs("slack: post upload-failure note", undefined));
                 }
               };
-              const settingsFooter = cronFooter(d);
+              const messageFooter = deliveryFooter(d);
               const footer = [
-                ...settingsFooter,
+                ...messageFooter,
                 ...(d.destination.debugFooter ? [{ type: "mrkdwn", text: d.destination.debugFooter }] : []),
               ];
               const taskList = d.destination.taskList?.length ? renderTaskList(d.destination.taskList) : undefined;
@@ -256,7 +258,7 @@ export function createDeliveryPoller(deps: {
                       ...(footer.length ? [{ type: "context", elements: footer }] : []),
                     ]
                   : undefined;
-              if (!text.trim() && !(settingsFooter.length && d.attachments?.length)) {
+              if (!text.trim() && !(messageFooter.length && d.attachments?.length)) {
                 if (taskList) {
                   let preserved = false;
                   if (d.destination.editRef) {
@@ -269,17 +271,15 @@ export function createDeliveryPoller(deps: {
                         ...botIdentityArgs(),
                       });
                       preserved = true;
-                      mirrorSelfPost(channel, d.destination.editRef, taskList, { sub: threadTs, editedAt: Date.now() });
                     } catch (error) {
                       swallow("slack: preserve recovered task list", error);
                     }
                   }
                   if (!preserved) {
-                    const posted = await client.chat.postMessage({
+                    await client.chat.postMessage({
                       ...slackReplyArgs(channel, taskList, threadTs, { threadOnly: Boolean(threadTs) }),
                       blocks: [{ type: "section", text: { type: "mrkdwn", text: taskList } }],
                     });
-                    mirrorSelfPost(channel, posted?.ts, taskList, { sub: threadTs });
                   }
                 } else if (d.destination.editRef) {
                   await client.chat
@@ -314,7 +314,6 @@ export function createDeliveryPoller(deps: {
                     ...(unfurlLinks !== undefined ? { unfurl_links: unfurlLinks, unfurl_media: unfurlLinks } : {}),
                   });
                   if (threadTs) threads.mark(channel, threadTs, true);
-                  mirrorSelfPost(channel, d.destination.editRef, text, { sub: threadTs, editedAt: Date.now() });
                   if (!alreadyDelivered) await replayAttachments(threadTs);
                   return undefined;
                 } catch (e) {
@@ -334,18 +333,16 @@ export function createDeliveryPoller(deps: {
               );
               const root = threadTs ?? (res?.ts ? String(res.ts) : undefined);
               if (root) threads.mark(channel, root, true);
-              if (!d.destination.identity) {
-                for (const part of res.parts ?? [{ ts: res?.ts, text }]) {
-                  mirrorSelfPost(channel, part.ts, part.text, { sub: threadTs });
-                }
-              }
               if (!res.reused) await replayAttachments(root);
               return undefined;
             } finally {
               slackApiMs = Math.round(performance.now() - tPost);
             }
           },
-          ack: (body) => ackDelivery(d.id, mergeSlackApiMs(body, slackApiMs)),
+          ack: async (body) => {
+            if (runId) await core.taskAcknowledgements?.finish(client, runId);
+            return ackDelivery(d.id, mergeSlackApiMs(body, slackApiMs));
+          },
           onError: logDeliveryError(d.id),
         });
       },
@@ -368,7 +365,7 @@ export function createDeliveryPoller(deps: {
               if (!text.trim() && !d.attachments?.length) return undefined;
               const channel = await openConversationFor(client, [d.destination.target]);
               const threadTs = d.destination.threadTs;
-              const footer = cronFooter(d);
+              const footer = deliveryFooter(d);
               const blocks = footer.length
                 ? [...(text.trim() ? slackSectionBlocks(text) : []), { type: "context", elements: footer }]
                 : undefined;
@@ -387,9 +384,6 @@ export function createDeliveryPoller(deps: {
                     : undefined,
                 );
                 reused = Boolean(posted.reused);
-                for (const part of posted.parts ?? [{ ts: posted?.ts, text }]) {
-                  mirrorSelfPost(channel, part.ts, part.text, { kind: "dm", sub: threadTs });
-                }
               }
               if (d.attachments?.length && !reused) {
                 try {
@@ -432,6 +426,10 @@ export function createDeliveryPoller(deps: {
         deliverToConversations(client, leaseLost),
         deliverToPrincipals(client, leaseLost),
       ]);
+      if (!lostFlag)
+        await core.taskAcknowledgements
+          ?.reconcile(client)
+          .catch(swallowAs("slack: task ack reconciliation", undefined));
       const cycleMs = Date.now() - cycleStart;
       if (cycleMs >= slowDrainMs) {
         void core

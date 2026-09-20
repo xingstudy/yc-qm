@@ -1,4 +1,10 @@
 import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
+import {
+  documentExtension,
+  documentFallbackText,
+  fitDocumentText,
+  nativeDocumentIsReadable,
+} from "../core/document-inputs.ts";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -10,7 +16,8 @@ import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk";
 import { CONFIG_DEFAULTS, type Config } from "../config.ts";
 import { isCustomModelId } from "../model/custom-providers.ts";
 import { normalizeProviderBaseUrl } from "../model/provider-endpoints.ts";
-import type { CustomProviderSpec } from "../model/custom-providers.ts";
+import { customProviderApi } from "../model/custom-providers.ts";
+import type { CustomProviderProtocol, CustomProviderSpec } from "../model/custom-providers.ts";
 import { DEFAULT_AGENT_MODEL_ID, modelServiceable, modelSupportedByHarness, resolveModel } from "../model/pi-models.ts";
 import { startSignalPoll, type RunSignalStore } from "../runs/run-signal-store.ts";
 import type { LlmCallUsage } from "../sessions/session-store.ts";
@@ -21,8 +28,8 @@ import { sleep } from "../util/async.ts";
 import { NonRetryableTurnError } from "../core/turn-error.ts";
 import {
   defineHarness,
-  envelopeWithoutMessages,
   harnessMcpToolDefs,
+  promptEnvelopeWithoutHistory,
   type Harness,
   type HarnessTurnInput,
   type HarnessTurnResult,
@@ -50,6 +57,13 @@ export const OPENCODE_STARTUP_TIMEOUT_MS = 90_000;
 class OpenCodeTurnCancelled extends Error {}
 
 class OpenCodeTurnDeadlineExceeded extends NonRetryableTurnError {}
+
+function customProviderNpm(protocol: CustomProviderProtocol): string {
+  const api = customProviderApi(protocol);
+  if (api === "anthropic-messages") return "@ai-sdk/anthropic";
+  if (api === "openai-responses") return "@ai-sdk/openai";
+  return "@ai-sdk/openai-compatible";
+}
 
 export interface OpenCodeHarnessOptions extends HarnessToolPlumbing {
   modelId?: string | ((scope?: ScopeId) => string | undefined);
@@ -789,11 +803,7 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
           custom.map(({ spec, apiKey }) => [
             spec.id,
             {
-              npm: {
-                anthropic: "@ai-sdk/anthropic",
-                "openai-responses": "@ai-sdk/openai",
-                openai: "@ai-sdk/openai-compatible",
-              }[spec.protocol],
+              npm: customProviderNpm(spec.protocol),
               name: spec.name,
               options: {
                 baseURL:
@@ -1336,14 +1346,55 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
     const abortForClose = () => abort(true);
     activeTurnAborts.add(abortForClose);
     const queuedSignals = new Set<Promise<void>>();
-    const queueSignal = (text: string): Promise<void> => {
+    const documentTextBudget = { remaining: 100_000 };
+    const documentParts = async (documents: NonNullable<HarnessTurnInput["documents"]>) => {
+      const parts: Array<
+        { type: "text"; text: string } | { type: "file"; mime: string; filename: string; url: string }
+      > = [];
+      for (const document of documents) {
+        if (
+          documentExtension(document) === "pdf" &&
+          ["anthropic", "openai", "google"].includes(model.providerID) &&
+          (await nativeDocumentIsReadable(document, turn.cancel))
+        ) {
+          parts.push({
+            type: "file",
+            mime: "application/pdf",
+            filename: document.name,
+            url: `data:application/pdf;base64,${document.dataBase64}`,
+          });
+        } else {
+          const content = await documentFallbackText(document, turn.cancel);
+          const text = fitDocumentText(content, documentTextBudget);
+          parts.push({ type: "text", text });
+        }
+      }
+      return parts;
+    };
+    const steeredTapeParts: Array<{ text: string; parts: unknown[] }> = [];
+    const queueSignal = (
+      text: string,
+      images: HarnessTurnInput["images"] = [],
+      documents: HarnessTurnInput["documents"] = [],
+    ): Promise<void> => {
       const pending = (async () => {
         const remaining =
           wallMs > 0 ? Math.max(1, (deadline ?? Date.now() + wallMs) - Date.now()) : OPENCODE_IDLE_WAIT_MS;
         const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(remaining)]);
+        const parts = [
+          { type: "text" as const, text },
+          ...images.map((image, index) => ({
+            type: "file" as const,
+            mime: image.mimeType,
+            filename: `image-${index + 1}`,
+            url: `data:${image.mimeType};base64,${image.dataBase64}`,
+          })),
+        ];
+        steeredTapeParts.push({ text, parts: [...parts] });
+        parts.push(...(await documentParts(documents)));
         await rt.client.session.promptAsync({
           path: { id: sessionId },
-          body: { model, agent: "qm", parts: [{ type: "text", text }] },
+          body: { model, agent: "qm", parts },
           throwOnError: true,
           signal,
         });
@@ -1364,13 +1415,20 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
             turn.runId,
             {
               onAbort: async () => abort(true),
-              onSteer: async (text, ts) => {
+              onSteer: async (text, ts, request) => {
+                const prepared = await turn.prepareSteer?.(text, request);
+                const prompt = prepared?.text ?? text;
                 await turn.emit({
                   type: "user",
-                  payload: { text, ...(ts ? { ts } : {}), steered: true },
+                  payload: {
+                    text,
+                    ...(ts ? { ts } : {}),
+                    steered: true,
+                    ...(prepared?.attachments?.length ? { attachments: prepared.attachments } : {}),
+                  },
                   scopeLabel: turn.scopeLabel,
                 });
-                await queueSignal(text);
+                await queueSignal(prompt, prepared?.images, prepared?.documents);
               },
             },
             { onError: (error) => swallow("opencode signal poll", error), drainOnStop: true },
@@ -1410,7 +1468,7 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
             turnSeq: state.userSeq,
             step: capture.step,
             model: capture.model,
-            promptEnvelope: envelopeWithoutMessages(capture.request),
+            promptEnvelope: promptEnvelopeWithoutHistory(capture.request),
             truncated: false,
             transport: info?.providerID && info.modelID ? { modelId: `${info.providerID}/${info.modelID}` } : null,
             ttftMs: null,
@@ -1435,6 +1493,8 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
         url: `data:${image.mimeType};base64,${image.dataBase64}`,
       })),
     ];
+    const tapePromptParts = [...promptParts];
+    promptParts.push(...(await documentParts(turn.documents ?? [])));
     const enabled = Object.fromEntries(rt.definitionNames.map((name) => [name, false]));
     for (const tool of tools) enabled[bridgeToolName(tool.name)] = true;
     enabled.task = !turn.readOnly;
@@ -1482,10 +1542,19 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
           if (role !== "user" && role !== "assistant") continue;
           const isTrigger = role === "user" && !tapedTriggerUser;
           if (isTrigger) tapedTriggerUser = true;
+          const steered =
+            role === "user"
+              ? steeredTapeParts.find((steer) =>
+                  (message.parts as Array<{ type?: string; text?: string }>).some(
+                    (part) => part.type === "text" && part.text === steer.text,
+                  ),
+                )
+              : undefined;
+          const storedParts = isTrigger ? tapePromptParts : steered?.parts;
           await turn.tape({
             kind: "message",
             harness: "opencode",
-            payload: stripDataUrls(message),
+            payload: stripDataUrls(storedParts ? { ...message, parts: storedParts } : message),
             scopeLabel: turn.scopeLabel,
             ...(isTrigger
               ? {

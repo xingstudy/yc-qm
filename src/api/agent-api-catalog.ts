@@ -10,6 +10,7 @@ interface AgentApiRoute {
 interface AgentApiView {
   claims: CapabilityClaims;
   isAdmin: boolean;
+  swarmsEnabled: boolean;
 }
 
 interface AgentApiFamily {
@@ -22,6 +23,37 @@ interface AgentApiFamily {
 const onPath = (m: string, p: string) => (method: string, pathname: string) => method === m && pathname === p;
 
 const FAMILIES: AgentApiFamily[] = [
+  {
+    match: onPath("GET", "/v1/composio/identity"),
+    routes: [
+      {
+        method: "GET",
+        path: "/v1/composio/identity",
+        summary:
+          "read your stable Composio userId used by the web app picker; this selects accounts and does not grant access to them",
+      },
+    ],
+  },
+  {
+    match: (method, path) => path === "/v1/swarm" && (method === "GET" || method === "POST"),
+    when: (view) => view.swarmsEnabled,
+    guidance:
+      "Swarm workers are ordinary sessions with private blank computers. Inspect peers and their context, then send to chosen IDs or all; shared history is visible to every member. Notifications queue unattended turns. An optional forumSandboxId names an existing shared computer, selected explicitly per command with execute's sandbox_id.",
+    routes: [
+      {
+        method: "GET",
+        path: "/v1/swarm",
+        summary:
+          "own identity and all peers with editable JSON context, session IDs and sandbox IDs; ?read=1&after=0&waitMs=0&replyTo=... reads scoped messages, not only intended audience",
+      },
+      {
+        method: "POST",
+        path: "/v1/swarm",
+        summary:
+          "{action:'spawn',requestId,text,count?,context?,contexts?,forumSandboxId?,settings?,backend?} spawns one or an initial pool; {action:'context',context} updates own JSON; {action:'send',requestId,text,audience,replyTo?,notify?} sends to explicit peer ids or all. Retry the same requestId and payload for idempotency.",
+      },
+    ],
+  },
   {
     match: (m, p) =>
       (m === "GET" && p === "/v1/files/upload-client") ||
@@ -367,7 +399,7 @@ const FAMILIES: AgentApiFamily[] = [
       (m === "GET" && (p === "/v1/conversations" || /^\/v1\/conversations\/[^/]+$/.test(p))) ||
       (m === "POST" && (p === "/v1/conversations" || /^\/v1\/conversations\/[^/]+(?:\/fork)?$/.test(p))),
     guidance:
-      "These act on the ASKING PERSON's own conversation list (the web UI sidebar) — archiving, pinning, or renaming is a per-person view change, never a deletion, and never touches anyone else's list. Confirm before bulk-archiving.",
+      "These act on the ASKING PERSON's own conversation list (the web UI sidebar) — archiving, pinning, or renaming is a per-person view change, never a deletion, and never touches anyone else's list. Confirm before bulk-archiving. When handing off a newly started conversation, share the exact webUrl returned by POST /v1/conversations; never guess or reconstruct its route.",
     routes: [
       {
         method: "GET",
@@ -391,7 +423,7 @@ const FAMILIES: AgentApiFamily[] = [
         method: "POST",
         path: "/v1/conversations",
         summary:
-          "start a FRESH conversation in this scope (no inherited transcript) — body {text, title?}; text becomes its first message and a run begins there asynchronously. Unlike /fork, the new session starts with only what you put in text. Human-attended turns only — refused (403) from crons and other automations",
+          "start a FRESH conversation in this scope (no inherited transcript) — body {text, title?}; text becomes its first message and a run begins there asynchronously. Returns {session, turn, webUrl?}; share webUrl verbatim when present (it is omitted without a valid configured public web URL). Unlike /fork, the new session starts with only what you put in text. Human-attended turns only — refused (403) from crons and other automations",
       },
       {
         method: "POST",
@@ -436,7 +468,7 @@ const FAMILIES: AgentApiFamily[] = [
       (m === "GET" && /^\/v1\/deployments\/[^/]+$/.test(p)) ||
       (m === "GET" && /^\/v1\/deployments\/[^/]+\/fetch$/.test(p)) ||
       (m === "GET" && /^\/v1\/deployments\/[^/]+\/logs$/.test(p)) ||
-      (m === "GET" && /^\/v1\/deployments\/[^/]+\/git-url$/.test(p)) ||
+      (m === "GET" && /^\/v1\/deployments\/[^/]+\/(git-url|share)$/.test(p)) ||
       (m === "POST" && /^\/v1\/deployments\/[^/]+\/(share|archive|restore|name|display-name|always-on)$/.test(p)),
     guidance:
       'To see the published apps you can reach across scopes, GET /v1/deployments (each row carries your permission and a clone/push gitUrl). Read what an app renders as the asking person with GET /v1/deployments/:id/fetch. A published app (`publish`) is reachable only by its owner plus whoever the owner shares it with. To widen or narrow that — "share it with everyone" or "share it with <teammate>" — POST /v1/deployments/:id/share with `scope:"org"` or `recipient:"<name>"`; no redeploy. To rename or take down an app, use name / display-name / archive. POST /v1/deployments/:id/always-on with `{alwaysOn:true|false}` keeps an app permanently warm (no idle cold starts) or returns it to sleep-when-idle. Anyone who manages the app can change these: its owner from any conversation, a current member of the channel/team it was published from, or someone granted "manage" access.',
@@ -470,6 +502,11 @@ const FAMILIES: AgentApiFamily[] = [
         path: "/v1/deployments/:id/git-url",
         summary:
           "get an authed git remote URL for a deployment you can reach (clone its source; push a new version if you have write access) — returns {url, permission}",
+      },
+      {
+        method: "GET",
+        path: "/v1/deployments/:id/share",
+        summary: "list access grants for an app you own (:id is its name or id) — returns {grantees}; owner-only",
       },
       {
         method: "POST",
@@ -508,6 +545,7 @@ const FAMILIES: AgentApiFamily[] = [
   {
     match: (m, p) =>
       (p === "/v1/webhooks" && (m === "POST" || m === "GET")) ||
+      (m === "GET" && /^\/v1\/webhooks\/[^/]+\/events$/.test(p)) ||
       (m === "POST" && /^\/v1\/webhooks\/[^/]+\/(disable|enable)$/.test(p)),
     when: () => false,
     routes: [
@@ -517,6 +555,7 @@ const FAMILIES: AgentApiFamily[] = [
         summary: "register an inbound webhook that runs a prompt when an external system calls it (secret shown once)",
       },
       { method: "GET", path: "/v1/webhooks", summary: "list your webhooks" },
+      { method: "GET", path: "/v1/webhooks/:id/events", summary: "recent webhook payloads and sessions" },
       { method: "POST", path: "/v1/webhooks/:id/disable", summary: "disable a webhook" },
       { method: "POST", path: "/v1/webhooks/:id/enable", summary: "re-enable a webhook" },
     ],
@@ -587,8 +626,7 @@ const FAMILIES: AgentApiFamily[] = [
       {
         method: "GET",
         path: "/v1/keychain/overview",
-        summary:
-          "list this user's credential metadata, grants, pending asks, and recent audited use (never secret values)",
+        summary: "list this user's credential metadata, grants, and pending asks (never secret values)",
       },
       { method: "DELETE", path: "/v1/keychain/credentials/:id", summary: "remove a registered login" },
       {
@@ -601,7 +639,8 @@ const FAMILIES: AgentApiFamily[] = [
       {
         method: "POST|GET",
         path: "/v1/keychain/asks",
-        summary: "ask a credential's owner for access (purpose-bound; refused on trigger-fired turns) / list asks",
+        summary:
+          "ask a credential's owner for access, including scheduled turns in personal or shared conversations for discoverable credentials (no access until owner approval) / list asks",
       },
       { method: "POST", path: "/v1/keychain/asks/:id/decline", summary: "decline an ask" },
       {
@@ -675,7 +714,7 @@ const FAMILIES: AgentApiFamily[] = [
       ((m === "PUT" || m === "DELETE") && p.startsWith("/v1/skills/")) ||
       (m === "POST" && /^\/v1\/skills\/[^/]+\/restore$/.test(p)),
     guidance:
-      "Save a skill when you've worked out a repeatable procedure worth keeping (a checklist, a multi-step flow, a house style) — it auto-loads (skills/<name>/SKILL.md) on every future turn. The skill homes in THIS conversation's scope: in a 1:1 DM it's yours alone; in a private channel or group DM it's owned by that room and every member can edit or delete it (the audit trail records who changed what); a public channel stays owner-only. Write the `body` as a plain-step recipe addressed to your future self; edit or delete it as it goes stale.",
+      "Save a skill when you've worked out a repeatable procedure worth keeping (a checklist, a multi-step flow, a house style) — it is advertised for reading at skill://<name>/SKILL.md on future turns. The skill homes in THIS conversation's scope: in a 1:1 DM it's yours alone; in a private channel or group DM it's owned by that room and every member can edit or delete it (the audit trail records who changed what); a public channel stays owner-only. Write the `body` as a plain-step recipe addressed to your future self; edit or delete it as it goes stale.",
     routes: [
       {
         method: "POST",
@@ -771,7 +810,7 @@ const FAMILIES: AgentApiFamily[] = [
         method: "GET",
         path: "/v1/admin/scopes/:scopeId",
         summary:
-          "a scope's resolved config: command policy, SOUL, egress, flags, connectors, service credentials (non-org scopes: DM only)",
+          "a scope's resolved config: command policy, SOUL, egress, flags, connectors, service credentials (non-org scopes: DM or effective Open sharing)",
       },
       {
         method: "PUT",
@@ -782,41 +821,48 @@ const FAMILIES: AgentApiFamily[] = [
       {
         method: "GET|PUT",
         path: "/v1/admin/memory?scope=",
-        summary: "read or rewrite any scope's memory notebook (e.g. fix poisoned memory; non-org reads: DM only)",
+        summary:
+          "read or rewrite any scope's memory notebook (e.g. fix poisoned memory; non-org reads: DM or effective Open sharing)",
       },
       {
         method: "GET",
         path: "/v1/admin/sessions?scope=",
         summary:
-          "conversation metadata; /v1/admin/sessions/:id for a transcript and /:id/llm for captured prompts (DM only)",
+          "conversation metadata; /v1/admin/sessions/:id for a transcript and /:id/llm for captured prompts (DM or effective Open sharing)",
       },
-      { method: "GET", path: "/v1/admin/runs?scope=", summary: "queued / in-flight / recent runs (DM only)" },
+      {
+        method: "GET",
+        path: "/v1/admin/runs?scope=",
+        summary: "queued / in-flight / recent runs (DM or effective Open sharing)",
+      },
       {
         method: "GET",
         path: "/v1/admin/files?scope=",
-        summary: "document store listing; files/read?id= and files/download?id= for content (DM only)",
+        summary:
+          "document store listing; files/read?id= and files/download?id= for content (DM or effective Open sharing)",
       },
       {
         method: "GET",
         path: "/v1/admin/volumes?scope=",
-        summary: "a scope's computer/backup contents (paths and sizes; DM only)",
+        summary: "a scope's computer/backup contents (paths and sizes; DM or effective Open sharing)",
       },
       {
         method: "GET",
         path: "/v1/admin/crons|deployments|skills?scope=",
-        summary: "artifacts by owning scope (DM only)",
+        summary: "artifacts by owning scope (DM or effective Open sharing)",
       },
       {
         method: "GET",
         path: "/v1/admin/audit|errors|metrics|egress?scope=",
-        summary: "observability: audit log, error telemetry, turn metrics, outbound-destination log (logs: DM only)",
+        summary:
+          "observability: audit log, error telemetry, turn metrics, outbound-destination log (logs: DM or effective Open sharing)",
       },
       { method: "GET", path: "/v1/admin/retention", summary: "org-wide usage and retention report" },
       {
         method: "GET",
         path: "/v1/admin/users",
         summary:
-          "org roster with admin status plus externalUsers (invited outside collaborators with role, expiry, status); /v1/admin/users/:id for one user's activity, conversations, and personal-scope artifacts (DM only)",
+          "org roster with admin status plus externalUsers (invited outside collaborators with role, expiry, status); /v1/admin/users/:id for one user's activity, conversations, and personal-scope artifacts (DM or effective Open sharing)",
       },
       {
         method: "POST",
@@ -904,10 +950,15 @@ export interface AgentApiListing {
   guidance: string[];
 }
 
-export function renderAgentApis(claims: CapabilityClaims, admin: { isAdmin: boolean; role?: string }): AgentApiListing {
+export function renderAgentApis(
+  claims: CapabilityClaims,
+  admin: { isAdmin: boolean; role?: string },
+  features: { swarmsEnabled: boolean },
+): AgentApiListing {
   const view: AgentApiView = {
     claims,
     isAdmin: admin.isAdmin,
+    swarmsEnabled: features.swarmsEnabled,
   };
   const visible = [...FAMILIES, WHOAMI_FOR_ALL].filter((f) => f.when?.(view) ?? true);
   return {

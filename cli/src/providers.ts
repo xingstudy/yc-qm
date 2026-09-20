@@ -5,7 +5,7 @@ export type Target = (typeof HOSTING_PROVIDER_IDS)[number];
 export const isTarget = (value: unknown): value is Target =>
   typeof value === "string" && (HOSTING_PROVIDER_IDS as readonly string[]).includes(value);
 
-export type SandboxBackendId = "local" | "sprites" | "aws" | "agent37";
+export type SandboxBackendId = "local" | "sprites" | "aws" | "agent37" | "superserve";
 
 export interface SandboxBackendPolicy {
   allowed: readonly SandboxBackendId[];
@@ -13,9 +13,9 @@ export interface SandboxBackendPolicy {
 }
 
 export const SANDBOX_BACKEND_POLICY: Record<Target, SandboxBackendPolicy> = {
-  docker: { allowed: ["local", "sprites", "agent37"], requireExplicit: false },
-  fly: { allowed: ["sprites", "agent37"], requireExplicit: false },
-  aws: { allowed: ["sprites", "aws", "agent37"], requireExplicit: true },
+  docker: { allowed: ["local", "sprites", "agent37", "superserve"], requireExplicit: false },
+  fly: { allowed: ["sprites", "agent37", "superserve"], requireExplicit: false },
+  aws: { allowed: ["sprites", "aws", "agent37", "superserve"], requireExplicit: true },
 };
 
 export const targetsAllowingSandboxBackend = (backend: SandboxBackendId): Target[] =>

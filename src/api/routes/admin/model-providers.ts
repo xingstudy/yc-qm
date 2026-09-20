@@ -1,6 +1,6 @@
 import { isModelProvider, type ModelProvider } from "../../../model/model-credential-store.ts";
 import { providerBaseUrl } from "../../../model/provider-endpoints.ts";
-import { selectableModelCatalog } from "../../../model/model-catalog.ts";
+import { cachedModelCatalog, selectableModelCatalog } from "../../../model/model-catalog.ts";
 import { sendJson } from "../../http.ts";
 import type { ApiCtx } from "../route.ts";
 import { audit, authorizeAdmin, orgScope } from "../shared.ts";
@@ -60,10 +60,12 @@ export async function getModelProviders(ctx: ApiCtx): Promise<void> {
     scopeLabel: orgScope(ctx.deps),
   });
   await ctx.deps.refreshCustomProviders?.();
+  const cached =
+    ctx.url.searchParams.get("catalog") === "cached" ? cachedModelCatalog(ctx.deps.modelCredentialFetch) : undefined;
   const [providers, customProviders, models] = await Promise.all([
     ctx.deps.modelCredentials.statuses(),
     ctx.deps.customProviders?.statuses() ?? Promise.resolve([]),
-    selectableModelCatalog(ctx.deps.modelCredentialFetch),
+    cached?.models ?? selectableModelCatalog(ctx.deps.modelCredentialFetch),
   ]);
   const catalogProviders = new Set(models.map((model) => model.provider));
   return sendJson(ctx.res, 200, {
@@ -80,6 +82,7 @@ export async function getModelProviders(ctx: ApiCtx): Promise<void> {
         })),
     ],
     models,
+    ...(cached?.refreshing ? { modelCatalogRefreshing: true } : {}),
     ...(ctx.deps.harnessCarriedModelAuth
       ? { harnessAuth: { harnessId: ctx.deps.harnessId ?? "pi", provider: ctx.deps.harnessCarriedModelAuth } }
       : {}),

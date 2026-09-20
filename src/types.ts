@@ -67,6 +67,21 @@ export interface Conversation {
 
 export type SessionType = "dm" | "channel" | "group";
 
+export interface SpawnMeta {
+  openFingerprint?: string;
+  scopeVersion?: string;
+  sessionParticipantIds?: readonly string[];
+  surface: string;
+  conversation: Conversation;
+  actor: Principal;
+  deliveryTarget?: string;
+  timezone?: string;
+  readOnly?: boolean;
+  model?: string;
+  harness?: string;
+  thinkingLevel?: string;
+}
+
 export interface Session {
   id: string;
   type: SessionType;
@@ -81,6 +96,8 @@ export interface Session {
   color?: string;
   forkedFrom?: { sessionId: string; title?: string | null };
   forkBoundarySeq?: number;
+  parentSessionId?: string;
+  spawnMeta?: SpawnMeta;
   lastActivityAt?: number;
   hasEntries?: boolean;
   working?: boolean;
@@ -94,6 +111,7 @@ export type EntryType =
   | "user"
   | "assistant"
   | "thinking"
+  | "text_start"
   | "text"
   | "tool_call"
   | "tool_result"
@@ -175,6 +193,7 @@ export interface Destination {
   target: string;
   audienceScopeId?: ScopeId;
   onBehalfOf?: string;
+  relaySender?: string;
   threadTs?: string;
   editRef?: string;
   taskList?: Array<{
@@ -456,10 +475,11 @@ export interface Delivery {
 }
 
 export interface SurfaceContextQuery {
+  rateLimitRecipient?: { target: string; user: string };
   conversationTarget?: string;
   channelId?: string;
   channelName?: string;
-  count: number;
+  count?: number;
   viewer?: string;
   before?: string;
   match?: string;
@@ -569,6 +589,9 @@ export type TurnOrigin =
   | { kind: "direct" };
 
 export interface TurnRequest {
+  sessionSenderId?: string;
+  privateSessionMessage?: true;
+  sessionMessageDepth?: number;
   surface: string;
   scopeVersion?: string;
   deliveryTarget?: string;
@@ -621,6 +644,7 @@ export interface TurnRequest {
   clientSentAt?: number;
   approval?: { requestId: string; approved: boolean; scope?: ApprovalScope };
   proactiveOpener?: boolean;
+  analyticsSuppressed?: boolean;
   spawned?: boolean;
   idempotencyKey?: string;
   redeliveryKey?: string;

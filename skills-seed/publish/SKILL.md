@@ -26,9 +26,9 @@ the changed surface. A small update does not require a redesign or new variants:
 - **The deployment's house-style skill** — if a `*-design` skill is installed (list
   `skills/`), it carries the org's look as ready-to-paste CSS and design tokens. Start
   there for the look.
-- **`skills/taste-skill/SKILL.md`** — the design _process_: reading the brief, layout,
+- **`skill://taste-skill/SKILL.md`** — the design _process_: reading the brief, layout,
   hierarchy, verifying the result, avoiding generic AI-design slop.
-- **`skills/popular-web-designs/SKILL.md`** — when the user wants a specific visual
+- **`skill://popular-web-designs/SKILL.md`** — when the user wants a specific visual
   reference (Stripe, Linear, Vercel…).
 
 This is about the page a person sees — skip it for an internal-only API or a script with
@@ -55,6 +55,18 @@ publish({ renameFrom: "s-1176-p-5050", name: "status-board" })
 ```
 
 `publish` returns `{ id, name, version, url, dataDir? }` — give the user the `url` (`/d/<name>/`).
+
+## App bar and editing
+
+On a configured app subdomain, signed-in people who can manage the app automatically
+see a slim top bar. Chat opens a resizable editing conversation beside the app. Normal
+app links and refreshes keep editing available for the signed-in session; viewers with
+read-only access see the app alone.
+
+The bar uses a consistent neutral appearance, independent of the app's theme. Its
+name follows the app document title. The drawer opens directly into an empty composer;
+the app identity is supplied as conversation context, not pasted into the draft. The
+conversation survives app reloads after a publish.
 
 ## Durable data — where app state must live
 
@@ -120,6 +132,9 @@ publish({
   `renameFrom` lets you change it on request without losing history or shares.
 - **Immutable versions + rollback.** Every publish is a new immutable version; `rollbackTo`
   is an instant pointer flip. Safe to ship often.
+- **Env carries over.** `env` is baked into each version; a republish that omits `env` keeps
+  the most recent version's (including a failed attempt), and passing `env` replaces it
+  (`{}` clears).
 - **Posture-aware egress.** Deployment network access follows the operator's configured
   deployment provider and egress policy. Declare required hosts and credentials explicitly;
   never assume arbitrary outbound access.

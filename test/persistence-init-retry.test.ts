@@ -41,6 +41,9 @@ test("admin grants: a failed seed is retried on the next call (rejection not cac
   let failures = 1;
   const rows: AdminGrant[] = [];
   const persist: AdminGrantPersistence = {
+    async insertIfAbsent() {
+      throw new Error("not exercised");
+    },
     async all() {
       if (failures > 0) {
         failures--;

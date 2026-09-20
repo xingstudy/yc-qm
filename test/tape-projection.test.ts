@@ -22,7 +22,7 @@ interface Sim {
 }
 
 async function simSession(threadRef = "dm:projection-test"): Promise<Sim> {
-  const store = createMemorySessionStore({ now: () => CLOCK });
+  const store = { ...createMemorySessionStore({ now: () => CLOCK }), getTranscriptEntries: async () => [] };
   const session = await store.getOrCreateByThread(threadRef, "dm", scope);
   const { lease } = await store.acquireLease(session.id);
   assert.ok(lease);
@@ -335,6 +335,37 @@ test("overheard import and delivery note project to their entry shapes", async (
     entrySeq: imported.seq,
     meta: {
       overheard: true,
+      bareText: overheard.text,
+      ts: overheard.ts,
+      author: overheard.name,
+      entryCreatedAt: imported.createdAt,
+    },
+  });
+  await simTurn(sim, {
+    input: "yes, restart it",
+    reply: "Restarted.",
+    deliveryFiles: [{ name: "log.txt", mimetype: "text/plain", sizeBytes: 42, artifactId: "art_1" }],
+  });
+  await assertParity(sim);
+});
+
+test("agent-authored overheard import and delivery note project to their entry shapes", async () => {
+  const sim = await simSession();
+  const overheard: OverheardEntryPayload = {
+    overheard: true,
+    sourceRole: "agent",
+    ts: "1720000000.000050",
+    text: "Shall I restart the worker?",
+  };
+  const imported = await sim.store.append(sim.lease, { type: "user", payload: overheard, scopeLabel: scope });
+  await sim.store.appendTape(sim.lease, {
+    kind: "message",
+    payload: { role: "user", content: [{ type: "text", text: renderOverheard(overheard) }], timestamp: CLOCK },
+    scopeLabel: scope,
+    entrySeq: imported.seq,
+    meta: {
+      overheard: true,
+      sourceRole: "agent",
       bareText: overheard.text,
       ts: overheard.ts,
       author: overheard.name,
@@ -1011,6 +1042,38 @@ test("forViewer with a limit reads a bounded tape suffix for an active participa
     calls.every((c) => c?.limit !== undefined),
     "every tape read for a limited viewer render is bounded",
   );
+});
+
+test("an earlier-page tape fallback keeps its full prefix without repeated dense-turn reads", async () => {
+  const sim = await simSession();
+  await sim.store.addParticipant(sim.session.id, "viewer", undefined, { includeHistory: true });
+  await simTurn(sim, {
+    input: "a dense turn",
+    reply: "done",
+    steps: Array.from({ length: 90 }, (_, i) => ({
+      calls: [
+        {
+          id: `c${i}`,
+          name: "execute",
+          args: { command: "work" },
+          result: "done",
+        },
+      ],
+    })),
+  });
+  const expected = (await sim.store.getEntries(sim.session.id)).filter((entry) => entry.seq < 181);
+  const { store, calls } = tapeSpy(sim);
+  const source = createTranscriptSource(store);
+  for (const read of [
+    () => source.forRender(sim.session.id, { beforeSeq: 181, limit: 40 }),
+    () => source.forViewer(sim.session.id, "viewer", { beforeSeq: 181, limit: 40 }),
+  ]) {
+    calls.length = 0;
+    const page = await read();
+    assert.deepEqual(page.entries, expected);
+    assert.equal(page.earlier, 0);
+    assert.deepEqual(calls, [undefined]);
+  }
 });
 
 test("forViewer refetches in full when a late joiner's window under-fills the limit", async () => {

@@ -13,6 +13,7 @@ const providerCoverage: Record<SandboxBackendName, true> = {
   modal: true,
   porter: true,
   agent37: true,
+  superserve: true,
 };
 
 export const sandboxProviders = Object.keys(providerCoverage) as SandboxBackendName[];
@@ -55,6 +56,7 @@ export const sandboxProviderScenarios: Scenario[] = sandboxProviders.map((backen
     assert.ok(provider, `required sandbox provider ${backend} is unavailable`);
     assert.ok(provider.actions.includes("create"), `${backend} cannot create a test sandbox`);
     assert.ok(provider.actions.includes("retire"), `${backend} cannot clean up a test sandbox`);
+    await core.waitForChannelMembership(ch.id, ctx.env.qaUserId);
     const name = ctx.marker();
     const failures: unknown[] = [];
     try {

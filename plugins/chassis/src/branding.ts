@@ -1,4 +1,5 @@
 export interface OrgBranding {
+  orgName?: string;
   accent?: string;
   mark?: string;
   markUrl?: string;

@@ -20,6 +20,8 @@ RUN --mount=type=cache,target=/var/cache/apk,sharing=locked apk upgrade \
   && rm -f /usr/local/bin/npm /usr/local/bin/npx \
   && printf 'os packages refreshed for week %s\n' "${PKG_REFRESH_WEEK:-unknown}"
 
+ARG GIT_SHA=
+ENV GIT_SHA=$GIT_SHA
 ENV NODE_ENV=production
 ENV PORT=8080
 EXPOSE 8080

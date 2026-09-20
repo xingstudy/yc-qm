@@ -35,7 +35,6 @@ export async function verifyDeployOwnerToken(
   if (typeof session.exp !== "number" || now >= session.exp) return null;
   return session;
 }
-
 export interface DeployGitAccess {
   deploymentId: string;
   permission: "read" | "write";

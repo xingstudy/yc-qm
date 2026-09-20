@@ -159,8 +159,9 @@ const STYLE = `<style>
     background:var(--text); color:var(--bg); border:1px solid var(--text); }
   .btn:hover{ opacity:.9; }
   .btn.secondary{ background:var(--secondary); color:var(--text); border-color:var(--border); }
-  .divider{ display:flex; align-items:center; gap:10px; margin:16px 0; color:var(--muted); font-size:12px; }
-  .divider:before,.divider:after{ content:""; flex:1; height:1px; background:var(--border); }
+  .alternative{ background:var(--surface); color:var(--text); border-color:var(--border); }
+  .divider{ display:flex; align-items:center; gap:16px; margin:24px 0; color:var(--muted); font-size:11px; font-weight:600; letter-spacing:.08em; }
+  .divider::before,.divider::after{ content:""; flex:1; height:1px; background:var(--border); }
   .help{ color:var(--muted); font-size:12.5px; margin:20px 0 0; }
   .who{ display:block; margin:0 auto 22px; font-size:13px; color:var(--text); background:var(--secondary);
     border:1px solid var(--border); border-radius:var(--radius-md); padding:11px 14px; word-break:break-word; }
@@ -193,6 +194,7 @@ const LOCK_ICON = `<svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height
 function page(o: {
   title: string;
   brandName: string;
+  trustedSignInLabel?: string;
   icon: string;
   warn?: boolean;
   heading: string;
@@ -218,6 +220,7 @@ ${STYLE}
       <p class="msg">${escapeHtml(o.msg)}</p>
       ${o.body ?? ""}
       <p class="help">${escapeHtml(o.help)}</p>
+      ${o.trustedSignInLabel ? `<div class="divider">OR</div><a class="btn alternative" href="/auth/trusted/login">Sign in with ${escapeHtml(o.trustedSignInLabel)}</a>` : ""}
     </section>
   </main>
 </body>
@@ -226,6 +229,7 @@ ${STYLE}
 
 export function emailFormPage(o: {
   brandName: string;
+  trustedSignInLabel?: string;
   action: string;
   requestToken: string;
   directoryLoginOptions?: readonly { label: string; url: string }[];
@@ -242,34 +246,44 @@ export function emailFormPage(o: {
         )
         .join("")}`
     : "";
+  const trustedLogin = o.trustedSignInLabel
+    ? `<a class="btn" href="/auth/trusted/login">Sign in with ${escapeHtml(o.trustedSignInLabel)}</a>`
+    : "";
+  const emailForm =
+    o.emailEnabled === false
+      ? ""
+      : `<form method="post" action="${escapeHtml(o.action)}">
+        <input type="hidden" name="request" value="${escapeHtml(o.requestToken)}">
+        <label for="email">Email address</label>
+        <input id="email" name="email" type="email" autocomplete="email" inputmode="email" required${o.trustedSignInLabel ? "" : " autofocus"}
+          spellcheck="false" maxlength="254" placeholder="you@example.com" value="${escapeHtml(o.email ?? "")}">
+        <button class="btn${o.trustedSignInLabel ? " alternative" : ""}" type="submit">Email me a sign-in link</button>
+      </form>`;
+  const loginOptions = `${trustedLogin}${directoryLogin}`;
+  let signInMessage = "Enter your work email and we'll send you a one-time sign-in link.";
+  if (o.emailEnabled === false) signInMessage = "Choose your enterprise sign-in method.";
+  else if (o.trustedSignInLabel) signInMessage = `Use your ${o.trustedSignInLabel} account to continue.`;
   return page({
     title: "Sign in",
     brandName: o.brandName,
-    icon: MAIL_ICON,
+    icon: o.trustedSignInLabel ? LOCK_ICON : MAIL_ICON,
     heading: `Sign in to ${o.brandName}`,
-    msg:
-      o.emailEnabled === false
-        ? "Choose your enterprise sign-in method."
-        : "Enter your work email and we'll send you a one-time sign-in link.",
-    body: `${o.problem ? `<p class="reason"><strong>Try again</strong>${escapeHtml(o.problem)}</p>` : ""}${
-      o.emailEnabled === false
-        ? ""
-        : `<form method="post" action="${escapeHtml(o.action)}">
-        <input type="hidden" name="request" value="${escapeHtml(o.requestToken)}">
-        <label for="email">Email address</label>
-        <input id="email" name="email" type="email" autocomplete="email" inputmode="email" required autofocus
-          spellcheck="false" maxlength="254" placeholder="you@example.com" value="${escapeHtml(o.email ?? "")}">
-        <button class="btn" type="submit">Email me a sign-in link</button>
-      </form>`
-    }${directoryLogin}`,
-    help: "Only addresses your administrator has allowed can sign in.",
+    msg: signInMessage,
+    body: `${o.problem ? `<p class="reason"><strong>Try again</strong>${escapeHtml(o.problem)}</p>` : ""}${loginOptions}${loginOptions && emailForm ? '<div class="divider"><span>OR</span></div>' : ""}${emailForm}`,
+    help: "For email sign-in, use an address your administrator has allowed.",
   });
 }
 
-export function linkSentPage(o: { brandName: string; email: string; ttlMinutes: number }): string {
+export function linkSentPage(o: {
+  brandName: string;
+  trustedSignInLabel?: string;
+  email: string;
+  ttlMinutes: number;
+}): string {
   return page({
     title: "Check your email",
     brandName: o.brandName,
+    trustedSignInLabel: o.trustedSignInLabel,
     icon: SENT_ICON,
     heading: "Check your email",
     msg: `If that address can sign in, a one-time link is on its way. Open it in the browser where you want to sign in — it works once and expires in ${o.ttlMinutes} minutes.`,
@@ -304,10 +318,11 @@ export function wecomLoginPage(o: {
   });
 }
 
-export function confirmSignInPage(o: { brandName: string; action: string }): string {
+export function confirmSignInPage(o: { brandName: string; trustedSignInLabel?: string; action: string }): string {
   return page({
     title: "Finish signing in",
     brandName: o.brandName,
+    trustedSignInLabel: o.trustedSignInLabel,
     icon: LOCK_ICON,
     heading: `Finish signing in to ${o.brandName}`,
     msg: "Confirm below to complete sign-in. Your link is spent the moment you confirm, so do it in the browser you want to be signed in to.",
@@ -364,6 +379,7 @@ export function handoffCompletePage(o: { brandName: string }): string {
 
 export function problemPage(o: {
   brandName: string;
+  trustedSignInLabel?: string;
   heading: string;
   msg: string;
   detail?: string;
@@ -375,6 +391,7 @@ export function problemPage(o: {
   return page({
     title: "Sign-in problem",
     brandName: o.brandName,
+    trustedSignInLabel: o.trustedSignInLabel,
     icon: ALERT_ICON,
     warn: true,
     heading: o.heading,

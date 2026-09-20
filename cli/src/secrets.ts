@@ -6,6 +6,8 @@ import { TARGET_ENV_DEFAULTS } from "./target-env-defaults.ts";
 import { deploymentSecretValue } from "./util.ts";
 
 type SecretCondition =
+  | { kind: "background-work-control" }
+  | { kind: "sandbox-backend"; backend: string }
   | { kind: "env-equals"; service: DeclaredServiceName; name: string; value: string }
   | { kind: "env-in"; service: DeclaredServiceName; name: string; values: string[] }
   | { kind: "env-absent"; service: DeclaredServiceName; name: string }
@@ -107,6 +109,13 @@ export const FIRST_PARTY_SECRET_SPECS: readonly SecretSpec[] = [
     generate: MINT_LOCALLY,
   },
   {
+    name: "DEPLOYMENT_CONTROL_SECRET",
+    service: "core",
+    required: { when: { kind: "background-work-control" } },
+    description: "Deployment ownership credential held only by core and the privileged deployment operator.",
+    generate: MINT_LOCALLY,
+  },
+  {
     name: "CAPABILITY_SECRET",
     service: "core",
     required: true,
@@ -138,8 +147,21 @@ export const FIRST_PARTY_SECRET_SPECS: readonly SecretSpec[] = [
     name: "FLY_DEPLOY_API_TOKEN",
     service: "core",
     required: { when: { kind: "env-equals", service: "core", name: "DEPLOY_PROVIDER", value: "fly" } },
-    description: "Fly organization token used only by qm's opt-in per-deployment app publisher.",
-    generate: "fly tokens create org -o <fly-org> -x 8760h",
+    description: "Fly publisher token: app-scoped for FLY_DEPLOY_SHARED_APP_NAME, organization-scoped otherwise.",
+  },
+  {
+    name: "FLY_DEPLOY_WIREGUARD_PEERS",
+    service: "core",
+    required: {
+      when: {
+        kind: "all",
+        conditions: [
+          { kind: "env-equals", service: "core", name: "DEPLOY_PROVIDER", value: "fly" },
+          { kind: "env-present", service: "core", name: "FLY_DEPLOY_SHARED_APP_NAME" },
+        ],
+      },
+    },
+    description: "JSON array of distinct private ingress WireGuard peer configurations for shared Fly publishing.",
   },
   {
     name: "PORTER_DEPLOY_API_TOKEN",
@@ -148,7 +170,7 @@ export const FIRST_PARTY_SECRET_SPECS: readonly SecretSpec[] = [
       when: {
         kind: "any",
         conditions: [
-          { kind: "env-equals", service: "core", name: "SANDBOX_BACKEND", value: "porter" },
+          { kind: "sandbox-backend", backend: "porter" },
           { kind: "env-equals", service: "core", name: "DEPLOY_PROVIDER", value: "porter" },
         ],
       },
@@ -161,33 +183,33 @@ export const FIRST_PARTY_SECRET_SPECS: readonly SecretSpec[] = [
   {
     name: "SPRITES_TOKEN",
     service: "core",
-    required: { when: { kind: "env-equals", service: "core", name: "SANDBOX_BACKEND", value: "sprites" } },
+    required: { when: { kind: "sandbox-backend", backend: "sprites" } },
     description: "Fly Sprites API token for the agent-computer substrate.",
     generate: "sprite login   # then copy the token from ~/.sprite/credentials",
   },
   {
     name: "E2B_API_KEY",
     service: "core",
-    required: { when: { kind: "env-equals", service: "core", name: "SANDBOX_BACKEND", value: "e2b" } },
+    required: { when: { kind: "sandbox-backend", backend: "e2b" } },
     description: "E2B API key used by the e2b sandbox backend (from e2b.dev dashboard).",
   },
   {
     name: "MODAL_TOKEN_ID",
     service: "core",
-    required: { when: { kind: "env-equals", service: "core", name: "SANDBOX_BACKEND", value: "modal" } },
+    required: { when: { kind: "sandbox-backend", backend: "modal" } },
     description: "Modal token id used by the modal sandbox backend.",
     generate: "modal token new   # or create a token in the Modal dashboard",
   },
   {
     name: "MODAL_TOKEN_SECRET",
     service: "core",
-    required: { when: { kind: "env-equals", service: "core", name: "SANDBOX_BACKEND", value: "modal" } },
+    required: { when: { kind: "sandbox-backend", backend: "modal" } },
     description: "Modal token secret paired with MODAL_TOKEN_ID.",
   },
   {
     name: "SMOLMACHINES_TOKEN",
     service: "core",
-    required: { when: { kind: "env-equals", service: "core", name: "SANDBOX_BACKEND", value: "smolmachines" } },
+    required: { when: { kind: "sandbox-backend", backend: "smolmachines" } },
     description: "smolmachines API key for the agent-computer substrate.",
     generate: "create an API key in the smolmachines console (https://smolmachines.com/console)",
   },
@@ -198,13 +220,20 @@ export const FIRST_PARTY_SECRET_SPECS: readonly SecretSpec[] = [
       when: {
         kind: "any",
         conditions: [
-          { kind: "env-equals", service: "core", name: "SANDBOX_BACKEND", value: "agent37" },
+          { kind: "sandbox-backend", backend: "agent37" },
           { kind: "env-equals", service: "core", name: "SANDBOX_SECONDARY_BACKEND", value: "agent37" },
         ],
       },
     },
     description: "Agent37 API key for the agent-computer substrate.",
     generate: "mint a key in the Agent37 dashboard (https://agent37.com/dashboard/cloud/api-keys)",
+  },
+  {
+    name: "SUPERSERVE_API_KEY",
+    service: "core",
+    required: { when: { kind: "sandbox-backend", backend: "superserve" } },
+    description: "API key for Superserve sandboxes.",
+    generate: "create an API key in the Superserve console (https://console.superserve.ai/api-keys)",
   },
   {
     name: "DATABASE_URL",
@@ -516,6 +545,19 @@ export const FIRST_PARTY_SECRET_SPECS: readonly SecretSpec[] = [
 ];
 
 function conditionMatches(config: QmConfig, condition: SecretCondition): boolean {
+  if (condition.kind === "background-work-control")
+    return config.target === "aws" && config.aws?.backgroundWorkControl === true;
+  if (condition.kind === "sandbox-backend") {
+    const backend =
+      config.env.core?.SANDBOX_BACKEND ??
+      config.sandbox?.backend ??
+      targetEnvDefault(config, "core", "SANDBOX_BACKEND");
+    if (backend?.trim() === condition.backend) return true;
+    const scopes: unknown = JSON.parse(config.env.core?.SANDBOX_SCOPE_BACKENDS || "{}");
+    if (!scopes || typeof scopes !== "object" || Array.isArray(scopes))
+      throw new Error("SANDBOX_SCOPE_BACKENDS must be an object");
+    return Object.values(scopes).some((value) => typeof value === "string" && value.trim() === condition.backend);
+  }
   if (condition.kind === "service-enabled") return config.services.includes(condition.service);
   if (condition.kind === "service-absent") return !config.services.includes(condition.service);
   if (condition.kind === "all") return condition.conditions.every((nested) => conditionMatches(config, nested));
@@ -642,6 +684,9 @@ export function computedSecrets(config: QmConfig): ComputedSecret[] {
       });
     }
   }
+  const control = byName.get("DEPLOYMENT_CONTROL_SECRET");
+  if (control && (control.services.some((service) => service !== "core") || control.aliases?.length))
+    throw new Error("DEPLOYMENT_CONTROL_SECRET must be delivered only to core under its original name");
   const secrets = [...byName.values()]
     .map((secret) => ({
       ...secret,
@@ -740,6 +785,9 @@ function requiresOtherEmailTransport(config: QmConfig, condition: SecretConditio
 }
 
 function conditionClause(condition: SecretCondition): string {
+  if (condition.kind === "background-work-control") return "aws.backgroundWorkControl is enabled";
+  if (condition.kind === "sandbox-backend")
+    return `SANDBOX_BACKEND or SANDBOX_SCOPE_BACKENDS selects ${condition.backend}`;
   if (condition.kind === "service-enabled") return `the ${condition.service} service is enabled`;
   if (condition.kind === "service-absent") return `the ${condition.service} service is not enabled`;
   if (condition.kind === "all") return condition.conditions.map(conditionClause).join(" and ");

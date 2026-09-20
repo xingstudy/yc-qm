@@ -105,8 +105,6 @@ const getCfg = async (base: string) =>
       hasSecret: boolean;
       enabled: boolean;
       grantees: string[];
-      usageCount: number;
-      usageTruncated: boolean;
       updatedAt: number;
       injection?: { header?: string; scheme?: string; actor?: boolean };
       allowedMethods?: string[];
@@ -132,8 +130,7 @@ test("admin creates a credential (default org-wide); GET projects it WITHOUT the
     assert.ok(cred);
     assert.equal(cred!.hasSecret, true);
     assert.deepEqual(cred!.grantees, ["org:default-org"]);
-    assert.equal(cred!.usageCount, 0);
-    assert.equal(cred!.usageTruncated, false);
+    assert.equal("usageCount" in cred, false);
     assert.doesNotMatch(JSON.stringify(cfg), /super-secret-bearer/);
   } finally {
     await srv.close();
@@ -1241,7 +1238,12 @@ test("the system prompt advertises an entitled credential (host/methods/paths) s
   assert.match(reply, /Shared org credentials available to you/);
   assert.match(reply, /\/v1\/credentials\/broker/);
   assert.match(reply, /x-agent-capability: \$AGENT_CREDENTIAL_TOKEN/);
-  assert.match(reply, /x-firehose.*api\.x\.com.*GET.*\/2\/tweets\/search\//s);
+  assert.match(reply, /x-firehose.*X firehose.*api\.x\.com.*GET.*\/2\/tweets\/search\//s);
+  assert.match(reply, /clone\/fetch\/push using a shared org credential/);
+  assert.match(reply, /configured org account, not automatically the requesting user's account/);
+  assert.match(reply, /live personal OAuth connector does not switch this route's identity/);
+  assert.match(reply, /Choose among credentials authorized for this conversation/);
+  assert.match(reply, /does not identify the upstream username/);
 });
 
 test("the system prompt does NOT advertise a credential the session isn't entitled to", async () => {
@@ -1307,4 +1309,74 @@ test("the published-apps switch defaults on, round-trips, survives a partial upd
   } finally {
     await srv.close();
   }
+});
+
+test("credential lists batch grants and finish without usage reads", async (t) => {
+  const srv = start();
+  t.after(srv.close);
+  for (const slug of ["first", "second"]) {
+    assert.equal(
+      (await putCred(srv.base, { slug, name: slug, host: "api.example.com", secret: "private" })).status,
+      200,
+    );
+  }
+  const listGrants = t.mock.method(srv.built.acl, "list");
+  t.mock.method(srv.built.acl, "grantsFor", () => {
+    throw new Error("per-credential grant read");
+  });
+  t.mock.method(srv.built.credentialUsage, "list", () => {
+    throw new Error("raw usage read");
+  });
+  t.mock.method(srv.built.credentialUsage, "summary", () => {
+    throw new Error("summary read on list path");
+  });
+  const response = await fetch(`${srv.base}/v1/admin/scopes/org:default-org?view=credentials`, {
+    headers: ADMIN,
+    signal: AbortSignal.timeout(500),
+  });
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { serviceCredentials: { grantees: string[]; usageCount?: number }[] };
+  assert.equal(body.serviceCredentials.length, 2);
+  assert.equal(listGrants.mock.callCount(), 1);
+  for (const credential of body.serviceCredentials) {
+    assert.deepEqual(credential.grantees, ["org:default-org"]);
+    assert.equal(credential.usageCount, undefined);
+  }
+});
+
+test("usage summaries authorize before reads and include only the requested scope's credentials", async (t) => {
+  const srv = start();
+  t.after(srv.close);
+  await putCred(srv.base, { slug: "summary", name: "Summary", host: "api.example.com", secret: "private" });
+  srv.built.credentialUsage.record({
+    slug: "summary",
+    host: "api.example.com",
+    status: "ok",
+    scopeLabel: "personal:U1",
+    principalId: "U1",
+  });
+  srv.built.credentialUsage.record({
+    slug: "unlisted",
+    host: "api.example.com",
+    status: "ok",
+    scopeLabel: "personal:U2",
+    principalId: "U2",
+  });
+  const read = t.mock.method(srv.built.serviceCreds, "listServiceCredentials");
+  const summarize = t.mock.method(srv.built.credentialUsage, "summary");
+  const path = `${srv.base}/v1/admin/scopes/org:default-org/credential-usage`;
+  assert.equal((await fetch(path, { headers: { "x-admin-actor": "nobody@default-org" } })).status, 403);
+  assert.equal(read.mock.callCount(), 0);
+  assert.equal(summarize.mock.callCount(), 0);
+  const response = await fetch(path, { headers: ADMIN });
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    summaries: { slug: string; usageCount: number; recentUsagePrincipals: string[] }[];
+  };
+  assert.equal(body.summaries.length, 1);
+  assert.equal(body.summaries[0]!.slug, "summary");
+  assert.equal(body.summaries[0]!.usageCount, 1);
+  assert.deepEqual(body.summaries[0]!.recentUsagePrincipals, ["U1"]);
+  assert.deepEqual(summarize.mock.calls[0]!.arguments, [["summary"]]);
+  assert.doesNotMatch(JSON.stringify(body), /private|unlisted|U2/);
 });

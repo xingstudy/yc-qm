@@ -5,7 +5,7 @@ export function mentionsBot(text: string, botUserId: string): boolean {
 }
 
 export function threadHasBotStake(
-  messages: readonly { user?: string; bot_id?: string; text?: string }[],
+  messages: readonly { user?: string; bot_id?: string; text?: string; mentionsSelf?: boolean }[],
   botUserId: string,
   ownBotId = "",
 ): boolean {
@@ -15,6 +15,7 @@ export function threadHasBotStake(
     const bot = m.bot_id ? String(m.bot_id) : "";
     const text = m.text ? String(m.text) : "";
     return Boolean(
+      m.mentionsSelf ||
       (botUserId && user === botUserId) ||
       (ownBotId && bot === ownBotId) ||
       (botUserId && mentionsBot(text, botUserId)),
@@ -32,6 +33,14 @@ export function shouldProcessMessage(
   if (m.subtype && m.subtype !== "file_share" && m.subtype !== "thread_broadcast" && m.subtype !== "bot_message")
     return false;
   return true;
+}
+
+export function shouldMirrorMessage(m: { hidden?: boolean; subtype?: string; ts?: string }): boolean {
+  return (
+    Boolean(m.ts) &&
+    m.hidden !== true &&
+    !["message_changed", "message_deleted", "message_replied", "tombstone"].includes(m.subtype ?? "")
+  );
 }
 
 export function isGroupMembershipMessage(m: { channel_type?: string; subtype?: string }): boolean {

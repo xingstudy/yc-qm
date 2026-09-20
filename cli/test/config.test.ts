@@ -9,8 +9,10 @@ import {
   CONFIG_FILENAME,
   loadConfigAt,
   loadConfigInDir,
+  localSandboxActive,
   mockHarnessWarning,
   sandboxCoreEnv,
+  securityScreenEnv,
   updateConfigImageOverrides,
 } from "../src/config.ts";
 
@@ -605,6 +607,26 @@ test("AWS validates release labels, unique coordinates, Fargate sizes, and owned
     networking: { cloudMapNamespace: "acme.internal" },
     services: { core: service },
   };
+  for (const scopeBackend of ["modal", "aws"]) {
+    withConfig(
+      {
+        target: "aws",
+        aws,
+        env: {
+          core: {
+            DEPLOY_PROVIDER: "fly",
+            SANDBOX_BACKEND: "sprites",
+            AWS_DEPLOY_IMAGE: "",
+            SANDBOX_SCOPE_BACKENDS: JSON.stringify({ personal: scopeBackend }),
+          },
+        },
+      },
+      ({ path }) => {
+        if (scopeBackend === "aws") assert.throws(() => loadConfigAt(path), /AWS_DEPLOY_IMAGE/);
+        else assert.equal(loadConfigAt(path).config.env.core?.DEPLOY_PROVIDER, "fly");
+      },
+    );
+  }
   withConfig({ target: "aws", aws }, ({ path }) =>
     assert.equal(loadConfigAt(path).config.aws?.imageLabel, "release-1"),
   );
@@ -865,11 +887,11 @@ test("sandbox shape errors: object, app non-empty string, env string-map, secret
     { sandbox: { secretEnv: ["1BAD"] }, rx: /not a valid env var name/ },
     {
       sandbox: { backend: "k8s", app: "acme-sandboxes" },
-      rx: /"sandbox.backend" must be "local".*"sprites".*"aws".*or "agent37"/,
+      rx: /"sandbox.backend" must be "local".*"sprites".*"aws".*"agent37".*or "superserve"/,
     },
     {
       sandbox: { backend: "fly", app: "acme-sandboxes" },
-      rx: /"sandbox.backend" must be "local".*"sprites".*"aws".*or "agent37"/,
+      rx: /"sandbox.backend" must be "local".*"sprites".*"aws".*"agent37".*or "superserve"/,
     },
     {
       sandbox: { backend: "aws", app: "acme-sandboxes" },
@@ -917,6 +939,135 @@ test("agent37 is a deployment backend on every target and rejects unused Fly set
   });
 });
 
+test("superserve backend requires the agent template in env.core", () => {
+  withConfig({ sandbox: { backend: "superserve" } }, ({ path }) => {
+    assert.throws(() => loadConfigAt(path), /superserve sandbox backend requires env.core.SUPERSERVE_TEMPLATE/);
+  });
+  withConfig({ env: { core: { SANDBOX_BACKEND: "superserve" } } }, ({ path }) => {
+    assert.throws(() => loadConfigAt(path), /superserve sandbox backend requires env.core.SUPERSERVE_TEMPLATE/);
+  });
+  withConfig({ sandbox: { backend: "superserve" }, env: { core: { SUPERSERVE_TEMPLATE: "  " } } }, ({ path }) => {
+    assert.throws(() => loadConfigAt(path), /superserve sandbox backend requires env.core.SUPERSERVE_TEMPLATE/);
+  });
+  withConfig(
+    { sandbox: { backend: "superserve" }, env: { core: { SUPERSERVE_TEMPLATE: "qm-agent-1.0.0" } } },
+    ({ path }) => {
+      const { config } = loadConfigAt(path);
+      assert.deepEqual(sandboxCoreEnv(config), { env: { SANDBOX_BACKEND: "superserve" }, missingSecrets: [] });
+    },
+  );
+  withConfig(
+    {
+      sandbox: { backend: "local" },
+      env: { core: { SANDBOX_SCOPE_BACKENDS: JSON.stringify({ personal: "superserve" }) } },
+    },
+    ({ path }) => {
+      assert.throws(() => loadConfigAt(path), /superserve sandbox backend requires env.core.SUPERSERVE_TEMPLATE/);
+    },
+  );
+  withConfig(
+    {
+      sandbox: { backend: "local" },
+      env: {
+        core: {
+          SANDBOX_SCOPE_BACKENDS: JSON.stringify({ personal: "superserve" }),
+          SUPERSERVE_TEMPLATE: "qm-agent-1.0.0",
+        },
+      },
+    },
+    ({ path }) => assert.doesNotThrow(() => loadConfigAt(path)),
+  );
+});
+
+test("Superserve selection honors env.core.SANDBOX_BACKEND overrides", () => {
+  withConfig({ sandbox: { backend: "local" }, env: { core: { SANDBOX_BACKEND: "superserve" } } }, ({ path }) => {
+    assert.throws(() => loadConfigAt(path), /superserve sandbox backend requires env.core.SUPERSERVE_TEMPLATE/);
+  });
+  withConfig({ sandbox: { backend: "local" }, env: { core: { SANDBOX_BACKEND: " superserve " } } }, ({ path }) => {
+    assert.throws(() => loadConfigAt(path), /superserve sandbox backend requires env.core.SUPERSERVE_TEMPLATE/);
+  });
+  withConfig({ sandbox: { backend: "superserve" }, env: { core: { SANDBOX_BACKEND: "   " } } }, ({ path }) => {
+    assert.throws(
+      () => loadConfigAt(path),
+      /"env.core.SANDBOX_BACKEND" is blank/,
+      "a blank override is refused rather than rendered over the sandbox block",
+    );
+  });
+  withConfig(
+    {
+      target: "fly",
+      sandbox: { backend: "sprites", app: "acme-sandboxes", secretEnv: ["COMPANY_API_TOKEN"] },
+      env: { core: { SANDBOX_BACKEND: "superserve", SUPERSERVE_TEMPLATE: "qm-agent-1.0.0" } },
+    },
+    ({ path }) => {
+      const { config } = loadConfigAt(path);
+      assert.deepEqual(
+        sandboxCoreEnv(config),
+        { env: { SANDBOX_BACKEND: "superserve" }, missingSecrets: [] },
+        "the overridden backend's settings are not demanded or injected",
+      );
+    },
+  );
+  withConfig(
+    {
+      sandbox: { backend: "local" },
+      env: { core: { SANDBOX_BACKEND: "superserve", SUPERSERVE_TEMPLATE: "qm-agent-1.0.0" } },
+    },
+    ({ path }) => {
+      const { config } = loadConfigAt(path);
+      assert.equal(config.sandbox?.backend, "local");
+    },
+  );
+  withConfig({ sandbox: { backend: "superserve" }, env: { core: { SANDBOX_BACKEND: "local" } } }, ({ path }) => {
+    const { config } = loadConfigAt(path);
+    assert.equal(localSandboxActive(config), true, "docker prepares the local sandbox the override actually runs");
+    assert.equal(sandboxCoreEnv(config).env.SANDBOX_BACKEND, "local");
+  });
+  withConfig(
+    {
+      sandbox: { backend: "local" },
+      env: { core: { SANDBOX_BACKEND: "superserve", SUPERSERVE_TEMPLATE: "qm-agent-1.0.0" } },
+    },
+    ({ path }) => {
+      assert.equal(
+        localSandboxActive(loadConfigAt(path).config),
+        false,
+        "a remote override never mounts the host docker socket",
+      );
+    },
+  );
+});
+
+test("Superserve configuration preserves existing backend selection and validation", () => {
+  for (const override of ["agent37", "sprites", "", "   "]) {
+    withConfig({ sandbox: { backend: "local" }, env: { core: { SANDBOX_BACKEND: override } } }, ({ path }) => {
+      const { config } = loadConfigAt(path);
+      assert.equal(localSandboxActive(config), true);
+      assert.equal(sandboxCoreEnv(config).env.SANDBOX_BACKEND, "local");
+    });
+  }
+  withConfig({ sandbox: { backend: "agent37" }, env: { core: { SANDBOX_BACKEND: "sprites" } } }, ({ path }) =>
+    assert.equal(sandboxCoreEnv(loadConfigAt(path).config).env.SANDBOX_BACKEND, "agent37"),
+  );
+  for (const scopes of ["invalid", "[]", "null", "42"]) {
+    withConfig({ sandbox: { backend: "local" }, env: { core: { SANDBOX_SCOPE_BACKENDS: scopes } } }, ({ path }) =>
+      assert.doesNotThrow(() => loadConfigAt(path)),
+    );
+  }
+});
+
+test("sandbox.backend alone makes the backend's credential a required secret on every target", () => {
+  for (const target of ["docker", "fly"] as const) {
+    withConfig(
+      { target, sandbox: { backend: "superserve" }, env: { core: { SUPERSERVE_TEMPLATE: "qm-agent-1.0.0" } } },
+      ({ path }) => {
+        const secret = computedSecrets(loadConfigAt(path).config).find((s) => s.name === "SUPERSERVE_API_KEY");
+        assert.ok(secret?.required, `${target} requires the key without duplicating SANDBOX_BACKEND under env.core`);
+      },
+    );
+  }
+});
+
 test("aws target makes the sandbox substrate explicit: backend required with a sandbox block, aws forbids fly sandbox settings", () => {
   const aws = {
     accountId: "123456789012",
@@ -933,6 +1084,11 @@ test("aws target makes the sandbox substrate explicit: backend required with a s
   });
   withConfig({ target: "aws", aws, sandbox: { backend: "sprites", app: "acme-sandboxes" } }, ({ path }) => {
     assert.equal(loadConfigAt(path).config.sandbox?.backend, "sprites");
+  });
+  withConfig({ target: "aws", aws, sandbox: { backend: "sprites" } }, ({ path }) => {
+    const { config } = loadConfigAt(path);
+    assert.equal(config.sandbox?.backend, "sprites");
+    assert.equal(config.sandbox?.app, undefined);
   });
   withConfig({ target: "aws", aws, sandbox: { backend: "aws" } }, ({ path }) => {
     assert.equal(loadConfigAt(path).config.sandbox?.backend, "aws");
@@ -1277,5 +1433,47 @@ test("blank model provider overrides preserve the declared provider in runtime a
       assert.equal(serviceEnvironment(config, "core").MODEL_PROVIDER, "openrouter");
       assert.equal(computedSecrets(config).find((secret) => secret.name === "OPENROUTER_API_KEY")?.required, true);
     },
+  );
+});
+
+test("screening defaults off and model screening requires an explicit backend", () => {
+  assert.deepEqual(securityScreenEnv({}), { SECURITY_SCREEN_BACKEND: "off" });
+  for (const backend of ["off", "model"] as const) {
+    withConfig({ securityScreen: { backend } }, ({ path }) => {
+      const { config } = loadConfigAt(path);
+      assert.deepEqual(securityScreenEnv(config), { SECURITY_SCREEN_BACKEND: backend });
+    });
+    withConfig({ securityScreen: { backend, rollout: "enforce" } }, ({ path }) =>
+      assert.throws(() => loadConfigAt(path), /require backend proxy/),
+    );
+    withConfig(
+      { securityScreen: { backend }, secretEnv: { core: { SECURITY_SCREEN_PROXY_TOKEN: "TOKEN" } } },
+      ({ path }) => assert.throws(() => loadConfigAt(path), /requires securityScreen/),
+    );
+  }
+});
+
+test("AWS ownership control is opt-in and reserves deployment identity allocation", () => {
+  const aws = {
+    accountId: "123456789012",
+    region: "us-west-2",
+    cluster: "acme",
+    deployRoleArn: "arn:aws:iam::123456789012:role/deploy",
+    secretsPrefix: "acme/",
+    imageLabel: "release",
+    networking: { cloudMapNamespace: "acme.internal" },
+    services: { core: { ecrRepository: "core", ecsService: "acme-core", cpu: 512, memory: 1024 } },
+  };
+  withConfig({ target: "aws", aws }, ({ path }) =>
+    assert.equal(loadConfigAt(path).config.aws!.backgroundWorkControl, undefined),
+  );
+  withConfig({ target: "aws", aws: { ...aws, backgroundWorkControl: true } }, ({ path }) =>
+    assert.equal(loadConfigAt(path).config.aws!.backgroundWorkControl, true),
+  );
+  withConfig({ target: "aws", aws: { ...aws, backgroundWorkControl: "true" } }, ({ path }) =>
+    assert.throws(() => loadConfigAt(path), /backgroundWorkControl/),
+  );
+  withConfig({ target: "aws", aws, env: { core: { BACKGROUND_DEPLOYMENT_ID: "reused" } } }, ({ path }) =>
+    assert.throws(() => loadConfigAt(path), /allocated/),
   );
 });

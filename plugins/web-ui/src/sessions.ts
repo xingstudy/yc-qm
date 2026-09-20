@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Clock3,
   Cog,
+  CornerLeftUp,
   EllipsisVertical,
   Folder,
   Hash,
@@ -35,6 +36,7 @@ import {
   fetchSessionApprovals,
   fetchTranscript,
   currentEarlierCount,
+  detachSession,
   inheritedTranscript,
   isContinuable,
   entriesToMessages,
@@ -53,6 +55,7 @@ import {
   activityOf,
   chatBrowseStatusMatches,
   bumpActivity,
+  sidebarSessions,
   groupProjectSessions,
   recencyGroup,
   recentProjectSeeds,
@@ -90,8 +93,12 @@ import { allConversations, isLiveConversation, mainConversation } from "./conver
 import type { Conversation } from "./conv-types";
 import {
   startNewChatInCanvas,
+  mountRestoredCanvas,
+  focusedPaneConversation,
+  openBackgroundInCanvas,
   beginSessionDrag,
   endPaneDrag,
+  canvasToast,
   notifyPanesChanged,
   drawCanvas,
   closeSessionSurfaces,
@@ -233,6 +240,7 @@ function listWhen(ms: number): string {
 export function surfaceOf(s: CoreSession): string {
   if (s.threadRef.startsWith("web:")) return "web";
   if (s.threadRef.startsWith("dm:") || s.threadRef.startsWith("ch:")) return "slack";
+  if (s.threadRef.startsWith("agent:main:subagent:") && s.surface) return s.surface;
   return "core";
 }
 
@@ -308,7 +316,7 @@ export function slackLogo(size = 13): TemplateResult {
 }
 
 function visibleSessions(): CoreSession[] {
-  const sorted = [...sessionsState.list].sort((a, b) => activityOf(b) - activityOf(a));
+  const sorted = sidebarSessions(sessionsState.list).sort((a, b) => activityOf(b) - activityOf(a));
   return sessionsState.webOnly ? sorted.filter((s) => surfaceOf(s) === "web") : sorted;
 }
 
@@ -321,19 +329,27 @@ export function renderList(): void {
   const archived = visible.filter((s) => s.archived);
   const { pinned, rest } = splitPinned(active);
   const activeItems = recentItemsFor(rest);
-  const archivedItems: RecentItem[] = archived.map((session) => ({ kind: "session", session }));
+  const archivedItems: RecentItem[] = archived.map((session) => ({
+    kind: "session",
+    session,
+  }));
   armMidnightRefresh();
   render(
     html`
+      ${detachDropZone()}
       ${
         pinned.length
           ? html`
-              <div class="recents-group pinned-head">${icon(Pin, 11)}<span>Pinned</span></div>
-              ${repeat(
-                pinned,
-                (session) => session.threadRef,
-                (session) => sessionRow(session),
-              )}
+              <div class="recents-group pinned-head">
+                <span class="pinned-head-glyph">${icon(Pin, 11)}</span><span>Pinned</span>
+              </div>
+              <div class="pinned-children">
+                ${repeat(
+                  pinned,
+                  (session) => session.threadRef,
+                  (session) => sessionRow(session),
+                )}
+              </div>
             `
           : nothing
       }
@@ -467,7 +483,8 @@ export function startNewChat(
 ): Conversation | null {
   closeSidebarOnNarrowView();
   if (scopeId) sessionsState.collapsedProjectScopes.delete(scopeId);
-  if (splitState.active) return startNewChatInCanvas(scopeId ?? undefined, threadRef);
+  const pane = startNewChatInCanvas(scopeId ?? undefined, threadRef);
+  if (pane) return pane;
   const conv = mainConversation();
   if (threadRef) conv.mountContinuable(threadRef, null, scopeId, [], name);
   else addPendingSession(conv.newChat(scopeId ? { scopeId, name } : undefined), scopeId, name);
@@ -475,7 +492,7 @@ export function startNewChat(
 }
 
 export function startNewChatInLastScope(): void {
-  const mounted = mainConversation().state;
+  const mounted = (focusedPaneConversation() ?? mainConversation()).state;
   const scopeId = mounted.scopeId ?? visibleSessions().find((s) => !s.archived)?.scopeId ?? null;
   startNewChat(scopeId, scopeId ? projectName(scopeId) : null);
 }
@@ -558,7 +575,7 @@ export function drawChatsPage(): void {
     appState.mainEl.replaceChildren(chatsPageHost);
   }
   const q = chatsPageQuery.trim().toLowerCase();
-  const rows = [...sessionsState.list]
+  const rows = sidebarSessions(sessionsState.list)
     .filter((s) => chatBrowseStatusMatches(s, chatsPageStatus))
     .filter((s) => chatsPageSurface === "all" || surfaceOf(s) === chatsPageSurface)
     .filter((s) => (chatsPageScope ? s.scopeId === chatsPageScope : true))
@@ -608,7 +625,7 @@ export function drawChatsPage(): void {
                 }}
               >
                 ${t(label)}<span
-                  >${sessionsState.list.filter((session) => chatBrowseStatusMatches(session, value)).length}</span
+                  >${sidebarSessions(sessionsState.list).filter((session) => chatBrowseStatusMatches(session, value)).length}</span
                 >
               </button>`,
           )}
@@ -693,6 +710,7 @@ function statusMarks(s: CoreSession): TemplateResult {
 function openBackgroundInspector(e: Event, s: CoreSession): void {
   e.stopPropagation();
   e.preventDefault();
+  if (openBackgroundInCanvas(s)) return;
   mainConversation().requestBackgroundPanel(s.id || null, s.threadRef);
   void openSession(s);
 }
@@ -706,11 +724,9 @@ function isActiveRow(s: CoreSession): boolean {
 
 function chatPageRow(s: CoreSession): TemplateResult {
   const readOnly = !isContinuable(s, appState.me?.user ?? "");
+  const color = displaySessionColor(s.color);
   return html`
-    <div
-      class="list-row chat-row ${s.color ? "colored" : ""}"
-      style=${s.color ? `--session-color:${s.color}` : nothing}
-    >
+    <div class="list-row chat-row ${color ? "colored" : ""}" style=${color ? `--session-color:${color}` : nothing}>
       <a
         class="chat-row-open"
         href=${deepLinkPath(UI_BASE, "chats", s.id)}
@@ -862,6 +878,7 @@ function sessionRow(s: CoreSession, projectChild = false): TemplateResult {
   const surface = surfaceOf(s);
   const context = projectChild ? null : rowContext(s);
   const working = sessionWorking(s);
+  const color = displaySessionColor(s.color);
   let titleContent: string | TemplateResult = groupDmTitle(s);
   if (refreshingTitle) {
     titleContent = html`<span class="sheen-label title-sheen thinking-sheen" data-sheen=${title}>${title}</span>`;
@@ -884,8 +901,8 @@ function sessionRow(s: CoreSession, projectChild = false): TemplateResult {
   return html`
     <div
       data-session-id=${saved ? s.id : nothing}
-      class="session-row ${active ? "active" : ""} ${saved && selection.ids.has(s.id) ? "selected" : ""} ${menuOpen ? "menu-open" : ""} ${readOnly ? "read-only" : ""} ${refreshingTitle ? "title-refreshing" : ""} ${working ? "working" : ""} ${s.awaitingInput ? "awaiting-input" : ""} ${projectChild ? "project-child" : ""} ${s.color ? "colored" : ""}"
-      style=${s.color ? `--session-color:${s.color}` : nothing}
+      class="session-row ${active ? "active" : ""} ${saved && selection.ids.has(s.id) ? "selected" : ""} ${menuOpen ? "menu-open" : ""} ${readOnly ? "read-only" : ""} ${refreshingTitle ? "title-refreshing" : ""} ${working ? "working" : ""} ${s.awaitingInput ? "awaiting-input" : ""} ${projectChild ? "project-child" : ""} ${color ? "colored" : ""}"
+      style=${color ? `--session-color:${color}` : nothing}
     >
       <a
         class="session"
@@ -895,7 +912,7 @@ function sessionRow(s: CoreSession, projectChild = false): TemplateResult {
         aria-keyshortcuts="Space Shift+Space Control+Space Meta+Space"
         draggable=${saved ? "true" : "false"}
         @dragstart=${(e: DragEvent) => onSessionDragStart(e, s)}
-        @dragend=${() => endPaneDrag()}
+        @dragend=${() => endSessionDrag()}
         @mousedown=${(e: MouseEvent) => {
           if (saved && e.shiftKey) e.preventDefault();
         }}
@@ -987,14 +1004,64 @@ function sessionRow(s: CoreSession, projectChild = false): TemplateResult {
   `;
 }
 
-function onSessionDragStart(e: DragEvent, s: CoreSession): void {
+let draggingChildId: string | null = null;
+
+export function onSessionDragStart(e: DragEvent, s: CoreSession): void {
   if (!s.id) {
     e.preventDefault();
     return;
   }
   e.dataTransfer?.setData("application/x-webui-session", s.id);
   if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-  beginSessionDrag(s);
+  draggingChildId = s.parentSessionId ? s.id : null;
+  appState.listEl?.classList.toggle("detach-drop-target", Boolean(draggingChildId));
+  if (!draggingChildId) beginSessionDrag(s);
+}
+
+export function endSessionDrag(): void {
+  draggingChildId = null;
+  appState.listEl?.classList.remove("detach-drop-target");
+  appState.listEl?.querySelector(".detach-drop-zone")?.classList.remove("over");
+  endPaneDrag();
+}
+
+async function promoteSession(id: string): Promise<void> {
+  sessionsState.openMenuId = null;
+  endSessionDrag();
+  try {
+    await detachSession(id);
+    await refreshSessions({ silent: true });
+  } catch (error) {
+    canvasToast(errMessage(error));
+    renderList();
+  }
+}
+
+function detachDropZone(): TemplateResult {
+  return html`<div
+    class="detach-drop-zone"
+    @dragenter=${(e: DragEvent) => {
+      if (!draggingChildId) return;
+      e.preventDefault();
+      (e.currentTarget as HTMLElement).classList.add("over");
+    }}
+    @dragover=${(e: DragEvent) => {
+      if (!draggingChildId) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    }}
+    @dragleave=${(e: DragEvent) => (e.currentTarget as HTMLElement).classList.remove("over")}
+    @drop=${(e: DragEvent) => {
+      const id = draggingChildId;
+      (e.currentTarget as HTMLElement).classList.remove("over");
+      if (!id) return;
+      e.preventDefault();
+      endSessionDrag();
+      void promoteSession(id);
+    }}
+  >
+    ${icon(CornerLeftUp, 13)}<span>Drop to make a top-level session</span>
+  </div>`;
 }
 
 const placeSessionMenu = (el?: Element): void => {
@@ -1043,10 +1110,24 @@ function sessionMenuPopover(s: CoreSession): TemplateResult {
   `;
 }
 
-const SESSION_COLORS = ["#ef4444", "#f59e0b", "#22c55e", "#3b82f6", "#a855f7", "#ec4899"] as const;
+const SESSION_COLORS = ["#f43f5e", "#f59e0b", "#10b981", "#3b82f6", "#8b5cf6", "#ec4899"] as const;
+const LEGACY_SESSION_COLORS = new Map([
+  ["#ef4444", SESSION_COLORS[0]],
+  ["#f59e0b", SESSION_COLORS[1]],
+  ["#22c55e", SESSION_COLORS[2]],
+  ["#3b82f6", SESSION_COLORS[3]],
+  ["#a855f7", SESSION_COLORS[4]],
+  ["#ec4899", SESSION_COLORS[5]],
+]);
+
+function displaySessionColor(color: string | null | undefined): string | null {
+  if (!color) return null;
+  const normalized = color.toLowerCase();
+  return LEGACY_SESSION_COLORS.get(normalized) ?? normalized;
+}
 
 function sessionColorRow(s: CoreSession): TemplateResult {
-  const current = s.color?.toLowerCase() ?? null;
+  const current = displaySessionColor(s.color);
   const isPreset = SESSION_COLORS.includes(current as (typeof SESSION_COLORS)[number]);
   return html`
     <div class="session-menu-colors" role="group" aria-label="Row color">
@@ -1067,7 +1148,7 @@ function sessionColorRow(s: CoreSession): TemplateResult {
         <input
           type="color"
           aria-label="Custom row color"
-          value=${current ?? "#6366f1"}
+          value=${current ?? SESSION_COLORS[3]}
           @click=${(e: Event) => e.stopPropagation()}
           @input=${(e: InputEvent) => previewColor(s, (e.currentTarget as HTMLInputElement).value)}
           @change=${(e: Event) => setColor(s, (e.currentTarget as HTMLInputElement).value)}
@@ -1524,6 +1605,7 @@ async function runSessionsRefresh(
       listSettled = null;
       sessionsLoading = false;
       renderList();
+      for (const conversation of allConversations()) conversation.redraw();
     }
   }
 }
@@ -1541,10 +1623,11 @@ export async function openSession(
     if (splitState.active) drawCanvas();
     syncUrlFromState(s.id || null);
   }
-  if (splitInterceptsOpen(s)) return;
+  mountRestoredCanvas();
+  const pane = splitInterceptsOpen(s);
   closeSidebarOnNarrowView();
   if (projectName(s.scopeId) && sessionsState.collapsedProjectScopes.delete(s.scopeId)) renderList();
-  return openSessionInto(mainConversation(), s, entriesPrefetch, approvalsPrefetch);
+  return openSessionInto(pane ?? mainConversation(), s, entriesPrefetch, approvalsPrefetch, true);
 }
 
 export async function openSessionInto(
@@ -1552,8 +1635,8 @@ export async function openSessionInto(
   s: CoreSession,
   entriesPrefetch?: Promise<TranscriptPage | null>,
   approvalsPrefetch?: Promise<{ approvals: PendingApproval[] } | null>,
+  tracked = conv === mainConversation(),
 ): Promise<void> {
-  const tracked = conv === mainConversation();
   if (!s.id) {
     if (conv.state.threadRef !== s.threadRef) {
       conv.mountContinuable(s.threadRef, null, s.scopeId || null, [], s.channelName ?? null);
@@ -1570,9 +1653,7 @@ export async function openSessionInto(
     sessionsState.openingKey = opening;
     renderList();
   }
-  const skeletonTimer = window.setTimeout(() => {
-    if (isLiveConversation(conv) && (!tracked || sessionsState.openingKey === opening)) conv.mountLoadingPane();
-  }, 140);
+  if (isLiveConversation(conv) && (!tracked || sessionsState.openingKey === opening)) conv.mountLoadingPane();
 
   const fetchEntries = (): Promise<TranscriptPage | null> =>
     fetchTranscript(s.id, { tailTurns: TAIL_TURNS }).catch(() => null);
@@ -1581,7 +1662,6 @@ export async function openSessionInto(
     entriesPrefetch ? entriesPrefetch.then((r) => r ?? fetchEntries()) : fetchEntries(),
     continuable ? (approvalsPrefetch ?? fetchSessionApprovals(s.id)) : Promise.resolve(null),
   ]);
-  window.clearTimeout(skeletonTimer);
   if (!isLiveConversation(conv)) return;
 
   if (tracked) {

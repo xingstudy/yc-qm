@@ -15,6 +15,14 @@ is a local name derived from the organization, not globally unique), then runs:
 node cli/bin/qm.ts init deploy/layers/<org> --org <slug> --target <fly-or-aws>
 ```
 
+Choose Fly.io or AWS before initialization; the slug is a local name derived from the
+organization, not globally unique. Customize config, tools, skills, and services in this
+directory. To change QM itself, use a public or private source fork and explicitly
+build its source, as described in [the README](../README.md#customize-your-instance).
+A private source fork can keep its deployment at `deploy/layers/<org>/`; a public source
+checkout uses a separate private deployment directory. See
+[`../deploy/layers/README.md`](../deploy/layers/README.md).
+
 Provider choice is part of initialization because it determines the config,
 secret rules, generated files, and teardown contract. Changing providers means
 initializing a new empty directory. `qm init` materializes `deployment.md` and

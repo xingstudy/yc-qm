@@ -17,7 +17,9 @@ ARG NPM_INSTALL_REGISTRY=https://registry.npmjs.org
 COPY plugins/web-ui/package.json plugins/web-ui/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm,sharing=shared npm ci --omit=dev --prefer-offline --no-audit --registry="${NPM_INSTALL_REGISTRY}" && rm package-lock.json
 COPY plugins/web-ui/server ./server
+COPY plugins/web-ui/src/app-edit.ts ./src/app-edit.ts
 COPY plugins/admin/src /admin/src
+RUN ln -s /app/node_modules /admin/node_modules
 COPY plugins/admin/public /admin/public
 COPY plugins/chassis/src /chassis/src
 COPY --from=build /app/dist-web ./dist-web
@@ -28,6 +30,8 @@ RUN --mount=type=cache,target=/var/cache/apk,sharing=locked apk upgrade \
   && rm -f /usr/local/bin/npm /usr/local/bin/npx \
   && printf 'os packages refreshed for week %s\n' "${PKG_REFRESH_WEEK:-unknown}"
 
+ARG GIT_SHA=
+ENV GIT_SHA=$GIT_SHA
 ENV NODE_ENV=production
 ENV PORT=8080
 EXPOSE 8080

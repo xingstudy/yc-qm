@@ -40,6 +40,15 @@ export function createPostgresAdminGrantStore(connectionString: string): AdminGr
         [g.principalId, g.scopeId, g.role, g.grantedBy ?? null, g.createdAt ?? null],
       );
     },
+    async insertIfAbsent(g) {
+      const result = await pg.query(
+        `INSERT INTO admin_grants (principal_id, scope_id, role, granted_by, created_at)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (principal_id, scope_id, role) DO NOTHING`,
+        [g.principalId, g.scopeId, g.role, g.grantedBy ?? null, g.createdAt ?? null],
+      );
+      return (result.rowCount ?? 0) > 0;
+    },
     async remove(principalId, scopeId, role) {
       await pg.query("DELETE FROM admin_grants WHERE principal_id = $1 AND scope_id = $2 AND role = $3", [
         principalId,

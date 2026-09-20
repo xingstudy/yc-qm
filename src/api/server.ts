@@ -1,3 +1,4 @@
+import { reportBackendError } from "../../plugins/chassis/src/error-reporting.ts";
 import {
   createServer as createHttpServer,
   type IncomingMessage,
@@ -21,7 +22,7 @@ import { currentCapabilityActor } from "./capability-actor.ts";
 import type { PortalIdentity } from "../auth/portal-identity.ts";
 import { isUserScoped, userScopedField, assertedActor, isUnclassifiedWrite } from "./user-scoped-routes.ts";
 import { errMessage } from "../util/errors.ts";
-import { parseScopeId } from "../types.ts";
+import { parseScopeId, scopeId } from "../types.ts";
 import { SKILL_IMPORT_BODY_MAX_BYTES } from "../../plugins/chassis/src/skill-import.ts";
 import {
   armBodyDeadline,
@@ -46,7 +47,13 @@ const safeDecode = (s: string): string => {
   }
 };
 
-function capabilityAdminDenied(method: string, pathname: string, url: URL, claims: CapabilityClaims): string | null {
+async function capabilityAdminDenied(
+  method: string,
+  pathname: string,
+  url: URL,
+  claims: CapabilityClaims,
+  config: ServerDeps["config"],
+): Promise<string | null> {
   if (method === "GET" && pathname === "/v1/admin/whoami") return null;
   if (claims.aud !== CONTROL_PLANE_AUD) return "admin routes require the per-turn agent token";
   if (method === "GET" && pathname === "/v1/admin/keychain") {
@@ -76,7 +83,11 @@ function capabilityAdminDenied(method: string, pathname: string, url: URL, claim
     if (pathname.startsWith("/v1/admin/scopes/"))
       target = safeDecode(pathname.slice("/v1/admin/scopes/".length).split("/")[0] ?? "");
     else if (pathname === "/v1/admin/memory") target = url.searchParams.get("scope") ?? "";
-    if (parseScopeId(target).kind !== "org") {
+    if (
+      parseScopeId(target).kind !== "org" &&
+      (!livePersonCapability(claims) ||
+        (await config?.resolveSharingPostureDurable(scopeId("personal", claims.actorId), claims.scopeId)) !== "open")
+    ) {
       return "this admin read returns private content — ask the agent in a DM";
     }
   }
@@ -244,7 +255,7 @@ async function gate(
         return null;
       }
       if (pathname.startsWith("/v1/admin/")) {
-        const denied = capabilityAdminDenied(method, pathname, url, capability);
+        const denied = await capabilityAdminDenied(method, pathname, url, capability, deps.config);
         if (denied) {
           sendJson(res, 403, { error: "forbidden", message: denied });
           return null;
@@ -345,6 +356,7 @@ function respondError(req: IncomingMessage, res: ServerResponse, err: unknown): 
     else res.destroy();
     return;
   }
+  reportBackendError(err);
   console.error("[server] 500 %s %s: %s", req.method ?? "?", req.url ?? "?", errMessage(err));
   if (!res.headersSent) sendJson(res, 500, { error: "internal_error", message: "internal server error" });
   else res.destroy();
@@ -414,6 +426,7 @@ function buildFastify(wiring: Wiring, server: Server): { fastify: FastifyInstanc
   fastify.decorateRequest("gate", undefined);
 
   fastify.setErrorHandler((err, request, reply) => {
+    reportBackendError(err);
     console.error("%s", `[server] 500 ${request.raw.method ?? "?"} ${request.raw.url ?? "?"}:`, errMessage(err));
     return reply.code(500).send({ error: "internal_error", message: "internal server error" });
   });

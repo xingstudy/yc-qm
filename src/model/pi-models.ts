@@ -1,3 +1,4 @@
+import { gatewayModelCatalog, gatewayModelsVersion, isGatewayModelId, resolveGatewayModel } from "./gateway-models.ts";
 import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { parseModelOverlay, type ModelOverlay } from "./model-overlay.ts";
@@ -20,6 +21,9 @@ const CODEX_SUBSCRIPTION_PREFIX = "codex/";
 
 export function codexSubscriptionModelId(id: string): string {
   return id.startsWith(CODEX_SUBSCRIPTION_PREFIX) ? id : CODEX_SUBSCRIPTION_PREFIX + id;
+}
+export function codexProviderModelId(id: string): string {
+  return id.startsWith(CODEX_SUBSCRIPTION_PREFIX) ? id.slice(CODEX_SUBSCRIPTION_PREFIX.length) : id;
 }
 export const THINKING_LEVELS = ["auto", "low", "medium", "high", "xhigh", "max", "ultracode"] as const;
 export const HARNESS_IDS = ["pi", "opencode", "codex", "claude", "mock"] as const;
@@ -187,7 +191,7 @@ let overlayVersion = 0;
 let overlaySnapshot = JSON.stringify([[], [], []]);
 
 export function modelOverlayVersion(): number {
-  return overlayVersion;
+  return overlayVersion + gatewayModelsVersion();
 }
 
 export function isOverlayModel(id: string): boolean {
@@ -199,11 +203,14 @@ export function modelOfferedInWebui(id: string): boolean {
 }
 
 export function modelUnavailableReason(id: string): string | undefined {
+  if (isGatewayModelId(id) && !resolveGatewayModel(id))
+    return "Gateway model is unavailable; select another model or retry after discovery recovers";
   return unavailableOverlays.get(id);
 }
 
 export function modelIdReserved(id: string): boolean {
   return (
+    isGatewayModelId(id) ||
     id.startsWith(CODEX_SUBSCRIPTION_PREFIX) ||
     REGISTRY_BY_ID.has(id) ||
     Boolean(builtinModel(id)) ||
@@ -269,8 +276,9 @@ export function setModelOverlays(
   overlayVersion += 1;
 }
 
-export function selectableBaseModels(): ReadonlyArray<{ id: string; name: string }> {
+export function selectableBaseModels(includeAliased = false): ReadonlyArray<{ id: string; name: string }> {
   return [
+    ...gatewayModelCatalog(includeAliased),
     ...SELECTABLE_BASE_MODELS.filter(({ id }) => resolveModel(id)),
     ...[...overlays.values()].filter((m) => m.base).map(({ id, name }) => ({ id, name })),
   ];
@@ -283,7 +291,11 @@ export function overlayModelCatalog(): Array<{ id: string; name: string; provide
 }
 
 export function defaultWebuiModelIds(): readonly string[] {
-  return [...DEFAULT_WEBUI_MODEL_IDS, ...[...overlays.values()].filter((m) => m.webui).map((m) => m.id)];
+  return [
+    ...DEFAULT_WEBUI_MODEL_IDS,
+    ...gatewayModelCatalog(true).map((m) => m.id),
+    ...[...overlays.values()].filter((m) => m.webui).map((m) => m.id),
+  ];
 }
 
 export function fastModeModelIds(): readonly string[] {
@@ -362,9 +374,7 @@ export function registerOpenRouterCatalogModel(definition: OpenRouterCatalogMode
 
 export function resolveBuiltinModel(id: string): PiModel | undefined {
   if (id.startsWith(CODEX_SUBSCRIPTION_PREFIX)) {
-    const m = getModel(CODEX_SUBSCRIPTION_PROVIDER, id.slice(CODEX_SUBSCRIPTION_PREFIX.length));
-    // Keep the namespaced id: pi resolves the turn's model by this string,
-    // and the un-prefixed id belongs to the metered "openai" provider.
+    const m = getModel(CODEX_SUBSCRIPTION_PROVIDER, codexProviderModelId(id));
     return m ? { ...m, id } : undefined;
   }
   const entry = REGISTRY_BY_ID.get(id);
@@ -389,6 +399,7 @@ export function resolveBuiltinModel(id: string): PiModel | undefined {
 }
 
 function resolveBaseModel(id: string): PiModel | undefined {
+  if (isGatewayModelId(id)) return resolveGatewayModel(id);
   if (unavailableOverlays.has(id)) return undefined;
   const builtin = resolveBuiltinModel(id);
   if (REGISTRY_BY_ID.has(id) || id.startsWith(CODEX_SUBSCRIPTION_PREFIX)) return builtin;
@@ -442,6 +453,7 @@ export function contextTokenBudgetForModel(id: string): number | undefined {
 }
 
 export function modelSupportedByHarness(id: string | undefined, harness: string): boolean {
+  if (id && isGatewayModelId(id)) return (harness === "pi" || harness === "mock") && Boolean(resolveGatewayModel(id));
   if (!id || unavailableOverlays.has(id)) return false;
   if (overlays.has(id)) return harness === "pi" || harness === "mock";
   const model = resolveModel(id);
@@ -462,7 +474,7 @@ export function defaultModelForHarness(
     return configured;
   const preferred = harness === "codex" ? DEFAULT_CODEX_MODEL_ID : DEFAULT_AGENT_MODEL_ID;
   if (!providers || modelServiceable(preferred, providers)) return preferred;
-  const servable = selectableBaseModels().find(
+  const servable = selectableBaseModels(true).find(
     (model) => modelSupportedByHarness(model.id, harness) && modelServiceable(model.id, providers),
   );
   return servable?.id ?? preferred;
@@ -481,6 +493,7 @@ function providerFlags(value: ModelProviderAvailability): ModelProviderAvailabil
 }
 
 export function modelServiceable(id: string, providers: ModelProviderAvailability): boolean {
+  if (isGatewayModelId(id)) return Boolean(resolveGatewayModel(id) && providers.modelIds?.has(id));
   const provider = resolveModel(id)?.provider;
   if (!provider) return false;
   if (isCustomModelId(id) && !REGISTRY_BY_ID.has(id)) return true;

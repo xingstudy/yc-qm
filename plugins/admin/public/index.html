@@ -8,12 +8,12 @@
     <style>
       :root {
         color-scheme: light;
-        --bg: #fbfbfa;
+        --bg: #ffffff;
         --surface: #ffffff;
         --subtle: #f4f5f4;
         --text: #18181b;
         --muted: #667085;
-        --border: #e4e7ec;
+        --border: #e5e5e5;
         --ink: #101828;
         --danger: #b42318;
         --ok: #16723a;
@@ -42,6 +42,7 @@
         --bg: oklch(0.165 0.022 250);
         --surface: oklch(0.205 0.024 250);
         --subtle: oklch(0.245 0.024 250);
+        --sidebar-active: oklch(0.245 0.024 250);
         --text: oklch(0.975 0.005 250);
         --muted: oklch(0.72 0.021 250);
         --border: oklch(0.275 0.024 250);
@@ -63,6 +64,7 @@
       }
       html {
         min-height: 100%;
+        scrollbar-gutter: stable;
         overflow-x: hidden;
         background: var(--bg);
       }
@@ -101,7 +103,7 @@
         margin: 0;
         padding: var(--header-safe-top) max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
         border-bottom: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
-        background: color-mix(in srgb, var(--bg) 94%, var(--subtle));
+        background: var(--bg);
       }
       body:has(#app-view:not(.hidden)) header {
         margin-left: var(--sidebar-w);
@@ -174,9 +176,36 @@
         letter-spacing: 0;
         line-height: 1;
       }
-      .header-home {
+      .header-home,
+      #app-view #main #shellbar .back {
+        display: inline-flex;
+        align-items: center;
         flex: 0 0 auto;
+        gap: 6px;
         margin-right: auto;
+        width: fit-content;
+        min-height: 0;
+        line-height: 1.4;
+        border-radius: 0;
+        box-shadow: none;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 400;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+      .header-home:hover,
+      #app-view #main #shellbar .back:hover {
+        color: var(--text);
+      }
+      .header-home:focus-visible,
+      #app-view #main #shellbar .back:focus-visible {
+        outline: 2px solid var(--text);
+        outline-offset: 4px;
+        border-radius: 2px;
       }
       .header-controls {
         display: flex;
@@ -210,6 +239,9 @@
         margin: 0;
         accent-color: var(--ink);
         cursor: pointer;
+      }
+      .account-identity {
+        display: contents;
       }
       .who {
         display: flex;
@@ -324,7 +356,6 @@
         outline: 2px solid var(--text);
         outline-offset: 2px;
       }
-
       h1 {
         font-size: 24px;
         line-height: 1.2;
@@ -337,7 +368,6 @@
         margin: 0 0 28px;
         max-width: 62ch;
       }
-
       .admin-app {
         display: grid;
         grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
@@ -365,8 +395,8 @@
         padding: 28px 28px 40px;
       }
       .admin-inner {
-        width: min(var(--maxw), 100%);
-        margin: 0 auto;
+        width: 100%;
+        margin: 0;
       }
       .history-view .admin-main {
         padding-top: 20px;
@@ -475,7 +505,6 @@
         padding: 5px 10px;
         font-size: 13px;
       }
-
       nav.tabs {
         display: flex;
         flex: 1 1 auto;
@@ -484,6 +513,7 @@
         min-height: 0;
         overflow-x: hidden;
         overflow-y: auto;
+        overscroll-behavior-y: contain;
         scrollbar-width: none;
         max-width: 100%;
         padding: 0;
@@ -501,8 +531,8 @@
         width: 100%;
         border: none;
         background: none;
-        padding: 6px 11px 6px 38px;
-        color: var(--muted);
+        padding: 5px 5px 5px 6px;
+        color: var(--text);
         border-radius: var(--radius);
         cursor: pointer;
         font: inherit;
@@ -520,9 +550,9 @@
       }
       .tab.active {
         color: var(--text);
-        background: color-mix(in srgb, var(--text) 4%, transparent);
+        background: color-mix(in srgb, var(--text) 2.5%, transparent);
         box-shadow: none;
-        font-weight: 500;
+        font-weight: 400;
       }
       .tab:disabled {
         color: color-mix(in srgb, var(--muted) 45%, transparent);
@@ -537,9 +567,9 @@
       }
       .tab-section {
         flex: 0 0 auto;
-        padding: 12px 11px 6px 9px;
+        padding: 12px 6px 6px 19px;
         color: var(--muted);
-        font-size: 11px;
+        font-size: 12.5px;
         font-weight: 400;
       }
       nav.tabs .tab-section {
@@ -551,12 +581,11 @@
         border-top: 0;
       }
       nav.tabs .tab:last-child {
-        margin-top: auto;
-        padding-top: 12px;
-        border-top: 1px solid var(--border);
-        border-radius: 0;
+        margin-top: 0;
+        padding-top: 5px;
+        border-top: 0;
+        border-radius: var(--radius);
       }
-
       section.card {
         margin: 0 0 22px;
         padding: 18px;
@@ -638,7 +667,6 @@
         padding: 16px 0 0;
         border: none;
       }
-
       label {
         display: block;
         font-size: 12px;
@@ -647,6 +675,7 @@
         margin: 0 0 6px;
       }
       input[type="text"],
+      input[type="url"],
       input[type="email"],
       input[type="date"],
       input:not([type]),
@@ -771,7 +800,6 @@
       .danger-link:hover {
         background: none;
       }
-
       button {
         font: inherit;
         cursor: pointer;
@@ -799,9 +827,6 @@
       .primary:hover {
         background: var(--cta-hover);
         border-color: var(--cta-hover);
-      }
-      button.dirty::after {
-        content: " *";
       }
       .link {
         border: none;
@@ -844,7 +869,6 @@
       .icon-button:hover {
         color: var(--text);
       }
-
       .scopepick {
         position: relative;
       }
@@ -910,7 +934,6 @@
         color: var(--muted);
         font-size: 13px;
       }
-
       table {
         width: 100%;
         border-collapse: collapse;
@@ -1028,7 +1051,6 @@
       .history-volume-cell {
         white-space: nowrap;
       }
-
       .badge {
         display: inline-block;
         font-size: 11px;
@@ -1047,6 +1069,16 @@
         color: var(--ok);
         border-color: rgba(22, 114, 58, 0.35);
         background: rgba(22, 114, 58, 0.07);
+      }
+      .badge.ok {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        border-color: color-mix(in srgb, var(--ok) 16%, transparent);
+        background: color-mix(in srgb, var(--ok) 6%, transparent);
+        font-size: 12px;
+        font-weight: 500;
+        line-height: 1.4;
       }
       .badge.err {
         color: var(--danger);
@@ -1332,7 +1364,6 @@
         color: var(--danger);
         border-color: var(--danger);
       }
-
       .pack-register {
         display: flex;
         align-items: center;
@@ -1418,7 +1449,6 @@
       .ovmenu button.danger {
         color: var(--danger);
       }
-
       .statline {
         display: inline-flex;
         flex-wrap: wrap;
@@ -1516,7 +1546,6 @@
         padding-top: 6px;
         padding-bottom: 6px;
       }
-
       .status {
         font-size: 13px;
       }
@@ -1608,7 +1637,6 @@
         gap: 10px;
         flex-wrap: wrap;
       }
-
       .pager {
         display: flex;
         align-items: center;
@@ -1634,14 +1662,12 @@
       .hidden {
         display: none !important;
       }
-
       tr.openable {
         cursor: pointer;
       }
       tr.openable:hover td {
         background: var(--subtle);
       }
-
       tr.monologue-row td {
         background-color: color-mix(in srgb, var(--trigger) 3%, transparent);
       }
@@ -1791,7 +1817,6 @@
         color: var(--muted);
         font-size: 12px;
       }
-
       .sm-stream {
         max-width: var(--readw);
         display: flex;
@@ -2071,7 +2096,6 @@
       .prompt-toggle:hover {
         color: var(--text);
       }
-
       .back {
         border: none;
         background: none;
@@ -2089,7 +2113,6 @@
       .detail {
         max-width: var(--readw);
       }
-
       .viewer {
         margin: 14px 0 0;
         max-width: var(--readw);
@@ -2098,7 +2121,6 @@
         border-radius: 8px;
         background: var(--surface);
       }
-
       .vhead {
         display: flex;
         align-items: flex-start;
@@ -2186,7 +2208,6 @@
         margin-left: auto;
         text-align: right;
       }
-
       .entry.collapsed > pre,
       .entry.collapsed > .message-body {
         display: none;
@@ -2381,7 +2402,6 @@
         display: block;
         margin: 2px 0 6px 18px;
       }
-
       .tool-line-entry > .tool-entry > .who {
         display: none;
       }
@@ -2391,7 +2411,6 @@
       .context-turn {
         margin: 0 0 2px 18px;
       }
-
       .context-turn.cache-miss {
         border-left: 3px solid var(--danger);
         padding-left: 10px;
@@ -2659,7 +2678,6 @@
       .inline-context.collapsed {
         display: none;
       }
-
       .context-page-head {
         display: flex;
         align-items: baseline;
@@ -2694,7 +2712,6 @@
       .context-page .context-stack {
         height: 36px;
       }
-
       .context-page.context-turn {
         margin: 0;
       }
@@ -2734,7 +2751,6 @@
         color: var(--muted);
         font-size: 13px;
       }
-
       body.context-fullpage header {
         position: static;
       }
@@ -2887,7 +2903,6 @@
       .pathcrumb {
         word-break: break-all;
       }
-
       .field-hint {
         color: var(--muted);
         font-size: 12px;
@@ -3108,7 +3123,6 @@
         display: block;
         color: var(--muted);
       }
-
       body[data-subview="models"] #view-governance section.card:not(.sv-models),
       body[data-subview="credentials"] #view-governance section.card:not(.sv-credentials),
       body[data-subview="customize"] #view-governance section.card:not(.sv-customize),
@@ -3214,11 +3228,8 @@
         background: var(--subtle);
       }
       .admin-app .dd-item.sel {
-        font-weight: 600;
-      }
-      .admin-app .dd-item.sel::after {
-        content: " ✓";
-        color: var(--accent, #4a7dff);
+        background: var(--subtle);
+        font-weight: 400;
       }
       .admin-app .dd-item.dis {
         color: var(--muted);
@@ -3779,7 +3790,7 @@
         font-size: 12px;
       }
       .governance-view .shellbar {
-        display: none;
+        display: flex;
       }
       .governance-capability {
         display: flex;
@@ -4006,7 +4017,6 @@
       .review-dialog-confirm.danger:hover {
         background: #912018;
       }
-
       @media (max-width: 1180px) {
         .governance-layout {
           grid-template-columns: 1fr;
@@ -4029,7 +4039,6 @@
           border-bottom-color: var(--ink);
         }
       }
-
       @media (max-width: 900px) {
         header.top {
           padding-right: max(14px, env(safe-area-inset-right));
@@ -4122,7 +4131,6 @@
           grid-template-columns: 1fr;
         }
       }
-
       @media (max-width: 640px) {
         #view-governance .setting-row {
           grid-template-columns: 1fr;
@@ -4141,7 +4149,6 @@
           text-align: left;
         }
       }
-
       @media (max-width: 560px) {
         header.top {
           gap: 10px;
@@ -4273,7 +4280,6 @@
           display: none;
         }
       }
-
       @media (max-width: 400px) {
         header.top {
           gap: 8px;
@@ -4300,17 +4306,16 @@
           padding: 0 2px;
         }
       }
-
       :root {
-        --subtle: #eeeeea;
-        --text: #1c1c1a;
-        --muted: #6f6f68;
+        --subtle: #f5f5f5;
+        --text: #171717;
+        --muted: #737373;
         --ink: #1c1c1a;
         --danger: #b91c1c;
         --ok: #1a7f37;
         --warn: #b45309;
-        --bg: #fbfbfa;
-        --border: #e4e7ec;
+        --bg: #ffffff;
+        --border: #e5e5e5;
         --radius: 8px;
         --header-h: 56px;
         --sidebar-w: 280px;
@@ -4334,14 +4339,10 @@
         margin-left: var(--sidebar-w);
         padding: var(--header-safe-top) max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
         border-bottom-color: color-mix(in srgb, var(--border) 68%, transparent);
-        background: color-mix(in srgb, var(--bg) 94%, var(--subtle));
+        background: var(--bg);
       }
       body:has(#app-view.hidden) header.top {
         display: none;
-      }
-      .header-home {
-        flex: 0 0 auto;
-        margin-right: auto;
       }
       .who {
         margin-left: auto;
@@ -4355,6 +4356,17 @@
         height: 100dvh;
         padding: calc(10px + var(--header-safe-top)) 4px 10px 8px;
         background: color-mix(in srgb, var(--subtle) 42%, var(--bg));
+      }
+      @media (min-width: 901px) {
+        .admin-sidebar .tab {
+          width: calc(100% - 13px);
+          margin-left: 13px;
+          line-height: 21px;
+          transition: background 0.12s ease;
+        }
+        .admin-sidebar nav.tabs {
+          padding-right: 6px;
+        }
       }
       .brand {
         gap: 7.5px;
@@ -4410,9 +4422,9 @@
       }
       .tab {
         min-height: 0;
-        padding: 6px 11px 6px 38px;
+        padding: 5px 5px 5px 6px;
         border-radius: var(--radius);
-        color: var(--muted);
+        color: var(--text);
         font-size: 14px;
         font-weight: 400;
       }
@@ -4422,18 +4434,18 @@
       }
       .tab.active {
         color: var(--text);
-        background: color-mix(in srgb, var(--text) 4%, transparent);
+        background: color-mix(in srgb, var(--text) 2.5%, transparent);
         box-shadow: none;
-        font-weight: 500;
+        font-weight: 400;
       }
       .tab-top {
-        color: var(--muted);
+        color: var(--text);
         font-weight: 400;
       }
       .tab-section {
-        padding: 12px 11px 6px 9px;
+        padding: 12px 6px 6px 19px;
         color: var(--muted);
-        font-size: 11px;
+        font-size: 12.5px;
         font-weight: 400;
         letter-spacing: 0;
       }
@@ -4454,10 +4466,10 @@
         border-top: 0;
       }
       nav.tabs .tab:last-child {
-        margin-top: auto;
-        padding-top: 12px;
-        border-top: 1px solid var(--border);
-        border-radius: 0;
+        margin-top: 0;
+        padding-top: 5px;
+        border-top: 0;
+        border-radius: var(--radius);
       }
       .admin-main {
         grid-column: 2;
@@ -4465,9 +4477,50 @@
         max-width: none;
         padding: 28px 28px 40px;
       }
+      .admin-main .shellbar {
+        position: static;
+        min-height: 32px;
+        margin-bottom: 8px;
+        padding: 0;
+      }
+      .admin-main .shell-title {
+        font-size: 22px;
+        font-weight: 600;
+        letter-spacing: -0.025em;
+      }
+      .admin-main input[type="text"],
+      .admin-main input[type="url"],
+      .admin-main textarea,
+      .admin-main select,
+      .admin-main .dd > button {
+        background: transparent;
+        border-color: var(--border);
+        border-radius: 10px;
+        box-shadow: none;
+      }
+      .admin-main label,
+      .admin-main .hint,
+      .admin-main .viewlink,
+      .admin-main input,
+      .admin-main textarea,
+      .admin-main .dd > button {
+        font-size: 13px;
+        line-height: 1.4;
+      }
+      .admin-main label,
+      .admin-main .hint,
+      .admin-main .viewlink {
+        color: var(--muted);
+      }
+      .admin-main label {
+        margin-bottom: 4px;
+      }
+      .admin-main section.card:not(.setting-row) {
+        box-shadow: none;
+      }
       .admin-inner {
-        width: min(var(--maxw), 100%);
-        margin: 0 auto;
+        width: 100%;
+        margin: 0;
       }
       #view-governance > .governance-overview,
       #view-governance .governance-sections,
@@ -4490,7 +4543,7 @@
         display: block;
         min-height: 0;
         margin: 0;
-        padding: 16px 12px;
+        padding: 20px 0;
         border: 0;
         border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
         border-radius: 0;
@@ -4530,14 +4583,14 @@
       #view-governance .setting-row > .head h2 {
         margin: 0;
         font-size: 14px;
-        font-weight: 600;
+        font-weight: 500;
       }
       #view-governance .card > .head p,
       #view-governance .setting-row > .head p {
-        margin: 2px 0 8px;
+        margin: 4px 0 8px;
         color: var(--muted);
-        font-size: 12.5px;
-        line-height: 1.5;
+        font-size: 13px;
+        line-height: 1.4;
       }
       #view-governance .card > .body,
       #view-governance .setting-row > .body {
@@ -4571,9 +4624,6 @@
         font-size: 12.5px;
         font-weight: 500;
       }
-      #view-governance [data-save]:disabled {
-        display: none;
-      }
       #view-governance .parity-subsection {
         padding: 4px 0;
         border: 0;
@@ -4588,31 +4638,42 @@
         display: none;
       }
       #card-security-posture > .head p,
-      #card-external-slack > .head p,
-      #card-feature-flags .editor-grid {
+      #card-external-slack > .head p {
         display: none;
       }
       .choice-stack {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        max-width: 640px;
-        margin-top: 8px;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        max-width: none;
+        margin-top: 6px;
       }
       .posture-choice {
         display: flex;
         align-items: flex-start;
         gap: 8px;
         margin: 0;
-        padding: 8px 10px;
-        border: 1px solid var(--border);
+        padding: 7px 10px;
+        border: 1px solid transparent;
         border-radius: 8px;
         color: var(--text);
         cursor: pointer;
+        line-height: 1.4;
+        transition: background 120ms ease;
+      }
+      .posture-choice:hover {
+        background: color-mix(in srgb, var(--text) 6%, transparent);
+      }
+      .posture-choice:focus-within {
+        outline: 2px solid var(--muted);
+        outline-offset: 1px;
       }
       .posture-choice:has(input:checked) {
-        border-color: var(--border);
-        background: var(--subtle);
+        border-color: transparent;
+        background: color-mix(in srgb, var(--text) 4%, transparent);
+      }
+      .posture-choice:has(input:checked):hover {
+        background: color-mix(in srgb, var(--text) 8%, transparent);
       }
       .posture-choice input {
         width: auto;
@@ -4623,15 +4684,426 @@
         display: block;
       }
       .posture-choice strong {
+        color: var(--text);
         font-size: 13px;
         font-weight: 600;
       }
       .posture-choice small {
-        margin-top: 2px;
+        margin-top: 0;
         color: var(--muted);
-        font-size: 11.5px;
+        font-size: 13px;
         font-weight: 400;
         line-height: 1.4;
+      }
+      #card-security-posture .choice-stack {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        max-width: none;
+      }
+      #card-security-posture .posture-choice,
+      #card-sharing-posture .posture-choice,
+      #card-external-slack .posture-choice {
+        padding: 14px 16px;
+        border-color: var(--border);
+        background: transparent;
+      }
+      #card-security-posture .posture-choice:has(input:checked),
+      #card-sharing-posture .posture-choice:has(input:checked),
+      #card-external-slack .posture-choice:has(input:checked) {
+        border-color: var(--muted);
+        background: transparent;
+      }
+      #card-security-posture .posture-choice:hover,
+      #card-sharing-posture .posture-choice:hover,
+      #card-external-slack .posture-choice:hover {
+        background: color-mix(in srgb, var(--text) 2%, transparent);
+      }
+      @media (max-width: 1100px) {
+        #card-security-posture .choice-stack {
+          grid-template-columns: 1fr;
+          gap: 4px;
+        }
+        #card-security-posture .posture-choice > span {
+          display: flex;
+          flex-wrap: wrap;
+          column-gap: 8px;
+        }
+      }
+      #view-governance .governance-field-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 12px;
+        max-width: 720px;
+      }
+      .governance-field-grid .dd,
+      .governance-field-grid select {
+        width: 100%;
+      }
+      .governance-prompt {
+        margin-top: 12px;
+        border-top: 1px solid var(--border);
+      }
+      #auto-flagger-rubric {
+        width: 100%;
+        min-height: 140px;
+        max-height: 360px;
+        resize: vertical;
+      }
+      .governance-secondary-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      #view-governance :is(.card, .parity-subsection) > .foot:has([data-save]),
+      #view-governance :is(.card, .parity-subsection) > .foot:has(#governance-org-ambient-save) {
+        min-height: 32px;
+        margin-top: 12px;
+        gap: 10px;
+      }
+      #view-governance :is(.card, .parity-subsection) > .foot [data-save],
+      #view-governance :is(.card, .parity-subsection) > .foot #governance-org-ambient-save,
+      #view-governance :is(.card, .parity-subsection) > .foot #sc-save {
+        flex: 0 0 auto;
+        min-width: 76px;
+        min-height: 32px;
+        margin: 0;
+      }
+      @media (max-width: 600px) {
+        .choice-stack {
+          grid-template-columns: 1fr;
+        }
+        #view-governance .governance-field-grid {
+          grid-template-columns: 1fr;
+          gap: 8px;
+        }
+      }
+
+      body:is(
+          [data-subview="governance"],
+          [data-subview="models"],
+          [data-subview="credentials"],
+          [data-subview="connectors"],
+          [data-subview="customize"]
+        )
+        .shell-title {
+        font-weight: 500;
+      }
+      #view-governance {
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 400;
+        line-height: 1.4;
+      }
+      #view-governance label,
+      #view-governance input,
+      #view-governance textarea,
+      #view-governance select,
+      #view-governance .dd > button,
+      #view-governance .posture-choice {
+        color: var(--text);
+        font-weight: 400;
+      }
+      #view-governance .card > .head h2,
+      #view-governance .posture-choice strong,
+      #view-governance summary,
+      #view-governance button {
+        font-weight: 500;
+      }
+      #view-governance .card > .head p,
+      #view-governance .body p,
+      #view-governance .hint,
+      #view-governance .posture-choice small,
+      #view-governance .viewlink,
+      #view-governance summary span {
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 400;
+        line-height: 1.4;
+      }
+      #view-governance p strong,
+      #view-governance p b {
+        color: inherit;
+        font-weight: 400;
+      }
+      #view-governance :is(.card, .parity-subsection) > .foot [data-save]:disabled,
+      #view-governance :is(.card, .parity-subsection) > .foot #governance-org-ambient-save:disabled,
+      #view-governance :is(.card, .parity-subsection) > .foot #sc-save:disabled {
+        color: color-mix(in srgb, var(--text) 32%, var(--bg));
+        background: color-mix(in srgb, var(--text) 3%, var(--bg));
+        border: 1px solid color-mix(in srgb, var(--text) 8%, var(--bg));
+        box-shadow: none;
+        opacity: 1;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      body:is(
+          [data-subview="governance"],
+          [data-subview="models"],
+          [data-subview="credentials"],
+          [data-subview="connectors"],
+          [data-subview="customize"],
+          [data-subview="users"]
+        )
+        .admin-inner {
+        max-width: 960px;
+        margin-inline: auto;
+      }
+
+      body:is(
+          [data-subview="governance"],
+          [data-subview="models"],
+          [data-subview="credentials"],
+          [data-subview="connectors"],
+          [data-subview="customize"]
+        )
+        .shellbar {
+        margin-bottom: 16px;
+      }
+      #view-governance section.card,
+      #view-governance section.card.setting-row {
+        display: grid;
+        grid-template-columns: minmax(240px, 1fr) minmax(260px, 1fr);
+        column-gap: 40px;
+        row-gap: 0;
+        padding: 20px 0;
+        align-items: start;
+      }
+      #view-governance section.card.hidden,
+      #view-governance section.card.reference-omitted {
+        display: none;
+      }
+      #view-governance .card > .head {
+        grid-column: 1;
+        margin: 0;
+      }
+      #view-governance .card > .head h2 {
+        font-size: 14px;
+        font-weight: 400;
+        line-height: 1.5;
+      }
+      #view-governance .card > .head p {
+        display: block;
+        margin: 4px 0 0;
+        line-height: 1.5;
+      }
+      #view-governance .card > .body {
+        grid-column: 2;
+        min-width: 0;
+      }
+      #view-governance :is(.card, .parity-subsection) > .foot {
+        grid-column: 2;
+        justify-content: flex-end;
+      }
+      #view-governance :is(.card, .parity-subsection) > .foot[hidden] {
+        display: none;
+      }
+      .screening-test-options {
+        border-top: 1px solid var(--border);
+      }
+      .screening-test-fields {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 12px;
+        padding: 4px 0 12px;
+      }
+      .screening-test-fields input[type="number"] {
+        width: 100%;
+      }
+      #view-governance .screening-compare {
+        grid-column: 1 / -1;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin: 0;
+      }
+      #view-governance .screening-compare input {
+        flex: 0 0 18px;
+        width: 18px;
+        height: 18px;
+        margin: 0;
+        accent-color: var(--cta);
+        cursor: pointer;
+      }
+      #view-governance #auto-flagger-window {
+        width: 76px;
+        min-width: 76px;
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+        appearance: textfield;
+        -moz-appearance: textfield;
+      }
+      #auto-flagger-window::-webkit-inner-spin-button,
+      #auto-flagger-window::-webkit-outer-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+      }
+      #auto-flagger-window-range {
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      #auto-flagger-test {
+        grid-column: 1 / -1;
+        justify-self: end;
+      }
+      #view-governance :is(.card, .parity-subsection) > .foot [data-save],
+      #view-governance :is(.card, .parity-subsection) > .foot #governance-org-ambient-save,
+      #view-governance :is(.card, .parity-subsection) > .foot #sc-save {
+        order: 1;
+        font-weight: 400;
+      }
+      #card-security-posture .body > .dd,
+      #card-sharing-posture .body > .dd {
+        width: 180px;
+        margin-left: auto;
+      }
+      #view-governance #sharing-posture-effective {
+        margin: 0 0 8px;
+        text-align: right;
+        font-size: 12px;
+      }
+      #view-governance .audience-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        min-height: 34px;
+      }
+      #view-governance .audience-toggle input {
+        width: 16px;
+        height: 16px;
+        margin: 0;
+      }
+      #view-governance #card-command-policy > .body,
+      #view-governance #card-egress > .body,
+      #view-governance #card-ambient-policy > .body {
+        grid-column: 1 / -1;
+        margin-top: 12px;
+      }
+      #view-governance .governance-secondary-actions {
+        font-size: 12px;
+      }
+      @media (max-width: 1100px) {
+        #view-governance section.card,
+        #view-governance section.card.setting-row {
+          column-gap: 24px;
+          grid-template-columns: minmax(180px, 1fr) minmax(220px, 1fr);
+        }
+      }
+      @media (max-width: 650px) {
+        #view-governance section.card,
+        #view-governance section.card.setting-row {
+          grid-template-columns: 1fr;
+        }
+        #view-governance .card > .body {
+          grid-column: 1;
+          margin-top: 12px;
+        }
+        #view-governance :is(.card, .parity-subsection) > .foot {
+          grid-column: 1;
+        }
+        #card-security-posture .body > .dd,
+        #card-sharing-posture .body > .dd {
+          width: 100%;
+          margin-left: 0;
+        }
+        #view-governance #sharing-posture-effective {
+          text-align: left;
+        }
+        #view-governance .audience-toggle {
+          justify-content: flex-start;
+        }
+      }
+      .posture-help {
+        margin-top: 8px;
+        font-size: 13px;
+      }
+      .posture-help dl {
+        margin: 12px 0 0;
+      }
+      .posture-help dt {
+        font-weight: 500;
+      }
+      .posture-help dd {
+        margin: 4px 0 12px;
+        color: var(--muted);
+      }
+      .screening-count {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .screening-count input {
+        min-width: 64px;
+      }
+      #view-governance .governance-prompt {
+        padding-top: 12px;
+        margin-top: 12px;
+      }
+      #view-governance .screening-test-options {
+        padding-top: 12px;
+        margin-top: 12px;
+      }
+      #view-governance .screening-test-options h3 {
+        margin: 0 0 4px;
+        font-size: 13px;
+        font-weight: 500;
+      }
+      #view-governance .screening-test-help {
+        margin: 0 0 12px;
+      }
+      #view-governance .posture-help dl {
+        margin-top: 12px;
+      }
+      #view-governance .posture-help dd:last-child {
+        margin-bottom: 0;
+      }
+      #view-governance #card-security-posture .choice-stack,
+      #view-governance #card-sharing-posture .choice-stack,
+      #view-governance #card-external-slack .choice-stack,
+      #view-governance #card-governance-org-ambient .choice-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        margin: 0;
+      }
+      #view-governance #card-security-posture .posture-choice,
+      #view-governance #card-sharing-posture .posture-choice,
+      #view-governance #card-external-slack .posture-choice,
+      #view-governance #card-governance-org-ambient .posture-choice {
+        padding: 10px 12px;
+        border: 1px solid color-mix(in srgb, var(--text) 9%, var(--bg));
+      }
+      #view-governance #card-security-posture .posture-choice > span,
+      #view-governance #card-sharing-posture .posture-choice > span,
+      #view-governance #card-external-slack .posture-choice > span,
+      #view-governance #card-governance-org-ambient .posture-choice > span {
+        display: block;
+      }
+      #view-governance #card-security-posture .posture-choice:has(input:checked),
+      #view-governance #card-sharing-posture .posture-choice:has(input:checked),
+      #view-governance #card-external-slack .posture-choice:has(input:checked),
+      #view-governance #card-governance-org-ambient .posture-choice:has(input:checked) {
+        background: color-mix(in srgb, var(--text) 2%, transparent);
+      }
+      #view-governance #card-security-posture .posture-choice:hover,
+      #view-governance #card-sharing-posture .posture-choice:hover,
+      #view-governance #card-external-slack .posture-choice:hover,
+      #view-governance #card-governance-org-ambient .posture-choice:hover {
+        background: color-mix(in srgb, var(--text) 4%, transparent);
+      }
+      #view-governance #card-governance-org-ambient > .head {
+        display: block;
+      }
+      #view-governance #card-governance-org-ambient .head .viewlink {
+        display: block;
+        margin: 8px 0 0;
+        padding: 0;
       }
       .policy-rules {
         display: grid;
@@ -4653,9 +5125,26 @@
       .policy-rule .policy-pattern {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
-      .policy-rule .rowbtn {
-        min-width: 34px;
-        padding: 6px 8px;
+      #view-governance .policy-rule .rowbtn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        justify-self: center;
+        width: 16px;
+        height: 16px;
+        min-width: 0;
+        min-height: 0;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        box-shadow: none;
+        color: var(--muted);
+      }
+      #view-governance .policy-rule .rowbtn:hover {
+        border: 0;
+        background: transparent;
+        box-shadow: none;
+        color: var(--danger);
       }
       .policy-actions {
         display: flex;
@@ -4686,9 +5175,6 @@
       #governance-org-ambient + .dd .dd-btn {
         width: 100%;
       }
-      #governance-org-ambient-save:disabled {
-        display: none;
-      }
       #card-egress.egress-disabled .egress-editor,
       #card-egress.egress-disabled .egress-actions {
         opacity: 0.45;
@@ -4703,6 +5189,246 @@
         gap: 8px 10px;
       }
       .egress-empty-state > .hint {
+        margin: 0;
+      }
+
+      body:is(
+          [data-subview="governance"],
+          [data-subview="models"],
+          [data-subview="credentials"],
+          [data-subview="connectors"],
+          [data-subview="customize"]
+        )
+        #view-governance
+        input:not([type="radio"]):not([type="checkbox"]),
+      body:is(
+          [data-subview="governance"],
+          [data-subview="models"],
+          [data-subview="credentials"],
+          [data-subview="connectors"],
+          [data-subview="customize"]
+        )
+        #view-governance
+        select,
+      body:is(
+          [data-subview="governance"],
+          [data-subview="models"],
+          [data-subview="credentials"],
+          [data-subview="connectors"],
+          [data-subview="customize"]
+        )
+        #view-governance
+        textarea,
+      body:is(
+          [data-subview="governance"],
+          [data-subview="models"],
+          [data-subview="credentials"],
+          [data-subview="connectors"],
+          [data-subview="customize"]
+        )
+        #view-governance
+        .dd
+        > button {
+        border-radius: 6px;
+      }
+      #view-governance input[type="radio"] {
+        appearance: none;
+        -webkit-appearance: none;
+        display: inline-grid;
+        place-content: center;
+        flex: 0 0 16px;
+        width: 16px;
+        height: 16px;
+        padding: 0;
+        border: 1.5px solid color-mix(in srgb, var(--text) 38%, var(--bg));
+        border-radius: 50%;
+        background: transparent;
+        cursor: pointer;
+      }
+      #view-governance input[type="radio"]::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--cta);
+        transform: scale(0);
+      }
+      #view-governance input[type="radio"]:checked {
+        border-color: var(--cta);
+      }
+      #view-governance input[type="radio"]:checked::before {
+        transform: scale(1);
+      }
+      #view-governance input[type="radio"]:focus-visible {
+        outline: 2px solid var(--cta);
+        outline-offset: 3px;
+      }
+      #view-governance input[type="radio"]:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      #view-governance #internal-member-overrides {
+        overflow-x: hidden;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      body[data-subview="credentials"] #view-governance section.card.sv-credentials {
+        display: block;
+      }
+      body[data-subview="credentials"] #view-governance .sv-credentials > .head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: baseline;
+        gap: 4px 16px;
+      }
+
+      body[data-subview="credentials"] #view-governance .sv-credentials > .head h2 {
+        grid-column: 1;
+        grid-row: 1;
+      }
+      body[data-subview="credentials"] #view-governance .sv-credentials > .head p {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        margin: 0;
+      }
+
+      body[data-subview="credentials"] #view-governance #card-service-credentials > .head p {
+        max-width: 70%;
+      }
+      @media (max-width: 650px) {
+        body[data-subview="credentials"] #view-governance #card-service-credentials > .head p {
+          max-width: 100%;
+        }
+      }
+
+      body[data-subview="credentials"] #view-governance .sv-credentials > .head .viewlink {
+        grid-column: 2;
+        grid-row: 1;
+        margin: 0;
+        padding: 0;
+      }
+      body[data-subview="credentials"] #view-governance .sv-credentials > .body {
+        margin-top: 16px;
+      }
+      body[data-subview="credentials"] #view-governance .credential-main {
+        flex: 1;
+      }
+      body[data-subview="credentials"] #view-governance .credential-row {
+        padding: 12px 0;
+        align-items: center;
+        border-color: color-mix(in srgb, var(--text) 8%, var(--bg));
+      }
+      body[data-subview="credentials"] #view-governance .credential-title strong,
+      body[data-subview="credentials"] #view-governance .keychain-summary strong {
+        font-size: 13px;
+        font-weight: 500;
+      }
+      body[data-subview="credentials"] #view-governance .credential-main > .hint {
+        margin: 4px 0 0;
+      }
+      body[data-subview="credentials"] #view-governance .credential-badges {
+        margin-top: 6px;
+      }
+      body[data-subview="credentials"] #view-governance .badge {
+        font-size: 12px;
+        font-weight: 400;
+        line-height: 1.4;
+        padding: 2px 7px;
+      }
+
+      body[data-subview="credentials"] #view-governance .badge:is(.info, .ok, .muted) {
+        color: var(--muted);
+        border-color: color-mix(in srgb, var(--text) 9%, var(--bg));
+        background: color-mix(in srgb, var(--text) 2%, transparent);
+      }
+
+      body[data-subview="credentials"] #view-governance .credential-actions button {
+        min-height: 32px;
+        padding: 5px 12px;
+        border-radius: 6px;
+        border-color: var(--border);
+        background: transparent;
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 400;
+      }
+
+      body[data-subview="credentials"] #view-governance .credential-actions button:hover {
+        background: color-mix(in srgb, var(--text) 4%, transparent);
+      }
+
+      body[data-subview="credentials"] #view-governance .credential-actions button.danger:hover {
+        color: var(--danger);
+      }
+      body[data-subview="credentials"] #view-governance .keychain-summary {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      body[data-subview="credentials"] #view-governance .keychain-summary strong {
+        color: var(--text);
+      }
+      body[data-subview="credentials"] #view-governance .editor-grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      body[data-subview="credentials"] #view-governance .editor-panel {
+        padding: 16px 0 0;
+        border: 0;
+        border-top: 1px solid var(--border);
+        border-radius: 0;
+        background: transparent;
+      }
+      body[data-subview="credentials"] #view-governance .sc-semantics strong,
+      body[data-subview="credentials"] #view-governance .sc-semantics span,
+      body[data-subview="credentials"] #view-governance .capability-summary dt,
+      body[data-subview="credentials"] #view-governance .capability-summary dd {
+        font-size: 13px;
+        font-weight: 400;
+        line-height: 1.4;
+      }
+      body[data-subview="credentials"] #view-governance input[type="checkbox"] {
+        min-width: 18px;
+        height: 18px;
+        accent-color: var(--cta);
+      }
+      #view-governance .model-runtime-fields {
+        display: grid;
+        gap: 12px;
+      }
+      #view-governance .model-runtime-fields label {
+        margin: 0 0 4px;
+      }
+      #view-governance .model-runtime-fields .dd,
+      #view-governance .model-runtime-fields select {
+        width: 100%;
+        max-width: none;
+      }
+      #view-governance #base-fast-mode-control {
+        margin-top: 16px;
+      }
+      #view-governance .setting-toggle input:checked + .setting-switch {
+        border-color: var(--cta);
+        background: var(--cta);
+      }
+      #view-governance .setting-toggle input:focus-visible + .setting-switch {
+        outline-color: var(--cta);
+      }
+      #view-governance #base-fast-mode-control strong,
+      #view-governance #base-fast-mode-control small {
+        font-size: 13px;
+        font-weight: 400;
+        line-height: 1.4;
+      }
+      #view-governance #base-fast-mode-control .setting-copy {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        column-gap: 8px;
+        row-gap: 0;
+      }
+      #view-governance #base-fast-mode-control small {
+        color: var(--muted);
         margin: 0;
       }
       .model-list {
@@ -4725,12 +5451,16 @@
         background: var(--subtle);
         font-size: 13px;
       }
-      .model-chip button {
+      #view-governance .model-chip button {
         display: inline-flex;
         align-items: center;
         justify-content: center;
+        flex: 0 0 22px;
         width: 22px;
         height: 22px;
+        min-width: 22px;
+        min-height: 22px;
+        margin: 0;
         padding: 0;
         border: 0;
         border-radius: 999px;
@@ -4739,7 +5469,7 @@
         font-size: 16px;
         line-height: 1;
       }
-      .model-chip button:hover {
+      #view-governance .model-chip button:hover {
         background: color-mix(in srgb, var(--text) 8%, transparent);
         color: var(--text);
       }
@@ -4748,7 +5478,7 @@
         align-items: flex-end;
         gap: 8px;
         max-width: 520px;
-        margin-top: 14px;
+        margin: 0 0 14px;
       }
       .model-add-field {
         flex: 1 1 auto;
@@ -4824,10 +5554,228 @@
       body[data-subview="connectors"] .shellbar {
         display: none;
       }
+      #slack-installation-create {
+        color: #2563b8;
+        text-decoration: underline;
+        text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+        text-underline-offset: 0.2em;
+      }
+      :where(html.dark) #slack-installation-create {
+        color: #4c8edb;
+      }
+      #slack-installation-create:is(:hover, :focus-visible) {
+        text-decoration-color: currentColor;
+      }
+      #slack-installation-create:focus-visible {
+        outline: 2px solid currentColor;
+        outline-offset: 3px;
+        border-radius: 2px;
+      }
       .connector-dm-tip {
         margin: 0 0 10px;
         color: var(--muted);
         font-size: 12.5px;
+      }
+      .connector-dm-tip p {
+        margin: 0;
+      }
+      body[data-subview="connectors"] .shellbar {
+        display: flex;
+      }
+      #view-connectors {
+        overflow: visible;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+      }
+      #view-connectors section.card {
+        padding: 24px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      #view-connectors section.card:last-child {
+        border-bottom: 0;
+      }
+      #view-connectors .card > .head {
+        margin: 0 0 16px;
+        padding: 0;
+        border: 0;
+      }
+      #view-connectors .card > .head h2 {
+        font-size: 14px;
+        font-weight: 500;
+      }
+      #view-connectors .card > .head p,
+      #view-connectors .hint,
+      .connector-dm-tip {
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 400;
+        line-height: 1.4;
+      }
+      .admin-notice {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 14px 16px;
+        border: 1px solid color-mix(in srgb, #7095c0 20%, white);
+        border-radius: 8px;
+        background: color-mix(in srgb, #7095c0 6%, white);
+        color: var(--cta);
+        font-size: 13px;
+        font-weight: 400;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
+      }
+      .admin-notice--warning {
+        border-color: #f2dfa2;
+        background: #fffbeb;
+        color: #854d0e;
+      }
+      .admin-notice::before {
+        content: "";
+        display: block;
+        flex: 0 0 18px;
+        width: 18px;
+        height: 18px;
+        margin-top: 1px;
+        border-radius: 0;
+        color: inherit;
+        background: currentColor;
+        mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 11v5M12 8h.01'/%3E%3C/svg%3E")
+          center / contain no-repeat;
+      }
+      .admin-notice > div,
+      .admin-notice > p {
+        flex: 1;
+        min-width: 0;
+      }
+      .admin-notice p,
+      .admin-notice span,
+      .admin-notice strong {
+        margin: 0;
+        color: inherit;
+        font-size: inherit;
+        line-height: inherit;
+      }
+      .admin-notice strong {
+        display: block;
+        margin-bottom: 4px;
+        font-weight: 600;
+      }
+      .connector-dm-tip {
+        margin-bottom: 16px;
+      }
+      #view-connectors .card > .head p {
+        margin: 4px 0 0;
+        max-width: 70ch;
+      }
+      #view-connectors .card > .foot {
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      #view-connectors .credential-title strong {
+        font-size: 13px;
+        font-weight: 500;
+      }
+      #view-connectors .credential-row {
+        padding: 12px 0;
+        border-color: color-mix(in srgb, var(--text) 8%, var(--bg));
+      }
+      #view-governance .sv-customize > .head {
+        row-gap: 0;
+      }
+      #view-governance .sv-customize .body label:not(.setting-toggle) {
+        margin-bottom: 4px;
+        font-size: 13px;
+        font-weight: 400;
+      }
+
+      #view-governance .sv-customize .body input:not([type="checkbox"]):not([type="radio"]) {
+        max-width: none !important;
+        min-height: 34px;
+        padding: 7px 10px;
+        background: transparent;
+        font: inherit;
+      }
+      #view-governance .sv-customize .setting-toggle {
+        align-items: flex-start;
+      }
+      #view-governance .sv-customize .setting-switch {
+        margin-top: 1px;
+      }
+      #view-governance .sv-customize .setting-copy strong,
+      #view-governance .sv-customize .setting-copy small {
+        font-size: 13px;
+        font-weight: 400;
+        line-height: 1.4;
+      }
+      #view-governance .sv-customize .setting-copy small {
+        margin-top: 4px;
+      }
+      #view-governance .parity-subsection {
+        display: block;
+        min-height: 0;
+        padding: 16px 0;
+        border-top: 1px solid var(--border);
+      }
+      #view-governance .parity-subsection:first-child {
+        padding-top: 0;
+        border-top: 0;
+      }
+      #view-governance .parity-subsection:last-child {
+        padding-bottom: 0;
+      }
+      #view-governance :is(.card, .parity-subsection) > .foot .status {
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      .soul-preview-label {
+        display: none;
+      }
+      .soul-preview-label {
+        display: block;
+        margin-bottom: 4px;
+      }
+      #card-soul.is-editing .soul-preview-body {
+        display: none;
+      }
+      #view-governance #card-soul .soul-preview,
+      #view-governance .soul-workbench textarea {
+        width: 100%;
+        min-height: 140px;
+        max-height: 360px;
+        margin: 0;
+        overflow: auto;
+        padding: 7px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: transparent;
+        color: var(--text);
+        font: inherit;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      #view-governance .soul-meta {
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      #view-governance .soul-diff {
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+      #view-governance .soul-diff h3,
+      #view-governance .soul-history h3 {
+        margin: 0 0 4px;
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 400;
+      }
+      #view-governance .soul-diff pre {
+        padding: 7px 10px;
+        border-radius: 6px;
+        background: transparent;
+        font: inherit;
       }
       #card-soul:not(.is-editing) .soul-workbench {
         display: none;
@@ -4898,7 +5846,6 @@
             max(14px, env(safe-area-inset-left));
         }
       }
-
       body.design-view {
         background: var(--surface);
       }
@@ -4986,7 +5933,448 @@
           gap: 9px;
         }
       }
+
+      #view-data .users-layout section.card {
+        margin: 0;
+        padding: 24px 0;
+        border: 0;
+        border-bottom: 1px solid var(--border);
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+      }
+      #view-data .users-layout > section.card:last-child {
+        border-bottom: 0;
+      }
+      #view-data .users-layout .card > .head {
+        margin: 0 0 16px;
+        padding: 0;
+        border: 0;
+      }
+      #view-data .users-layout .card > .head h2 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 500;
+      }
+      #view-data .users-layout .card > .head p {
+        max-width: 70ch;
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.4;
+      }
+      #view-data .users-layout .card > .body {
+        padding: 0;
+        min-width: 0;
+      }
+      #view-data .users-layout .users-setting {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 32px;
+      }
+      #view-data .users-layout .users-setting > .head {
+        margin: 0;
+      }
+      #view-data .users-layout .users-roster > .head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        column-gap: 16px;
+      }
+      #view-data .users-layout .users-roster > .head p {
+        grid-column: 1;
+      }
+      #view-data .users-layout .users-roster > .head button {
+        grid-column: 2;
+        grid-row: 1 / 3;
+        align-self: start;
+      }
+      #view-data .users-layout .status:empty {
+        display: none;
+      }
+      #view-data .users-layout .empty {
+        padding: 12px 0;
+        text-align: left;
+      }
+      #view-data .users-layout .grant-form .grow {
+        min-width: min(220px, 100%);
+      }
+      body:has(.users-layout) .shell-search input {
+        width: 240px;
+        max-width: 100%;
+        padding: 7px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: transparent;
+        color: var(--text);
+        font: inherit;
+        font-size: 13px;
+      }
+      @media (max-width: 720px) {
+        #view-data .users-layout .users-setting {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 16px;
+        }
+        #view-data .users-layout .users-roster > .head {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          align-items: flex-start;
+        }
+      }
+      #app-view #shellbar .judgment-filters .shell-tab {
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 6px 14px;
+        background: transparent;
+        color: var(--muted);
+      }
+      #app-view #shellbar .judgment-filters .shell-tab:hover {
+        background: var(--subtle);
+        color: var(--text);
+      }
+      #app-view #shellbar .judgment-filters .shell-tab.active,
+      #app-view #shellbar .judgment-filters .shell-tab.active:hover {
+        border-color: #0a2540;
+        background: #0a2540;
+        color: #fff;
+      }
+
+      #app-view #shellbar.logs-shell {
+        flex-wrap: wrap;
+        gap: 12px;
+        overflow: visible;
+      }
+      #app-view #shellbar.logs-shell .log-counts,
+      #app-view #shellbar.logs-shell .shell-tabs {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+      #app-view #shellbar.logs-shell .log-counts:empty {
+        display: none;
+      }
+      #app-view #shellbar.logs-shell .shell-tab {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        min-height: 32px;
+        box-sizing: border-box;
+        padding: 6px 14px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: transparent;
+        color: var(--muted);
+        font-size: 12.5px;
+        font-weight: 500;
+        line-height: 18px;
+        white-space: nowrap;
+      }
+      #app-view #shellbar.logs-shell .log-count {
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 400;
+        line-height: 18px;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+      }
+      #app-view #shellbar.logs-shell .log-counts {
+        gap: 6px 16px;
+      }
+      #app-view #shellbar.logs-shell .shell-tab:hover {
+        background: var(--subtle);
+        color: var(--text);
+      }
+      #app-view #shellbar.logs-shell .shell-tab.active,
+      #app-view #shellbar.logs-shell .shell-tab.active:hover {
+        background: #0a2540;
+        border-color: #0a2540;
+        color: #fff;
+      }
+      @media (max-width: 720px) {
+        #app-view #shellbar.logs-shell .log-counts {
+          flex: 1 0 100%;
+          order: 1;
+        }
+        #app-view #shellbar.logs-shell .shell-spacer {
+          display: none;
+        }
+      }
+
+      #view-data .memory-notebooks {
+        padding-top: 8px;
+      }
+      #view-data .memory-notebooks .memory-columns,
+      #view-data .memory-notebooks .dense-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 100px 180px;
+        align-items: center;
+        gap: 24px;
+        padding: 12px 0;
+        border-bottom: 1px solid var(--border);
+        background: transparent;
+        font-size: 13px;
+        line-height: 1.4;
+      }
+      #view-data .memory-notebooks .memory-columns {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      #view-data .memory-notebooks .memory-columns > :not(:first-child) {
+        text-align: right;
+      }
+      #view-data .memory-notebooks .dense-name {
+        min-width: 0;
+        max-width: none;
+        font-weight: 500;
+      }
+      #view-data .memory-notebooks .dense-preview,
+      #view-data .memory-notebooks .dense-time {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      #view-data .memory-notebooks .dense-row {
+        border-top: 0;
+      }
+      #view-data .memory-notebooks .dense-row:hover {
+        background: var(--subtle);
+      }
+      #view-data .memory-notebooks .dense-row:focus-visible {
+        outline: 2px solid var(--cta);
+        outline-offset: 2px;
+      }
+      #view-data section.memory-editor {
+        margin: 0;
+        padding: 24px 0;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+      }
+      #view-data .memory-editor > .head {
+        margin: 0 0 24px;
+        padding: 0;
+        border: 0;
+      }
+      #view-data .memory-editor h2 {
+        font-size: 14px;
+        font-weight: 500;
+      }
+      #view-data .memory-editor .head p {
+        margin: 4px 0 0;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      #view-data .memory-editor > .body {
+        padding: 0;
+      }
+      #view-data .memory-editor label {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 13px;
+      }
+      #view-data .memory-editor textarea {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 12px;
+        border-radius: 6px;
+        line-height: 1.6;
+        resize: vertical;
+      }
+      #view-data .memory-editor .foot {
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+        gap: 12px;
+        border: 0;
+        padding: 12px 0 0;
+      }
+      #view-data .memory-editor .status {
+        order: -1;
+        margin-right: auto;
+      }
+      #view-data .memory-editor button.primary {
+        min-height: 32px;
+        padding: 6px 14px;
+        border: 1px solid #0a2540;
+        border-radius: 6px;
+        background: #0a2540;
+        color: white;
+        font-size: 13px;
+      }
+      @media (max-width: 720px) {
+        #view-data .memory-notebooks .memory-columns,
+        #view-data .memory-notebooks .dense-row {
+          grid-template-columns: minmax(0, 1fr) 65px 110px;
+          gap: 10px;
+        }
+        #view-data .memory-notebooks .dense-name {
+          white-space: normal;
+          overflow-wrap: anywhere;
+        }
+        #view-data .memory-notebooks .dense-time {
+          white-space: normal;
+        }
+      }
+      @media (min-width: 901px) {
+        nav.tabs .tab.tab-footer:last-child {
+          margin-top: auto;
+          padding-top: 12px;
+          border-top: 1px solid var(--border);
+          border-radius: 0;
+        }
+      }
+      nav.tabs .tab {
+        border-radius: 8px;
+        transition: background 0.12s ease;
+      }
+      nav.tabs .tab:not(:disabled):hover,
+      nav.tabs .tab.active {
+        color: var(--text);
+        background: color-mix(in srgb, var(--text) 4%, transparent);
+        box-shadow: none;
+        font-weight: 400;
+      }
+
+      #card-slack-installation > .head {
+        border: 0;
+        padding-bottom: 6px;
+      }
+      #card-slack-installation > .head h2 {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--muted);
+      }
+      #card-slack-installation > .body {
+        padding-top: 0;
+      }
+      #card-slack-installation .slack-connection {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 10px 8px;
+        border-radius: 8px;
+      }
+      #card-slack-installation h3 {
+        font-size: 14px;
+        font-weight: 500;
+        margin: 0;
+        line-height: 20px;
+      }
+      #card-slack-installation .hint {
+        margin: 2px 0 0;
+        font-size: 12px;
+        line-height: 18px;
+      }
+      .slack-connection-actions {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+      }
+      #card-slack-installation .slack-connection-actions button {
+        min-height: 32px;
+        padding: 6px 10px;
+        border: 0;
+        border-radius: 8px;
+        box-shadow: none;
+        background: transparent;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 400;
+      }
+      #card-slack-installation .slack-connection-actions button:hover {
+        background: var(--subtle);
+        color: var(--text);
+      }
+      #card-slack-installation #slack-installation-start {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-height: 40px;
+        padding: 0 12px;
+        border: 1px solid #c7c7c7;
+        border-radius: 5px;
+        background: #fff;
+        color: #1d1c1d;
+        font-size: 14px;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      #card-slack-installation #slack-installation-start:hover:not(:disabled) {
+        background: #f8f8f8;
+        border-color: #868686;
+      }
+      #slack-own-app-guide {
+        margin-top: 4px;
+      }
+      #slack-own-app-guide summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        list-style: none;
+        padding: 9px 8px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 400;
+        color: var(--muted);
+      }
+      #slack-own-app-guide summary::-webkit-details-marker {
+        display: none;
+      }
+      #slack-own-app-guide summary:hover {
+        background: var(--subtle);
+        color: var(--text);
+      }
+      .slack-guide-arrow {
+        font-size: 18px;
+        line-height: 16px;
+      }
+      #slack-own-app-guide[open] .slack-guide-arrow {
+        transform: rotate(90deg);
+      }
+      #slack-own-app-guide > p,
+      #slack-own-app-guide > ol,
+      #slack-own-app-guide > button {
+        margin-left: 8px;
+      }
+      #slack-own-app-guide p,
+      #slack-own-app-guide ol {
+        color: var(--muted);
+        max-width: 760px;
+        line-height: 1.65;
+      }
+      #slack-own-app-guide li {
+        padding: 4px 0 8px 4px;
+      }
+      #slack-token-editor {
+        max-width: 560px;
+        margin-top: 20px;
+      }
+      #st-slack-installation:empty {
+        display: none;
+      }
+      #st-slack-installation {
+        display: block;
+        margin-top: 16px;
+      }
+      @media (max-width: 640px) {
+        #card-slack-installation .slack-connection {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 16px;
+        }
+      }
     </style>
+    <style data-admin-components></style>
   </head>
   <body>
     <header class="top">
@@ -5163,7 +6551,7 @@
                 /></label>
               </div>
               <div class="foot">
-                <button class="primary" id="onboarding-model-save">Validate and save</button
+                <button class="primary" id="onboarding-model-save">Validate and connect</button
                 ><button class="danger" id="onboarding-model-delete">Disable this provider</button
                 ><span class="status" id="st-onboarding-model"></span>
               </div>
@@ -5354,7 +6742,7 @@
                 the organization. Ties use the last scope ID in alphabetical order.
               </p>
             </details>
-            <aside class="environment-notice hidden" id="environment-notice" role="status">
+            <aside class="environment-notice admin-notice hidden" id="environment-notice" role="status">
               <div>
                 <strong id="environment-notice-title"></strong>
                 <p id="environment-notice-detail"></p>
@@ -5404,11 +6792,12 @@
                 <section class="card sv-governance setting-row hidden" id="card-security-posture">
                   <div class="head">
                     <h2>Security posture</h2>
+                    <p>Choose how the agent screens external content and when it requires your approval.</p>
                   </div>
                   <div class="body">
                     <select id="security-posture" data-choice-state hidden>
                       <option value="dangerous">Dangerous — no content scans; nothing pauses between tool calls</option>
-                      <option value="auto">Auto — screen external content with proxy or model</option>
+                      <option value="auto">Auto — use the deployment’s configured screener</option>
                       <option value="strict">Strict — approve tool actions</option>
                     </select>
                     <div class="choice-stack">
@@ -5421,8 +6810,8 @@
                         /><span
                           ><strong>Auto</strong
                           ><small
-                            >Default. External content (web pages, tool output, files) is screened for prompt injection
-                            before the agent acts on it.</small
+                            >Default. Blocks private-network access. Screens external content when the deployment
+                            configures a screener; model screening is off by default.</small
                           ></span
                         ></label
                       >
@@ -5455,42 +6844,61 @@
                   <div class="head">
                     <h2>Auto flagger</h2>
                     <p>
-                      Model and prompt that decide whether external context and tool results are quarantined in Auto
-                      mode. The security boundary and required verdict format remain fixed.
+                      Model and prompt used when the deployment explicitly enables model screening in Auto mode. These
+                      settings do not enable screening. The security boundary and required verdict format remain fixed.
                     </p>
                   </div>
                   <div class="body">
-                    <label for="auto-flagger-harness">Harness</label>
-                    <select id="auto-flagger-harness" style="max-width: 360px"></select>
-                    <label for="auto-flagger-model">Model</label>
-                    <select id="auto-flagger-model" style="max-width: 440px"></select>
-                    <label for="auto-flagger-rubric">Quarantine prompt (classification rubric)</label>
-                    <textarea id="auto-flagger-rubric" rows="10" maxlength="20000" style="width: 100%"></textarea>
+                    <div class="screening-details">
+                      <div class="governance-field-grid">
+                        <div>
+                          <label for="auto-flagger-harness">Harness</label>
+                          <select id="auto-flagger-harness"></select>
+                        </div>
+                        <div>
+                          <label for="auto-flagger-model">Model</label>
+                          <select id="auto-flagger-model"></select>
+                        </div>
+                      </div>
+                      <div class="governance-prompt">
+                        <label for="auto-flagger-rubric">Quarantine prompt (classification rubric)</label>
+                        <textarea id="auto-flagger-rubric" rows="6" maxlength="20000"></textarea>
+                      </div>
+                      <div class="screening-test-options">
+                        <h3>Test Auto flagger</h3>
+                        <p class="screening-test-help">
+                          Try the model and prompt above on recent screenings without applying changes.
+                        </p>
+                        <div class="screening-test-fields">
+                          <label for="auto-flagger-window">Recent screenings to test</label>
+                          <div class="screening-count">
+                            <input
+                              id="auto-flagger-window"
+                              type="number"
+                              inputmode="numeric"
+                              min="1"
+                              max="500"
+                              step="1"
+                              value="100"
+                              aria-describedby="auto-flagger-window-range"
+                            />
+                            <span id="auto-flagger-window-range">1–500</span>
+                          </div>
+                          <label
+                            class="screening-compare"
+                            title="Also replay the configuration in effect today, so the flag rates are comparable"
+                          >
+                            <input type="checkbox" id="auto-flagger-compare" />Compare with the currently applied
+                            configuration
+                          </label>
+                          <button id="auto-flagger-test" type="button">Run test</button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                   <div class="foot">
-                    <button class="primary" data-save="auto-flagger">Apply</button>
-                    <button id="auto-flagger-test" type="button">Test</button>
-                    <label
-                      for="auto-flagger-window"
-                      style="display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 13px"
-                      >on the last
-                      <input
-                        id="auto-flagger-window"
-                        type="number"
-                        min="1"
-                        max="500"
-                        step="1"
-                        value="100"
-                        style="width: 78px"
-                      />
-                      screenings</label
-                    >
-                    <label
-                      style="display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 13px"
-                      title="Also replay the configuration in effect today, so the flag rates are comparable"
-                      ><input type="checkbox" id="auto-flagger-compare" /> compare with current</label
-                    >
                     <button id="auto-flagger-reset" type="button">Restore default</button>
+                    <button class="primary" data-save="auto-flagger">Apply</button>
                     <span class="status" id="st-auto-flagger"></span>
                   </div>
                   <div class="foot" id="auto-flagger-test-result" hidden>
@@ -5548,7 +6956,12 @@
                       durable revision; restoring an older revision creates a new one.
                     </p>
                   </div>
-                  <div class="body"><p class="soul-preview" id="soul-preview">No saved instructions</p></div>
+                  <div class="body soul-preview-body">
+                    <div class="soul-preview-label" id="soul-preview-label">Standing instructions</div>
+                    <p class="soul-preview" id="soul-preview" aria-labelledby="soul-preview-label">
+                      No saved instructions
+                    </p>
+                  </div>
                   <div class="body soul-workbench">
                     <label for="soul">Standing instructions</label>
                     <textarea
@@ -5688,7 +7101,11 @@
                     <h2>Egress policy</h2>
                   </div>
                   <div class="body">
-                    <div class="governance-capability" id="egress-capability" role="status">
+                    <div
+                      class="governance-capability admin-notice admin-notice--warning"
+                      id="egress-capability"
+                      role="status"
+                    >
                       <div>
                         <strong>Agent computer egress policy unavailable</strong
                         ><span
@@ -5982,15 +7399,24 @@
                 <section class="card sv-models setting-row hidden" id="card-base-model">
                   <div class="head">
                     <h2>Default runtime</h2>
+                    <p>The harness, model, and reasoning level used across your organization unless overridden.</p>
                   </div>
                   <div class="body">
-                    <label for="base-harness">Harness</label>
-                    <select id="base-harness" style="max-width: 360px"></select>
-                    <label for="base-model">Model</label>
-                    <select id="base-model" style="max-width: 360px"></select>
-                    <label for="base-effort">Reasoning level</label>
-                    <select id="base-effort" style="max-width: 360px"></select>
-                    <label class="setting-toggle" id="base-fast-mode-control" style="display: none; margin-top: 10px">
+                    <div class="model-runtime-fields">
+                      <div>
+                        <label for="base-harness">Harness</label>
+                        <select id="base-harness"></select>
+                      </div>
+                      <div>
+                        <label for="base-model">Model</label>
+                        <select id="base-model"></select>
+                      </div>
+                      <div>
+                        <label for="base-effort">Reasoning level</label>
+                        <select id="base-effort"></select>
+                      </div>
+                    </div>
+                    <label class="setting-toggle" id="base-fast-mode-control" style="display: none">
                       <input type="checkbox" id="base-fast-mode" />
                       <span class="setting-switch" aria-hidden="true"></span>
                       <span class="setting-copy"
@@ -6009,9 +7435,6 @@
                     <h2>Enabled models</h2>
                   </div>
                   <div class="body">
-                    <div id="webui-models-list" class="model-list">
-                      <p id="webui-models-empty" class="hint">No additional models enabled.</p>
-                    </div>
                     <div class="model-add-row">
                       <div class="model-add-field">
                         <label for="webui-models-add">Add a model</label>
@@ -6020,6 +7443,9 @@
                         </select>
                       </div>
                       <button type="button" id="webui-models-add-button" disabled>+ Add model</button>
+                    </div>
+                    <div id="webui-models-list" class="model-list">
+                      <p id="webui-models-empty" class="hint">No additional models enabled.</p>
                     </div>
                   </div>
                   <div class="foot">
@@ -6159,11 +7585,13 @@
                         >Feature
                         <select id="feature-flag-name">
                           <option value="command_scoped_credentials">Command-scoped credentials</option>
+                          <option value="persistent_subagents">Persistent subagents</option>
                         </select>
                       </label>
                       <label
                         >Scope ID
-                        <input id="feature-flag-scope" placeholder="channel:C012345" autocomplete="off" />
+                        <input id="feature-flag-scope" placeholder="personal:principal-id" autocomplete="off" />
+                        <span class="hint">For persistent subagents, use the person’s personal scope.</span>
                       </label>
                     </div>
                   </div>
@@ -6185,7 +7613,9 @@
                       saving.
                     </p>
                   </div>
-                  <div class="body"><div id="sc-list" class="hint">No credentials configured.</div></div>
+                  <div class="body">
+                    <div id="sc-list" class="hint" role="status" aria-live="polite">Loading credentials…</div>
+                  </div>
                   <div
                     class="body hidden"
                     id="sc-editor"
@@ -6423,53 +7853,112 @@
             </section>
             <section class="card" id="card-slack-installation">
               <div class="head">
-                <h2>Slack installation</h2>
-                <p>
-                  Add Slack after the web deployment is working. Tokens are validated with Slack, encrypted in durable
-                  storage, and never displayed again.
-                </p>
+                <h2>Slack</h2>
               </div>
               <div class="body">
-                <p>
-                  <a
-                    id="slack-installation-create"
-                    href="https://api.slack.com/apps?new_app=1"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    >Create Slack app from manifest ↗</a
-                  >
-                </p>
-                <p class="hint" id="slack-installation-state">Not configured.</p>
-                <div class="hidden" id="slack-token-editor">
-                  <label style="display: block; margin-bottom: 8px"
-                    >Bot User OAuth Token
-                    <input
-                      type="password"
-                      id="slack-bot-token"
-                      autocomplete="off"
-                      placeholder="xoxb-…"
-                      style="width: 100%"
-                  /></label>
-                  <label style="display: block; margin-bottom: 8px"
-                    >App-Level Token
-                    <input
-                      type="password"
-                      id="slack-app-token"
-                      autocomplete="off"
-                      placeholder="xapp-…"
-                      style="width: 100%"
-                  /></label>
-                  <p class="field-hint">
-                    Use an app-level token with <code>connections:write</code>. Saving activates or reloads the Slack
-                    surface within a few seconds.
-                  </p>
+                <div class="slack-connection">
+                  <div class="slack-connection-info">
+                    <h3 id="slack-installation-state">Connect your workspace</h3>
+                    <p class="hint" id="slack-installation-description">Add the QM app to get started.</p>
+                  </div>
+                  <div class="slack-connection-actions">
+                    <button class="hidden" id="slack-installation-start">
+                      <svg width="20" height="20" viewBox="0 0 127 127" aria-hidden="true" focusable="false">
+                        <path
+                          d="M27.2 80c0 7.3-5.9 13.2-13.2 13.2C6.7 93.2.8 87.3.8 80c0-7.3 5.9-13.2 13.2-13.2h13.2V80zm6.6 0c0-7.3 5.9-13.2 13.2-13.2 7.3 0 13.2 5.9 13.2 13.2v33c0 7.3-5.9 13.2-13.2 13.2-7.3 0-13.2-5.9-13.2-13.2V80z"
+                          fill="#E01E5A"
+                        />
+                        <path
+                          d="M47 27c-7.3 0-13.2-5.9-13.2-13.2C33.8 6.5 39.7.6 47 .6c7.3 0 13.2 5.9 13.2 13.2V27H47zm0 6.7c7.3 0 13.2 5.9 13.2 13.2 0 7.3-5.9 13.2-13.2 13.2H13.9C6.6 60.1.7 54.2.7 46.9c0-7.3 5.9-13.2 13.2-13.2H47z"
+                          fill="#36C5F0"
+                        />
+                        <path
+                          d="M99.9 46.9c0-7.3 5.9-13.2 13.2-13.2 7.3 0 13.2 5.9 13.2 13.2 0 7.3-5.9 13.2-13.2 13.2H99.9V46.9zm-6.6 0c0 7.3-5.9 13.2-13.2 13.2-7.3 0-13.2-5.9-13.2-13.2V13.8C66.9 6.5 72.8.6 80.1.6c7.3 0 13.2 5.9 13.2 13.2v33.1z"
+                          fill="#2EB67D"
+                        />
+                        <path
+                          d="M80.1 99.8c7.3 0 13.2 5.9 13.2 13.2 0 7.3-5.9 13.2-13.2 13.2-7.3 0-13.2-5.9-13.2-13.2V99.8h13.2zm0-6.6c-7.3 0-13.2-5.9-13.2-13.2 0-7.3 5.9-13.2 13.2-13.2h33.1c7.3 0 13.2 5.9 13.2 13.2 0 7.3-5.9 13.2-13.2 13.2H80.1z"
+                          fill="#ECB22E"
+                        />
+                      </svg>
+                      <span id="slack-installation-start-label">Add to Slack</span>
+                    </button>
+                    <button class="danger hidden" id="slack-installation-delete">Disconnect</button>
+                  </div>
                 </div>
-              </div>
-              <div class="foot">
-                <button type="button" id="slack-rotate">Rotate tokens…</button
-                ><button class="primary hidden" id="slack-installation-save">Validate and save</button
-                ><button class="danger" id="slack-installation-delete">Remove</button
-                ><span class="status" id="st-slack-installation"></span>
+                <details id="slack-own-app-guide">
+                  <summary>
+                    <span id="slack-own-app-label">Use your own Slack app</span>
+                    <span class="slack-guide-arrow" aria-hidden="true">›</span>
+                  </summary>
+                  <p>
+                    Give your bot its own name and identity. Start with our preconfigured manifest, then connect your
+                    app below.
+                  </p>
+                  <ol>
+                    <li>
+                      <a
+                        id="slack-installation-create"
+                        href="https://api.slack.com/apps?new_app=1"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        >Create your preconfigured Slack app ↗</a
+                      >. Choose your company workspace, review the permissions, and click <strong>Create</strong>. The
+                      manifest sets up the bot, message events, buttons, and Socket Mode for you.
+                    </li>
+                    <li>
+                      In <strong>OAuth &amp; Permissions</strong>, click <strong>Install to Workspace</strong> and
+                      approve access. Copy the <strong>Bot User OAuth Token</strong> starting with <code>xoxb-</code>.
+                    </li>
+                    <li>
+                      In <strong>Basic Information → App-Level Tokens</strong>, click
+                      <strong>Generate Token and Scopes</strong>. Name it <strong>QM connection</strong>, add
+                      <code>connections:write</code>, and generate it. Copy the token starting with <code>xapp-</code>.
+                    </li>
+                    <li>
+                      Paste both tokens below and click <strong>Validate and connect</strong>. Keep this page open while
+                      you work in Slack. Tokens must come from the same app.
+                    </li>
+                    <li>
+                      Invite your new bot to a channel, mention it, then send it a DM to check both surfaces. It only
+                      sees conversations it can access; older history may be incomplete.
+                    </li>
+                  </ol>
+                  <p class="hint">
+                    Replacing a connected app changes the bot identity. Invite the new bot to your channels and start a
+                    new DM with it. The old app stays installed until a workspace admin removes it.
+                    <span id="slack-hosted-switch" class="hidden"
+                      >To switch back to the QM app, disconnect here first, then choose Add to Slack.</span
+                    >
+                  </p>
+                  <button type="button" id="slack-enter-tokens">I have both tokens</button>
+                  <div class="hidden" id="slack-token-editor">
+                    <label style="display: block; margin-bottom: 8px"
+                      >Bot User OAuth Token
+                      <input
+                        type="password"
+                        id="slack-bot-token"
+                        autocomplete="off"
+                        placeholder="xoxb-…"
+                        style="width: 100%"
+                    /></label>
+                    <label style="display: block; margin-bottom: 8px"
+                      >App-Level Token
+                      <input
+                        type="password"
+                        id="slack-app-token"
+                        autocomplete="off"
+                        placeholder="xapp-…"
+                        style="width: 100%"
+                    /></label>
+                    <p class="field-hint">
+                      Use an app-level token with <code>connections:write</code>. Saving activates or reloads the Slack
+                      surface within a few seconds.
+                    </p>
+                    <button class="primary hidden" id="slack-installation-save">Validate and connect</button>
+                  </div>
+                </details>
+                <span class="status" role="status" id="st-slack-installation"></span>
               </div>
             </section>
           </div>
@@ -6614,7 +8103,7 @@
       </div>
       <div class="review-dialog-body">
         <dl class="review-dialog-facts" id="governance-review-facts"></dl>
-        <p class="review-dialog-warning" id="governance-review-warning"></p>
+        <p class="review-dialog-warning admin-notice" id="governance-review-warning"></p>
       </div>
       <div class="review-dialog-foot">
         <button type="button" id="governance-review-cancel">Cancel</button
@@ -8908,35 +10397,37 @@
           '<svg class="tab-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M14 10a2 2 0 0 1-2 2H6l-3.5 3V4a2 2 0 0 1 2-2h7.5a2 2 0 0 1 2 2z"/></svg>',
       };
       const SECTIONS = [
-        { views: ["history", "slack", "judgments"] },
-        { label: "Artifacts", views: ["files", "skills", "memory", "deployments", "crons"] },
-        { label: "System", views: ["metrics"] },
+        {
+          views: ["governance", "models", "credentials", "connectors", "customize", "users"],
+        },
+        {
+          label: "Logs",
+          views: ["history", "slack", "judgments", "errors", "audit", "egress"],
+        },
+        {
+          label: "Artifacts",
+          views: ["files", "skills", "memory", "deployments", "crons"],
+        },
+        { views: ["design-system"] },
+      ];
+      const ADMIN_SECTIONS = [
         {
           label: "Admin",
           views: [
             "onboarding",
-            "governance",
-            "models",
-            "credentials",
-            "customize",
-            "connectors",
             "mcp-servers",
             "directory-sources",
             "org-members",
-            "users",
             "org-units",
             "org-groups",
             "org-directory",
             "keychain",
-            "errors",
-            "egress",
-            "audit",
           ],
         },
-        { label: "Insights", views: ["retention"] },
       ];
-
+      const NAV_SECTIONS = [...SECTIONS, ...ADMIN_SECTIONS];
       const VIEWS = [...SECTIONS.flatMap((s) => s.views), "onboarding", "user", "ackemoji", "keychain"];
+      VIEWS.push(...ADMIN_SECTIONS.flatMap((section) => section.views).filter((item) => !VIEWS.includes(item)));
       const DISABLED_VIEWS = new Set(["retention"]);
       function paritySubsection(card) {
         card.classList.remove("card", "sv-governance", "sv-models", "sv-credentials", "sv-customize");
@@ -8982,7 +10473,7 @@
         governanceAmbient.className = "card sv-governance hidden";
         governanceAmbient.id = "card-governance-org-ambient";
         governanceAmbient.innerHTML =
-          '<div class="head"><h2>Ambient reply policy</h2><button type="button" class="viewlink" data-viewlink="judgments">View judgment log ›</button><p>@-mentions are always answered. Each ambient decision is recorded in the judgments log.</p></div><div class="body"><select id="governance-org-ambient"><option value="on">Agent judges all messages and replies when useful</option><option value="off">Agent does not read messages or reply unless @-mentioned</option></select></div><div class="foot"><button type="button" class="primary" id="governance-org-ambient-save" disabled>Apply</button><span class="status" id="st-governance-org-ambient"></span></div>';
+          '<div class="head"><h2>Ambient reply policy</h2><p>@-mentions are always answered. Each ambient decision is recorded in the judgments log.</p><button type="button" class="viewlink" data-viewlink="judgments">View judgment log ›</button></div><div class="body"><select id="governance-org-ambient" data-choice-state hidden><option value="on">Agent judges all messages and replies when useful</option><option value="off">Agent does not read messages or reply unless @-mentioned</option></select><div class="choice-stack"><label class="posture-choice"><input type="radio" name="ambient-reply-choice" value="on" data-choice-for="governance-org-ambient"><span><strong>Reply when useful</strong><small>Agent judges all messages and replies when useful</small></span></label><label class="posture-choice"><input type="radio" name="ambient-reply-choice" value="off" data-choice-for="governance-org-ambient"><span><strong>Only when mentioned</strong><small>Agent does not read messages or reply unless @-mentioned</small></span></label></div></div><div class="foot"><button type="button" class="primary" id="governance-org-ambient-save" disabled>Apply</button><span class="status" id="st-governance-org-ambient"></span></div>';
         $("card-command-policy").after(governanceAmbient);
 
         const keychains = document.createElement("section");
@@ -9018,13 +10509,15 @@
         ].forEach((card) => content.appendChild(card));
 
         const connectorView = $("view-connectors");
-        const connectorTip = document.createElement("p");
-        connectorTip.className = "connector-dm-tip hidden";
+        const connectorTip = document.createElement("aside");
+        connectorTip.className = "connector-dm-tip admin-notice hidden";
         connectorTip.id = "connector-dm-tip";
-        connectorTip.textContent =
+        connectorTip.setAttribute("role", "note");
+        connectorTip.appendChild(document.createElement("p"));
+        connectorTip.querySelector("p").textContent =
           "Tip: the easiest way to change these settings is to ask " +
           ($("brand-product").textContent || "Agent") +
-          " in a DM — it can make the edit for you and confirm what changed.";
+          " in a DM. It can make the edit for you and confirm what changed.";
         connectorView.before(connectorTip);
         const builtIns = document.createElement("section");
         builtIns.className = "card";
@@ -9038,6 +10531,45 @@
         });
       }
       prepareParityCards();
+      const scAddButton = $("sc-add");
+      const scStatusHome = $("st-service-credentials").parentElement;
+      const dialog = document.createElement("dialog");
+      dialog.id = "sc-dialog";
+      dialog.className = "custom-provider-dialog credential-dialog";
+      dialog.setAttribute("aria-labelledby", "sc-dialog-title");
+      dialog.setAttribute("aria-describedby", "sc-dialog-description");
+      dialog.innerHTML =
+        '<div class="project-dialog-head"><div><h2 id="sc-dialog-title">Add credential</h2><p id="sc-dialog-description">Connect a service securely, then choose what the agent can access.</p></div><button class="project-icon-button" type="button" id="sc-dialog-close" aria-label="Close credential dialog">×</button></div><div class="project-dialog-actions" id="sc-dialog-actions"></div>';
+      $("card-service-credentials").appendChild(dialog);
+      dialog.insertBefore($("sc-editor"), $("sc-dialog-actions"));
+      $("sc-dialog-actions").append($("sc-reset"), $("sc-save"));
+      const dismiss = () => {
+        if (!$("st-service-credentials").classList.contains("saving")) resetScForm();
+      };
+      $("sc-dialog-close").onclick = dismiss;
+      dialog.addEventListener("cancel", (event) => {
+        event.preventDefault();
+        dismiss();
+      });
+      dialog.addEventListener("click", (event) => {
+        const rect = dialog.getBoundingClientRect();
+        if (
+          event.target === dialog &&
+          (event.clientX < rect.left ||
+            event.clientX > rect.right ||
+            event.clientY < rect.top ||
+            event.clientY > rect.bottom)
+        )
+          dismiss();
+      });
+      function openScDialog() {
+        const dialog = $("sc-dialog");
+        $("sc-dialog-title").textContent = scEditing ? "Edit credential" : "Add credential";
+        setStatus("st-service-credentials", "", "");
+        $("sc-dialog-actions").prepend($("st-service-credentials"));
+        if (!dialog.open) dialog.showModal();
+      }
+
       let governanceOrgAmbientSaved = "on";
       document.querySelectorAll("[data-choice-for]").forEach((input) => {
         input.onchange = () => {
@@ -9105,7 +10637,7 @@
         slack: "Slack",
         judgments: "Judgments",
         ackemoji: "Ack emoji",
-        design: "Design library",
+        "design-system": "Design system",
       };
       const SCOPED = new Set([
         "governance",
@@ -9171,17 +10703,21 @@
       const API_BASE = "__ADMIN_BASE__";
 
       async function api(method, path, body) {
-        const res = await fetch(API_BASE + path, {
-          method,
-          headers: body ? { "content-type": "application/json" } : {},
-          ...(body ? { body: JSON.stringify(body) } : {}),
-        });
-        const text = await res.text();
-        let data = null;
         try {
-          data = text ? JSON.parse(text) : null;
-        } catch {}
-        return { ok: res.ok, status: res.status, data };
+          const res = await fetch(API_BASE + path, {
+            method,
+            headers: body ? { "content-type": "application/json" } : {},
+            ...(body ? { body: JSON.stringify(body) } : {}),
+          });
+          const text = await res.text();
+          let data = null;
+          try {
+            data = text ? JSON.parse(text) : null;
+          } catch {}
+          return { ok: res.ok, status: res.status, data };
+        } catch {
+          return { ok: false, status: 0, data: { message: "Network request failed." } };
+        }
       }
 
       async function openWebUiAs(target) {
@@ -9526,13 +11062,17 @@
           })(),
         );
         main.append(glyph, label);
+
         const actions = document.createElement("div");
         actions.className = "file-upload-actions";
         const status = document.createElement("span");
         status.className = "status muted";
         const button = document.createElement("button");
         button.type = "button";
-        button.textContent = adminTr("Upload");
+        button.className = "primary upload-button";
+        button.innerHTML =
+          '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 15v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></svg><span>Upload</span>';
+
         const input = document.createElement("input");
         input.type = "file";
         input.multiple = true;
@@ -9613,7 +11153,7 @@
           upload(e.dataTransfer.files || []);
         };
         actions.append(status, button, input);
-        box.append(main, actions);
+        box.append(actions);
         return box;
       }
       function fmtDuration(start, end) {
@@ -9698,6 +11238,8 @@
           return showView("signin-view", "Sign in through the portal to continue.");
         }
         $("org-tag").textContent = me.data.org;
+        $("org-tag").title = "Organization: " + me.data.org;
+        $("who-name").title = "Signed in as " + me.data.principal;
         orgId = me.data.org;
         $("who-name").textContent = me.data.principal;
         managerMode = me.data.isAdmin === false && me.data.isManager === true;
@@ -9712,6 +11254,7 @@
 
         if (!new URLSearchParams(location.search).get("scope")) scope = "org:" + orgId;
         if (!managerMode) loadScopeDirectory();
+
         route();
       }
       const signOut = async () => {
@@ -9752,7 +11295,7 @@
       function renderTabs() {
         const nav = $("tabs");
         nav.textContent = "";
-        SECTIONS.forEach((s) => {
+        NAV_SECTIONS.forEach((s) => {
           if (s.label) {
             const h = document.createElement("div");
             h.className = "tab-section";
@@ -9802,6 +11345,8 @@
           const path = scopeInPath ? API_BASE + "/history/scopes/" + scopeSegment : API_BASE + "/history";
           return q ? path + "?" + q : path;
         }
+        if (st.view === "connectors" && st.setup === "slack") p.set("setup", "slack");
+        if (st.view === "connectors" && ["setup", "install", "connected"].includes(st.slack)) p.set("slack", st.slack);
         if (st.scope && SCOPED.has(st.view)) p.set("scope", st.scope);
         if (st.view === "errors" && st.page > 1) p.set("page", st.page);
         if (st.principal) p.set("principal", st.principal);
@@ -9844,9 +11389,10 @@
           if (segs[1] === "s") pathSession = decodePathSegment(segs[2] ?? "");
           else if (segs[1] === "scopes") pathScope = decodePathSegment(segs[2] ?? "");
         }
-        const raw = p.get("view") || fromPath;
+        const slackStep = ["setup", "install", "connected"].includes(p.get("slack"));
+        const raw = p.get("setup") === "slack" || slackStep ? "connectors" : p.get("view") || fromPath;
 
-        const v = raw === "skill-packs" ? "skills" : raw;
+        const v = raw === "skill-packs" ? "skills" : raw === "design" ? "design-system" : raw;
         const session = pathSession || p.get("session") || null;
         const kindRaw = p.get("kind");
         const normalizedHistoryKind = ["conversation", "cron", "background"].includes(kindRaw)
@@ -9859,6 +11405,8 @@
         else if (session) resolvedView = "history";
         return {
           view: resolvedView,
+          setup: p.get("setup"),
+          slack: p.get("slack"),
           scope:
             pathScope ||
             p.get("scope") ||
@@ -9895,24 +11443,53 @@
         page = st.page || 1;
         historyKind = st.historyKind || "conversation";
         $("app-view").classList.toggle("history-view", view === "history");
+        $("app-view").classList.toggle("slack-view", view === "slack");
+        $("app-view").classList.toggle("judgments-view", view === "judgments");
+        $("app-view").classList.toggle("errors-view", view === "errors");
+        $("app-view").classList.toggle("deployments-view", view === "deployments");
+        $("app-view").classList.toggle("crons-view", view === "crons");
         $("app-view").classList.toggle("governance-view", isGovLike(view));
-        document.body.dataset.subview = isGovLike(view) ? view : view === "connectors" ? "connectors" : "";
+        document.body.dataset.subview = view;
+        document.body.dataset.adminKit = [
+          "crons",
+          "deployments",
+          "files",
+          "skills",
+          "memory",
+          "audit",
+          "egress",
+          "metrics",
+          "history",
+          "slack",
+          "judgments",
+          "errors",
+          "governance",
+          "models",
+          "credentials",
+          "connectors",
+          "customize",
+          "users",
+          "design-system",
+        ].includes(view)
+          ? "true"
+          : "false";
         document.body.classList.toggle("context-fullpage", view === "history" && !!st.session && st.turn != null);
-        document.body.classList.toggle("design-view", view === "design");
+        document.body.classList.toggle("design-view", view === "design-system");
+        if (!isGovLike(view) && view !== "connectors" && view !== "onboarding" && !scopeDir) void loadScopeDirectory();
         defaultShell();
         renderTabs();
         $("view-governance").classList.toggle("hidden", !isGovLike(view));
         $("view-onboarding").classList.toggle("hidden", view !== "onboarding");
         $("connector-dm-tip").classList.toggle("hidden", view !== "connectors");
         $("view-connectors").classList.toggle("hidden", view !== "connectors");
-        $("view-design").classList.toggle("hidden", view !== "design");
+        $("view-design").classList.toggle("hidden", view !== "design-system");
         $("view-mcp-servers").classList.toggle("hidden", view !== "mcp-servers");
         $("view-data").classList.toggle(
           "hidden",
           view === "onboarding" ||
             isGovLike(view) ||
             view === "connectors" ||
-            view === "design" ||
+            view === "design-system" ||
             view === "mcp-servers",
         );
         if (view === "onboarding") return void loadOnboarding();
@@ -9921,8 +11498,9 @@
           return void loadScope();
         }
         if (view === "connectors") return void loadConnectors();
-        if (view === "design") return void renderDesignLibrary();
+        if (view === "design-system") return void renderDesignLibrary();
         if (view === "mcp-servers") return void loadMcpServers();
+
         if (view === "user") return void showUserDetail(st.principal);
         if (view === "slack") return void renderSlackMirror(st);
         if (view === "judgments") return void renderAmbientJudgments(st);
@@ -10219,13 +11797,32 @@
       function pageShell(opts = {}) {
         const bar = $("shellbar");
         bar.textContent = "";
+        const logView = ["history", "slack", "judgments", "errors", "audit", "egress", "metrics", "memory"].includes(
+          view,
+        );
+        bar.classList.toggle("logs-shell", logView);
+        const counts = document.createElement("div");
+        counts.className = "log-counts";
+        const countText = (label, value) => {
+          const count = document.createElement("span");
+          count.className = "log-count";
+          const number = Number(value);
+          const noun = number === 1 ? label.replace(/s$/, "") : label;
+          count.textContent =
+            (Number.isFinite(number) ? number.toLocaleString() : String(value)) + " " + noun.toLowerCase();
+          return count;
+        };
         if (opts.back) {
           const b = document.createElement("button");
           b.type = "button";
           b.className = "back";
           b.textContent = adminTr(opts.back.label);
+
           b.onclick = opts.back.onClick;
-          bar.appendChild(b);
+          const row = document.createElement("div");
+          row.className = "shell-back-row";
+          row.appendChild(b);
+          bar.appendChild(row);
         }
         if (opts.title) {
           const h = document.createElement("h1");
@@ -10233,6 +11830,7 @@
           h.textContent = opts.titleI18n ? adminTr(opts.title) : opts.title;
           bar.appendChild(h);
         }
+        if (logView) bar.appendChild(counts);
         if (opts.context) {
           const c = opts.contextGo ? navLink(opts.context, opts.contextGo) : document.createElement("span");
           c.classList.add("shell-context");
@@ -10241,7 +11839,7 @@
         }
         if (opts.tabs && opts.tabs.length) {
           const wrap = document.createElement("div");
-          wrap.className = "shell-tabs";
+          wrap.className = "shell-tabs" + (view === "judgments" ? " judgment-filters" : "");
           opts.tabs.forEach((tab) => {
             const b = document.createElement("button");
             b.type = "button";
@@ -10249,20 +11847,35 @@
             b.textContent = adminTr(
               tab.count != null ? tab.label + " " + Number(tab.count).toLocaleString(adminLocaleCode()) : tab.label,
             );
+
             b.onclick = tab.onClick;
             wrap.appendChild(b);
           });
+          if (logView) {
+            const active = opts.tabs.find((tab) => tab.active);
+            if (active?.count != null) {
+              const noun =
+                view === "judgments" ? "judgments" : active.label === "Background" ? "background runs" : active.label;
+              counts.appendChild(countText(noun, active.count));
+            }
+          }
           bar.appendChild(wrap);
         } else if (opts.count != null && opts.count !== "") {
           const c = document.createElement("span");
           c.className = "shell-count";
           c.textContent = String(opts.count);
-          bar.appendChild(c);
+          if (logView) {
+            const match = String(opts.count).match(/^([\d,.]+\+?)\s*(.*)$/);
+            counts.appendChild(match ? countText(match[2] || "records", match[1].replaceAll(",", "")) : c);
+          } else bar.appendChild(c);
+        }
+        if (logView && opts.stats?.length) {
+          opts.stats.forEach(([value, label]) => counts.appendChild(countText(label, value)));
         }
         const spacer = document.createElement("span");
         spacer.className = "shell-spacer";
         bar.appendChild(spacer);
-        if (opts.stats && opts.stats.length) bar.appendChild(kpis(opts.stats, "shell-stats"));
+        if (!logView && opts.stats && opts.stats.length) bar.appendChild(kpis(opts.stats, "shell-stats"));
         if (opts.search) {
           const w = document.createElement("div");
           w.className = "shell-search";
@@ -10276,6 +11889,38 @@
           bar.appendChild(w);
         }
         (opts.actions || []).forEach((n) => bar.appendChild(n));
+      }
+      function searchField({ placeholder = "Search…", onInput = () => {}, value = "", disabled = false }) {
+        const wrap = document.createElement("div");
+        wrap.className = "shell-search admin-search";
+        const input = document.createElement("input");
+        input.type = "search";
+        input.placeholder = placeholder;
+        input.setAttribute("aria-label", placeholder.replace(/[…]+$/, ""));
+        input.spellcheck = false;
+        input.setAttribute("autocapitalize", "none");
+        input.value = value;
+        input.disabled = disabled;
+        input.oninput = () => onInput(input.value);
+        wrap.appendChild(input);
+        const icon = document.createElement("span");
+        icon.className = "admin-search-icon";
+        icon.setAttribute("aria-hidden", "true");
+        icon.innerHTML =
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>';
+        const clear = document.createElement("button");
+        clear.type = "button";
+        clear.className = "icon-button admin-search-clear";
+        clear.setAttribute("aria-label", "Clear search");
+        clear.textContent = "×";
+        clear.disabled = disabled;
+        clear.onclick = () => {
+          input.value = "";
+          onInput("");
+          input.focus();
+        };
+        wrap.append(icon, clear);
+        return wrap;
       }
       function renderTranscriptHeaderControls(onChange) {
         const controls = $("header-controls");
@@ -10322,6 +11967,7 @@
       }
 
       function defaultShell(extras = {}) {
+        extras = { actions: view === "credentials" ? [scAddButton] : [], ...extras };
         const title = VIEW_TITLE[view] || titleCase(view);
         if (SCOPED.has(view) && !orgWideView()) {
           pageShell({
@@ -10473,7 +12119,7 @@
       const FOCUS_REFRESH_EXEMPT = new Set(["governance", "connectors", "user"]);
       window.addEventListener("focus", () => {
         if ($("app-view").classList.contains("hidden")) return;
-        if (FOCUS_REFRESH_EXEMPT.has(view)) return;
+        if (isGovLike(view) || FOCUS_REFRESH_EXEMPT.has(view)) return;
         if (Date.now() - (viewLoadedAt[view] || 0) < FOCUS_STALE_MS) return;
         if (view === "memory" && !(orgWideView() && urlToState().mem !== "edit")) return;
         if (view === "history" && urlToState().session) return;
@@ -10490,6 +12136,7 @@
         else renderData();
       });
 
+      let webuiModelIds = [];
       let loadedGovernanceScope = null;
       let loadedCommandPolicyPresent = false;
       let governanceOverviewData = {};
@@ -10500,6 +12147,7 @@
       let serviceCredentialSelectedSubjects = [];
       let serviceCredentialSearchTimer = null;
       let serviceCredentialSearchSeq = 0;
+
       function updateSoulWorkbench() {
         const draft = $("soul").value;
         $("soul-preview").textContent = soulSaved || adminTr("No saved instructions");
@@ -10777,21 +12425,40 @@
       }
       async function loadScope() {
         const requestedScope = scope;
+        const requestedView = view;
         const requestId = ++governanceReq;
         const scopeChanged = scope !== loadedGovernanceScope;
-        renderGovernanceScopePicker();
-        renderEnvironmentNotice(null);
-        $("governance-inheritance").classList.add("hidden");
-        $("governance-overview").classList.add("hidden");
-        $("governance-settings").classList.add("hidden");
-        setStatus("st-governance-load", "Loading…", "");
-        const r = await api("GET", "/api/scopes/" + encodeURIComponent(scope)).catch(() => ({
-          ok: false,
-          status: 0,
-          data: null,
-        }));
-        if (requestId !== governanceReq || requestedScope !== scope) return;
+        if (requestedView === "governance") {
+          renderGovernanceScopePicker();
+          renderEnvironmentNotice(null);
+          $("governance-inheritance").classList.add("hidden");
+          $("governance-overview").classList.add("hidden");
+          $("governance-settings").classList.add("hidden");
+          setStatus("st-governance-load", "Loading…", "");
+        }
+        if (requestedView === "credentials") {
+          serviceCredList = [];
+          setServiceCredentialState("Loading credentials…");
+          $("sc-add").disabled = true;
+          void loadPersonalKeychainSummary(requestId, requestedScope);
+        }
+        const r = await api(
+          "GET",
+          "/api/scopes/" + encodeURIComponent(scope) + "?view=" + encodeURIComponent(requestedView),
+        );
+        if (requestId !== governanceReq || requestedScope !== scope || requestedView !== view) return;
         if (!r.ok) {
+          if (requestedView === "credentials") {
+            setServiceCredentialState(
+              r.status === 403 ? "You don't administer this scope." : "Could not load credentials.",
+              true,
+            );
+          }
+          setStatus(
+            "st-policy",
+            r.status === 403 ? "You don't administer this scope." : r.data?.message || "Failed to load.",
+            "err",
+          );
           setApiStatus(
             "st-governance-load",
             r.status === 403 ? null : r.data?.message,
@@ -10800,6 +12467,7 @@
           );
           return;
         }
+        const refreshModelChoices = [];
         renderEnvironmentNotice(r.data);
         renderGovernanceOverview(r.data);
         syncGovernanceSectionNav();
@@ -10848,6 +12516,7 @@
             model.value = options.some((entry) => entry.id === prior) ? prior : (options[0] || {}).id || "";
           };
           harness.oninput = syncAutoFlaggerModels;
+          refreshModelChoices.push(syncAutoFlaggerModels);
           syncAutoFlaggerModels();
           $("auto-flagger-rubric").value = current.rubric;
         }
@@ -10898,6 +12567,9 @@
           $("org-ambient").checked = r.data.orgAmbient !== false;
           governanceOrgAmbientSaved = r.data.orgAmbient === false ? "off" : "on";
           $("governance-org-ambient").value = governanceOrgAmbientSaved;
+          document.querySelectorAll('[data-choice-for="governance-org-ambient"]').forEach((input) => {
+            input.checked = input.value === governanceOrgAmbientSaved;
+          });
           $("governance-org-ambient-save").disabled = true;
         }
         const showInteractiveFastMode = "interactiveFastMode" in r.data;
@@ -10981,7 +12653,9 @@
             syncEffort();
             syncFastMode();
           };
-          harness.oninput = () => syncModels(true);
+          harness.oninput = syncModels;
+          refreshModelChoices.push(syncModels);
+
           syncModels();
         }
         const showApprovedHarnesses = "approvedHarnesses" in r.data;
@@ -11016,12 +12690,13 @@
         const showWebuiModels = opts.length > 0;
         $("card-webui-models").classList.toggle("hidden", !showWebuiModels);
         if (showWebuiModels) {
-          const catalogModels = Object.values(modelsByHarness)
-            .flat()
-            .concat(opts)
-            .filter((m, i, all) => m && m.id && all.findIndex((x) => x && x.id === m.id) === i);
+          const catalogModels = () =>
+            Object.values(modelsByHarness)
+              .flat()
+              .concat(opts)
+              .filter((m, i, all) => m && m.id && all.findIndex((x) => x && x.id === m.id) === i);
           const modelLabel = (id) => {
-            const m = catalogModels.find((x) => x.id === id);
+            const m = catalogModels().find((x) => x.id === id);
             return m && m.name && m.name !== id ? m.name + " (" + id + ")" : id;
           };
           const configured = Array.isArray(r.data.webuiModels) ? r.data.webuiModels.filter(Boolean) : [];
@@ -11048,6 +12723,7 @@
               x.textContent = "×";
               x.setAttribute("aria-label", adminTr("Remove") + " " + id);
               x.style.cssText = "border:0;background:none;cursor:pointer;padding:0;font-size:14px;line-height:1";
+
               x.onclick = () => {
                 webuiModelIds = webuiModelIds.filter((v) => v !== id);
                 renderChips();
@@ -11063,7 +12739,7 @@
             placeholder.value = "";
             placeholder.textContent = "Choose a model…";
             addSelect.appendChild(placeholder);
-            catalogModels
+            catalogModels()
               .filter((m) => !webuiModelIds.includes(m.id))
               .forEach((m) => {
                 const o = document.createElement("option");
@@ -11084,6 +12760,7 @@
           };
           addSelect.onchange = () => (addButton.disabled = !addSelect.value);
           addButton.onclick = addModel;
+          refreshModelChoices.push(renderChips);
           renderChips();
         }
         function autoSaveAckEmoji() {
@@ -11316,12 +12993,16 @@
           sel.value = r.data.browseModel || "";
         }
         loadServiceCredentialSubjects(r.data.organizationAccessSubjects || {});
+
         const showFeatureFlags = scope.startsWith("org:") && "featureFlags" in r.data;
         $("card-feature-flags").classList.toggle("hidden", !showFeatureFlags);
         if (showFeatureFlags) renderFeatureFlags(r.data.featureFlags || []);
         renderServiceCreds(r.data.serviceCredentials || []);
         if (view === "models") void loadCustomProviders();
-        if (view === "credentials") void loadPersonalKeychainSummary();
+        if (view === "credentials") {
+          $("sc-add").disabled = false;
+          void loadServiceCredentialUsage(requestedScope, requestId);
+        }
         if (scopeChanged) resetScForm();
         document.querySelectorAll("[data-inherit]").forEach((button) => {
           button.classList.toggle("hidden", scope.startsWith("org:"));
@@ -11338,10 +13019,41 @@
         $("governance-overview").classList.remove("hidden");
         $("governance-settings").classList.remove("hidden");
         syncGovernanceSectionNav();
+        if (r.data.modelCatalogRefreshing) {
+          void api(
+            "GET",
+            "/api/scopes/" +
+              encodeURIComponent(requestedScope) +
+              "?view=" +
+              encodeURIComponent(requestedView) +
+              "&catalog=refresh",
+          )
+            .then((fresh) => {
+              if (!fresh.ok || requestId !== governanceReq || requestedScope !== scope || requestedView !== view)
+                return;
+              const append = (target, incoming) => {
+                for (const model of incoming || []) {
+                  const existing = target.findIndex((candidate) => candidate.id === model.id);
+                  if (existing < 0) target.push(model);
+                  else target[existing] = model;
+                }
+              };
+              append(opts, fresh.data.baseModelOptions);
+              for (const [harness, models] of Object.entries(fresh.data.modelsByHarness || {})) {
+                append((modelsByHarness[harness] ||= []), models);
+              }
+              refreshModelChoices.forEach((refresh) => refresh());
+              initCustomDropdowns($("view-governance"));
+            })
+            .catch(() => {});
+        }
       }
       async function refreshSoulConflict() {
         const draft = $("soul").value;
-        const fresh = await api("GET", "/api/scopes/" + encodeURIComponent(scope));
+        const fresh = await api(
+          "GET",
+          "/api/scopes/" + encodeURIComponent(scope) + "?view=" + encodeURIComponent(view),
+        );
         if (!fresh.ok) return false;
         soulVersion = fresh.data.soulVersion || 0;
         soulSaved = fresh.data.soul || "";
@@ -11355,13 +13067,22 @@
         return true;
       }
       async function refreshServiceCredentialConflict() {
-        const fresh = await api("GET", "/api/scopes/" + encodeURIComponent(scope));
-        if (!fresh.ok) return false;
+        const requestedScope = scope;
+        const requestedView = view;
+        const requestId = ++governanceReq;
+        const fresh = await api(
+          "GET",
+          "/api/scopes/" + encodeURIComponent(scope) + "?view=" + encodeURIComponent(view),
+        );
+        if (requestId !== governanceReq || requestedScope !== scope || requestedView !== view || !fresh.ok)
+          return false;
         loadServiceCredentialSubjects(fresh.data.organizationAccessSubjects || {}, true);
+
         const credentials = fresh.data.serviceCredentials || [];
         const refreshedEditing = credentials.find((credential) => credential.slug === scEditing);
         if (refreshedEditing) scEditVersion = refreshedEditing.updatedAt;
         renderServiceCreds(credentials);
+        void loadServiceCredentialUsage(requestedScope, requestId);
         renderServiceCredentialCapability();
         updateScFormDirty();
         return refreshedEditing ? "present" : "missing";
@@ -11371,32 +13092,33 @@
         featureFlagRows = rows || [];
         const root = $("feature-flag-list");
         root.textContent = "";
-        const row = featureFlagRows.find((item) => item.featureName === "command_scoped_credentials");
-        const scopes = row?.enabledScopes || [];
-        if (!scopes.length) {
+        const enabled = featureFlagRows.flatMap((row) =>
+          (row.enabledScopes || []).map((scopeId) => ({ featureName: row.featureName, scopeId })),
+        );
+        if (!enabled.length) {
           root.className = "hint";
-          root.textContent = "Command-scoped credentials: no enabled scopes.";
+          root.textContent = "No enabled scopes.";
           return;
         }
         root.className = "";
-        scopes.forEach((scopeId) => {
+        enabled.forEach(({ featureName, scopeId }) => {
           const line = document.createElement("div");
           line.className = "setting-row";
           const code = document.createElement("code");
-          code.textContent = scopeId;
+          code.textContent = featureName + ": " + scopeId;
           const remove = document.createElement("button");
           remove.className = "danger";
           remove.textContent = "Disable";
-          remove.onclick = () => updateFeatureFlag(scopeId, false);
+          remove.onclick = () => updateFeatureFlag(scopeId, false, featureName);
           line.append(code, remove);
           root.appendChild(line);
         });
       }
-      async function updateFeatureFlag(scopeId, on) {
+      async function updateFeatureFlag(scopeId, on, featureName = $("feature-flag-name").value) {
         const status = $("st-feature-flags");
         status.textContent = on ? "Enabling…" : "Disabling…";
         const result = await api("PUT", "/api/scopes/" + encodeURIComponent(scope) + "/feature-flags", {
-          featureName: $("feature-flag-name").value,
+          featureName,
           scopeId,
           on,
         });
@@ -11420,6 +13142,44 @@
       let scEditVersion = null;
       let scSnapshot = "";
       let serviceCredList = [];
+      let serviceCredentialResolutionError = "";
+      function setServiceCredentialState(message, retry = false) {
+        const root = $("sc-list");
+        root.className = "hint";
+        root.textContent = message;
+        if (retry) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = "Retry";
+          button.style.marginInlineStart = "8px";
+          button.onclick = () => loadScope();
+          root.appendChild(button);
+        }
+      }
+      async function loadServiceCredentialUsage(requestedScope, requestId) {
+        if (!serviceCredList.length) return;
+        const result = await api("GET", "/api/scopes/" + encodeURIComponent(requestedScope) + "/credential-usage");
+        if (requestId !== governanceReq || requestedScope !== scope || view !== "credentials") return;
+        const summaries = new Map((result.data?.summaries || []).map((summary) => [summary.slug, summary]));
+        renderServiceCreds(
+          serviceCredList.map((credential) => ({
+            ...credential,
+            ...(result.ok ? summaries.get(credential.slug) : {}),
+            usageUnavailable: !result.ok || !summaries.has(credential.slug),
+          })),
+        );
+      }
+      function serviceCredentialUsageLabel(credential) {
+        if (credential.usageUnavailable) return "Usage unavailable";
+        if (credential.usageCount == null) return "Loading usage…";
+        const window = credential.usageCount
+          ? " since " + fmtTime(credential.usageSince)
+          : " in retained broker history";
+        return (
+          (credential.usageTruncated ? "at least " : "") + plural(credential.usageCount, "successful use") + window
+        );
+      }
+
       function renderServiceCreds(list) {
         serviceCredList = list;
         const root = $("sc-list");
@@ -11440,22 +13200,19 @@
           title.className = "credential-title";
           const name = document.createElement("strong");
           name.textContent = c.name || c.slug;
-          title.append(name, badge(c.slug, "muted"));
+          const slug = document.createElement("span");
+          slug.className = "credential-slug";
+          slug.textContent = c.slug;
+          title.append(name, slug);
           const orgWide = (c.grantees || []).some((g) => g.startsWith("org:"));
           const who = orgWide ? "Organization-wide" : plural((c.grantees || []).length, "principal");
           const meta = document.createElement("div");
           meta.className = "hint";
-          const usageWindow = c.usageCount ? " since " + fmtTime(c.usageSince) : " in retained broker history";
           const target =
             c.delivery === "env"
               ? "sandbox env $" + (c.envKey || "?")
               : c.host + " · " + (c.allowedMethods && c.allowedMethods.length ? c.allowedMethods.join("/") : "GET");
-          meta.textContent =
-            target +
-            " · " +
-            (c.usageTruncated ? "at least " : "") +
-            plural(c.usageCount || 0, "successful use") +
-            usageWindow;
+          meta.textContent = target + " · " + serviceCredentialUsageLabel(c);
           const badges = document.createElement("div");
           badges.className = "credential-badges";
           badges.append(
@@ -11488,7 +13245,7 @@
       }
       function loadScForm(c) {
         $("sc-editor").classList.remove("hidden");
-        $("sc-add").classList.add("hidden");
+        scAddButton.classList.add("hidden");
         $("sc-save").classList.remove("hidden");
         $("sc-reset").classList.remove("hidden");
         scEditing = c.slug;
@@ -11530,11 +13287,16 @@
         syncScPeople();
         captureScForm();
         renderServiceCreds(serviceCredList);
-        $("card-service-credentials").scrollIntoView({ behavior: "smooth", block: "nearest" });
+        openScDialog();
+        $("sc-name").focus();
       }
       function resetScForm() {
+        const dialog = $("sc-dialog");
+        const wasOpen = dialog.open;
+        if (wasOpen) dialog.close();
+        scStatusHome.appendChild($("st-service-credentials"));
         $("sc-editor").classList.add("hidden");
-        $("sc-add").classList.remove("hidden");
+        scAddButton.classList.remove("hidden");
         $("sc-save").classList.add("hidden");
         $("sc-reset").classList.add("hidden");
         scEditing = null;
@@ -11568,6 +13330,7 @@
         syncScPeople();
         captureScForm();
         if (serviceCredList.length) renderServiceCreds(serviceCredList);
+        if (wasOpen) scAddButton.focus();
       }
       function syncScDelivery() {
         const env = $("sc-delivery").value === "env";
@@ -11829,13 +13592,15 @@
         const principals = c.grantees.some((g) => g.startsWith("org:"))
           ? adminTr("everyone in the organization")
           : c.grantees.map(serviceCredentialPrincipalLabel).join(", ");
-        const recent = c.recentUsagePrincipals.length
-          ? " " +
-            adminTr("Recent users in the retained window:") +
-            " " +
-            c.recentUsagePrincipals.map((id) => serviceCredentialPrincipalLabel("personal:" + id)).join(", ") +
-            "."
-          : " " + adminTr("No successful use appears in the retained window.");
+        const recent =
+          c.usageCount == null || c.usageUnavailable
+            ? " Recent usage is unavailable."
+            : c.recentUsagePrincipals.length
+              ? " Recent users in the retained window: " +
+                c.recentUsagePrincipals.map((id) => serviceCredentialPrincipalLabel("personal:" + id)).join(", ") +
+                "."
+              : " No successful use appears in the retained window.";
+
         const confirmed = await reviewGovernanceChange({
           title: adminTr("Delete credential") + " “" + (c.name || c.slug) + "”?",
           subtitle: adminTr("This credential currently grants broker access to") + " " + principals + "." + recent,
@@ -11878,15 +13643,18 @@
           setStatus("st-service-credentials", message, "err", false, !serverMessage);
         }
       }
-      $("sc-add").onclick = () => {
+      scAddButton.onclick = () => {
         resetScForm();
         $("sc-editor").classList.remove("hidden");
-        $("sc-add").classList.add("hidden");
+        scAddButton.classList.add("hidden");
         $("sc-save").classList.remove("hidden");
         $("sc-reset").classList.remove("hidden");
+        openScDialog();
         $("sc-name").focus();
       };
-      $("sc-reset").onclick = resetScForm;
+      $("sc-reset").onclick = () => {
+        if (!$("st-service-credentials").classList.contains("saving")) resetScForm();
+      };
       $("sc-save").onclick = async () => {
         const body = serviceCredentialBody();
         const invalid = validateServiceCredential(body);
@@ -11950,6 +13718,7 @@
       };
 
       let onboardingModels = {};
+      let onboardingRequestId = 0;
       let onboardingModelStatuses = [];
       async function onboardingRequest(method, path, body) {
         try {
@@ -12018,17 +13787,20 @@
         );
       }
       async function loadOnboarding(preferredProvider = "", preferredModel = "") {
-        await loadModelRegistry();
+        const requestId = ++onboardingRequestId;
+        const requestedView = view;
+        void loadModelRegistry().catch(() => {});
         const [models, slack, catalog, config, customProvidersReady] = await Promise.all([
-          onboardingRequest("GET", "/api/model-providers"),
+          onboardingRequest("GET", "/api/model-providers?catalog=cached"),
           onboardingRequest("GET", "/api/slack-installation"),
           onboardingRequest("GET", "/api/connector-catalog"),
-          onboardingRequest("GET", "/api/scopes/" + encodeURIComponent(orgScope())),
+          onboardingRequest("GET", "/api/scopes/" + encodeURIComponent(orgScope()) + "?view=onboarding"),
           loadCustomProviders(),
         ]);
-        if (!customProvidersReady) {
+        if (requestId !== onboardingRequestId || requestedView !== view) return;
+        if (!customProvidersReady)
           setStatus("st-custom-provider", "Custom providers could not be loaded. Try again.", "err", true);
-        }
+
         if (!models.ok || !slack.ok || !catalog.ok || !config.ok) {
           setStatus("st-onboarding-model", "Setup status could not be loaded. Try again.", "err", true);
           renderOnboardingProviderOptions();
@@ -12036,8 +13808,14 @@
         }
         onboardingModelStatuses = models.data.providers || [];
         onboardingModels = {};
-        (models.data.models || []).forEach((model) => {
-          (onboardingModels[model.provider] ||= []).push(model);
+        [
+          ...(models.data.models || []),
+          ...(config.data.baseModelOptions || []),
+          ...Object.values(config.data.modelsByHarness || {}).flat(),
+        ].forEach((model) => {
+          if (!model.provider) return;
+          const options = (onboardingModels[model.provider] ||= []);
+          if (!options.some((option) => option.id === model.id)) options.push(model);
         });
         const baseModel = config.data.baseModel || config.data.baseModelDefault || "";
         const baseProvider = onboardingProviderForModel(baseModel);
@@ -12092,6 +13870,19 @@
             (adminLocale === "zh-CN" ? " 已可在 Web UI 中使用。" : " available in the web UI.")
           : adminTr("Add Google, GitHub, Notion, or other OAuth clients to make those connectors available.");
         viewLoadedAt.onboarding = Date.now();
+        if (models.data.modelCatalogRefreshing) {
+          void onboardingRequest("GET", "/api/model-providers")
+            .then((fresh) => {
+              if (!fresh.ok || requestId !== onboardingRequestId || requestedView !== view) return;
+              const selected = $("onboarding-model-id").value;
+              for (const model of fresh.data.models || []) {
+                const options = (onboardingModels[model.provider] ||= []);
+                if (!options.some((option) => option.id === model.id)) options.push(model);
+              }
+              renderOnboardingModelOptions(selected);
+            })
+            .catch(() => {});
+        }
         return { setupReady: true, customProvidersReady };
       }
       $("onboarding-model-provider").onchange = () => renderOnboardingModelOptions();
@@ -12564,22 +14355,14 @@
         });
         return true;
       }
-      async function loadPersonalKeychainSummary() {
-        const res = await api("GET", "/api/keychain");
-        if (!res.ok || res.data?.enabled === false) {
-          $("keychain-user-count").textContent = "—";
-          $("keychain-standing-count").textContent = "—";
-          return;
-        }
-        const users = new Set((res.data?.credentials || []).map((credential) => credential.ownerId));
-        const standing = (res.data?.grants || []).filter(
-          (grant) =>
-            grant.mode === "standing" &&
-            grant.status === "active" &&
-            (!grant.expiresAt || grant.expiresAt > Date.now()),
-        );
-        $("keychain-user-count").textContent = String(users.size);
-        $("keychain-standing-count").textContent = String(standing.length);
+      async function loadPersonalKeychainSummary(requestId, requestedScope) {
+        $("keychain-user-count").textContent = "—";
+        $("keychain-standing-count").textContent = "—";
+        const res = await api("GET", "/api/keychain?summary=1");
+        if (requestId !== governanceReq || requestedScope !== scope || view !== "credentials") return;
+        $("keychain-user-count").textContent = res.ok && res.data?.enabled !== false ? String(res.data.users) : "—";
+        $("keychain-standing-count").textContent =
+          res.ok && res.data?.enabled !== false ? String(res.data.standing) : "—";
       }
       $("custom-provider-save").onclick = async () => {
         const id = $("custom-provider-id").value.trim();
@@ -12648,16 +14431,45 @@
       const DESIGN_TOKENS = [
         ["--bg", "Page behind every surface"],
         ["--surface", "Cards, dialogs, table bodies"],
-        ["--subtle", "Zebra rows, inset wells"],
+        ["--subtle", "Quiet control and inset backgrounds"],
         ["--border", "Every hairline and divider"],
         ["--text", "Primary copy"],
         ["--muted", "Secondary copy and hints"],
-        ["--ink", "Primary button fill"],
+        ["--cta", "Primary actions and selected controls"],
         ["--ok", "Confirmed and healthy"],
         ["--warn", "Needs attention"],
         ["--danger", "Destructive and failed"],
         ["--trigger", "Automation and triggers"],
       ];
+
+      let twoWayToggleId = 0;
+      function twoWayToggle({ label, options, value, onChange, disabled = false }) {
+        if (options.length !== 2 || options[0].value === options[1].value)
+          throw new Error("A two-way toggle needs two distinct options.");
+        const group = document.createElement("fieldset");
+        group.className = "two-way-toggle";
+        group.disabled = disabled;
+        const legend = document.createElement("legend");
+        legend.textContent = label;
+        group.appendChild(legend);
+        const name = "two-way-toggle-" + ++twoWayToggleId;
+        options.forEach((option) => {
+          const choice = document.createElement("label");
+          const input = document.createElement("input");
+          input.type = "radio";
+          input.name = name;
+          input.value = option.value;
+          input.checked = option.value === value;
+          input.onchange = () => {
+            if (input.checked) onChange(option.value);
+          };
+          const text = document.createElement("span");
+          text.textContent = option.label;
+          choice.append(input, text);
+          group.appendChild(choice);
+        });
+        return group;
+      }
 
       function designSpec(label, note, demo, stack) {
         return (
@@ -12694,193 +14506,347 @@
         ).join("");
 
         root.innerHTML = [
-          '<p class="lead">Every control below is rendered from the same stylesheet the rest of this surface uses, so ' +
-            "this page drifts only when the design does. Copy the class names, not the markup screenshots.</p>",
-
-          designSection(
-            "Colour",
-            "Semantic tokens, not raw hex. Reach for the meaning, and light and dark stay consistent.",
-            [designSpec("Palette", "Declared on :root", '<div class="swatches">' + swatches + "</div>")],
-          ),
-
-          designSection("Typography", "One sans stack for the product, one serif for the brand lockup.", [
+          '<p class="lead">Components and page patterns from the redesigned admin portal, including Skills, Files, Sessions, Metrics, Audit, and Egress. Examples use fictional data and do not save changes.</p>',
+          designSection("Foundations", "One palette, a small type scale, and consistent spacing.", [
             designSpec(
-              "Scale",
-              "Sizes are set per component, not by a global step scale",
-              '<div class="type-row"><h2 style="margin: 0">Section heading</h2></div>' +
-                '<div class="type-row"><p class="lead" style="margin: 0">Lead paragraph, used once at the top of a page</p></div>' +
-                '<div class="type-row"><p style="margin: 0">Body copy at the default size</p></div>' +
-                '<div class="type-row"><p class="hint" style="margin: 0">Hint text for secondary guidance</p></div>' +
-                '<div class="type-row"><span class="mono">mono for identifiers and payloads</span></div>',
+              "Semantic colors",
+              "Shared theme tokens · light and dark",
+              '<div class="swatches">' + swatches + "</div>",
+            ),
+            designSpec(
+              "Type & spacing",
+              "22px page title · 14px section title · 13px controls and copy",
+              '<div class="shell-title">Page title</div><div class="head"><h2>Section title</h2><p>Descriptions explain the setting.</p></div><label>Field label</label><p class="hint">4px label gap · 8px action gap · 24px section spacing</p>',
               true,
             ),
-            designSpec(
-              "Brand lockup",
-              "--brand-font, serif, reserved for the wordmark",
-              '<span class="brand-name" style="font-family: var(--brand-font); font-size: 19px">QM ' +
-                '<span class="brand-suffix">(admin)</span></span>',
-            ),
           ]),
-
-          designSection("Actions", "One primary per view. Everything else is secondary or a link.", [
+          designSection(
+            "Page layout",
+            "Start with the shared shell. Align titles, sections, and rows to the same content edge; use whitespace and dividers instead of enclosing cards.",
+            [
+              designSpec(
+                "Desktop and mobile",
+                "Authored layout diagrams · .admin-main → .admin-inner → .shellbar",
+                '<div class="design-layouts"><div class="design-layout-frame"><div class="design-layout-nav">Sidebar<br>Independent scroll</div><div class="design-layout-main"><div class="design-layout-content"><div class="design-layout-title">Title <span>Search / action</span></div><div class="design-layout-section">Open section<br><small>Heading + description</small></div><div class="design-layout-lines">Compact rows<br>────────────────<br>Compact rows</div></div></div></div><div class="design-layout-frame mobile"><div class="design-layout-nav">Horizontal navigation</div><div class="design-layout-main"><div class="design-layout-content"><div class="design-layout-title">Title</div><div class="design-layout-section">Full-width search</div><div class="design-layout-lines">Stacked content<br>────────────<br>Local table scroll</div></div></div></div></div>',
+                true,
+              ),
+              designSpec(
+                "Width and page padding",
+                "Current New CSS · index.html and admin-components.css",
+                '<div class="tablewrap"><table><thead><tr><th>Rule</th><th>Desktop</th><th>Small screens</th></tr></thead><tbody><tr><td>Navigation</td><td>280px sidebar; independent scroll</td><td>Horizontal navigation at ≤900px</td></tr><tr><td>Content width</td><td>960px maximum, centered; fluid below that</td><td>Available width; min-width: 0</td></tr><tr><td>Main padding</td><td>28px top and sides</td><td>At ≤900px: 18px top, 14px sides with safe-area insets</td></tr><tr><td>Bottom clearance</td><td colspan="2">110px for the fixed Original / New switch</td></tr><tr><td>Page heading</td><td colspan="2">22px / 500 weight; shared shell spacing 16px (activity pages use 24px)</td></tr><tr><td>Sections</td><td colspan="2">24px between artifact sections; 12px from section heading to content</td></tr><tr><td>Controls</td><td colspan="2">32px height · 6px radius · 8px gap · 4px label gap</td></tr></tbody></table></div>',
+                true,
+              ),
+              designSpec(
+                "Choose a page pattern",
+                "Live references · preserve the selected organization",
+                '<div class="design-page-links"><a data-design-view="governance">Governance / Models</a><p>Descriptions beside settings, 40px column gap; stack on small screens. Keep Apply right-aligned with status on its left.</p><a data-design-view="skills">Skills</a><p>Open installed-skill and skill-pack sections; compact tables and an inline registration form.</p><a data-design-view="files">Files</a><p>Search in the header, flat upload toolbar, then scopes or files with metadata.</p><a data-design-view="history">Sessions</a><p>Two-way sort toggle, named environments, and a separately titled conversation list.</p><a data-design-view="audit">Audit</a> · <a data-design-view="egress">Egress</a><p>Filters above plain tables; headers stay transparent and regular-weight.</p></div>',
+                true,
+              ),
+              designSpec(
+                "Responsive behavior",
+                "Page-level rules",
+                '<ul class="design-rules"><li>At ≤900px, the sidebar becomes horizontal navigation.</li><li>At ≤640px, Skills and Files search uses the full row; dense rows allow more height and Files metadata wraps below the name.</li><li>Wide tables scroll inside .tablewrap. Never force the entire document wider than the viewport.</li><li>Keep all actions and metadata available on mobile. Use wrapping or local scrolling rather than hiding content.</li><li>Sidebar scrolling is contained; reaching its end must not scroll the main page.</li></ul>',
+                true,
+              ),
+            ],
+          ),
+          designSection(
+            "Artifact and reporting patterns",
+            "Compositions from the recent redesigns. Shared helpers render the lists; the form and report examples are local demonstrations.",
+            [
+              designSpec(
+                "Scope list",
+                "denseList() · shared Skills / Files row styles · Enter or click selects a demo row",
+                '<div id="design-scope-list"></div><p class="hint" id="design-scope-status" role="status">Choose a scope to try the row interaction.</p>',
+                true,
+              ),
+              designSpec(
+                "File list and upload toolbar",
+                "denseList() + fileThumb() · .file-upload · visual upload example, no network requests",
+                '<div class="file-upload"><div class="file-upload-actions"><button type="button" class="primary upload-button" id="design-upload"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 15v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></svg><span>Upload</span></button></div></div><div id="design-file-list"></div><p class="hint" id="design-file-status" role="status">File names, thumbnails, sizes, and dates stay visible.</p>',
+                true,
+              ),
+              designSpec(
+                "Skill-pack registration",
+                ".pack-register · shared Skills styles · local form demonstration",
+                '<div class="pack-register"><input type="url" aria-label="Example skill repository" placeholder="https://github.com/example/skills"/><button type="button" id="design-register">Register</button><button type="button" class="linkish" id="design-advanced" aria-expanded="false" aria-controls="design-pack-advanced">Advanced</button></div><div class="pack-adv hidden" id="design-pack-advanced"><div><label for="design-pack-name">Name</label><input id="design-pack-name" type="text" placeholder="Team skills"/></div><div><label for="design-pack-ref">Ref</label><input id="design-pack-ref" type="text" placeholder="main"/></div><div><label for="design-pack-path">Path</label><input id="design-pack-path" type="text" placeholder="skills/"/></div></div><p class="hint" id="design-pack-status" role="status">Registration is a local demonstration.</p>',
+                true,
+              ),
+              designSpec(
+                "Open report section",
+                "Authored Metrics / Audit / Egress composition · statline() + shared table controls",
+                '<section class="design-open-section"><h3>Activity summary</h3><p class="hint">Keep descriptions beside the section they explain.</p><div id="design-metrics-summary"></div><div class="tablewrap"><table><thead><tr><th>Scope</th><th>Requests</th><th>Status</th></tr></thead><tbody><tr><td>Example team</td><td>128</td><td><span class="badge ok">Healthy</span></td></tr><tr><td>Research</td><td>24</td><td><span class="badge muted">Idle</span></td></tr></tbody></table></div></section>',
+                true,
+              ),
+            ],
+          ),
+          designSection("Actions", "32px controls with a 6px radius. Primary actions use the dark blue accent.", [
             designSpec(
               "Buttons",
-              "button, .primary, .danger",
-              '<button class="primary" type="button">Save changes</button>' +
-                '<button type="button">Secondary</button>' +
-                '<button class="danger" type="button">Remove</button>' +
-                '<button type="button" disabled>Disabled</button>',
+              "button · .primary · .danger",
+              '<button type="button" class="primary">Apply</button><button type="button">Add item</button><button type="button" class="danger">Delete</button><button type="button" disabled>Disabled</button><button type="button" class="primary" disabled>Apply</button>',
             ),
             designSpec(
-              "Dirty state",
-              "button.dirty marks unsaved edits with a trailing asterisk",
-              '<button class="primary dirty" type="button">Apply</button>',
+              "Quiet actions",
+              ".viewlink · .icon-button",
+              '<button type="button" class="viewlink">View history ›</button><button type="button" class="icon-button" aria-label="Remove example">×</button>',
             ),
             designSpec(
-              "Links",
-              ".link for navigation, .danger-link for destructive text actions",
-              '<button class="link" type="button">Inline link</button>' +
-                '<button class="danger-link" type="button">Revoke access</button>',
-            ),
-          ]),
-
-          designSection("Status and labels", "Short, factual, colour-coded by meaning.", [
-            designSpec(
-              "Badges",
-              ".badge with ok, warn, err, info, muted, accent, admin",
-              '<span class="badge ok">Healthy</span><span class="badge warn">Degraded</span>' +
-                '<span class="badge err">Failed</span><span class="badge info">Queued</span>' +
-                '<span class="badge muted">Inactive</span><span class="badge accent">Beta</span>' +
-                '<span class="badge admin">Admin</span>',
-            ),
-            designSpec(
-              "Pills",
-              ".pill for counts and scope chips",
-              '<span class="pill">org:acme</span><span class="pill">12</span>',
-            ),
-            designSpec(
-              "Save status",
-              ".status beside the control it reports on",
-              '<span class="status ok">Saved</span><span class="status err">Save failed</span>' +
-                '<span class="status muted">No changes</span><span class="status dirty">Unsaved</span>',
-            ),
-            designSpec(
-              "Chips",
-              ".meta-chip and .identity-chip carry one fact each",
-              '<span class="meta-chip">web</span><span class="meta-chip danger">quarantined</span>' +
-                '<span class="identity-chip">person@example.com</span>',
-            ),
-          ]),
-
-          designSection("Surfaces", "Flat. Borders and spacing carry the hierarchy, never a shadow.", [
-            designSpec(
-              "Card",
-              "section.card with head, body, foot",
-              '<section class="card" style="margin: 0; width: 100%"><div class="head"><h2>Card heading</h2>' +
-                "<p>One sentence saying what this card controls.</p></div>" +
-                '<div class="body"><p style="margin: 0">Body content.</p></div>' +
-                '<div class="foot"><button class="primary" type="button">Apply</button>' +
-                '<span class="status muted">Idle</span></div></section>',
-              true,
-            ),
-            designSpec(
-              "Note",
-              ".notebox for a standing caveat",
-              '<p class="notebox" style="margin: 0">Changes here apply to every scope that inherits from this organization.</p>',
-              true,
-            ),
-            designSpec(
-              "Empty state",
-              ".empty says what is missing and what to do",
-              '<div class="empty">No credentials yet. Add one to let the agent reach this provider.</div>',
+              "Save feedback",
+              ".foot · .status · native input events",
+              '<section class="card"><div class="head"><h2>Example setting</h2><p>Edit the name to try unsaved and saved states.</p></div><div class="body"><label for="design-name">Display name</label><input id="design-name" type="text" value="Acme" /></div><div class="foot"><span class="status" id="design-status" role="status">No changes</span><button class="primary" type="button" id="design-apply" disabled>Apply</button></div></section>',
               true,
             ),
           ]),
-
-          designSection("Forms", "Label above, hint below, status next to the button that writes.", [
+          designSection(
+            "Two-way toggle",
+            "Choose one of two mutually exclusive options. Tab to focus; use arrow keys to switch.",
+            [
+              designSpec(
+                "Segmented choice",
+                "twoWayToggle({ label, options, value, onChange, disabled }) · shared radio group",
+                '<div id="design-two-way-toggle"></div><p class="hint" id="design-two-way-status" role="status">Selected: Human activity</p>',
+                true,
+              ),
+              designSpec(
+                "Disabled",
+                "The same component with disabled: true",
+                '<div id="design-two-way-disabled"></div>',
+              ),
+            ],
+          ),
+          designSection(
+            "Search",
+            "A transparent background, subtle border, search icon, and clear action. Focus uses the shared dark blue accent.",
+            [
+              designSpec(
+                "Search field",
+                "searchField() · shared with Slack and page toolbar searches",
+                '<div id="design-search"></div><p class="hint" id="design-search-status" role="status">Type to try the search field, then clear it.</p>',
+                true,
+              ),
+              designSpec(
+                "Populated and disabled",
+                "The same component with value and disabled options",
+                '<div id="design-search-filled"></div><div id="design-search-disabled"></div>',
+                true,
+              ),
+            ],
+          ),
+          designSection("Fields", "Shared sizing, labels, hints, focus rings, validation, and disabled states.", [
             designSpec(
-              "Text input",
-              "input, select, textarea share one border and radius",
-              '<label style="display: block; width: 100%">Display name<input type="text" value="Acme" style="width: 100%" /></label>' +
-                '<p class="field-hint" style="margin: 0">Shown to everyone in the organization.</p>',
+              "Text fields",
+              "input · label · .hint",
+              '<label for="design-text">Client ID</label><input id="design-text" type="text" placeholder="Enter a client ID" aria-describedby="design-text-hint" /><p class="hint" id="design-text-hint">A label stays visible when the field has a value.</p><label for="design-number">Limit</label><input id="design-number" type="number" value="10" /><label for="design-disabled">Inherited value</label><input id="design-disabled" type="text" disabled value="Organization default" /><label for="design-invalid">Required value</label><input id="design-invalid" type="text" aria-invalid="true" aria-describedby="design-error" /><p class="status err" id="design-error">Enter a value to continue.</p>',
               true,
             ),
             designSpec(
-              "Select",
-              "Native control, styled to match",
-              "<select><option>Organization</option><option>Team</option><option>Personal</option></select>",
-            ),
-            designSpec(
-              "Toggle row",
-              ".setting-toggle with .setting-switch",
-              '<label class="setting-toggle"><input type="checkbox" checked />' +
-                '<span class="setting-switch" aria-hidden="true"></span> Require approval for shell commands</label>',
-              true,
-            ),
-          ]),
-
-          designSection("Navigation", "The sidebar owns primary navigation; these move within a page.", [
-            designSpec(
-              "Page tabs",
-              ".shell-tabs with .shell-tab",
-              '<div class="shell-tabs"><button class="shell-tab active" type="button">Conversations</button>' +
-                '<button class="shell-tab" type="button">Runs</button>' +
-                '<button class="shell-tab" type="button">Deliveries</button></div>',
+              "Dropdown",
+              "select → shared .dd accessible dropdown",
+              '<label for="design-select">Scope</label><select id="design-select"><option>Organization</option><option>Team</option><option>Personal</option></select>',
               true,
             ),
             designSpec(
-              "Segmented",
-              ".segmented with .seg for mutually exclusive modes",
-              '<div class="segmented"><button class="seg active" type="button">Rendered</button>' +
-                '<button class="seg" type="button">Raw</button></div>',
-              true,
-            ),
-          ]),
-
-          designSection("Data", "Dense by default. Numbers right-aligned, identifiers in mono.", [
-            designSpec(
-              "Table",
-              "table inside .tablewrap",
-              '<div class="tablewrap" style="width: 100%"><table><thead><tr><th>Principal</th><th>Scope</th>' +
-                "<th>Status</th></tr></thead><tbody>" +
-                '<tr><td><span class="mono">person@example.com</span></td><td>org:acme</td><td><span class="badge ok">Active</span></td></tr>' +
-                '<tr><td><span class="mono">teammate@example.com</span></td><td>team:eng</td><td><span class="badge muted">Invited</span></td></tr>' +
-                "</tbody></table></div>",
+              "Multiline",
+              "textarea · same field border and label",
+              '<label for="design-notes">Instructions</label><textarea id="design-notes" rows="3" placeholder="Write instructions…"></textarea>',
               true,
             ),
             designSpec(
-              "Metrics",
-              ".kpis with .kpi for headline numbers",
-              '<div class="kpis" style="width: 100%">' +
-                '<div class="kpi"><div class="n">1,284</div><div class="k">Turns</div></div>' +
-                '<div class="kpi"><div class="n">37</div><div class="k">Sessions</div></div>' +
-                '<div class="kpi"><div class="n">2.1s</div><div class="k">Median latency</div></div></div>',
+              "Choices",
+              ".choice-stack · .posture-choice",
+              '<div class="choice-stack"><label class="posture-choice"><input type="radio" name="design-choice" checked /><span><strong>Automatic</strong><small>Review activity when needed.</small></span></label><label class="posture-choice"><input type="radio" name="design-choice" /><span><strong>Always review</strong><small>Review every request.</small></span></label></div>',
               true,
             ),
             designSpec(
-              "Distribution",
-              ".dist rows for a share-of-total breakdown",
-              '<div class="dist" style="width: 100%">' +
-                '<div class="dist-row"><span class="dist-label">Slack</span>' +
-                '<span class="dist-track"><span class="dist-bar" style="width: 68%"></span></span>' +
-                '<span class="dist-count">68%</span></div>' +
-                '<div class="dist-row"><span class="dist-label">Web</span>' +
-                '<span class="dist-track"><span class="dist-bar" style="width: 27%"></span></span>' +
-                '<span class="dist-count">27%</span></div>' +
-                '<div class="dist-row"><span class="dist-label">Cron</span>' +
-                '<span class="dist-track"><span class="dist-bar" style="width: 5%"></span></span>' +
-                '<span class="dist-count">5%</span></div></div>',
+              "Switch & checkbox",
+              ".setting-toggle · .setting-switch · input[type=checkbox]",
+              '<label class="setting-toggle"><input type="checkbox" checked /><span class="setting-switch" aria-hidden="true"></span><span>Enable feature</span></label><label><input type="checkbox" /> Include optional details</label>',
               true,
             ),
           ]),
+          designSection(
+            "Sections & lists",
+            "Open sections separated by rules, with the same headings, descriptions, and row actions.",
+            [
+              designSpec(
+                "Settings section",
+                ".card > .head / .body / .foot",
+                '<section class="card"><div class="head"><h2>Section title</h2><p>Explain what the setting changes.</p></div><div class="body"><label for="design-section-field">Setting label</label><input id="design-section-field" type="text" value="Default value" /></div><div class="foot"><span class="status">No changes</span><button class="primary" type="button" disabled>Apply</button></div></section>',
+                true,
+              ),
+              designSpec(
+                "List row",
+                ".credential-row · .credential-title · .credential-actions",
+                '<div class="credential-row"><div class="credential-main"><div class="credential-title"><strong>Example service</strong><span class="credential-slug">example</span></div><p class="hint">Available to the organization</p></div><div class="credential-actions"><button type="button">Edit</button><button type="button" class="danger">Delete</button></div></div>',
+                true,
+              ),
+              designSpec(
+                "Model chip",
+                ".model-chip · removable item",
+                '<div class="model-chip"><span>Example model</span><button type="button" id="design-remove-chip" aria-label="Remove example model">×</button></div><span class="hint" id="design-chip-status" role="status"></span>',
+              ),
+              designSpec(
+                "Badges & feedback",
+                ".badge · .status · semantic colors",
+                '<span class="badge muted">Inherited</span><span class="badge ok">Enabled</span><span class="badge warn">Needs review</span><span class="badge err">Failed</span><span class="status ok">Saved</span><span class="status err">Save failed</span>',
+              ),
+              designSpec(
+                "Empty state",
+                ".empty",
+                '<div class="empty">No items yet. Add an item to get started.</div>',
+                true,
+              ),
+            ],
+          ),
+          designSection(
+            "Dialogs",
+            "The same controls in a focused, keyboard-accessible dialog. Escape closes it and returns focus.",
+            [
+              designSpec(
+                "Review dialog",
+                "dialog.review-dialog · shared fields and actions",
+                '<button type="button" id="design-dialog-open">Open example dialog</button><dialog class="review-dialog" id="design-dialog" aria-labelledby="design-dialog-title"><div class="review-dialog-head"><h2 id="design-dialog-title">Example dialog</h2><p>Try the shared controls without changing any settings.</p></div><div class="review-dialog-body"><label for="design-dialog-field">Display name</label><input id="design-dialog-field" type="text" value="Example" /></div><div class="review-dialog-foot"><button type="button" id="design-dialog-close">Cancel</button><button type="button" class="primary" id="design-dialog-done">Done</button></div></dialog>',
+              ),
+            ],
+          ),
+          designSection(
+            "Tables",
+            "13px cells, quiet headers, consistent padding, and scrolling inside the table on small screens.",
+            [
+              designSpec(
+                "Data table",
+                ".tablewrap > table · th · td",
+                '<div class="tablewrap"><table><thead><tr><th>Name</th><th>Access</th><th>Status</th><th>Actions</th></tr></thead><tbody><tr><td>Alex Example</td><td>Organization</td><td><span class="badge ok">Active</span></td><td><button type="button">Edit</button></td></tr><tr><td>Sam Example</td><td>Team</td><td><span class="badge muted">Invited</span></td><td><button type="button" disabled>Edit</button></td></tr></tbody></table></div>',
+                true,
+              ),
+            ],
+          ),
         ].join("");
+        const contents = document.createElement("nav");
+        contents.className = "design-contents";
+        contents.setAttribute("aria-label", "Design system sections");
+        root.querySelectorAll(".design-group").forEach((section) => {
+          const title = section.querySelector("h2").textContent;
+          section.id = "design-group-" + title.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+          const link = document.createElement("a");
+          link.href = "#" + section.id;
+          link.textContent = title;
+          contents.appendChild(link);
+        });
+        root.querySelector(".lead").after(contents);
+        root.querySelectorAll(".design-page-links a").forEach((link) => {
+          link.href = stateToUrl({ view: link.dataset.designView, scope });
+        });
+        $("design-scope-list").appendChild(
+          denseList(
+            [
+              { name: "Example team", preview: "12 skills", time: "5 mins ago" },
+              { name: "Research", preview: "4 skills", time: "Yesterday" },
+            ],
+            (item) => item,
+            (item) => {
+              $("design-scope-status").textContent = "Selected: " + item.name;
+            },
+            "No skills yet.",
+          ),
+        );
+        $("design-file-list").appendChild(
+          denseList(
+            [
+              { name: "Research brief.pdf", size: "240 KB", date: "Today" },
+              { name: "Project notes.md", size: "8 KB", date: "Yesterday" },
+            ],
+            (item) => ({
+              name: item.name,
+              icon: fileThumb(item),
+              preview: "Example team",
+              time: item.size + " · " + item.date,
+            }),
+            (item) => {
+              $("design-file-status").textContent = "Selected: " + item.name + " (demo only)";
+            },
+            "No documents saved yet.",
+          ),
+        );
+        $("design-upload").onclick = () => {
+          $("design-file-status").textContent =
+            "On Files, this opens the file picker. This example does not upload files.";
+        };
+        $("design-register").onclick = () => {
+          $("design-pack-status").textContent = "Example registered locally. No repository was fetched.";
+        };
+        $("design-advanced").onclick = () => {
+          const expanded = $("design-advanced").getAttribute("aria-expanded") !== "true";
+          $("design-advanced").setAttribute("aria-expanded", String(expanded));
+          $("design-pack-advanced").classList.toggle("hidden", !expanded);
+        };
+        $("design-metrics-summary").appendChild(statline(["152 requests", "2 scopes", "Last 24 hours"]));
+        $("design-search").appendChild(
+          searchField({
+            placeholder: "Search messages…",
+            onInput: (value) => {
+              $("design-search-status").textContent = value
+                ? "Search query: " + value
+                : "Type to try the search field, then clear it.";
+            },
+          }),
+        );
+        $("design-search-filled").appendChild(
+          searchField({ placeholder: "Search messages…", value: "Product updates" }),
+        );
+        $("design-search-disabled").appendChild(searchField({ placeholder: "Search unavailable", disabled: true }));
+        const toggleOptions = [
+          { value: "human", label: "Human activity" },
+          { value: "all", label: "All activity" },
+        ];
+        $("design-two-way-toggle").appendChild(
+          twoWayToggle({
+            label: "Example activity sort",
+            options: toggleOptions,
+            value: "human",
+            onChange: (value) => {
+              $("design-two-way-status").textContent =
+                "Selected: " + toggleOptions.find((option) => option.value === value).label;
+            },
+          }),
+        );
+        $("design-two-way-disabled").appendChild(
+          twoWayToggle({
+            label: "Disabled activity sort",
+            options: toggleOptions,
+            value: "human",
+            disabled: true,
+            onChange: () => {},
+          }),
+        );
+        let savedName = "Acme";
+        $("design-name").oninput = () => {
+          const dirty = $("design-name").value !== savedName;
+          $("design-apply").disabled = !dirty;
+          $("design-status").textContent = dirty ? "Unsaved changes" : "No changes";
+        };
+        $("design-apply").onclick = () => {
+          savedName = $("design-name").value;
+          $("design-apply").disabled = true;
+          $("design-status").textContent = "Saved in this example";
+        };
+        $("design-remove-chip").onclick = () => {
+          $("design-remove-chip").closest(".model-chip").remove();
+          $("design-chip-status").textContent = "Example model removed";
+        };
+        $("design-dialog-open").onclick = () => $("design-dialog").showModal();
+        $("design-dialog-close").onclick = () => $("design-dialog").close();
+        $("design-dialog-done").onclick = () => $("design-dialog").close();
+        initCustomDropdowns(root);
         designLibraryRendered = true;
       }
 
       async function loadConnectors() {
+        void loadSlackInstallation();
         const [catalog, r] = await Promise.all([
           api("GET", "/api/connector-catalog"),
-          api("GET", "/api/scopes/" + encodeURIComponent(orgScope())),
+          api("GET", "/api/scopes/" + encodeURIComponent(orgScope()) + "?view=connectors"),
         ]);
         if (!catalog.ok) {
           setApiStatus("st-connectors", catalog.data?.message, "Failed to load connector setup.", "err");
@@ -12904,7 +14870,6 @@
           $("conn-provider").value = connEditing;
           $("conn-provider").disabled = true;
         } else resetConnForm();
-        await loadSlackInstallation();
       }
       function renderBuiltInConnectors() {
         const root = $("built-in-connectors");
@@ -12957,7 +14922,10 @@
           title.className = "credential-title";
           const name = document.createElement("strong");
           name.textContent = connectorName(c.provider);
-          title.append(name, badge(c.provider, "muted"));
+          const slug = document.createElement("span");
+          slug.className = "credential-slug";
+          slug.textContent = c.provider;
+          title.append(name, slug);
           const meta = document.createElement("div");
           meta.className = "hint";
           meta.textContent = c.inherited
@@ -13110,11 +15078,33 @@
         $("conn-client-id").focus();
         $("card-connectors").scrollIntoView({ behavior: "smooth", block: "start" });
       };
+      let slackLinkStarted = false;
       async function loadSlackInstallation() {
         const r = await api("GET", "/api/slack-installation");
         if (!r.ok) {
           setApiStatus("st-slack-installation", r.data?.message, "Failed to load Slack status.", "err");
           return;
+        }
+        $("slack-installation-start").classList.toggle("hidden", !r.data.installAvailable);
+        $("slack-installation-start").disabled = r.data.configured && r.data.source === "admin";
+        $("slack-installation-start").title =
+          r.data.configured && r.data.source === "admin"
+            ? "Remove your current connection before switching to the hosted app."
+            : "";
+        $("slack-installation-start-label").textContent = r.data.configured ? "Re-add to Slack" : "Add to Slack";
+        $("slack-installation-description").textContent = r.data.configured
+          ? r.data.source === "service"
+            ? "QM app"
+            : "Custom app"
+          : r.data.installAvailable
+            ? "Add the QM app or connect your own below."
+            : "Create a Slack app from our manifest, then connect it here.";
+        $("slack-own-app-label").textContent = r.data.installAvailable ? "Use your own Slack app" : "Set up Slack";
+        $("slack-hosted-switch").classList.toggle("hidden", !r.data.installAvailable);
+        if (!r.data.installAvailable && !r.data.configured) $("slack-own-app-guide").open = true;
+        if (new URLSearchParams(location.search).get("setup") === "slack") {
+          $("slack-own-app-guide").open = true;
+          $("card-slack-installation").scrollIntoView({ block: "start" });
         }
         if (r.data.createUrl) $("slack-installation-create").href = r.data.createUrl;
         $("slack-installation-state").textContent =
@@ -13132,8 +15122,34 @@
                 : r.data.managed
                   ? adminTr("Disabled by an administrator.")
                   : adminTr("Not configured.");
+
         $("slack-installation-delete").disabled = !r.data.configured;
+        const step = new URLSearchParams(location.search).get("slack");
+        if (!slackLinkStarted && r.data.installAvailable && ["setup", "install"].includes(step)) {
+          slackLinkStarted = true;
+          if (r.data.configured && !(r.data.source === "service" && r.data.setup?.connected === false)) {
+            setStatus("st-slack-installation", "Slack is already configured. Return to your conversation.", "ok");
+          } else {
+            await startSlackInstallation(step);
+          }
+        }
+        if (step === "connected" && r.data.configured && r.data.setup?.connected) {
+          setStatus("st-slack-installation", "Connected. You can return to your QM conversation.", "ok");
+        }
       }
+      async function startSlackInstallation(step = "install") {
+        $("slack-installation-start").disabled = true;
+        const r = await api("POST", "/api/slack-installation/start", { step });
+        $("slack-installation-start").disabled = false;
+        if (r.ok && r.data.url) {
+          const form = document.createElement("form");
+          form.method = "POST";
+          form.action = r.data.url;
+          document.body.appendChild(form);
+          form.submit();
+        } else setStatus("st-slack-installation", "Could not start Slack installation. Please try again.", "err");
+      }
+      $("slack-installation-start").onclick = () => startSlackInstallation();
       $("slack-installation-save").onclick = async () => {
         const botToken = $("slack-bot-token").value.trim();
         const appToken = $("slack-app-token").value.trim();
@@ -13154,9 +15170,13 @@
         $("slack-token-editor").classList.add("hidden");
         $("slack-installation-save").classList.add("hidden");
         await loadSlackInstallation();
-        setStatus("st-slack-installation", "Saved. Slack is activating.", "ok");
+        setStatus(
+          "st-slack-installation",
+          "Tokens verified and saved. Allow a few seconds, then test a mention and DM in Slack.",
+          "ok",
+        );
       };
-      $("slack-rotate").onclick = () => {
+      $("slack-enter-tokens").onclick = () => {
         $("slack-token-editor").classList.remove("hidden");
         $("slack-installation-save").classList.remove("hidden");
         $("slack-bot-token").focus();
@@ -13171,7 +15191,7 @@
           return;
         }
         await loadSlackInstallation();
-        setStatus("st-slack-installation", "Removed", "ok");
+        setStatus("st-slack-installation", "Slack disconnected.", "ok");
       };
       $("conn-reset").onclick = resetConnForm;
       async function deleteConn(provider) {
@@ -13529,6 +15549,7 @@
         del.textContent = "×";
         del.title = adminTr("Remove this command policy rule");
         del.setAttribute("aria-label", adminTr("Remove command policy rule"));
+
         del.onclick = () => {
           row.remove();
           syncRuleWorkbench();
@@ -14186,7 +16207,10 @@
           if (btn.dataset.saveRequest === saveRequest) delete btn.dataset.saveRequest;
           if (r.ok) {
             if (key === "security-posture" || key === "sharing-posture" || key === "ambient-policy") {
-              const fresh = await api("GET", "/api/scopes/" + encodeURIComponent(scope));
+              const fresh = await api(
+                "GET",
+                "/api/scopes/" + encodeURIComponent(scope) + "?view=" + encodeURIComponent(view),
+              );
               if (!fresh.ok) {
                 updateSectionDirty(key);
                 setStatus(SAVE_ST[key], "Saved, but could not refresh the applied value.", "err");
@@ -14198,7 +16222,10 @@
               else renderAmbientPolicy(fresh.data.ambientPolicy);
               captureSection(key);
             } else if (key === "branding") {
-              location.reload();
+              sectionSnapshots.set(key, JSON.stringify(body));
+              updateSectionDirty(key);
+              setStatus(SAVE_ST[key], "Saved", "ok");
+              if (!hasGovernanceDraft()) location.reload();
               return;
             } else if (SAVE_RELOADS.has(key)) await loadScope();
             else {
@@ -14682,6 +16709,7 @@
       function renderMetrics(root, d) {
         const phaseSel = urlToState().phase;
         if (phaseSel) return renderPhaseDrill(root, d, phaseSel);
+        defaultShell({ count: plural(d.throughput?.total ?? 0, "run") });
         renderCacheHealth(root, d);
         const phases = d.phases || [];
         root.appendChild(
@@ -14899,29 +16927,23 @@
         const total = d.total ?? errors.length;
         const limit = d.limit || ERRORS_PAGE_SIZE;
         const offset = d.offset || 0;
-        defaultShell({ count: plural(total, "error"), context: "Newest first" });
+        defaultShell({ count: plural(total, "error") });
         const rows = errors.map((e) => {
           const scopeTarget = /^(personal|channel|team|org|group):.+/.test(e.scopeLabel || "") ? e.scopeLabel : null;
           const fullText = e.message || "(no message)";
           const previewText = firstLine(fullText, 160);
-          const expandable = previewText !== fullText;
-          const message = document.createElement(expandable ? "details" : "div");
+          const message = document.createElement("details");
           message.className = "error-message";
-          if (expandable) {
-            const summary = document.createElement("summary");
-            const preview = document.createElement("span");
-            preview.className = "error-preview";
-            preview.textContent = previewText;
-            const full = document.createElement("span");
-            full.className = "error-full";
-            full.textContent = fullText;
-            summary.append(preview, full);
-            message.append(summary);
-          } else {
-            message.textContent = fullText;
-          }
+          const summary = document.createElement("summary");
+          const preview = document.createElement("span");
+          preview.className = "error-preview";
+          preview.textContent = previewText;
+          const full = document.createElement("span");
+          full.className = "error-full";
+          full.textContent = fullText;
+          summary.append(preview, full);
+          message.append(summary);
           return [
-            timeCell(e.ts),
             { text: e.category || "uncategorized" },
             { text: e.code || "—", cls: "mono" },
             nodeCell(message),
@@ -14937,10 +16959,11 @@
                   navLink("View session", { view: "history", scope: scopeTarget || scope, session: e.sessionId }),
                 )
               : { text: "—" },
+            timeCell(e.ts),
           ];
         });
         const content = table(
-          ["Time", "Category", "Code", "Message", ...(all ? ["Scope"] : []), "Session"],
+          ["Category", "Code", "Message", ...(all ? ["Scope"] : []), "Session", "Time"],
           rows,
           all ? "No errors recorded." : "No errors recorded for this scope.",
         );
@@ -15061,10 +17084,10 @@
         defaultShell({
           stats: [
             [String(d.total ?? recs.length), "Calls"],
-            [String(d.denied ?? 0), "Denied"],
+            [String(d.denied ?? 0), "denied requests"],
             [String(d.hosts ?? 0), "Hosts"],
-            [String(bs.broker ?? 0), "Broker"],
-            [String(bs.firewall ?? 0), "Firewall"],
+            [String(bs.broker ?? 0), "broker requests"],
+            [String(bs.firewall ?? 0), "firewall requests"],
           ],
         });
         const rows = recs.map((r) => [
@@ -15590,7 +17613,7 @@
           (a, b) => (b.lastAccessAt || b.createdAt || 0) - (a.lastAccessAt || a.createdAt || 0),
         );
         const deployments = orgOwnView() ? allDeps.filter((dep) => scopeKind(dep.ownerScopeId) === "org") : allDeps;
-        const count = deployments.length ? plural(deployments.length, "app") : "";
+        const count = plural(deployments.length, "app");
         const previewOf = (dep) =>
           [
             adminTr(titleCase(dep.status || "unknown")),
@@ -15839,7 +17862,7 @@
           },
           placeholder: index ? "Search all skills…" : "Search skills…",
         });
-        const card = bareDataCard(tableWrap);
+        const card = dataCard("Installed skills", "", tableWrap);
         if (scopeWrap) card.querySelector(".body").prepend(scopeWrap);
         root.appendChild(card);
         root.appendChild(detail);
@@ -16527,7 +18550,9 @@
           ];
         });
         box.appendChild(table(["Pack", "Skills", "Trust", "Status", ""], rows, "No packs yet. Register one above."));
-        root.appendChild(bareDataCard(box));
+        root.appendChild(
+          dataCard("Skill packs", "Register a repository, then choose which skills to import into each scope.", box),
+        );
         root.appendChild(detail);
       }
 
@@ -17058,6 +19083,7 @@
         const ta = document.createElement("textarea");
         ta.id = "memory-text";
         ta.spellcheck = false;
+        ta.setAttribute("aria-label", "Notebook contents");
         ta.value = memDraft !== null && memDraftScope === scope ? memDraft : server;
         ta.style.minHeight = "340px";
         ta.style.fontFamily = "ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -17099,9 +19125,19 @@
         };
         foot.append(save, st);
         wrap.append(ta, foot);
-        root.appendChild(bareDataCard(wrap));
+        const label = document.createElement("label");
+        label.htmlFor = "memory-text";
+        label.textContent = "Notebook contents";
+        wrap.prepend(label);
+        st.setAttribute("role", "status");
+        const card = dataCard("Notebook", "What the agent remembers in this scope. Changes apply when you save.", wrap);
+        card.classList.add("memory-editor");
+        root.appendChild(card);
       }
       function renderMemoryIndex(root, d) {
+        let query = "";
+        const list = document.createElement("div");
+        list.className = "memory-notebooks";
         const scopes = (d.scopes || []).filter((s) => s.hasMemory || scopeKind(s.scopeId) === "org");
         const written = scopes.filter((s) => s.hasMemory);
         const hasTimestamps = written.some((s) => s.updatedAt);
@@ -17119,26 +19155,48 @@
         pageShell({
           title: VIEW_TITLE.memory,
           titleI18n: true,
-          count: written.length ? plural(written.length, "notebook") : "",
+          count: plural(written.length, "notebook"),
+          search: {
+            placeholder: "Search notebooks…",
+            onInput: (value) => {
+              query = value.trim().toLowerCase();
+              draw();
+            },
+          },
+
           context: written.length && !hasTimestamps ? "sorted by size (this backend keeps no edit history)" : "",
           contextI18n: true,
         });
-        const t = denseList(
-          scopes,
-          (s) => ({
-            name: scopeKind(s.scopeId) === "org" ? "org" : s.label || shortName(s.scopeId),
-            preview: s.hasMemory ? fmtBytes(s.bytes || 0) : adminTr("empty"),
-            time: s.updatedAt ? relTime(s.updatedAt) : "—",
-            href: stateToUrl(
-              scopeKind(s.scopeId) === "org"
-                ? { view: "memory", scope: s.scopeId, mem: "edit" }
-                : { view: "memory", scope: s.scopeId },
-            ),
-          }),
-          openScope,
-          "No notebooks yet. The agent hasn't remembered anything.",
-        );
-        root.appendChild(bareDataCard(t));
+        const draw = () => {
+          const visible = scopes.filter(
+            (s) => !query || [s.label, shortName(s.scopeId), s.scopeId].join(" ").toLowerCase().includes(query),
+          );
+          const t = denseList(
+            visible,
+            (s) => ({
+              name: scopeKind(s.scopeId) === "org" ? "org" : s.label || shortName(s.scopeId),
+              preview: s.hasMemory ? fmtBytes(s.bytes || 0) : "empty",
+              time: s.updatedAt ? relTime(s.updatedAt) : "Never",
+              href: stateToUrl(
+                scopeKind(s.scopeId) === "org"
+                  ? { view: "memory", scope: s.scopeId, mem: "edit" }
+                  : { view: "memory", scope: s.scopeId },
+              ),
+            }),
+            openScope,
+            query ? "No notebooks match your search." : "No notebooks yet. The agent hasn't remembered anything.",
+          );
+          const headings = document.createElement("div");
+          headings.className = "memory-columns";
+          for (const text of ["Notebook", "Size", "Last updated"]) {
+            const label = document.createElement("span");
+            label.textContent = text;
+            headings.appendChild(label);
+          }
+          list.replaceChildren(headings, t);
+        };
+        draw();
+        root.appendChild(list);
       }
       function renderRetention(root, d) {
         const a = d.active || {};
@@ -17520,6 +19578,10 @@
         return stacked(activeText || adminTr("None"), pendingText ? adminTr("Pending") + ": " + pendingText : "");
       };
       function renderUsers(root, d) {
+        const layout = document.createElement("div");
+        layout.className = "users-layout";
+        root.appendChild(layout);
+        root = layout;
         const users = d.users || [];
         const grants = d.grants || [];
         const externalUsers = d.externalUsers || [];
@@ -17553,12 +19615,16 @@
           f.className = "f" + (cls ? " " + cls : "");
           const l = document.createElement("label");
           l.textContent = adminTr(labelText);
+          control.id = "users-" + labelText.toLowerCase().replaceAll(" ", "-");
+          l.htmlFor = control.id;
+
           f.append(l, control);
           return f;
         };
         const pInput = document.createElement("input");
         pInput.type = "text";
-        pInput.placeholder = adminTr("principal id (e.g. U07ABCD)");
+        pInput.placeholder = "name@example.com or U07ABCD";
+
         pInput.spellcheck = false;
         pInput.autocapitalize = "none";
         const grantBtn = document.createElement("button");
@@ -17580,13 +19646,18 @@
               "err",
             );
         };
-        form.append(mkField("grow", "Principal id", pInput), grantBtn);
-        const formCard = dataCard("Grant org admin", "Promote a principal to org admin. Org admins only.", form);
+        form.append(mkField("grow", "Email or principal ID", pInput), grantBtn);
+        const formCard = dataCard(
+          "Grant org admin",
+          "Enter their email or principal ID. They do not need to appear in the Users table first. Org admins only.",
+          form,
+        );
         const st = document.createElement("p");
         st.className = "status";
         st.id = "st-users";
         st.style.margin = "10px 0 0";
         formCard.querySelector(".body").appendChild(st);
+        formCard.classList.add("users-setting");
         root.appendChild(formCard);
 
         const impForm = document.createElement("div");
@@ -17661,6 +19732,7 @@
         impSt.id = "st-imp";
         impSt.style.margin = "10px 0 0";
         impCard.querySelector(".body").append(impDatalist, impSt);
+        impCard.classList.add("users-setting");
         root.appendChild(impCard);
 
         const inviteEmail = d.inviteEmail || {};
@@ -17740,9 +19812,9 @@
         const addBtn = document.createElement("button");
         addBtn.type = "button";
         addBtn.className = "rowbtn";
-        addBtn.textContent = "+";
-        addBtn.title = "Add external user";
-        addBtn.setAttribute("aria-label", "Add external user");
+        addBtn.textContent = "Invite external user";
+        addBtn.title = "Invite external user";
+        addBtn.setAttribute("aria-label", "Invite external user");
         addBtn.setAttribute("aria-expanded", "false");
         addBtn.onclick = () => {
           const open = !invite.classList.toggle("hidden");
@@ -17756,7 +19828,7 @@
 
         const lists = document.createElement("div");
         lists.className = "list-root";
-        root.appendChild(lists);
+        root.prepend(lists);
         const orgAdminCount = grants.filter((g) => g.role === "org_admin").length;
         const matches = (parts) => parts.join(" ").toLowerCase().includes(filterVal.trim().toLowerCase());
         const drawLists = () => {
@@ -17841,10 +19913,7 @@
             "Everyone who has used the agent — click a row for their activity, artifacts, and config.",
             roster,
           );
-          usersCard.querySelector(".head h2").append(" ", addBtn);
-          usersCard.querySelector(".body").prepend(invite);
-          usersCard.querySelector(".body").appendChild(externalSt);
-          lists.appendChild(usersCard);
+          lists.prepend(usersCard);
 
           const external = actionTable(
             ["Email", "Role", "Expires", "Invited by", "Status", ""],
@@ -17863,15 +19932,18 @@
             ],
             externalUsers.length
               ? "No external users match."
-              : "No external users. Use + on the Users card to invite one.",
+              : "No external users. Use Invite external user to invite an outside collaborator.",
           );
-          lists.appendChild(
-            dataCard(
-              "External users",
-              "Outside collaborators invited by email. They sign in at the portal with that address until it expires.",
-              external,
-            ),
+          const externalCard = dataCard(
+            "External users",
+            "Outside collaborators invited by email until an expiry date. Org members do not need an external invite.",
+            external,
           );
+          externalCard.classList.add("users-roster");
+          externalCard.querySelector(".head").appendChild(addBtn);
+          externalCard.querySelector(".body").prepend(invite);
+          externalCard.querySelector(".body").appendChild(externalSt);
+          lists.appendChild(externalCard);
         };
         drawLists();
       }
@@ -21911,31 +23983,25 @@
         sortControl.className = "shell-sort";
         const sortLabel = document.createElement("span");
         sortLabel.className = "shell-sort-label";
-        sortLabel.textContent = adminTr("Sort:");
-        const seg = document.createElement("div");
-        seg.className = "segmented";
-        const sortOpt = (value, label) => {
-          const b = document.createElement("button");
-          b.type = "button";
-          b.className = "seg" + (scopeSort === value ? " active" : "");
-          b.textContent = adminTr(label);
-          b.onclick = () => {
-            if (scopeSort !== value) {
-              scopeSort = value;
-              renderScopeIndex();
-            }
-          };
-          seg.appendChild(b);
-        };
-        sortOpt("human", "Human activity");
-        sortOpt("all", "All activity");
+        sortLabel.textContent = "Sort:";
+        const seg = twoWayToggle({
+          label: "Sort sessions",
+          options: [
+            { value: "human", label: "Human activity" },
+            { value: "all", label: "All activity" },
+          ],
+          value: scopeSort,
+          onChange: (value) => {
+            scopeSort = value;
+            renderScopeIndex();
+            $("shellbar").querySelector(".two-way-toggle input:checked")?.focus({ preventScroll: true });
+          },
+        });
         sortControl.append(sortLabel, seg);
         pageShell({
           title: VIEW_TITLE.history,
-          titleI18n: true,
-          count: activeRows.length
-            ? adminTr(activeRows.length + (activeRows.length === 1 ? " active scope" : " active scopes"))
-            : "",
+          count: plural(activeRows.length, "active scope"),
+
           actions: [sortControl],
         });
         const activityTime = (s) => (scopeSort === "human" ? s.lastConversationActivity || 0 : s.lastActivity || 0);
@@ -21999,7 +24065,7 @@
           (s) => selectScope(s.scopeId),
           rows.length ? "No conversations yet." : "No scopes yet. Nobody has talked to the agent.",
         );
-        root.appendChild(bareDataCard(t));
+        root.appendChild(dataCard("Conversations by person or channel", "", t));
         if (quietRows.length) {
           const quiet = document.createElement("details");
           quiet.className = "history-quiet";
@@ -22975,15 +25041,9 @@
       function slackUnescape(s) {
         return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
       }
-      function slackHashHue(s) {
-        let h = 0;
-        for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-        return h % 360;
-      }
       function slackAvatar(m) {
         const av = document.createElement("span");
         av.className = "sm-avatar";
-        av.style.background = "hsl(" + slackHashHue(m.authorId || m.authorName || "?") + " 52% 42%)";
         av.textContent = (slackAuthorLabel(m).trim()[0] || "?").toUpperCase();
         return av;
       }
@@ -23023,7 +25083,7 @@
 
       function slackAppendMrkdwn(raw, parent) {
         const text = slackUnescape(raw);
-        const re = /\*([^*\n]+)\*|(?<!\w)_([^_\n]+)_(?!\w)|~([^~\n]+)~/g;
+        const re = /\*([^*\n]+)\*|(?<!\w)_([^_\n]+)_(?!\w)|~([^~\n]+)~|(https?:\/\/[^\s<>]+)/g;
         let last = 0,
           m;
         while ((m = re.exec(text))) {
@@ -23035,9 +25095,18 @@
           } else if (m[2] != null) {
             el = document.createElement("em");
             el.textContent = m[2];
-          } else {
+          } else if (m[3] != null) {
             el = document.createElement("s");
             el.textContent = m[3];
+          } else {
+            let url = m[4].replace(/[.,;!?]+$/, "");
+            while (url.endsWith(")") && (url.match(/\)/g) || []).length > (url.match(/\(/g) || []).length)
+              url = url.slice(0, -1);
+            el = slackEntityNode(url);
+            parent.appendChild(el);
+            parent.appendChild(document.createTextNode(m[4].slice(url.length)));
+            last = re.lastIndex;
+            continue;
           }
           parent.appendChild(el);
           last = re.lastIndex;
@@ -23075,7 +25144,21 @@
             pre.appendChild(code);
             frag.appendChild(pre);
           } else {
-            slackParseInline(part, frag, mentions);
+            let quote = null;
+            part.split("\n").forEach((line, lineIndex) => {
+              const quoted = /^(?:>|&gt;) ?/.test(line);
+              if (quoted) {
+                if (!quote) {
+                  quote = document.createElement("blockquote");
+                  frag.appendChild(quote);
+                } else quote.appendChild(document.createTextNode("\n"));
+                slackParseInline(line.replace(/^(?:>|&gt;) ?/, ""), quote, mentions);
+              } else {
+                if (lineIndex && !quote) frag.appendChild(document.createTextNode("\n"));
+                quote = null;
+                slackParseInline(line, frag, mentions);
+              }
+            });
           }
         });
         return frag;
@@ -23146,6 +25229,7 @@
             t.className = "sm-tag";
             t.textContent = adminTr("↳ thread");
             t.title = adminTr("Reply in the thread rooted at " + m.sub);
+
             head.appendChild(t);
           }
           if (opts.containerLabel) {
@@ -23156,7 +25240,10 @@
           }
           const when = document.createElement("span");
           when.className = "sm-when";
-          when.textContent = relTime(m.createdAt);
+          when.textContent =
+            view === "slack" && !opts.onOpen
+              ? new Date(m.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+              : relTime(m.createdAt);
           when.title = fmtTime(m.createdAt) + " · ts " + m.ts;
           head.appendChild(when);
           body.appendChild(head);
@@ -23243,7 +25330,11 @@
           pageShell({
             title: "Slack",
             titleI18n: true,
-            count: slackContainersTruncated ? containers.length.toLocaleString() + "+" : containers.length,
+            count:
+              (slackContainersTruncated ? containers.length.toLocaleString() + "+" : containers.length) +
+              " " +
+              adminTr("conversations"),
+
             search: slackSearchBox(null),
           });
           root.appendChild(
@@ -23257,6 +25348,7 @@
                   preview: adminTr(
                     `${Number(c.messageCount).toLocaleString(adminLocaleCode())} mirrored · ${(c.members || []).length} members`,
                   ),
+
                   time: relTime(c.updatedAt),
                   href: stateToUrl({ view: "slack", container: c.container }),
                 };
@@ -23288,6 +25380,15 @@
               : []),
           ],
         });
+        const bar = $("shellbar");
+        const toolbar = document.createElement("div");
+        toolbar.className = "sm-toolbar";
+        toolbar.append(bar.querySelector(".back"), ...bar.querySelectorAll(".link"));
+        const heading = document.createElement("div");
+        heading.className = "sm-channel-heading";
+        heading.append(bar.querySelector(".shell-title"), bar.querySelector(".shell-context"));
+        bar.querySelector(".shell-spacer")?.remove();
+        bar.prepend(toolbar, heading);
         const loading = document.createElement("div");
         loading.className = "loadingline";
         loading.textContent = adminTr("Loading messages...");
@@ -23317,16 +25418,14 @@
         const stateNow = urlToState();
         if (view !== "slack" || stateNow.container !== container) return;
         root.textContent = "";
-        const rawFeed = document.createElement("div");
-        rawFeed.className = "sm-rawfeed";
         const rawLink = document.createElement("a");
         rawLink.href = "/api/slack-mirror/messages?container=" + encodeURIComponent(container);
         rawLink.target = "_blank";
         rawLink.rel = "noopener";
-        rawLink.textContent = adminTr("Raw feed ↗");
-        rawLink.title = adminTr("Open the raw mirrored JSON rows for this container in a new tab");
-        rawFeed.appendChild(rawLink);
-        root.appendChild(rawFeed);
+        rawLink.textContent = "Raw feed ↗";
+        rawLink.title = "Open the raw mirrored JSON rows for this container in a new tab";
+        $("shellbar").querySelector(".sm-toolbar").appendChild(rawLink);
+
         const stream = document.createElement("div");
         stream.className = "sm-stream";
         const dayOf = (m) => new Date(m.createdAt).toDateString();
@@ -23525,8 +25624,10 @@
           prev.className = "badges";
           prev.appendChild(judgmentBadge(j.decision));
           const txt = document.createElement("span");
-          txt.className = "pill";
-          txt.textContent = j.reason || (j.decision === "fastlane" ? adminTr("@mention — routed past the judge") : "—");
+          txt.className = "pill judgment-reason";
+          txt.textContent =
+            j.reason || (j.decision === "fastlane" ? adminTr("@mention — routed past the judge") : adminTr("None"));
+
           prev.appendChild(txt);
           if (j.latencyMs != null) {
             const l = document.createElement("span");
@@ -25078,6 +27179,7 @@
         let scopeWrap = null;
         if (index) {
           scopeWrap = document.createElement("div");
+          scopeWrap.className = "file-scope-index";
           scopeWrap.appendChild(
             scopeIndexList(all, {
               latestOf: (f) => f.createdAt || 0,
@@ -25096,6 +27198,7 @@
         }
         const fileWrap = document.createElement("div");
         fileWrap.append(list, ...(searchWrap ? [searchWrap] : []), noMatch);
+        const uploadBox = fileUploadBox();
         wireScopeSearch({
           key: "files",
           indexWrap: scopeWrap,
@@ -25117,10 +27220,10 @@
             title: index ? VIEW_TITLE.files : shortName(scope),
             titleI18n: index,
             count: files.length ? plural(files.length, "file") + (capped ? adminTr(", newest shown") : "") : "",
+            actions: [uploadBox],
           },
           placeholder: index ? "Search all files…" : "Search files…",
         });
-        root.appendChild(fileUploadBox());
         const card = bareDataCard(fileWrap);
         if (scopeWrap) card.querySelector(".body").prepend(scopeWrap);
         root.appendChild(card);

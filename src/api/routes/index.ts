@@ -1,3 +1,6 @@
+import { deploymentLiveSmokeRoutes } from "./deployment-live-smoke.ts";
+import { backgroundWorkRoutes } from "./background-work.ts";
+import { composioRoutes } from "./composio.ts";
 import { sendJson } from "../http.ts";
 import { type ApiCtx, type BaseCtx, type Route } from "./route.ts";
 import { connectorRawRoutes, connectorRoutes } from "./connectors.ts";
@@ -6,6 +9,7 @@ import { blobRoutes } from "./blobs.ts";
 import { sessionStateRawRoutes } from "./session-state.ts";
 import { loopItemEventsRawRoutes } from "./loop-item-events.ts";
 import { webhookRawRoutes, webhookRoutes } from "./webhooks.ts";
+import { runEventRoutes } from "./run-events.ts";
 import { turnRoutes } from "./turns.ts";
 import { credentialRoutes } from "./credentials.ts";
 import { brokerGitHttp, GIT_HTTP_BROKER_PREFIX } from "../git-http-broker.ts";
@@ -34,6 +38,7 @@ import { organizationRoutes } from "./organization.ts";
 import { loopItemRoutes } from "./loop-items.ts";
 import { searchRoutes } from "./search.ts";
 import { userModelAuthRoutes } from "./user-model-auth.ts";
+import { swarmRoutes } from "./swarms.ts";
 
 export const rawRoutes: ReadonlyArray<Route<BaseCtx>> = [
   { method: "GET", path: "/healthz", auth: "public", handle: ({ res }) => sendJson(res, 200, { ok: true }) },
@@ -53,13 +58,18 @@ export const rawRoutes: ReadonlyArray<Route<BaseCtx>> = [
 ];
 
 export const apiRoutes: ReadonlyArray<Route<ApiCtx>> = [
+  ...swarmRoutes,
   ...searchRoutes,
   ...deploymentLayerRoutes,
+  ...backgroundWorkRoutes,
+  ...deploymentLiveSmokeRoutes,
   ...turnRoutes,
+  ...runEventRoutes,
   ...credentialRoutes,
   ...keychainRoutes,
   ...secretDropRoutes,
   ...connectorRoutes,
+  ...composioRoutes,
   ...adminRoutes,
   ...skillPackRoutes,
   ...surfaceRoutes,

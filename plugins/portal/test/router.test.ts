@@ -168,7 +168,11 @@ const upstream = createServer((req: IncomingMessage, res) => {
         });
     });
   }
-  if (req.url?.startsWith("/v1/deployment-layer")) {
+  if (
+    req.url?.startsWith("/v1/deployment-layer") ||
+    req.url?.startsWith("/v1/background-work") ||
+    req.url?.startsWith("/v1/deployment/live-session")
+  ) {
     deploymentLayerRequests++;
     if (req.headers["x-timestamp"] !== "123" || req.headers["x-signature"] !== VALID_SOURCE_SIGNATURE) {
       res.writeHead(401, { "content-type": "application/json" });
@@ -1084,4 +1088,48 @@ test("impersonate: the minted identity targets the impersonated user with the ta
     method: "POST",
     headers: { cookie: `${sessionCookie("U-admin")}; ${impCookie}`, origin: PUBLIC },
   });
+});
+
+test("background ownership forwards both credentials only on its exact control routes", async () => {
+  for (const [method, path] of [
+    ["GET", "/v1/background-work"],
+    ["POST", "/v1/background-work"],
+    ["POST", "/v1/deployment/live-session"],
+  ]) {
+    const response = await fetch(`${base}${path}`, {
+      method,
+      headers: {
+        "x-timestamp": "123",
+        "x-signature": VALID_SOURCE_SIGNATURE,
+        authorization: "Bearer deployment-only-secret",
+        "x-as-principal": "must-not-cross",
+        cookie: "portal_session=must-not-cross",
+        ...(method === "POST" ? { "content-type": "application/json" } : {}),
+      },
+      ...(method === "POST" ? { body: '{"expectedGeneration":0}' } : {}),
+    });
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { headers: Record<string, string>; body: string };
+    assert.equal(payload.headers.authorization, "Bearer deployment-only-secret");
+    assert.equal(payload.headers["x-signature"], VALID_SOURCE_SIGNATURE);
+    assert.equal(payload.headers.cookie, undefined);
+    assert.equal(payload.headers["x-as-principal"], undefined);
+    if (method === "POST") assert.equal(payload.body, '{"expectedGeneration":0}');
+  }
+  for (const [method, path] of [
+    ["PUT", "/v1/background-work"],
+    ["GET", "/v1/background-work/nearby"],
+    ["GET", "/v1/deployment/live-session"],
+    ["POST", "/v1/deployment/live-session/nearby"],
+  ]) {
+    const response = await fetch(`${base}${path}`, {
+      method,
+      headers: {
+        authorization: "Bearer deployment-only-secret",
+        "x-timestamp": "123",
+        "x-signature": VALID_SOURCE_SIGNATURE,
+      },
+    });
+    assert.equal(response.status, 404);
+  }
 });

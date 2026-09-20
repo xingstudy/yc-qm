@@ -1,5 +1,6 @@
 import { NonRetryableTurnError } from "../core/turn-error.ts";
 import { resolveRuntimeChoiceDurable } from "../harness/harness-router.ts";
+import { gatewayModelCatalog } from "../model/gateway-models.ts";
 import type { ServerDeps } from "./deps.ts";
 import type { ScopeId } from "../types.ts";
 import { orgScope } from "./routes/shared.ts";
@@ -16,6 +17,7 @@ import {
   modelUnavailableReason,
   thinkingLevelsForHarness,
   harnessSupportsFastMode,
+  codexProviderModelId,
   type HarnessId,
 } from "../model/pi-models.ts";
 import { builtInModelCatalog, selectableCatalogForHarness, selectableModelCatalog } from "../model/model-catalog.ts";
@@ -35,13 +37,20 @@ export type RuntimeDeps = Pick<
 
 export function runtimeFallback(ctx: { deps: RuntimeDeps }): { harnessId: HarnessId; modelId: string } {
   const harnessId = isHarnessId(ctx.deps.harnessId) ? ctx.deps.harnessId : "pi";
-  return { harnessId, modelId: ctx.deps.baseModelDefault ?? defaultModelForHarness(harnessId) };
+  const gatewayIds = gatewayModelCatalog(true).map((model) => model.id);
+  const providers =
+    gatewayIds.length && ctx.deps.providerKeys
+      ? { ...ctx.deps.providerKeys, modelIds: new Set(gatewayIds) }
+      : undefined;
+  return { harnessId, modelId: ctx.deps.baseModelDefault ?? defaultModelForHarness(harnessId, undefined, providers) };
 }
 
 export async function runtimeConfigBody(ctx: { deps: RuntimeDeps }, scope: ScopeId, principalId?: string) {
   await ctx.deps.refreshModels?.();
   await ctx.deps.refreshCustomProviders?.();
   const config = ctx.deps.config!;
+  const configuredKeys = ctx.deps.providerKeys ?? ALL_PROVIDERS_AVAILABLE;
+  const managedKeys = ctx.deps.modelCredentials ? await ctx.deps.modelCredentials.availability() : configuredKeys;
   const fallback = runtimeFallback(ctx);
   const org = orgScope(ctx.deps);
   const approvedHarnesses = (
@@ -53,8 +62,6 @@ export async function runtimeConfigBody(ctx: { deps: RuntimeDeps }, scope: Scope
     (modelSupportedByHarness(fallback.modelId, fallback.harnessId) || modelUnavailableReason(fallback.modelId))
       ? fallback
       : { harnessId: firstApproved, modelId: defaultModelForHarness(firstApproved, fallback.modelId) };
-  const configuredKeys = ctx.deps.providerKeys ?? ALL_PROVIDERS_AVAILABLE;
-  const managedKeys = ctx.deps.modelCredentials ? await ctx.deps.modelCredentials.availability() : configuredKeys;
   const providersFor = (harnessId: string) => modelProviderAvailabilityFor(harnessId, configuredKeys, managedKeys);
   const catalog =
     ctx.deps.modelCredentials && managedKeys.openrouter
@@ -224,7 +231,7 @@ export async function webuiModelEnabled(
   scope: ScopeId = orgScope(ctx.deps),
   principalId?: string,
 ): Promise<boolean> {
-  modelId = modelId.replace(/^codex\//, "");
+  modelId = codexProviderModelId(modelId);
   const config = ctx.deps.config!;
   const picker = await config.getWebuiModelsDurable(scope, principalId);
   const scoped = await config.getScopedWebuiModelsDurable(scope, principalId);

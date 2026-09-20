@@ -20,12 +20,16 @@ primary_region = "sjc"
   FLY_ORG = "personal"
   FLY_DEPLOY_APP_PREFIX = "qm-d"
   SANDBOX_BACKEND = "sprites"
+  SECURITY_SCREEN_BACKEND = "off"
 [deploy]
   strategy = "bluegreen"
 
+[[restart]]
+  policy = "always"
+
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "2gb"
+  size = "performance-2x"
+  memory = "4gb"
 
 kill_signal = "SIGTERM"
 kill_timeout = "300s"

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import vm from "node:vm";
 
 const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 
@@ -33,6 +34,7 @@ test("admin shell uses the QM identity with org-injectable branding", () => {
   assert.match(html, /<title>QM Admin<\/title>/);
   assert.match(html, /<meta name="brand-self-label" content="Agent" \/>/);
   assert.match(html, /<div class="brand">\s*<span id="brand-product">Agent<\/span>&nbsp;Admin /);
+
   assert.doesNotMatch(html, new RegExp(["Work", "Claw"].join(" "), "i"));
   assert.doesNotMatch(html, new RegExp(["Quarter", "master"].join(""), "i"));
 });
@@ -55,6 +57,23 @@ test("admin navigation retains organization management alongside runtime, creden
   ])
     assert.ok(section.includes(`"${view}"`), view);
   assert.match(html, /MANAGER_VIEWS\.has\(v\)/);
+});
+
+test("admin shell groups control, logs, and artifacts like the reorganization", () => {
+  const sections = html.match(/const SECTIONS = (\[[\s\S]*?\n {6}\]);/)?.[1];
+  assert.ok(sections);
+  const actual = JSON.parse(JSON.stringify(vm.runInNewContext(sections)));
+  assert.deepEqual(actual, [
+    { views: ["governance", "models", "credentials", "connectors", "customize", "users"] },
+    { label: "Logs", views: ["history", "slack", "judgments", "errors", "audit", "egress"] },
+    { label: "Artifacts", views: ["files", "skills", "memory", "deployments", "crons"] },
+    { views: ["design-system"] },
+  ]);
+  assert.match(html, /history: "Sessions"/);
+  assert.match(
+    html,
+    /const VIEWS = \[\.\.\.SECTIONS\.flatMap\(\(s\) => s\.views\), "onboarding", "user", "ackemoji", "keychain"\];/,
+  );
 });
 
 test("deployment management is presented as Apps", () => {
@@ -82,7 +101,7 @@ test("connector setup uses the live catalog and shows exact provider and callbac
   assert.doesNotMatch(html, /const CONNECTOR_CATALOG = \[/);
   assert.match(html, /id="slack-bot-token"/);
   assert.match(html, /api\("PUT", "\/api\/slack-installation"/);
-  assert.match(html, /encrypted in durable storage/);
+  assert.match(html, /Use your own Slack app/);
 });
 
 test("MCP server management is available as an admin view and keeps credentials write-only", () => {
@@ -101,7 +120,7 @@ test("temporary onboarding covers model credentials, Slack, and OAuth setup", ()
   assert.match(html, /view-onboarding/);
   assert.match(html, /Model provider/);
   assert.match(html, /OpenRouter/);
-  assert.match(html, /onboardingRequest\("GET", "\/api\/model-providers"\)/);
+  assert.match(html, /onboardingRequest\("GET", "\/api\/model-providers\?catalog=cached"\)/);
   assert.match(html, /onboardingRequest\(\s*"PUT",\s*"\/api\/model-providers\/" \+ encodeURIComponent\(provider\)/);
   assert.match(html, /models\.data\.models/);
   assert.doesNotMatch(html, /const ONBOARDING_MODELS/);
@@ -113,7 +132,10 @@ test("temporary onboarding covers model credentials, Slack, and OAuth setup", ()
 test("admin shell addresses views by path, not a ?view= query param", () => {
   assert.match(html, /const path = API_BASE \+ "\/" \+ encodeURIComponent\(st\.view \|\| DEFAULT_VIEW\);/);
   assert.doesNotMatch(html, /p\.set\("view", st\.view\)/);
-  assert.match(html, /const raw = p\.get\("view"\) \|\| fromPath;/);
+  assert.match(
+    html,
+    /const raw = p\.get\("setup"\) === "slack" \|\| slackStep \? "connectors" : p\.get\("view"\) \|\| fromPath;/,
+  );
   assert.doesNotMatch(html, /st\.view !== "governance"/);
 });
 
@@ -235,7 +257,7 @@ test("control-plane pages use the shared web UI canvas without redundant page in
   assert.match(html, /id="slack-token-editor"/);
   assert.match(html, /id="soul-preview"/);
   assert.match(html, /body\[data-subview="connectors"\] \.shellbar/);
-  assert.match(html, /connectorTip\.className = "connector-dm-tip hidden"/);
+  assert.match(html, /connectorTip\.className = "connector-dm-tip admin-notice hidden"/);
   assert.doesNotMatch(html.split("<script>")[0], /First match wins/);
   assert.doesNotMatch(html.split("<script>")[0], /direct mutations blocked/);
   assert.doesNotMatch(html.split("<script>")[0], /The org setting is a minimum/);
@@ -247,7 +269,6 @@ test("governance renders simple settings as compact rows with contextual actions
     "card-security-posture",
     "card-sharing-posture",
     "card-external-slack",
-    "card-base-model",
     "card-people-directory",
     "card-turn-wall-clock",
   ]) {
@@ -318,7 +339,10 @@ test("governance keeps effective-state summaries synchronized after focused save
 
 test("stale governance reads cannot overwrite a newer scope", () => {
   assert.match(html, /const requestId = \+\+governanceReq/);
-  assert.match(html, /if \(requestId !== governanceReq \|\| requestedScope !== scope\) return;/);
+  assert.match(
+    html,
+    /if \(requestId !== governanceReq \|\| requestedScope !== scope \|\| requestedView !== view\) return;/,
+  );
   assert.match(html, /encodeURIComponent\(requestedScope\) \+ "\/" \+ key/);
 });
 
@@ -416,7 +440,7 @@ test("governance SOUL workbench shows draft diff, history, and conflict-safe res
 });
 
 test("the hidden utility hides an element whose component rule is declared later", () => {
-  assert.match(html, /<aside class="environment-notice hidden" id="environment-notice"/);
+  assert.match(html, /<aside class="environment-notice admin-notice hidden" id="environment-notice"/);
   assert.match(html, /notice\.classList\.toggle\("hidden", !attachment\)/);
   assert.equal(resolvedDisplay(["environment-notice"]), "flex");
   assert.equal(resolvedDisplay(["environment-notice", "hidden"]), "none");
@@ -458,7 +482,7 @@ test("admin parity views expose the requested card groups and real navigation ac
     "+ Add flag",
     "View usage ›",
     "View users ›",
-    "Rotate tokens…",
+    "Use your own Slack app",
     "+ Add OAuth app",
   ]) {
     assert.ok(html.includes(action), `missing ${action}`);
@@ -467,7 +491,7 @@ test("admin parity views expose the requested card groups and real navigation ac
   assert.match(html, /id="model-custom-provider-rows"/);
   assert.match(html, /provider\.models\.length/);
   assert.match(html, /function renderBuiltInConnectors\(\)/);
-  assert.match(html, /function loadPersonalKeychainSummary\(\)/);
+  assert.match(html, /function loadPersonalKeychainSummary\(requestId, requestedScope\)/);
   assert.doesNotMatch(html, /Enabled harnesses/);
   assert.doesNotMatch(html, /id="card-browsing"/);
   assert.doesNotMatch(html, /\$\("feature-flag-enable"\)\.disabled = true/);
@@ -492,6 +516,7 @@ test("custom providers share one in-place editor instead of linking to onboardin
   assert.match(html, /\$\("onboarding-add-custom-provider"\)\.onclick = \(\) => openCustomProviderEditor\(\)/);
   assert.match(html, /edit\.onclick = \(\) => openCustomProviderEditor\(provider\)/);
   assert.match(html, /<option value="openai-responses">OpenAI Responses \(Pi \/ OpenCode \/ Codex\)<\/option>/);
+
   assert.match(html, /CUSTOM_PROVIDER_PROTOCOL_LABELS\[provider\.protocol\] \|\| provider\.protocol/);
   assert.match(html, /\$\("custom-provider-protocol"\)\.value = provider\?\.protocol \|\| "openai"/);
   assert.match(html, /actions\.append\(edit, customProviderRemoveButton\(provider\)\)/);
@@ -532,7 +557,7 @@ test("governance follows the neutral web UI interaction palette", () => {
   assert.match(html, /\.viewlink \{[\s\S]*?color: var\(--muted\)/);
   assert.match(
     html,
-    /\.posture-choice:has\(input:checked\) \{\s*border-color: var\(--border\);\s*background: var\(--subtle\)/,
+    /\.posture-choice:has\(input:checked\) \{\s*border-color: transparent;\s*background: color-mix\(in srgb, var\(--text\) 4%, transparent\)/,
   );
 });
 
