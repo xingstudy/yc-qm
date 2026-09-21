@@ -483,13 +483,131 @@ test("sandbox advertises available management actions and retires migrate", asyn
   const execute = createAgentTools(ref).find((t) => t.name === "execute")!;
   assert.equal("computer" in (execute.parameters as { properties: object }).properties, false);
   assert.equal("to" in (execute.parameters as { properties: object }).properties, false);
-  const disabled = createAgentTools(ref).find((t) => t.name === "sandbox")!;
+  const legacy = createAgentTools(ref);
+  const disabled = legacy.find((t) => t.name === "sandbox")!;
   assert.deepEqual((disabled.parameters as { properties: { action: { enum: string[] } } }).properties.action.enum, [
     "status",
     "restart",
   ]);
+  for (const name of ["execute", "background", "sandbox"]) {
+    const tool = legacy.find((candidate) => candidate.name === name)!;
+    assert.equal("sandbox_id" in (tool.parameters as { properties: object }).properties, false);
+  }
+  assert.equal("sandbox_id" in properties, true);
   assert.match(textOut(await call(sandbox, { action: "migrate", purpose: "p" })), /unsupported sandbox action/);
   await assert.rejects(() => call(execute, { command: "", computer: "migrate" }), /migrate has been retired/);
+});
+
+test("legacy sandbox tools reject stale explicit targets without dispatching and persist guidance", async () => {
+  const entries: Emitted[] = [];
+  const calls: string[] = [];
+  const tc: ToolContext = {
+    ...fakeToolContext(),
+    async execute() {
+      calls.push("execute");
+      return { stdout: "", stderr: "", code: 0, timedOut: false };
+    },
+    async backgroundStart(command) {
+      calls.push("background");
+      return {
+        processId: "bg-1",
+        output: command,
+        cursor: 0,
+        status: { state: "running" },
+        reattached: false,
+      };
+    },
+    async computerStatus() {
+      calls.push("status");
+      return { machine: "healthy", guestResponsive: true };
+    },
+  };
+  const tools = createAgentTools({
+    current: tc,
+    scopeLabel: "personal:U1",
+    emit: (entry) => {
+      entries.push(entry as Emitted);
+    },
+  });
+  const cases = [
+    ["execute", { command: "pwd", sandbox_id: "core", purpose: "Inspect files" }],
+    ["background", { action: "start", command: "npm test", sandbox_id: "default" }],
+    ["sandbox", { action: "status", sandbox_id: "local", purpose: "Check health" }],
+  ] as const;
+  for (const [name, params] of cases) {
+    const result = await call(
+      tools.find((candidate) => candidate.name === name),
+      params,
+    );
+    assert.match(textOut(result), /Retry without `sandbox_id`/);
+  }
+  assert.deepEqual(calls, []);
+  const results = entries.filter((entry) => entry.type === "tool_result");
+  assert.equal(results.length, 3);
+  assert.ok(results.every((entry) => entry.payload.isError === true));
+  assert.ok(results.every((entry) => entry.payload.error === "sandbox_id_unavailable"));
+});
+
+test("sandbox execution failures are durable tool results instead of transient throws", async () => {
+  for (const [name, params, options] of [
+    ["execute", { command: "pwd", purpose: "Inspect files" }, {}],
+    ["background", { action: "start", command: "npm test" }, {}],
+    [
+      "sandbox",
+      { action: "exec", command: "pwd", sandbox_id: "missing", purpose: "Inspect files" },
+      { sandboxResources: true },
+    ],
+  ] as const) {
+    const entries: Emitted[] = [];
+    const tc = fakeToolContext();
+    tc.execute = tc.backgroundStart = async () => {
+      throw new Error("sandbox not found: missing");
+    };
+    const tool = createAgentTools(
+      {
+        current: tc,
+        scopeLabel: "personal:U1",
+        emit: (entry) => {
+          entries.push(entry as Emitted);
+        },
+      },
+      options,
+    ).find((candidate) => candidate.name === name);
+    assert.match(textOut(await call(tool, params)), /sandbox not found: missing/);
+    assert.deepEqual(
+      entries.map((entry) => entry.type),
+      ["tool_call", "tool_result"],
+    );
+    assert.equal(entries[1]!.payload.isError, true);
+    assert.match(String(entries[1]!.payload.result), /sandbox not found: missing/);
+  }
+});
+
+test("execute cancellation remains transient and cannot record a late tool result", async () => {
+  const controller = new AbortController();
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const entries: Emitted[] = [];
+  const tc = fakeToolContext();
+  tc.execute = async (_command, options) => {
+    started.resolve();
+    await release.promise;
+    options?.signal?.throwIfAborted();
+    return { stdout: "late", stderr: "", code: 0, timedOut: false };
+  };
+  const execute = createAgentTools({
+    current: tc,
+    abortSignal: controller.signal,
+    emit: (entry) => {
+      entries.push(entry as Emitted);
+    },
+  }).find((tool) => tool.name === "execute");
+  const result = call(execute, { command: "pwd", purpose: "Inspect files" });
+  await started.promise;
+  controller.abort();
+  release.resolve();
+  await assert.rejects(result, { name: "AbortError" });
+  assert.equal(entries.filter((entry) => entry.type === "tool_result").length, 0);
 });
 
 test("sandbox creation and default routing remain independent", async () => {

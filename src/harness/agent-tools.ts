@@ -614,15 +614,20 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     "If commands hang or fail with transport errors that nothing you ran explains, the computer itself may be " +
     "wedged — use sandbox action=status to inspect it out-of-band and action=restart to recover it.";
 
+  const explicitSandboxTargetParams = opts?.sandboxResources
+    ? {
+        sandbox_id: Type.Optional(
+          Type.String({
+            minLength: 1,
+            description:
+              "Exact sandbox ID. Omit only when this scope has a stored default; otherwise select a target with sandbox list/create.",
+          }),
+        ),
+      }
+    : {};
   const executeBaseParams = {
     command: Type.String({ description: "The shell command to run." }),
-    sandbox_id: Type.Optional(
-      Type.String({
-        minLength: 1,
-        description:
-          "Exact sandbox ID. Omit only when this scope has a stored default; otherwise select a target with sandbox list/create.",
-      }),
-    ),
+    ...explicitSandboxTargetParams,
     purpose: Type.String({
       description:
         "One short sentence on what this command accomplishes and why you're running it now — " +
@@ -669,6 +674,20 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     );
   };
 
+  const rejectUnavailableSandboxTarget = (callId: string, tool: string, action?: string) =>
+    recordResult(
+      callId,
+      {
+        tool,
+        ...(action ? { action } : {}),
+        error: "sandbox_id_unavailable",
+      },
+      text(
+        "[error] Named sandbox IDs are unavailable on this deployment. Retry without `sandbox_id` to use this conversation's scoped sandbox; do not guess or reuse an ID.",
+      ),
+      true,
+    );
+
   const runExecute = async (
     callId: string,
     params: {
@@ -702,6 +721,8 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       ...scopeNote,
       ...(params.sandbox_id ? { sandbox_id: params.sandbox_id } : {}),
     });
+    if (!opts?.sandboxResources && params.sandbox_id !== undefined)
+      return rejectUnavailableSandboxTarget(callId, "execute");
     try {
       if (params.sandbox_id === null) throw new Error("a command requires a sandbox ID; null only clears the default");
       const execOpts = {
@@ -749,7 +770,14 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           true,
         );
       }
-      throw e;
+      if (ref.abortSignal?.aborted) throw e;
+      const message = errMessage(e);
+      return recordResult(
+        callId,
+        { tool: "execute", error: "execution_failed", reason: message },
+        text(`[error] ${message}`),
+        true,
+      );
     }
   };
 
@@ -761,7 +789,10 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
   const SCOPED_EPHEMERAL_ERROR =
     '[error] the scoped computer is always durable today — re-run with durable:true (or omit `durable`), or use scope:"scratch" for a run that leaves no trace.';
   const FILE_SEND_GUIDANCE =
-    "The read/write/publish tools use the default sandbox; execute and background can target sandbox_id. To send a file, write it to a workspace path and name that path to whichever tool sends: the surface `post` action's `files` when you have `post` (the only way there — a file needs a thread), otherwise `attach`, which rides it out with your reply. The tool result tells you what actually went. A background job can't deliver; have it write to the workspace and attach that from a live turn. ";
+    (opts?.sandboxResources
+      ? "The read/write/publish tools use the default sandbox; execute and background can target sandbox_id. "
+      : "The read/write/publish, execute, and background tools use this conversation's scoped sandbox. ") +
+    "To send a file, write it to a workspace path and name that path to whichever tool sends: the surface `post` action's `files` when you have `post` (the only way there — a file needs a thread), otherwise `attach`, which rides it out with your reply. The tool result tells you what actually went. A background job can't deliver; have it write to the workspace and attach that from a live turn. ";
   const DURABLE_PARAM_DESC =
     "Retain working state for later turns within provider recovery limits? Scoped retains working state; scratch and owner are invocation-only. Publish durable code to git and artifacts to Files.";
 
@@ -877,7 +908,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
               ),
             }
           : {}),
-      }),
+      } as Record<string, TSchema>),
       execute: (callId, params) => runScopedExecute(callId, params as Parameters<typeof runScopedExecute>[1]),
     });
   } else if (scratchExec || ownerAuthExec) {
@@ -901,7 +932,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           ),
         ),
         durable: Type.Optional(Type.Boolean({ description: DURABLE_PARAM_DESC })),
-      }),
+      } as Record<string, TSchema>),
       execute: (callId, params) => runScopedExecute(callId, params as Parameters<typeof runScopedExecute>[1]),
     });
   } else {
@@ -909,7 +940,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       name: "execute",
       label: "execute",
       description: legacyDescription,
-      parameters: Type.Object(executeBaseParams),
+      parameters: Type.Object(executeBaseParams as Record<string, TSchema>),
       execute: (callId, params) => runExecute(callId, params as Parameters<typeof runExecute>[1]),
     });
   }
@@ -922,53 +953,67 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
   const sandboxManagement = defineTool({
     name: "sandbox",
     label: "sandbox",
-    description:
-      "Manage sandbox resources. list returns providers, supported actions, inventory, and this scope's optional default. create provisions a blank sandbox without changing the default or copying files. set_default changes routing only; pass sandbox_id:null to clear it. status reports health and recovery expiry without provisioning. restart recovers working state where supported and stops running processes. retire deletes the named sandbox after its default and jobs are cleared. Durable outputs belong in Files or git. Select an exact sandbox_id for status/restart or omit it to use the stored default.",
+    description: opts?.sandboxResources
+      ? "Manage sandbox resources. list returns providers, supported actions, inventory, and this scope's optional default. create provisions a blank sandbox without changing the default or copying files. set_default changes routing only; pass sandbox_id:null to clear it. status reports health and recovery expiry without provisioning. restart recovers working state where supported and stops running processes. retire deletes the named sandbox after its default and jobs are cleared. Durable outputs belong in Files or git. Select an exact sandbox_id for status/restart or omit it to use the stored default."
+      : "Inspect or restart this conversation's scoped sandbox. status reports health and recovery expiry without provisioning. restart recovers working state where supported and stops running processes. Named sandbox IDs are unavailable; omit sandbox_id.",
     parameters: Type.Object({
       action: Type.String({ enum: sandboxActions }),
-      sandbox_id: Type.Optional(
-        Type.Union([Type.String({ minLength: 1 }), Type.Null()], {
-          description: "Exact sandbox ID; null is allowed only for set_default.",
-        }),
-      ),
-      backend: Type.Optional(Type.String({ description: "create only: provider from list." })),
-      name: Type.Optional(Type.String({ description: "create only: human-readable name." })),
+      ...(opts?.sandboxResources
+        ? {
+            sandbox_id: Type.Optional(
+              Type.Union([Type.String({ minLength: 1 }), Type.Null()], {
+                description: "Exact sandbox ID; null is allowed only for set_default.",
+              }),
+            ),
+            backend: Type.Optional(Type.String({ description: "create only: provider from list." })),
+            name: Type.Optional(Type.String({ description: "create only: human-readable name." })),
+          }
+        : {}),
       purpose: Type.String({ description: "Briefly explain why this action is needed." }),
     }),
     async execute(callId, params) {
       const tc = ref.current;
       if (!tc) return text("[error] no active tool context");
+      const input = params as {
+        action: string;
+        sandbox_id?: string | null;
+        backend?: string;
+        name?: string;
+        purpose?: string;
+      };
       await recordCall(callId, {
         tool: "sandbox",
-        action: params.action,
-        ...(params.sandbox_id !== undefined ? { sandbox_id: params.sandbox_id } : {}),
-        ...(params.backend ? { backend: params.backend } : {}),
-        ...(params.name ? { name: params.name } : {}),
+        action: input.action,
+        ...(input.sandbox_id !== undefined ? { sandbox_id: input.sandbox_id } : {}),
+        ...(input.backend ? { backend: input.backend } : {}),
+        ...(input.name ? { name: input.name } : {}),
       });
+      if (!opts?.sandboxResources && input.sandbox_id !== undefined)
+        return rejectUnavailableSandboxTarget(callId, "sandbox", input.action);
       try {
-        if (!sandboxActions.includes(params.action)) throw new Error("unsupported sandbox action");
-        if (["list", "create", "set_default", "retire"].includes(params.action)) {
+        if (!sandboxActions.includes(input.action)) throw new Error("unsupported sandbox action");
+        if (["list", "create", "set_default", "retire"].includes(input.action)) {
           if (!tc.sandboxResources) throw new Error("sandbox inventory unavailable");
           const result = await tc.sandboxResources(
-            (params.action === "set_default" ? "default" : params.action) as "list" | "create" | "default" | "retire",
+            (input.action === "set_default" ? "default" : input.action) as "list" | "create" | "default" | "retire",
             {
-              backend: params.backend,
-              name: params.name,
-              sandboxId: params.sandbox_id,
+              backend: input.backend,
+              name: input.name,
+              sandboxId: input.sandbox_id,
             },
           );
-          return recordResult(callId, { tool: "sandbox", action: params.action }, text(JSON.stringify(result)));
+          return recordResult(callId, { tool: "sandbox", action: input.action }, text(JSON.stringify(result)));
         }
-        if (params.sandbox_id === null) throw new Error("null only clears a default");
-        if (params.action === "restart") {
-          await tc.restartComputer(params.sandbox_id);
+        if (input.sandbox_id === null) throw new Error("null only clears a default");
+        if (input.action === "restart") {
+          await tc.restartComputer(input.sandbox_id);
           return recordResult(
             callId,
             { tool: "sandbox", action: "restart", restarted: true },
             text("Computer restarting. Give it a moment to boot before running the next command."),
           );
         }
-        const s = await tc.computerStatus(params.sandbox_id);
+        const s = await tc.computerStatus(input.sandbox_id);
         const verdict = computerVerdict(s);
         const machineLine = s.listed && s.listed !== s.machine ? `${s.machine} (listed: ${s.listed})` : s.machine;
         const pressureLine = s.pressure ? `; io pressure: ${s.pressure.ioFull60}% (load ${s.pressure.load1})` : "";
@@ -1002,10 +1047,10 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           ),
         );
       } catch (e) {
-        if (e instanceof NeedsApproval) return blockOnApproval(callId, e, params.purpose, "sandbox");
+        if (e instanceof NeedsApproval) return blockOnApproval(callId, e, input.purpose, "sandbox");
         return recordResult(
           callId,
-          { tool: "sandbox", action: params.action, failed: true },
+          { tool: "sandbox", action: input.action, failed: true },
           text(`[error] ${errMessage(e)}`),
           true,
         );
@@ -1622,7 +1667,10 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       "remind your future self what to do with each wake. action=unwatch (with monitor_id from " +
       `watch) disarms it. Each job has a hard time-to-live (default ${bgTtlMin} minutes, max ${bgTtlMaxMin}) after which ` +
       "it's stopped automatically (a watch survives just long enough to tell you) — for anything " +
-      `that finishes within ${execCeilingSec}s, just use \`execute\`. Available on the default sandbox or an authorized explicit sandbox_id; ` +
+      `that finishes within ${execCeilingSec}s, just use \`execute\`. ` +
+      (opts?.sandboxResources
+        ? "Available on the default sandbox or an authorized explicit sandbox_id; "
+        : "Available on this conversation's scoped sandbox; ") +
       "elsewhere, use `execute`. A background job carries the same environment a foreground `execute` " +
       `does — $AGENT_API_URL, $AGENT_API_TOKEN and $AGENT_CREDENTIAL_TOKEN all work, so self-API calls and shared-credential broker calls run fine from background work. Two limits: those turn tokens expire ${capabilityTtlMin} minutes after the turn that launched the job started (past that they 401 — checkpoint your progress to the workspace and continue from a later turn or a cron), and a background job cannot deliver a file itself, so write results to ordinary workspace paths and attach them from a live turn after polling.\n` +
       "INTERACTIVE LOGINS: device-flow logins (`gh auth login`, " +
@@ -1698,11 +1746,15 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           { description: "stop only: default TERM; use KILL to force." },
         ),
       ),
-      sandbox_id: Type.Optional(
-        Type.String({
-          description: "start only: exact sandbox to run on; later operations use the job’s saved target.",
-        }),
-      ),
+      ...(opts?.sandboxResources
+        ? {
+            sandbox_id: Type.Optional(
+              Type.String({
+                description: "start only: exact sandbox to run on; later operations use the job’s saved target.",
+              }),
+            ),
+          }
+        : {}),
       timeout_seconds: Type.Optional(
         Type.Integer({
           minimum: 1,
@@ -1713,14 +1765,18 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     async execute(callId, params) {
       const tc = ref.current;
       if (!tc) return text("[error] no active tool context");
+      const sandboxId = (params as { sandbox_id?: unknown }).sandbox_id;
+      const explicitSandboxId = typeof sandboxId === "string" ? sandboxId : undefined;
       await recordCall(callId, {
         tool: "background",
         action: params.action,
         command: params.command,
         process_id: params.process_id,
-        ...(params.sandbox_id ? { sandbox_id: params.sandbox_id } : {}),
+        ...(explicitSandboxId ? { sandbox_id: explicitSandboxId } : {}),
         ...(params.monitor_id ? { monitor_id: params.monitor_id } : {}),
       });
+      if (!opts?.sandboxResources && sandboxId !== undefined)
+        return rejectUnavailableSandboxTarget(callId, "background", params.action);
       try {
         switch (params.action) {
           case "start": {
@@ -1733,7 +1789,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
               );
             const r = await tc.backgroundStart(params.command, {
               ...(params.timeout_seconds ? { ttlSeconds: params.timeout_seconds } : {}),
-              ...(params.sandbox_id ? { sandboxId: params.sandbox_id } : {}),
+              ...(explicitSandboxId ? { sandboxId: explicitSandboxId } : {}),
             });
             return recordResult(
               callId,
@@ -1966,7 +2022,14 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
             true,
           );
         }
-        throw e;
+        if (ref.abortSignal?.aborted) throw e;
+        const message = errMessage(e);
+        return recordResult(
+          callId,
+          { tool: "background", action: params.action, error: "operation_failed", reason: message },
+          text(`[error] ${message}`),
+          true,
+        );
       }
     },
   });
@@ -2003,22 +2066,24 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     ),
     action: Type.String({ enum: [...sandboxActions, "exec", ...Object.keys(processActions)] }),
   };
-  const actionFields: Record<string, string[]> = {
-    status: ["sandbox_id"],
-    restart: ["sandbox_id"],
-    list: [],
-    create: ["backend", "name"],
-    set_default: ["sandbox_id"],
-    retire: ["sandbox_id"],
-    exec: Object.keys(schemas(execute)),
-    start_process: ["command", "sandbox_id", "timeout_seconds"],
-    read_process: ["process_id", "since_cursor", "wait_seconds", "max_bytes"],
-    write_stdin: ["process_id", "data"],
-    signal_process: ["process_id", "signal"],
-    list_processes: [],
-    watch_process: ["process_id", "since_cursor", "pattern", "instructions"],
-    unwatch_process: ["monitor_id"],
-  };
+  const actionFields: Record<string, string[]> = opts?.sandboxResources
+    ? {
+        status: ["sandbox_id"],
+        restart: ["sandbox_id"],
+        list: [],
+        create: ["backend", "name"],
+        set_default: ["sandbox_id"],
+        retire: ["sandbox_id"],
+        exec: Object.keys(schemas(execute)),
+        start_process: ["command", "sandbox_id", "timeout_seconds"],
+        read_process: ["process_id", "since_cursor", "wait_seconds", "max_bytes"],
+        write_stdin: ["process_id", "data"],
+        signal_process: ["process_id", "signal"],
+        list_processes: [],
+        watch_process: ["process_id", "since_cursor", "pattern", "instructions"],
+        unwatch_process: ["monitor_id"],
+      }
+    : { status: [], restart: [] };
   const requiredFields: Record<string, string[]> = {
     status: ["purpose"],
     restart: ["purpose"],
