@@ -49,13 +49,15 @@ test("core deploy image includes git", () => {
 
 test("core deploy image pins a patched wireproxy release", () => {
   const dockerfile = readFileSync(join(repoRoot, "deploy/core/Dockerfile"), "utf8");
-  const version = dockerfile.match(/github\.com\/windtf\/wireproxy\/cmd\/wireproxy@v(\d+)\.(\d+)\.(\d+)/);
+  const version = dockerfile.match(/github\.com\/windtf\/wireproxy@v(\d+)\.(\d+)\.(\d+)/);
 
   assert.ok(version, "wireproxy must use a pinned release");
   const [, major, minor, patch] = version.map(Number);
   assert.ok(
     Number(major) > 1 || (Number(major) === 1 && (Number(minor) > 1 || (Number(minor) === 1 && Number(patch) >= 3))),
   );
+  assert.match(dockerfile, /golang\.org\/x\/crypto@v0\.55\.0\b/);
+  assert.match(dockerfile, /golang\.org\/x\/net@v0\.57\.0\b/);
 });
 
 test("scheduled OS refreshes cannot invalidate production payload layers", () => {
