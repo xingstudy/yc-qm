@@ -26,8 +26,9 @@ function routerAt(pathname: string, search = "", base = "/admin") {
   );
   return factory(
     base,
-    new Set(["history", "files", "memory", "live", "audit", "errors", "skills", "crons", "deployments"]),
+    new Function(`${html.match(/const SCOPED = new Set\(\[[\s\S]*?\]\);/)?.[0]}; return SCOPED;`)(),
     [
+      "connectors",
       "history",
       "files",
       "memory",
@@ -50,6 +51,7 @@ function routerAt(pathname: string, search = "", base = "/admin") {
     stateToUrl: (st: Record<string, unknown>) => string;
     urlToState: () => {
       view: string;
+      setup: string | null;
       scope: string;
       session: string | null;
       historyKind: string;
@@ -181,3 +183,69 @@ test("Errors pagination round-trips arbitrary pages without losing scope", () =>
     `/admin/errors?scope=${SCOPE_ENC}&page=37`,
   );
 });
+
+test("Slack setup links select connectors and preserve the guide through canonical routing", () => {
+  for (const pathname of ["/admin", "/admin/", "/admin/connectors"]) {
+    const { stateToUrl, urlToState } = routerAt(pathname, "?setup=slack");
+    const state = urlToState();
+    assert.equal(state.view, "connectors");
+    assert.equal(state.setup, "slack");
+    assert.equal(stateToUrl(state), "/admin/connectors?setup=slack");
+  }
+  const { stateToUrl } = routerAt("/admin/connectors", "?setup=slack");
+  assert.equal(stateToUrl({ view: "connectors" }), "/admin/connectors");
+  assert.equal(stateToUrl({ view: "files", setup: "slack" }), "/admin/files");
+});
+
+test("navigation drops retired design parameters while retaining route state", () => {
+  const { stateToUrl } = routerAt("/admin/history", "?variant=original");
+  assert.equal(
+    stateToUrl({ view: "history", scope: SCOPE, session: "sess-1", turn: 4 }),
+    "/admin/history/s/sess-1?turn=4",
+  );
+  assert.equal(stateToUrl({ view: "files", scope: SCOPE }), `/admin/files?scope=${SCOPE_ENC}`);
+});
+
+for (const base of ["", "/admin", "/control"]) {
+  test(`catalog live links use the configured base (${base || "root"})`, () => {
+    const root = { innerHTML: "" };
+    const helpers = html.slice(
+      html.indexOf("      function designSpec("),
+      html.indexOf("      let designLibraryRendered"),
+    );
+    const start = html.indexOf('        const root = $("view-design");');
+    const end = html.indexOf('        const contents = document.createElement("nav");', start);
+    assert.ok(start >= 0 && end > start);
+    new Function("$", "DESIGN_TOKENS", helpers + html.slice(start, end))(() => root, []);
+    const section = root.innerHTML.match(/<div class="design-page-links">([\s\S]*?)<\/div>/)?.[1];
+    assert.ok(section);
+    const links = [...section.matchAll(/<a data-design-view="([^"]+)">/g)].map((match) => ({
+      dataset: { designView: match[1] },
+      href: "",
+    }));
+    assert.deepEqual(
+      links.map((link) => link.dataset.designView),
+      ["governance", "skills", "files", "history", "audit", "egress"],
+    );
+    const bindStart = html.indexOf('        root.querySelectorAll(".design-page-links a")');
+    const bindEnd = html.indexOf("        });", bindStart) + "        });".length;
+    assert.ok(bindStart >= 0 && bindEnd > bindStart);
+    const { stateToUrl } = routerAt(`${base}/design-system`, "", base);
+    new Function("root", "stateToUrl", "scope", html.slice(bindStart, bindEnd))(
+      { querySelectorAll: () => links },
+      stateToUrl,
+      SCOPE,
+    );
+    assert.deepEqual(
+      links.map((link) => link.href),
+      [
+        `${base}/governance?scope=${SCOPE_ENC}`,
+        `${base}/skills?scope=${SCOPE_ENC}`,
+        `${base}/files?scope=${SCOPE_ENC}`,
+        `${base}/history/scopes/${SCOPE_ENC}`,
+        `${base}/audit?scope=${SCOPE_ENC}`,
+        `${base}/egress?scope=${SCOPE_ENC}`,
+      ],
+    );
+  });
+}

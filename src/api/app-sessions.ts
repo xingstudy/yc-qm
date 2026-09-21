@@ -1,3 +1,4 @@
+import { sessionTreeRoot, sessionTreeRunCount, SUBAGENT_TREE_RUN_CAP } from "../sessions/session-syscalls.ts";
 import type { PendingApprovalRecord } from "../types.ts";
 import { orgId as orgIdOf } from "../config.ts";
 import { parseScopeId, scopeId } from "../types.ts";
@@ -36,8 +37,7 @@ interface TranscriptWindow {
 }
 
 function tailWindowLimit(window?: TranscriptWindow): number | undefined {
-  if (window?.tailTurns === undefined || window.sinceSeq !== undefined || window.beforeSeq !== undefined)
-    return undefined;
+  if (window?.tailTurns === undefined || window.sinceSeq !== undefined) return undefined;
   return Math.min(window.tailTurns * ENTRIES_PER_TURN_ESTIMATE, TAIL_WINDOW_ENTRY_CAP);
 }
 
@@ -78,6 +78,8 @@ export function createSessionMethods(
   | "membershipControlsScope"
   | "authorizesCapabilityScope"
   | "updateSession"
+  | "detachSession"
+  | "adoptSession"
   | "regenerateTitle"
   | "spawnSession"
   | "discardSession"
@@ -106,6 +108,7 @@ export function createSessionMethods(
     syncProjectChannelRoster,
     approvalRecordIsCurrent,
     principalCanAccessCurrentScope,
+    principalCanWriteScope,
     principalGitPermission,
     principalCanManageScope,
     membershipControlsScope,
@@ -241,14 +244,18 @@ export function createSessionMethods(
     async getSession(sessionId, window) {
       const session = await deps.sessions.get(sessionId);
       if (!session) return null;
-      const limit = tailWindowLimit(window);
-      let read = await transcripts.forRender(sessionId, limit !== undefined ? { limit } : undefined);
+      let limit = tailWindowLimit(window);
+      const [initialRead, pinRecords] = await Promise.all([
+        transcripts.forRender(sessionId, { limit, beforeSeq: window?.beforeSeq }),
+        deps.sessions.listPins(sessionId),
+      ]);
+      let read = initialRead;
       let all = transcriptEntries(read.entries);
-      if (limit !== undefined && read.earlier > 0 && !coversTailWindow(all, window!.tailTurns!)) {
-        read = await transcripts.forRender(sessionId);
+      while (limit !== undefined && read.earlier > 0 && !coversTailWindow(all, window!.tailTurns!)) {
+        limit *= 2;
+        read = await transcripts.forRender(sessionId, { limit, beforeSeq: window?.beforeSeq });
         all = transcriptEntries(read.entries);
       }
-      const pinRecords = await deps.sessions.listPins(sessionId);
       const w = windowedTranscript(all, window);
       const earlier = w.earlier + read.earlier;
       const pins = await decoratedPins(pinRecords, all, (seq) => storedEntryAt(sessionId, seq));
@@ -283,18 +290,19 @@ export function createSessionMethods(
       const participantSession = await sessionForViewer(sessionId, principalId);
       const session = participantSession ?? (await cronSessionForViewer(sessionId, principalId));
       if (!session) return null;
-      const readTranscript = (limit?: number) =>
+      let limit = tailWindowLimit(window);
+      const readTranscript = (readLimit?: number) =>
         participantSession
-          ? transcripts.forViewer(sessionId, principalId, limit !== undefined ? { limit } : undefined)
-          : transcripts.forRender(sessionId, limit !== undefined ? { limit } : undefined);
-      const limit = tailWindowLimit(window);
-      let read = await readTranscript(limit);
+          ? transcripts.forViewer(sessionId, principalId, { limit: readLimit, beforeSeq: window?.beforeSeq })
+          : transcripts.forRender(sessionId, { limit: readLimit, beforeSeq: window?.beforeSeq });
+      const [initialRead, pinRecords] = await Promise.all([readTranscript(limit), deps.sessions.listPins(sessionId)]);
+      let read = initialRead;
       let visible = transcriptEntries(read.entries);
-      if (limit !== undefined && read.earlier > 0 && !coversTailWindow(visible, window!.tailTurns!)) {
-        read = await readTranscript();
+      while (limit !== undefined && read.earlier > 0 && !coversTailWindow(visible, window!.tailTurns!)) {
+        limit *= 2;
+        read = await readTranscript(limit);
         visible = transcriptEntries(read.entries);
       }
-      const pinRecords = await deps.sessions.listPins(sessionId);
       const w = windowedTranscript(visible, window);
       const earlier = w.earlier + read.earlier;
       const pins = await decoratedPins(pinRecords, visible, (seq) =>
@@ -543,7 +551,10 @@ export function createSessionMethods(
       const sandbox = deps.sandbox;
       const rec = await deps.processes.get(processId);
       if (!rec || rec.kind !== "background" || rec.sessionRef !== session.threadRef) return null;
-      const handle = await sandbox.provision([{ scopeId: rec.scopeId, mode: "rw", mountPath: "" }]);
+      const handle = await sandbox.provision(
+        [{ scopeId: rec.scopeId, mode: "rw", mountPath: "" }],
+        rec.sandboxId ? { sandboxId: rec.sandboxId } : undefined,
+      );
       try {
         const read = await sandbox.readProcess(handle, processId, { sinceCursor, maxBytes: 65_536, waitMs: 0 });
         return {
@@ -824,6 +835,56 @@ export function createSessionMethods(
       if (!(await sessionForViewer(sessionId, principalId))) return null;
       await deps.sessions.updateParticipantView(sessionId, principalId, patch);
       return sessionForViewer(sessionId, principalId);
+    },
+
+    async detachSession(sessionId, principalId) {
+      const detach = async () => {
+        const session = await sessionForViewer(sessionId, principalId);
+        if (!session?.parentSessionId || !(await principalCanWriteScope(principalId, session.scopeId))) return null;
+        await deps.sessions.setParentSession(sessionId, null);
+        return { detached: true as const };
+      };
+      return deps.advisoryLock
+        ? deps.advisoryLock.withLock("session-tree-admission", () =>
+            deps.advisoryLock!.withLock("session-run-admission", detach),
+          )
+        : detach();
+    },
+
+    async adoptSession(sessionId, parentSessionId, principalId) {
+      const adopt = async () => {
+        const child = await sessionForViewer(sessionId, principalId);
+        const parent = await sessionForViewer(parentSessionId, principalId);
+        if (!child?.spawnMeta || !parent || child.scopeId !== parent.scopeId || child.id === parent.id) return null;
+        if (parent.threadRef.startsWith("swarm:")) return null;
+        if (!(await principalCanWriteScope(principalId, child.scopeId))) return null;
+        const seen = new Set([child.id]);
+        let ancestor = parent;
+        while (true) {
+          if (seen.has(ancestor.id)) return null;
+          seen.add(ancestor.id);
+          if (!ancestor.parentSessionId) break;
+          const next = await deps.sessions.get(ancestor.parentSessionId);
+          if (!next) return null;
+          ancestor = next;
+        }
+        const root = await sessionTreeRoot(deps.sessions, parent);
+        const childRoot = await sessionTreeRoot(deps.sessions, child);
+        if (
+          root.id !== childRoot.id &&
+          (await sessionTreeRunCount(deps.sessions, deps.runs, root)) +
+            (await sessionTreeRunCount(deps.sessions, deps.runs, child)) >
+            SUBAGENT_TREE_RUN_CAP
+        )
+          return null;
+        await deps.sessions.setParentSession(child.id, parent.id);
+        return { adopted: true as const };
+      };
+      return deps.advisoryLock
+        ? deps.advisoryLock.withLock("session-tree-admission", () =>
+            deps.advisoryLock!.withLock("session-run-admission", adopt),
+          )
+        : adopt();
     },
 
     async regenerateTitle(sessionId, principalId) {

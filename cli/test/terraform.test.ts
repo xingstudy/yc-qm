@@ -350,6 +350,8 @@ test("the deploy role can run and inspect only stack-scoped deployment canaries"
 
   const inspect = policy.match(/Sid\s*= "InspectDeploymentCanaries"([\s\S]*?)\n\s*\},/)?.[1] ?? "";
   assert.match(inspect, /ecs:DescribeTasks/);
+  assert.match(inspect, /ecs:GetTaskProtection/);
+  assert.doesNotMatch(policy, /ecs:UpdateTaskProtection/);
   assert.match(inspect, /task\/\$\{var\.cluster_name\}\/\*/);
   assert.doesNotMatch(inspect, /Resource\s*= "\*"/);
 });
@@ -489,6 +491,17 @@ test("GitHub environments remain compatible with AWS scaffolds created before th
   );
 });
 
+test("AWS Terraform renders valid reserved coordinates without an unused MicroVM image", () => {
+  const selected: QmConfig = {
+    ...config,
+    env: { core: { DEPLOY_PROVIDER: "fly", SANDBOX_BACKEND: "sprites" } },
+  };
+  const rendered = terraformVars(selected, "", declared);
+  assert.match(rendered, /deploy_microvm_image\s*= "acme"/);
+  assert.doesNotMatch(rendered, /undefined/);
+  assert.deepEqual(terraformVarsDrift(selected, rendered, declared), []);
+});
+
 test("terraform derives the transfer lifecycle prefix from the same core S3 prefix as runtime", () => {
   const unprefixed = terraformVars(config, "", declared);
   assert.match(unprefixed, /transfer_lifecycle_prefix\s*= "transfer\/"/);
@@ -620,7 +633,7 @@ test("AWS module reuses account OIDC, guards account and passes configured task 
     /Sid\s*= "ManageDeploymentLayers"[\s\S]*"s3:GetObject", "s3:PutObject"[\s\S]*deployment\/layers\/\*/,
   );
   assert.match(mainTf, /Sid\s*= "InspectGithubOidcProvider"[\s\S]*iam:GetOpenIDConnectProvider/);
-  assert.match(mainTf, /"ecs:GetTaskProtection", "ecs:UpdateTaskProtection"/);
+  assert.match(mainTf, /"ecs:GetTaskProtection", "ecs:UpdateTaskProtection", "ecs:DescribeTasks"/);
   assert.match(mainTf, /task\/\$\{var\.cluster_name\}\/\*/);
   assert.match(mainTf, /"lambda:RunMicrovm"[\s\S]*"lambda:CreateMicrovmAuthToken"/);
   assert.match(mainTf, /"lambda:ListMicrovmImages"/);
@@ -753,4 +766,85 @@ test("the deploy role lists tasks only within its cluster", () => {
   const listing = mainTf.match(/Sid\s*= "ListClusterTasks"([\s\S]*?)\n\s*\},\n/)?.[1] ?? "";
   assert.match(listing, /ecs:ListTasks/);
   assert.match(listing, /"ecs:cluster" = aws_ecs_cluster\.this\.arn/);
+});
+
+test("terraform routes the app wildcard through portal when both services use the same app domain", () => {
+  for (const key of ["AWS_DEPLOY_APPS_DOMAIN", "DEPLOY_APPS_DOMAIN"]) {
+    const rendered = terraformVars(
+      {
+        ...config,
+        apiUrl: "https://api.agent.acme.example",
+        services: ["core", "portal"],
+        aws: {
+          ...config.aws!,
+          sharedAlb: true,
+          services: {
+            ...config.aws!.services,
+            portal: { ecrRepository: "qm-portal", ecsService: "acme-portal", cpu: 256, memory: 512 },
+          },
+        },
+        env: {
+          core: { [key]: "apps.agent.acme.example" },
+          portal: { PORTAL_APPS_DOMAIN: "APPS.AGENT.ACME.EXAMPLE." },
+        },
+      },
+      "",
+      declared,
+    );
+    assert.match(rendered, /core_public_hosts\s+= \[\s+"api\.agent\.acme\.example"\s+\]/);
+    assert.doesNotMatch(rendered, /\*\.apps/);
+  }
+});
+
+test("terraform rejects an app domain that differs between portal and core", () => {
+  assert.throws(
+    () =>
+      terraformVars(
+        {
+          ...config,
+          services: ["core", "portal"],
+          aws: {
+            ...config.aws!,
+            services: {
+              ...config.aws!.services,
+              portal: { ecrRepository: "qm-portal", ecsService: "acme-portal", cpu: 256, memory: 512 },
+            },
+          },
+          env: {
+            core: { DEPLOY_APPS_DOMAIN: "apps.agent.acme.example" },
+            portal: { PORTAL_APPS_DOMAIN: "other.agent.acme.example" },
+          },
+        },
+        "",
+        declared,
+      ),
+    /portal apps domain must match core/,
+  );
+});
+
+test("dedicated ALBs retain direct core app routing when portal declares the same domain", () => {
+  const rendered = terraformVars(
+    {
+      ...config,
+      apiUrl: "https://api.agent.acme.example",
+      services: ["core", "portal"],
+      aws: {
+        ...config.aws!,
+        services: {
+          ...config.aws!.services,
+          portal: { ecrRepository: "qm-portal", ecsService: "acme-portal", cpu: 256, memory: 512 },
+        },
+      },
+      env: {
+        core: { DEPLOY_APPS_DOMAIN: "apps.agent.acme.example" },
+        portal: { PORTAL_APPS_DOMAIN: "apps.agent.acme.example" },
+      },
+    },
+    "",
+    declared,
+  );
+  assert.match(
+    rendered,
+    /core_public_hosts\s+= \[\s+"\*\.apps\.agent\.acme\.example",\s+"api\.agent\.acme\.example"\s+\]/,
+  );
 });

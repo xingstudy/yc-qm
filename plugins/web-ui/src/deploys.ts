@@ -1,6 +1,7 @@
 import { nothing, render, type TemplateResult } from "lit";
+import { openDeploymentPermissions } from "./deploy-permissions";
 import { live } from "lit/directives/live.js";
-import { Archive, Check, Copy, ExternalLink, Pencil, RotateCcw, X } from "lucide";
+import { Archive, Check, Copy, ExternalLink, RotateCcw, X } from "lucide";
 import { api, withBase } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { copyText, icon, relTime } from "./ui";
@@ -36,6 +37,7 @@ import {
   type DeploymentView,
 } from "./deploy-view";
 import { tip } from "./tooltip";
+import { deepLinkPath, UI_BASE } from "./deep-link";
 
 const DEPLOY_TABS: Array<{ value: DeploymentTab; label: string }> = [
   { value: "yours", label: "Yours" },
@@ -51,6 +53,7 @@ let deployQuery = "";
 let deployTab: DeploymentTab = "yours";
 let deployPageHost: HTMLElement | null = null;
 let activeDeploy: DeploymentView | null = null;
+let visibleVersionCount = 10;
 let editingDeploy: { id: string; field: "displayName" | "name" } | null = null;
 let deployDraft = "";
 let deploySaving = false;
@@ -244,11 +247,19 @@ function drawDeploysPage(): void {
   );
 }
 
+let pendingDeployId: string | null = null;
+
+export function openDeployById(id: string): void {
+  pendingDeployId = id;
+}
+
 async function openDeploy(d: DeploymentView): Promise<void> {
+  visibleVersionCount = 10;
   editingDeploy = null;
   deployDraft = "";
   deployNotices = withoutDeploymentDetailNotice(deployNotices);
   activeDeploy = d;
+  history.replaceState(null, "", deepLinkPath(UI_BASE, "deploys", null, null, d.id));
   drawDeployDetail(d, true);
   try {
     const response = await api<{ deployment?: DeploymentView }>(`/api/deployments/${encodeURIComponent(d.id)}`);
@@ -264,7 +275,7 @@ async function openDeploy(d: DeploymentView): Promise<void> {
 
 function drawDeployDetail(d: DeploymentView, loading = false): void {
   if (appState.currentView !== "deploys" || !appState.mainEl || activeDeploy?.id !== d.id) return;
-  const host = document.createElement("div");
+  const host = appState.mainEl.querySelector<HTMLElement>(".deploy-detail-pane") ?? document.createElement("div");
   host.className = "resource-pane deploy-detail-pane";
   const versions = [...(d.versions ?? [])].sort((a, b) => b.version - a.version);
   const running = d.status === "running";
@@ -285,7 +296,6 @@ function drawDeployDetail(d: DeploymentView, loading = false): void {
           </div>
           <div class="actions">
             ${running && d.webUrl ? html`<a class="btn primary" href=${withBase(d.webUrl)} target="_blank" rel="noreferrer">Open app ${icon(ExternalLink, 14)}</a>` : nothing}
-            ${running && canManage(d) ? html`<button class="btn" type="button" @click=${(event: Event) => void openLiveEdit(d, event.currentTarget as HTMLButtonElement)}>${icon(Pencil, 14)}<span>Edit live</span></button>` : nothing}
             ${d.webUrl ? html`<button class="btn" type="button" @click=${(event: Event) => void copyText(new URL(withBase(d.webUrl!), window.location.href).href, event.currentTarget as HTMLButtonElement)}>${icon(Copy, 14)}<span>Copy URL</span></button>` : nothing}
           </div>
         </div>
@@ -320,7 +330,10 @@ function drawDeployDetail(d: DeploymentView, loading = false): void {
           </div>
           <div class="field">
             <label>Owner</label>
-            <div class="value">${ownerLabel(d)}</div>
+            <div class="value">
+              ${ownerLabel(d)}
+              ${d.ownerScopeId === `personal:${appState.me?.user}` ? html`<button class="btn" type="button" @click=${() => void openDeploymentPermissions(d.id, deploymentTitle(d), d.ownerScopeId!)}>Permissions</button>` : nothing}
+            </div>
           </div>
           ${
             d.createdBy
@@ -359,14 +372,11 @@ function drawDeployDetail(d: DeploymentView, loading = false): void {
             ? html`<section class="deploy-detail-section">
                 <h3>Settings</h3>
                 <div class="deploy-setting-row">
-                  <div>
-                    <strong>Display name</strong
-                    ><span>The human-friendly name shown here. This does not change the app URL.</span>
-                  </div>
-                  ${editingName ? deployEditForm(d, "displayName") : html`<div class="deploy-setting-value"><span dir="auto">${d.displayName || "Using URL slug"}</span><button class="btn" type="button" @click=${() => startEditDeploy(d, "displayName")}>Edit</button></div>`}
+                  <div><strong>Display name</strong><span>Shown in the app bar and app list.</span></div>
+                  ${editingName ? deployEditForm(d, "displayName") : html`<div class="deploy-setting-value"><span dir="auto">${deploymentTitle(d)}</span><button class="btn" type="button" @click=${() => startEditDeploy(d, "displayName")}>Edit</button></div>`}
                 </div>
                 <div class="deploy-setting-row">
-                  <div><strong>URL slug</strong><span>Changes the app URL. Existing links do not redirect.</span></div>
+                  <div><strong>App URL</strong><span>Changes the app URL. Existing links do not redirect.</span></div>
                   ${editingSlug ? deployEditForm(d, "name") : html`<div class="deploy-setting-value"><code>/d/${deploymentSlug(d)}/</code><button class="btn" type="button" @click=${() => startEditDeploy(d, "name")}>Change</button></div>`}
                 </div>
                 <div class="actions deploy-danger-actions">
@@ -394,7 +404,7 @@ function drawDeployDetail(d: DeploymentView, loading = false): void {
           ${
             versions.length
               ? html`<div class="deploy-version-list">
-                  ${versions.map(
+                  ${versions.slice(0, visibleVersionCount).map(
                     (version) => html`
                       <div class="deploy-version-row">
                         <div>
@@ -411,13 +421,27 @@ function drawDeployDetail(d: DeploymentView, loading = false): void {
                 </div>`
               : html`<div class="empty compact">No version history available.</div>`
           }
+          ${
+            versions.length > visibleVersionCount
+              ? html`<button
+                  class="btn"
+                  type="button"
+                  @click=${() => {
+                    visibleVersionCount += 10;
+                    drawDeployDetail(d);
+                  }}
+                >
+                  Show older versions
+                </button>`
+              : nothing
+          }
         </section>
       </div>
       ${archiveCandidate ? archiveDialog(archiveCandidate) : nothing} ${deployToast ? undoToast(deployToast) : nothing}
     `,
     host,
   );
-  appState.mainEl.replaceChildren(host);
+  if (host.parentElement !== appState.mainEl) appState.mainEl.replaceChildren(host);
 }
 
 function returnToDeploysList(): void {
@@ -425,6 +449,7 @@ function returnToDeploysList(): void {
   deployDraft = "";
   deployNotices = withoutDeploymentDetailNotice(deployNotices);
   activeDeploy = null;
+  history.replaceState(null, "", deepLinkPath(UI_BASE, "deploys", null));
   drawDeploysPage();
 }
 
@@ -721,21 +746,6 @@ function undoToast(toast: { deployment: DeploymentView; text: string; undo?: boo
   </div>`;
 }
 
-async function openLiveEdit(d: DeploymentView, button: HTMLButtonElement): Promise<void> {
-  const tab = window.open("about:blank", "_blank");
-  try {
-    const r = await api<{ url?: string }>(`/api/deployments/${encodeURIComponent(d.id)}/owner-url`);
-    if (!r.url) throw new Error("no live URL for this app");
-    if (tab) tab.location.href = r.url;
-    else window.open(r.url, "_blank");
-  } catch (error) {
-    tab?.close();
-    deployNotices = withDeploymentDetailNotice(deployNotices, d.id, errMessage(error, "Could not open live editing."));
-    drawDeployDetail(activeDeploy ?? d);
-    button.blur();
-  }
-}
-
 async function refreshDeployments(): Promise<"updated" | "failed" | "superseded"> {
   const seq = ++deployRefreshSeq;
   try {
@@ -755,6 +765,8 @@ async function refreshDeployments(): Promise<"updated" | "failed" | "superseded"
 
 export async function renderDeploys(): Promise<void> {
   if (appState.currentView !== "deploys") return;
+  const requestedId = pendingDeployId;
+  pendingDeployId = null;
   archiveCandidate = null;
   restoreArchiveFocus = false;
   setDeployBackgroundInert(false);
@@ -774,5 +786,7 @@ export async function renderDeploys(): Promise<void> {
   drawDeploysPage();
   await refreshDeployments();
   if (seq !== appState.viewRenderSeq || appState.currentView !== "deploys") return;
-  if (deploymentListRefreshCanRedraw(activeDeploy?.id)) drawDeploysPage();
+  if (requestedId) {
+    await openDeploy(deployList.find((d) => d.id === requestedId) ?? { id: requestedId });
+  } else if (deploymentListRefreshCanRedraw(activeDeploy?.id)) drawDeploysPage();
 }

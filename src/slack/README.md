@@ -245,3 +245,24 @@ your per-dev name + tokens live only in your local app and your gitignored `.env
 - Channel audience is enumerated per-member: `computeChannelAudience` (lib.ts) resolves
   the full member list (with a Slack-Connect / guest external marker, and an actor-only
   fallback when membership is unreadable) so the core's audience-floor is fine-grained.
+
+## History page size
+
+`SLACK_HISTORY_LIMIT` optionally sets the live history/replies page size and default
+`read_thread` result count for workspace-owned apps (integer 1–200). Without it,
+owned apps request 200-message pages and return up to 100 messages by default.
+Shared-app installations use 15 for both defaults regardless of this setting.
+An explicit tool count overrides the result count, but not the live page size.
+Stored mirror reads keep their existing window; shadow comparisons match the live page size.
+
+## Mirror qualification
+
+`SLACK_CONTEXT_SOURCE` controls conversation context and default Slack tool reads:
+
+- `live` (default) keeps Slack history as the source, including automatic channel thread expansion.
+- `shadow` returns the same live context while comparing stored events in the background. It logs `slack_mirror_shadow` counts for missing messages, text differences, and missing thread parents. It does not log message text or channel identifiers, backfill history, or wait for comparison before returning context. The live page is snapshotted before callers add trigger context, and shadow uses the same stored-message selection as mirror mode. Thread selection matches Slack’s first page, including its limitation that newer replies beyond that page may be absent. Channel roots use the newest page, and thread expansion truncation is tracked separately from root-page truncation. An extra stored row distinguishes exactly full pages from truncated pages; it does not prove complete Slack coverage. Counts cover raw message fields, not complete rendered context or author/subtype fidelity. At most one comparison runs per Slack client; concurrent reads are not all sampled.
+- `mirror` explicitly enables stored context and mirror search, with the documented partial coverage and bounded live fallback. Keep this opt-in until shadow evidence and development qualification are satisfactory.
+
+Ingestion continues in every mode. Shadow mismatch counts describe the sampled live window, not complete channel coverage. Compare channel and thread samples, edits/deletes, and normal agent turns before enabling mirror reads. No automatic mode promotion occurs.
+
+Slack mirror records preserve provider subtypes so stored context uses the same system-message filtering as live context. A missing stored subtype means legacy or unobserved metadata; an empty subtype means a verified ordinary message. Partial event updates preserve omitted subtype and thread metadata. Mirror-mode history fallback shares event content normalization and prefers fresh Slack duplicates; live and shadow reads never backfill their comparison source.

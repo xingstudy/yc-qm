@@ -77,13 +77,88 @@ configuration only, so it prints that timestamp as the matching data restore
 point (`aws rds restore-db-instance-to-point-in-time`);
 `aws.predeployDbSnapshot: false` opts out.
 
+AWS deployments can opt into durable background ownership with
+`aws.backgroundWorkControl: true`. Deploy protocol-capable core images to every
+participating stack before bootstrapping ownership. The CLI allocates a unique
+`BACKGROUND_DEPLOYMENT_ID` for each replacement core cohort and records it in the
+deployment manifest. A no-op deployment and automatic ECS task replacement keep
+that identity; an explicit core restart allocates a new one. Pending preparation
+is persisted before ECS changes, and an ambiguous previous deployment must be
+reconciled before another identity can be allocated.
+
+Control requests require both `CORE_SIGNING_SECRET` and a distinct
+`DEPLOYMENT_CONTROL_SECRET` of at least 32 characters. The control secret is
+restricted to core. Configuring an identity preserves the legacy background flag
+until explicit bootstrap verifies every participating task. The exported
+`awsBootstrapBackgroundWork` adapter accepts all peer configurations and an exact
+desired deployment identity, or `null` to start paused. It refuses missing cohorts
+and inconsistent durable membership.
+
+The exported `awsBackgroundWorkBootState` reads the exact manifest core task to
+return its recorded boot flag and optional deployment identity. It returns
+`undefined` only without a recorded core task, and rejects missing or ambiguous
+boot flags or identities. Deployment wrappers can preserve the boot environment
+while changing durable ownership independently.
+
+The exported `awsBackgroundWorkCapacity(config, configDir, candidatePath?)` proves
+that an inactive controlled stack is currently reusable. It requires another
+owner, fully drained current membership, stable native deployments and exact task
+inventories for every workload, resolved deployment preparation, and explicitly
+disabled protection on every current core task. It never changes task protection
+or deployment state. The deploy role needs `ecs:GetTaskProtection` on its tasks.
+The result binds the manifest and deployment identities, ownership generation,
+workload task definitions, native deployment IDs, task ARNs, and protection proof.
+`awsBackgroundWorkStatus` also returns the current manifest ID for an active-owner
+proof. A release coordinator can combine both snapshots with immutable candidate
+provenance and compare them again under its production lock before any mutation.
+This is a point-in-time check, not a reservation: intervening maintenance or task
+replacement invalidates the proof and must block promotion.
+
+Live checks use the active ownership cohort's authenticated canary endpoint to
+verify a real model reply, session persistence, generated title, error records,
+session cleanup, and database catalog health. The CLI proves the exact healthy
+task cohort and ownership generation before and after the check. It requires a
+final success bound to the request and responding task; heartbeats alone do not
+count. An uncertain result never triggers an automatic replay or fallback.
+Legacy deployments retain the Fargate canary. A controlled deployment uses that
+same path only when a successful ownership read proves bootstrap is disabled or
+another cohort owns background work.
+
+Once bootstrapped, background mode changes use generation-checked ownership
+requests without restarting ECS tasks. Activation waits for prior owners to stop
+claiming and every expected task to finish activation. Pausing stops new claims;
+in-flight turns can continue draining. Replacing or rolling back the active core
+cohort requires an explicit pause or handover and proof that every member has
+drained first. A demotion refuses to pause a different current owner. Unresponsive members are never
+assumed dead: `awsRetireBackgroundWorkMembers` requires exact instance, task ARN,
+and generation identities plus ECS evidence that each task stopped. This recovery
+is also available before bootstrap for stopped legacy members.
+
+Core secret uploads defer activation to a subsequent staged `up --restart core`.
+The generic upload path refuses changes to either control credential while a
+controlled cohort is recorded, because replacing credentials before coordinating
+all running processes would break ownership control. Legacy AWS deployments keep
+the task replacement path when ownership control is not configured.
+
+Batch operators can set `QM_DEPLOY_PROGRESS_FILE` to a new absolute file path and
+`QM_DEPLOY_PROGRESS_TOKEN` to a unique attempt identifier for candidate `up --yes`.
+After all forward service updates have been submitted, the CLI atomically creates
+a private JSON receipt with `phase: "monitoring"`, `token`, `orgId`, and `targets`
+(the selected workload-to-task-definition mapping). It then continues health
+checks, manifest recording, and rollback under the deployment lease. This receipt
+only permits the batch runner to release a submission slot; the CLI exit status
+still determines success. Use a fresh path and token for every attempt. Missing
+receipts must keep the submission slot occupied until the CLI exits.
+
 `sandbox build` is a local validation build of the sandbox layer image. At runtime
 sandboxes boot their platform's stock image; tools and skills arrive through the
 deployment-layer sync, which every ordinary `up` performs.
 
-Auto uses its built-in model classifier unless `qm.config.jsonc` declares one
-`securityScreen` proxy with a provider label, HTTPS endpoint, and `shadow` or
-`enforce` rollout. The proxy token is routed separately through
+Model screening is off by default. Set `securityScreen: { "backend": "model" }`
+to opt in, or configure a `securityScreen` proxy with a provider label, HTTPS
+endpoint, and `enforce` rollout to use an external screener without model fallback.
+The optional `shadow` rollout explicitly runs the model classifier and compares
+the proxy verdict. Route the proxy token through
 `secretEnv.core.SECURITY_SCREEN_PROXY_TOKEN`.
 
 ## Commands

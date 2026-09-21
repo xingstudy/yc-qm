@@ -28,6 +28,32 @@ import { CONTEXT_REQUEST_EXPIRY_MS } from "./app-types.ts";
 import type { AppHelpers } from "./app-helpers.ts";
 import type { AmbientHelpers } from "./app-ambient.ts";
 
+export async function cronVisibility(deps: AppDeps, h: AppHelpers, principalId: string) {
+  const viewerKeys = personKeys(await deps.directory.get(principalId).catch(() => null), principalId);
+  const viewersOwn = (id: string): boolean => viewerKeys.has(personKey(id));
+  const scopeNames = new Map<ScopeId, string | null>([[scopeId("org", orgIdOf()), null]]);
+  if (deps.identity.isInternal(deps.identity.classify(principalId))) {
+    for (const c of await deps.directory.listChannelsFor(principalId)) {
+      scopeNames.set(scopeId("channel", c.channelId), c.name);
+    }
+  }
+  for (const project of await h.projectsForViewer(principalId)) scopeNames.set(project.scopeId, project.name);
+  const allowed = (ownerScopeId: ScopeId): boolean => {
+    const { kind, ref } = parseScopeId(ownerScopeId);
+    return kind !== "group" || deps.projects?.recognizes(ref) !== true || scopeNames.has(ownerScopeId);
+  };
+  return {
+    viewersOwn,
+    scopeNames,
+    canSee: (c: Pick<import("../types.ts").Cron, "ownerScopeId" | "owner" | "members" | "destination">): boolean =>
+      allowed(c.ownerScopeId) &&
+      (viewersOwn(c.owner) ||
+        scopeNames.has(c.ownerScopeId) ||
+        c.members?.some((m) => viewersOwn(m.id)) === true ||
+        (c.destination?.type === "principal" && viewersOwn(c.destination.target))),
+  };
+}
+
 export function createMessagingMethods(
   deps: AppDeps,
   h: AppHelpers,
@@ -50,6 +76,7 @@ export function createMessagingMethods(
   | "createWebhook"
   | "getWebhook"
   | "listWebhooks"
+  | "listWebhookEvents"
   | "setWebhookEnabled"
   | "setWebhookRecipientConsent"
   | "pendingDeliveries"
@@ -94,7 +121,7 @@ export function createMessagingMethods(
   | "reachNow"
   | "resolveReachTarget"
 > {
-  const { adminBase, projectsForViewer, resolveReachTargetFor } = h;
+  const { adminBase, resolveReachTargetFor } = h;
   const { judgeAmbientContainer, ambientSelf } = ambient;
   const contextRequests = deps.contextRequests ?? createMemoryMap<SurfaceContextRequest>();
   const contextRequestListeners = new Set<(request: SurfaceContextRequest) => void>();
@@ -137,9 +164,6 @@ export function createMessagingMethods(
           throw new Error("scopeShared requires a shared (channel/group) scope, not a personal one");
         if (!input.members?.length) throw new Error("scopeShared requires a member snapshot");
       }
-      if ((await deps.crons.list()).filter((cron) => cron.owner === input.owner).length >= 100) {
-        throw new Error("cron limit reached for this owner (100)");
-      }
       const cron = await deps.crons.create(input);
       deps.auditLog.record({
         at: Date.now(),
@@ -167,29 +191,11 @@ export function createMessagingMethods(
     },
     async listCronsForViewer(principalId) {
       const all = await deps.crons.list();
-      const viewerKeys = personKeys(await deps.directory.get(principalId).catch(() => null), principalId);
-      const viewersOwn = (id: string): boolean => viewerKeys.has(personKey(id));
-      const scopeNames = new Map<ScopeId, string | null>([[scopeId("org", orgIdOf()), null]]);
-      if (deps.identity.isInternal(deps.identity.classify(principalId))) {
-        for (const c of await deps.directory.listChannelsFor(principalId)) {
-          scopeNames.set(scopeId("channel", c.channelId), c.name);
-        }
-      }
-      for (const project of await projectsForViewer(principalId)) scopeNames.set(project.scopeId, project.name);
-      const allowed = (ownerScopeId: ScopeId): boolean => {
-        const { kind, ref } = parseScopeId(ownerScopeId);
-        return kind !== "group" || deps.projects?.recognizes(ref) !== true || scopeNames.has(ownerScopeId);
-      };
-      const owned = all.filter((c) => viewersOwn(c.owner) && allowed(c.ownerScopeId));
+      const { viewersOwn, scopeNames, canSee } = await cronVisibility(deps, h, principalId);
+      const owned = all.filter((c) => viewersOwn(c.owner) && canSee(c));
       const visible = all
         .filter((c) => !viewersOwn(c.owner))
-        .filter((c) => allowed(c.ownerScopeId))
-        .filter(
-          (c) =>
-            scopeNames.has(c.ownerScopeId) ||
-            c.members?.some((m) => viewersOwn(m.id)) === true ||
-            (c.destination?.type === "principal" && viewersOwn(c.destination.target)),
-        )
+        .filter(canSee)
         .map((c) => {
           const name = scopeNames.get(c.ownerScopeId);
           return name ? { ...c, scopeName: name } : c;
@@ -278,6 +284,16 @@ export function createMessagingMethods(
     },
     getWebhook(id) {
       return deps.webhooks.get(id);
+    },
+    async listWebhookEvents(id, viewer) {
+      const events = await deps.webhooks.listEvents(id);
+      return Promise.all(
+        events.map(async (event) => {
+          const session = await deps.sessions.getByThread(`webhook:${id}:${event.deliveryId}`);
+          const visible = session && (await h.sessionForViewer(session.id, viewer));
+          return { ...event, ...(visible ? { sessionId: session.id } : {}) };
+        }),
+      );
     },
     listWebhooks() {
       return deps.webhooks.list();

@@ -1,4 +1,5 @@
 import { ModalClient, AlreadyExistsError } from "modal";
+import { resolveModalImage } from "../src/sandbox/modal-image.ts";
 
 const log = (step, ok, detail = "") => console.log(`${ok ? "PASS" : "FAIL"}  ${step}${detail ? " — " + detail : ""}`);
 const info = (step, detail) => console.log(`INFO  ${step} — ${detail}`);
@@ -8,7 +9,7 @@ const errShape = (e) => `${e?.constructor?.name ?? "?"}/${e?.name ?? "?"}: ${Str
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
 const APP = process.env.MODAL_APP_NAME ?? "qm-smoke";
-const IMAGE = process.env.MODAL_IMAGE ?? "ubuntu:24.04";
+const IMAGE = process.env.MODAL_IMAGE;
 const NAME = `qm-smoke-${Date.now().toString(36)}`;
 
 info(
@@ -23,7 +24,7 @@ let idler;
 try {
   const app = await modal.apps.fromName(APP, { createIfMissing: true });
   log("auth + app lookup (through any configured proxy)", true, `app=${APP} (${el()})`);
-  const image = modal.images.fromRegistry(IMAGE);
+  const image = await resolveModalImage(modal, IMAGE);
 
   const ct = Date.now();
   sb = await modal.sandboxes.create(app, image, { name: NAME, timeoutMs: 30 * 60_000 });

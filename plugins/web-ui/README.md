@@ -1,6 +1,6 @@
 # Web UI plugin
 
-An end-user web surface with a custom ChatGPT/Claude-style chat shell, stitched to the
+An end-user web surface with a custom chat shell, connected to the
 platform core. It still uses Pi's `Agent` state machine and selected Pi web utilities
 for markdown, attachment loading, and model metadata, but the visible conversation UI is
 owned by this plugin. Two processes:
@@ -45,6 +45,83 @@ Env (see `.env.example`): `CORE_API_URL` (default `http://localhost:8080`),
 `WEB_UI_IM_CREDENTIALS_KEY` (a dedicated high-entropy secret of at least 32 characters for IM Bot credentials;
 a 32-byte hexadecimal key is also accepted directly).
 
+## Suggested activities
+
+Suggested activity generation is **on by default** when the configured harness supports
+it. Set `SUGGESTED_ACTIVITIES_ENABLED=false` on core to disable generation. Optionally
+set `WEB_UI_SUGGESTED_ACTIVITIES` on web to a JSON array for fixed fallback starters;
+unset it as well to hide suggestions entirely. No deployment-specific activity content
+is bundled into the public application.
+
+```json
+[
+  {
+    "id": "weekly-brief",
+    "title": "Wake up to a fresh briefing",
+    "prompt": "Let's set up a recurring briefing on the topics I follow.",
+    "icon": "schedule"
+  },
+  {
+    "id": "project-app",
+    "title": "Build a home for my projects",
+    "prompt": "Let's build a private app to keep track of my projects.",
+    "icon": "app"
+  }
+]
+```
+
+The first three entries appear above the empty personal-chat composer with colored
+icons, without a heading or expansion link. Selecting an entry fills and focuses
+an editable draft; it never submits a turn. Suggestions fade and collapse while a draft
+or attachment is present and do not appear in existing chats, shared contexts,
+or compact pane views. Collapsed suggestions are inert and hidden from assistive
+technology; reduced-motion preferences disable the transition. Dark mode uses
+subdued blue-gray suggestion text. Drafts use the normal persistence path.
+
+Each entry requires a unique lowercase alphanumeric/hyphen `id` (up to 64
+characters), `title` (up to 65 characters), `prompt` (up to 1,200 characters), and
+`icon` (one emoji or `yc` for the orange YC mark; legacy `schedule`, `app`, `deck`,
+`people`, `calendar`, and `book` values also render as emoji). Configuration
+accepts up to 12 entries and 20,000 characters. Invalid configuration fails startup
+without printing its contents. Restart the web service after changing it.
+
+The authenticated `/me` response supplies the configured fallback and whether generation is enabled.
+Fixed starters are organization-wide; keep them free of personal activity or credentials.
+
+When enabled, opening a new personal chat enrolls the user in an ordinary personal
+cron named **Refresh my suggested activities**. Its first run starts immediately;
+subsequent runs happen around 2am in the browser's timezone, with the minute
+staggered by user. The cron runner uses the normal owner-scoped session, runtime
+selection, memory, history, tools, and authorized data access. It has no delivery
+destination. The standing task in `src/suggestions/activities.ts` asks it to research
+relevant context, avoid mutations or notifications, and return three validated
+activity objects. Draft prompts use a natural, collaborative voice, such as "Let's...",
+with relevant facts and uncertainties as neutral context, without attributing knowledge,
+feelings, or beliefs to the user. They preserve explicit user
+preferences and scope while leaving the approach to the responding agent. It does not
+create a separate reduced-context model call.
+
+The UI reads the latest valid result from the cron's completed personal session,
+including responses larger than the truncated fire-log preview. It displays the
+previous result while a refresh runs and briefly polls for the first/new result;
+opening another chat does not normally invoke a model. Failed initial generations
+can retry after five minutes. Existing cron queueing, run persistence, authorization,
+fire history, and failure handling apply.
+
+Cadence is reevaluated hourly. Ten or more user messages in sampled recent private
+conversations within 24 hours increases refreshes to every four hours; otherwise it
+returns to nightly. Accounts with no observed conversation activity or suggestion
+visits for 30 days are paused until activity returns. The owner can pause, delete,
+or edit the cron; custom task text and schedules are preserved. The global disable
+flag pauses managed jobs. Background work must also be enabled.
+
+Set `SUGGESTED_ACTIVITIES_CONTEXT` on core for rollout guidance (up to 8,000
+characters). For a YC rollout, describe WaaS sourcing, investor CRM, deck review,
+office hours, and Bookface advice there; optionally provide fallback starters on web.
+Guidance updates propagate to unmodified managed tasks. Public QM has no YC context
+by default. Suggestions are private to their owner; generated sessions use the
+same scoped access controls as other personal work.
+
 ## On a phone
 
 Below 860px the same build behaves like an app rather than a shrunken desktop:
@@ -81,8 +158,8 @@ the CSS media queries, the composer, and the split canvas.
   alongside the light/dark choice.
   The UI drives Pi's `Agent` with a custom `streamFn` (`src/core-bridge.ts`) instead of
   mounting Pi's stock `AgentInterface`.
-- **Slash-command skill picker** — type `/` at the start of the composer for a Codex-style
-  autofill of the **skills** available to you (B6): icon · name · description · scope, with the
+- **Slash-command skill picker** — type `/` at the start of the composer to browse the
+  **skills** available to you (B6): icon · name · description · scope, with the
   typed letters emboldened. Arrow/Tab/Enter to choose (it inserts `/<name> `), Esc/click-out to
   dismiss. The list is the signed-in principal's _visible_ skills — the same set the agent gets
   materialized into a DM turn — fetched once per session via the server's `/api/skills` proxy
@@ -180,3 +257,99 @@ the CSS media queries, the composer, and the split canvas.
 
 This is a **surface plugin**: it carries its own front-end deps (Vite, lit, pi-web-ui) and
 runs as a separate process. The zero-runtime-dep core is untouched.
+
+## Chat connection chips
+
+Chat authorization links share the connector service logos. Composio links use recognized
+service names in their Markdown labels; unknown or ambiguous names keep a generic icon.
+The destination URL and authorization behavior do not depend on the inferred logo.
+Gmail, Google Calendar, Google Drive, and Google Sheets artwork comes from
+[Simple Icons v16.0.0](https://github.com/simple-icons/simple-icons/tree/16.0.0)
+(CC0) and is bundled locally with the existing connector SVG artwork.
+
+## Cohort welcome and app picker
+
+Set `WEB_UI_WELCOME_COHORT=F26` on the web surface to show the cohort welcome in a new user's empty chat. It replaces the automatic first agent turn for that deployment; ordinary chat starts when the user sends a message. The greeting uses the signed-in display name. The welcome remains above the messages in the earliest personal web conversation, including when reopened. It is selected from persisted session creation times. The champagne and soft flutter sequence replays on refresh only before the first message and respects reduced motion.
+
+The picker reads Composio's live catalog in usage order, omits apps that need no authorization, and searches the complete paginated catalog. Known services use local logos; remaining catalog logos use Composio's logo host. Selecting an app submits to the authenticated web surface and opens the provider's authorization link directly. Consent remains on the provider page. The Slack action opens the existing administrator setup page.
+
+The core bridge accepts a verified portal identity and uses either that person's own `COMPOSIO_API_KEY` keychain entry or an enabled org service credential granted to them. Secrets never enter the browser. The agent skill reads `/v1/composio/identity` to use the same organization/person identity as the picker. A company project key retains Composio's existing project-wide access boundary; the identity selects accounts and does not isolate them from other holders of that key.
+
+### Local connection-return preview
+
+Open `http://localhost:8138/?connectionDemo=1` on the local dev instance. This loopback-only UI mode replaces app authorization with a provider simulation offering approval, cancellation, and failure. It makes a full navigation round trip with a callback URL, attempt nonce, status, and connected-account ID. The simulated verifier checks its own record rather than trusting `status=success` in the URL.
+
+Session storage retains the account-scoped attempt for twenty minutes, picker query, expanded state, scroll position, and simulated connections. Returning skips the welcome animation, verifies the simulated result, clears callback parameters, and restores the picker. Reset clears the preview's simulated connections. No provider authorization, tokens, or actual connected accounts are changed by this mode.
+
+Real authorization supplies a callback URL on the configured public origin and returns to the same conversation. A twenty-minute, user-bound session-storage attempt retains the account ID, originating widget, search, expanded state, and scroll position. The server lists only the authenticated actor’s active connected accounts; the browser verifies the expected account before showing success and removes callback parameters. Connected apps are refreshed on page load and window focus. Returning skips the welcome animation. Reply widgets become available after the reply is persisted. The loopback preview remains a separate simulation and does not connect real accounts.
+
+The welcome uses the organization's configured branding `orgName`, falling back to “your company” when it is unavailable.
+
+### Setup widgets in agent replies
+
+In web chat, an assistant reply can include `::connect-apps{}` as a standalone paragraph to render the reusable app picker. The separate `::add-to-slack{}` directive renders the Slack setup action for administrators; include both to show both. It omits the welcome and animation and uses the signed-in viewer’s authorization routes. The Composio skill teaches this response for requests to connect apps or reopen setup. Code blocks, quotations, and inline examples remain ordinary text. The directive persists in the transcript and renders again when reopened. Connected-account status retains the same limitations as the onboarding picker and local return-flow preview.
+
+## Optional product analytics
+
+Set `POSTHOG_API_KEY` to a PostHog project ingestion token to enable browser
+analytics. `POSTHOG_HOST` defaults to `https://us.i.posthog.com` and must be an
+HTTPS origin. The authenticated `/me` response supplies this public configuration;
+the portal serves the same web application, so it needs no separate SDK.
+
+Events are explicit pageviews by navigation view, accepted `message_sent` events,
+and `session_started` for the first user message in a chat. Company grouping uses
+`CORE_ORG_ID`; user identities combine company and authenticated principal. Browser
+analytics is disabled during impersonation. Autocapture, replay, exception capture,
+performance capture and feature flags are disabled. Event properties exclude chat
+content, URLs, query strings, titles and referrers. Delivery is best effort.
+
+Set the same variables on core to capture `app_published` after a successful new
+application or version deployment. Publications use the application's creator and
+company, matching browser identity. No key means no analytics requests.
+
+Core also captures `response_completed` and `response_failed` when a human turn
+reaches its final run state, including when a separate worker executes it.
+`completion_boundary=run` means processing finished, not confirmed delivery to the
+user. Successful silent or reaction-only results count as completed processing.
+`result_status` distinguishes those results; `surface` identifies web or Slack.
+Automation, automatic openers, impersonated turns, stopped turns, refusals, queued
+results and pending approvals do not emit outcomes. Retries emit only at the final
+run state. Stable insert IDs support deduplication. These best-effort events are
+not a complete reliability ledger and contain no response text or raw errors.
+
+## Optional browser error reporting
+
+Set `SENTRY_BROWSER_DSN` on the web server to enable browser error reporting.
+Use a public HTTPS DSN without a secret key, such as
+`https://public@sentry.example.com/1`. Backend `SENTRY_DSN` is never exposed or
+used as a browser fallback. The authenticated `/me` response supplies the public
+DSN and an optional `SENTRY_RELEASE` (or `GIT_SHA`). The server adds only the DSN
+origin to the web application's connection policy.
+
+Reporting starts after authentication and stops on sign-out or an authentication
+failure. It is disabled during impersonation and when the browser DSN is unset.
+Only uncaught errors and unhandled promise rejections are collected. Events retain
+standard error types, release, and same-origin compiled asset filenames with line
+and column numbers. Fingerprints use the sanitized error type, capture mechanism,
+and last retained stack position. Identical asset locations group across release
+label changes; changed asset hashes start separate groups. Without a retained
+frame, grouping falls back to the sanitized type and mechanism.
+Other stack frames and function names are omitted. Messages,
+URLs, requests, user identities, content, attachments, breadcrumbs, replay, logs,
+and tracing are excluded. A final transport gate rejects unsanitized SDK failures
+and non-event envelopes. Requests omit cookies and referrers. The ingestion
+server can still see the network source IP. Delivery is best effort.
+
+## Personal AI accounts
+
+Open **Settings → AI access**, or use the account label beside the model picker.
+Choose Company, Claude, or ChatGPT / Codex. Sign in with your subscription
+or use the secondary API-key option; connecting automatically selects that account. **Company access** switches back without disconnecting
+personal credentials. The choice is durable per person and applies to their human
+chat turns on the web and in Slack; background tasks retain company access.
+
+A submitted turn keeps its account choice, so switching affects new turns. Personal
+access failures do not retry on company credentials. Messages using a different
+account queue separately instead of steering an existing run; an explicit steer
+across accounts is refused. Organizations that already require individual accounts
+continue to require them.

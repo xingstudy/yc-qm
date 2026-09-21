@@ -16,6 +16,7 @@ import type { CredentialPathSpec } from "../credentials/resident-paths.ts";
 import { ephemeralCredLinkPaths } from "../credentials/resident-paths.ts";
 import { visibleNotInstalled, visibleTools } from "./sandbox.ts";
 import { createExecSandboxBase, sandboxScopeName } from "./exec-sandbox-base.ts";
+import { withConnectorSdk, type ConnectorSdkBundle } from "./connector-sdk.ts";
 import { createLayerToolInstaller } from "./layer-tool-install.ts";
 import type { LayerInstallFile } from "../deployment/load-layer.ts";
 import type { AgentComputerProfile, ExecPressure, ExecResult, Sandbox } from "./sandbox.ts";
@@ -66,6 +67,7 @@ export interface SpritesSandboxOptions extends BlobStagingOptions {
   egressProxyUrl?: string;
   extraTools?: string[];
   credentialPaths?: CredentialPathSpec[];
+  connectorSdk?: () => Promise<ConnectorSdkBundle>;
   layerToolFiles?: () => readonly LayerInstallFile[];
   client?: SpritesClientLike;
   fetchImpl?: typeof fetch;
@@ -268,7 +270,12 @@ export function createSpritesSandbox(workspace: WorkspaceStore, opts: SpritesSan
     homeDir: HOME_DIR,
     defaultTimeoutSec,
     credentialPaths: opts.credentialPaths ?? [],
-    ...(opts.layerToolFiles ? { installLayerTools: createLayerToolInstaller(opts.layerToolFiles) } : {}),
+    installLayerTools: withConnectorSdk(
+      HOME_DIR,
+      createLayerToolInstaller(opts.layerToolFiles ?? (() => [])),
+      opts.connectorSdk,
+    ),
+    combineLayerToolPrep: true,
     egressProxyUrl: opts.egressProxyUrl,
     deleteFailureCode: "sprite_delete_failed",
     onError: opts.onError,
@@ -355,6 +362,7 @@ export function createSpritesSandbox(workspace: WorkspaceStore, opts: SpritesSan
   const procSessions = createExecProcessSessions(procIo);
 
   const execFileOps = createExecFileOps({
+    combineRemoveAndList: true,
     label: "sprites",
     exec: (id, script, t) => execRaw(id, script, t),
     writeInline: (id, abs, data) => writeAbsBytes(id, abs, data),

@@ -54,6 +54,7 @@ jobs:
           build-args: |
             ${{ matrix.build-args }}
             PKG_REFRESH_WEEK=${{ steps.refresh.outputs.week }}
+            GIT_SHA=${{ github.sha }}
           tags: ghcr.io/yc-software/qm/${{ matrix.name }}:${{ github.sha }}
           cache-from: type=gha,scope=qm-${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=qm-${{ matrix.name }}

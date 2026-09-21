@@ -42,6 +42,7 @@ import {
   stableOriginPattern,
   threadRefCronIdExpr,
   userMessagePreview,
+  tapeTranscriptEntryRecord,
 } from "./session-store.ts";
 import { SECURITY_SCREEN_STEP, screenPayloadFromEnvelope } from "../security/security-posture.ts";
 
@@ -78,6 +79,8 @@ export function rowToSession(r: Record<string, unknown>): Session {
           forkBoundarySeq: Number(r.fork_boundary_seq),
         }
       : {}),
+    ...(r.parent_session_id != null ? { parentSessionId: r.parent_session_id as string } : {}),
+    ...(r.spawn_meta != null ? { spawnMeta: JSON.parse(r.spawn_meta as string) as Session["spawnMeta"] } : {}),
   };
 }
 
@@ -124,6 +127,7 @@ function rowToTape(r: Record<string, unknown>): TapeRecord {
     ...(r.change_time != null ? { changeTime: r.change_time as string } : {}),
     ...(r.hidden != null ? { hidden: Boolean(r.hidden) } : {}),
     ...(r.overheard != null ? { overheard: Boolean(r.overheard) } : {}),
+    ...(r.source_role === "agent" ? { sourceRole: "agent" as const } : {}),
     ...(r.author != null ? { author: r.author as string } : {}),
     ...(r.attachments != null ? { attachments: JSON.parse(r.attachments as string) as unknown[] } : {}),
     ...(r.display != null ? { display: r.display as string } : {}),
@@ -155,7 +159,7 @@ function rowToParticipantWindow(r: Record<string, unknown>): ParticipantWindow {
   };
 }
 
-function rowToEntry(r: Record<string, unknown>): SessionEntry {
+export function rowToEntry(r: Record<string, unknown>): SessionEntry {
   return {
     sessionId: r.session_id as string,
     seq: Number(r.seq),
@@ -526,6 +530,42 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
            ON CONFLICT (session_id, seq) DO NOTHING`,
         ],
       },
+      {
+        id: "sessions/store/0016-tape-source-role",
+        statements: [
+          `SET LOCAL lock_timeout = '3s'`,
+          `ALTER TABLE session_tape ADD COLUMN IF NOT EXISTS source_role TEXT`,
+        ],
+      },
+      {
+        id: "sessions/store/0017-transcript-entries",
+        statements: [
+          `CREATE INDEX IF NOT EXISTS session_tape_transcript_entries
+           ON session_tape(session_id, entry_seq DESC, seq DESC)
+           WHERE kind = 'annotation' AND safe_json(payload)->>'event' = 'transcript_entry'`,
+          `CREATE OR REPLACE VIEW session_transcript_entries AS
+           SELECT DISTINCT ON (session_id, entry_seq)
+             session_id, entry_seq AS seq,
+             (safe_json(payload)->'entry'->>'parentSeq')::int AS parent_seq,
+             safe_json(payload)->'entry'->>'type' AS type,
+             (safe_json(payload)->'entry'->'payload')::text AS payload,
+             scope_label,
+             (safe_json(payload)->'entry'->>'at')::bigint AS created_at
+           FROM session_tape t
+           WHERE kind = 'annotation' AND safe_json(payload)->>'event' = 'transcript_entry'
+           ORDER BY t.session_id, t.entry_seq DESC, t.seq DESC`,
+        ],
+      },
+      {
+        id: "sessions/store/0017-subagent-parentage",
+        statements: [
+          `SET LOCAL lock_timeout = '3s'`,
+          `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS parent_session_id TEXT`,
+          `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS spawn_meta TEXT`,
+          `CREATE INDEX IF NOT EXISTS idx_sessions_parent_session_id
+             ON sessions(parent_session_id) WHERE parent_session_id IS NOT NULL`,
+        ],
+      },
     ],
     [
       {
@@ -579,8 +619,8 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
     const stored = jsonbSafeStringify(rec.payload ?? null);
     const createdAt = now();
     await client.query(
-      `INSERT INTO session_tape(session_id, seq, kind, harness, payload, scope_label, bare_text, ts, change_time, hidden, overheard, author, attachments, display, security_tainted, entry_created_at, entry_seq, covers_entry_seq, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+      `INSERT INTO session_tape(session_id, seq, kind, harness, payload, scope_label, bare_text, ts, change_time, hidden, overheard, author, attachments, display, security_tainted, entry_created_at, entry_seq, covers_entry_seq, created_at, source_role)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
       [
         sessionId,
         seq,
@@ -601,6 +641,7 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
         rec.entrySeq ?? null,
         rec.coversEntrySeq ?? null,
         createdAt,
+        rec.meta?.sourceRole ?? null,
       ],
     );
     return { ...rec, payload: JSON.parse(stored), sessionId, seq, createdAt };
@@ -669,6 +710,21 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
         "UPDATE sessions SET forked_from_session_id = $2, forked_from_title = $3, fork_boundary_seq = $4 WHERE id = $1",
         [sessionId, provenance.forkedFrom.sessionId, provenance.forkedFrom.title ?? null, provenance.forkBoundarySeq],
       );
+    },
+
+    async setParentSession(sessionId, parentSessionId): Promise<void> {
+      await q("UPDATE sessions SET parent_session_id = $2 WHERE id = $1", [sessionId, parentSessionId]);
+    },
+
+    async setSpawnMeta(sessionId, meta): Promise<void> {
+      await q("UPDATE sessions SET spawn_meta = $2 WHERE id = $1", [sessionId, JSON.stringify(meta)]);
+    },
+
+    async childrenOf(parentSessionId): Promise<Session[]> {
+      const rows = await q("SELECT * FROM sessions WHERE parent_session_id = $1 ORDER BY created_at", [
+        parentSessionId,
+      ]);
+      return rows.map(rowToSession);
     },
 
     async acquireLease(sessionId, holder): Promise<LeaseAttempt> {
@@ -754,6 +810,7 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
           "INSERT INTO session_entries(session_id, seq, parent_seq, type, payload, scope_label, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
           [full.sessionId, full.seq, full.parentSeq, full.type, stored, full.scopeLabel, full.createdAt],
         );
+        await insertTapeRow(client, full.sessionId, tapeTranscriptEntryRecord(full));
         await client.query(
           `UPDATE sessions
               SET last_activity = CASE WHEN last_activity >= $2::bigint - ${LAST_ACTIVITY_DEBOUNCE_MS}
@@ -777,13 +834,35 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
     },
 
     async clearSecurityTaint(sessionId) {
-      const updated = await q(
-        "UPDATE session_entries SET payload = (payload::jsonb - 'securityTainted')::text " +
-          "WHERE session_id = $1 AND payload LIKE '%\"securityTainted\"%' RETURNING 1",
-        [sessionId],
-      );
-      if (updated.length > 0) return true;
-      return (await q("SELECT 1 FROM sessions WHERE id = $1", [sessionId])).length === 1;
+      return withPgTransaction(await pool(), async (client) => {
+        await lockSession(client, sessionId);
+        const updated = await client.query(
+          "UPDATE session_entries SET payload = (payload::jsonb - 'securityTainted')::text " +
+            "WHERE session_id = $1 AND jsonb_typeof(payload::jsonb) = 'object' AND payload::jsonb ? 'securityTainted' RETURNING *",
+          [sessionId],
+        );
+        for (const row of updated.rows) {
+          await insertTapeRow(client, sessionId, tapeTranscriptEntryRecord(rowToEntry(row)));
+        }
+        if (updated.rows.length > 0) return true;
+        return (await client.query("SELECT 1 FROM sessions WHERE id = $1", [sessionId])).rows.length === 1;
+      });
+    },
+
+    async getTranscriptEntries(sessionId, opts?: GetEntriesOptions) {
+      const params: unknown[] = [sessionId, opts?.sinceSeq ?? 0];
+      let sql = "SELECT * FROM session_transcript_entries WHERE session_id = $1 AND seq >= $2";
+      if (opts?.beforeSeq !== undefined) {
+        params.push(opts.beforeSeq);
+        sql += ` AND seq < $${params.length}`;
+      }
+      sql += " ORDER BY seq DESC";
+      if (opts?.limit !== undefined) {
+        params.push(opts.limit);
+        sql += ` LIMIT $${params.length}`;
+      }
+      const rows = await q(sql, params);
+      return rows.map(rowToEntry).reverse();
     },
 
     async appendTape(lease, rec: NewTapeRecord): Promise<TapeRecord> {
@@ -833,19 +912,18 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
     },
 
     async getEntries(sessionId, opts?: GetEntriesOptions): Promise<SessionEntry[]> {
-      const since = opts?.sinceSeq ?? 0;
-      if (opts?.limit !== undefined) {
-        const rows = await q(
-          "SELECT * FROM session_entries WHERE session_id = $1 AND seq >= $2 ORDER BY seq DESC LIMIT $3",
-          [sessionId, since, opts.limit],
-        );
-        return rows.map(rowToEntry).reverse();
+      const params: unknown[] = [sessionId, opts?.sinceSeq ?? 0];
+      let sql = "SELECT * FROM session_entries WHERE session_id = $1 AND seq >= $2";
+      if (opts?.beforeSeq !== undefined) {
+        params.push(opts.beforeSeq);
+        sql += ` AND seq < $${params.length}`;
       }
-      const rows = await q("SELECT * FROM session_entries WHERE session_id = $1 AND seq >= $2 ORDER BY seq ASC", [
-        sessionId,
-        since,
-      ]);
-      return rows.map(rowToEntry);
+      sql += " ORDER BY seq DESC";
+      if (opts?.limit !== undefined) {
+        params.push(opts.limit);
+        sql += ` LIMIT $${params.length}`;
+      }
+      return (await q(sql, params)).map(rowToEntry).reverse();
     },
 
     async getContextWindow(sessionId) {
@@ -1167,20 +1245,13 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
       const ts = tsPrefixQuery(query);
       if (!ts) return [];
       const rows = await q(
-        `WITH viewer AS MATERIALIZED (
-           SELECT session_id, valid_from_seq, valid_from, valid_to_seq, valid_to, title, archived
-             FROM participants WHERE principal_id = $1
-         ), candidates AS MATERIALIZED (
-           SELECT session_id, seq, type, author, text, created_at
-             FROM session_entry_search
-            WHERE session_id = ANY(ARRAY(SELECT session_id FROM viewer))
-              AND search_tsv @@ to_tsquery('simple', $2)
-         )
-         SELECT h.*, s.scope_id, COALESCE(p.title, s.title) AS title, s.channel_name, s.surface, p.archived
-           FROM candidates h
-           JOIN viewer p ON p.session_id = h.session_id
+        `SELECT h.session_id, h.seq, h.type, h.author, h.text, h.created_at,
+                s.scope_id, COALESCE(p.title, s.title) AS title, s.channel_name, s.surface, p.archived
+           FROM session_entry_search h
+           JOIN participants p ON p.session_id = h.session_id AND p.principal_id = $1
            JOIN sessions s ON s.id = h.session_id
-          WHERE ${withinParticipantWindow("h", "p")}
+          WHERE h.search_tsv @@ to_tsquery('simple', $2)
+            AND ${withinParticipantWindow("h", "p")}
           ORDER BY h.created_at DESC, h.session_id, h.seq DESC
           LIMIT $3`,
         [principalId, ts, Math.max(1, Math.min(limit, 200))],
@@ -1275,6 +1346,33 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
     async scopeHasSessions(scope): Promise<boolean> {
       const rows = await q("SELECT EXISTS(SELECT 1 FROM sessions WHERE scope_id = $1) AS present", [scope]);
       return Boolean(rows[0]?.present);
+    },
+
+    async countPersonalConversations(scope, limit = 3): Promise<number> {
+      const boundedLimit = Math.max(0, Math.floor(limit));
+      if (!boundedLimit) return 0;
+      const rows = await q(
+        `SELECT COUNT(*) AS n FROM (
+           SELECT s.id FROM sessions s
+           WHERE s.scope_id = $1 AND s.type = 'dm' AND s.parent_session_id IS NULL
+             AND ${hasOrigin("s", "conversation")}
+             AND EXISTS (
+               SELECT 1 FROM (
+                 SELECT DISTINCT ON (seq) seq, type, payload FROM (
+                   SELECT seq, type, payload, 1 AS priority FROM session_transcript_entries WHERE session_id = s.id
+                   UNION ALL
+                   SELECT seq, type, payload, 0 AS priority FROM session_entries WHERE session_id = s.id
+                 ) sources ORDER BY seq, priority DESC
+               ) e
+               WHERE e.seq > COALESCE(s.fork_boundary_seq, -1) AND e.type = 'user'
+                 AND (safe_json(replace(e.payload, '\\u0000', ''))->'hidden')::text IS DISTINCT FROM 'true'
+                 AND (safe_json(replace(e.payload, '\\u0000', ''))->'overheard')::text IS DISTINCT FROM 'true'
+             )
+           LIMIT $2
+         ) conversations`,
+        [scope, boundedLimit],
+      );
+      return Number(rows[0]?.n ?? 0);
     },
 
     async sessionsByThreadRefs(threadRefs): Promise<SessionRef[]> {

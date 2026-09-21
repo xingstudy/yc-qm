@@ -6,9 +6,11 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildApp, type BuiltApp } from "../src/wiring.ts";
+import { signedRequestHeaders } from "../src/auth/source-auth-sign.ts";
 import { signRequest } from "../src/auth/source-auth.ts";
 import { createServer } from "../src/api/server.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS } from "../src/auth/capability-token.ts";
+import { CoreClient } from "./live-slack/core.ts";
 import { testConfig } from "./support/test-config.ts";
 
 const SECRET = "directory-resolve-secret".repeat(3);
@@ -41,6 +43,25 @@ describe("GET /v1/directory/resolve (agent looks up a teammate's mention id)", a
   });
 
   const get = (path: string) => fetch(`${base}${path}`, { headers: { "x-agent-capability": cap } });
+
+  it("membership reads require source authentication and report only persisted channel members", async () => {
+    await built.app.upsertChannels(
+      [{ channelId: "CPUBLIC", name: "public", isPrivate: false }],
+      [{ channelId: "CPUBLIC", principalId: "carol@acme.com" }],
+    );
+    for (const [channel, principal, member] of [
+      ["CPUBLIC", "carol@acme.com", true],
+      ["CPUBLIC", "alice@acme.com", false],
+      ["CUNKNOWN", "carol@acme.com", false],
+    ] as const) {
+      const path = `/v1/directory/channels/${channel}/members/${encodeURIComponent(principal)}`;
+      assert.equal((await fetch(`${base}${path}`)).status, 401);
+      assert.equal((await get(path)).status, 403);
+      const response = await fetch(`${base}${path}`, { headers: signedRequestHeaders(SECRET, "GET", path) });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { member });
+    }
+  });
 
   it("resolves a name to a single match carrying the slackId needed to @-mention", async () => {
     const res = await get("/v1/directory/resolve?q=carol");
@@ -182,5 +203,45 @@ describe("a deployment without the Slack surface (the directory store is never p
     assert.equal(res.status, 400);
     assert.match(((await res.json()) as { message: string }).message, /internal, guest/);
     assert.deepEqual(await matchesOf("sam@acme.com"), [], "a rejected push must not land");
+  });
+});
+
+describe("qualification membership readiness with signed portal identity enforcement", () => {
+  it("authenticates directory reads with the separate portal key", async () => {
+    const portalSecret = "readiness-portal-key-distinct-from-source";
+    const originalPortalSecret = process.env.PORTAL_IDENTITY_SECRET;
+    const app = buildApp(testConfig({ signingSecret: SECRET }));
+    await app.app.upsertDirectory([
+      { principalId: process.env.LIVE_E2E_ADMIN_PRINCIPAL || "admin-alice", displayName: "Admin", type: "internal" },
+      { principalId: "qa@example.com", displayName: "QA", type: "internal", slackId: "UQA" },
+    ]);
+    await app.app.upsertChannels(
+      [{ channelId: "CQA", name: "qa", isPrivate: false }],
+      [{ channelId: "CQA", principalId: "qa@example.com" }],
+    );
+    const server = createServer(app.app, {
+      signingSecret: SECRET,
+      portalIdentitySecret: portalSecret,
+      capabilitySecret: "readiness-capability-key-distinct-from-source",
+      requireSignedPortalIdentity: true,
+      identity: app.identity,
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const base = `http://localhost:${(server.address() as AddressInfo).port}`;
+    try {
+      const path = "/v1/directory/resolve?q=UQA";
+      const unsigned = await fetch(`${base}${path}`, { headers: signedRequestHeaders(SECRET, "GET", path) });
+      assert.equal(unsigned.status, 401);
+      process.env.PORTAL_IDENTITY_SECRET = portalSecret;
+      const core = new CoreClient(base, SECRET);
+      await core.waitForChannelMembership("CQA", "UQA", 5000);
+      process.env.PORTAL_IDENTITY_SECRET = SECRET;
+      await assert.rejects(core.waitForChannelMembership("CQA", "UQA", 5000), /401.*portal identity required/);
+    } finally {
+      if (originalPortalSecret === undefined) delete process.env.PORTAL_IDENTITY_SECRET;
+      else process.env.PORTAL_IDENTITY_SECRET = originalPortalSecret;
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

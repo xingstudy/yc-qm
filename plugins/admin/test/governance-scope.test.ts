@@ -105,7 +105,7 @@ function runtimeSettings() {
     if (!elements.has(id)) elements.set(id, element());
     return elements.get(id);
   };
-  const context = vm.createContext({ $, document: { createElement: element } });
+  const context = vm.createContext({ $, document: { createElement: element }, refreshModelChoices: [] });
   const start = html.indexOf("        const opts = r.data.baseModelOptions");
   const end = html.indexOf("        const showApprovedHarnesses", start);
   assert.ok(start > 0 && end > start);

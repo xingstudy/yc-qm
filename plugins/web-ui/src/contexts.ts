@@ -1,5 +1,6 @@
 import { nothing, render, type TemplateResult } from "lit";
 import { html, t } from "./i18n.ts";
+import { peopleResults, type DirectoryMatch } from "./people-results";
 import {
   ArrowLeft,
   Boxes,
@@ -68,12 +69,6 @@ interface ScopeResourcesView {
   deployments: ScopeDeployment[];
   skills: ScopeSkill[];
   manageable: boolean;
-}
-
-interface DirectoryMatch {
-  principalId: string;
-  displayName: string;
-  email?: string | null;
 }
 
 export const contextsState = {
@@ -806,22 +801,7 @@ function memberPicker(context: CoreContext): TemplateResult {
           ${icon(X, 15)}
         </button>
       </div>
-      <div class="project-member-results">
-        ${matches.map(
-          (match) => html`
-            <button
-              class="project-member-result"
-              type="button"
-              ?disabled=${contextsState.memberSearching || contextsState.memberBusy}
-              @click=${() => void addProjectMember(context, match)}
-            >
-              <span class="project-member-avatar" aria-hidden="true">${initials(match.displayName)}</span>
-              <span class="project-member-name" dir="auto">${match.displayName}</span>
-              ${icon(Plus, 15)}
-            </button>
-          `,
-        )}
-      </div>
+      ${peopleResults(matches, contextsState.memberSearching || contextsState.memberBusy, (match) => void addProjectMember(context, match))}
       <div class="project-member-status" aria-live="polite">${t(memberStatus)}</div>
     </form>
   `;

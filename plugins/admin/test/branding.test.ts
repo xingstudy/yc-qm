@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
@@ -93,4 +94,16 @@ test("the brand icon is a CSS variable the org can point at its own image", () =
   );
   assert.match(shell, /id="branding-mark-url"/, "the admin form can set it");
   assert.match(shell, /markUrl: \$\("branding-mark-url"\)\.value\.trim\(\)/, "and saves it with the rest of branding");
+});
+
+test("design system routes embed the shared component library and retain the script CSP", async () => {
+  const response = await fetch(base + "/design-system");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  const css = readFileSync(new URL("../public/admin-components.css", import.meta.url), "utf8");
+  assert.ok(html.includes("<style data-admin-components>" + css + "</style>"));
+  const script = html.match(/<script>([\s\S]*?)<\/script>/i)?.[1];
+  assert.ok(script);
+  const hash = createHash("sha256").update(script).digest("base64");
+  assert.ok(response.headers.get("content-security-policy")?.includes("sha256-" + hash));
 });

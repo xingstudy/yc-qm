@@ -27,7 +27,7 @@ const USER_FILES_MAX = 200;
 const EXTERNAL_ORG_ADMIN_PORTAL_ONLY =
   "granting or removing org admin for an external user is portal-only — the agent cannot manage who governs the org";
 const ALREADY_A_MEMBER =
-  "that address already belongs to a member of the org — manage them under Users and Admins, not as an external user";
+  "that address already belongs to a member of the org and does not need an external invite. To make them an admin, use Grant org admin in the admin dashboard and enter their email as the principal ID.";
 const HOLDS_OWN_GRANT =
   "that address holds an org admin grant of its own — revoke it under Admins first, or re-invite with role org_admin";
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
@@ -390,6 +390,17 @@ export async function listKeychainStatus(ctx: ApiCtx): Promise<void> {
 
   if (!deps.keychain)
     return sendJson(res, 200, { scopeId: scope, people: [], credentials: [], grants: [], asks: [], enabled: false });
+
+  if (ctx.url.searchParams.get("summary") === "1") {
+    const [credentials, grants] = await Promise.all([deps.keychain.listAllMetadata(), deps.keychain.listGrants({})]);
+    return sendJson(res, 200, {
+      users: new Set(credentials.map((credential) => credential.ownerId)).size,
+      standing: grants.filter(
+        (grant) =>
+          grant.mode === "standing" && grant.status === "active" && (!grant.expiresAt || grant.expiresAt > Date.now()),
+      ).length,
+    });
+  }
 
   const [credentialRecords, grants, asks, participantIds, adminGrants] = await Promise.all([
     deps.keychain.listAllMetadata(),

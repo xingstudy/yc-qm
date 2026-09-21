@@ -1,9 +1,8 @@
-import { createPgPool, type PoolClient, type Rows } from "../persistence/pg-pool.ts";
-import { swallowAs } from "../util/errors.ts";
+import { createPgPool, type Rows } from "../persistence/pg-pool.ts";
+import { subscribePostgresChannel } from "../persistence/postgres-listener.ts";
 import type { RunSignal, RunSignalKind, RunSignalStore } from "./run-signal-store.ts";
 
 const CHANNEL = "run_signals";
-const RECONNECT_DELAY_MS = 1_000;
 
 function toSignals(rows: Rows): RunSignal[] {
   return rows
@@ -47,46 +46,25 @@ export function createPostgresRunSignalStore(connectionString: string): RunSigna
   const q = pg.query;
 
   const listeners = new Map<string, Set<() => void>>();
-  let listenClient: PoolClient | null = null;
-  let connecting = false;
+  let stopListening: (() => Promise<void>) | null = null;
   let closed = false;
+  let cleanup = Promise.resolve();
 
   function ring(runId: string): void {
     for (const cb of listeners.get(runId) ?? []) cb();
   }
 
-  function dropListenClient(): void {
-    const client = listenClient;
-    listenClient = null;
-    if (client) client.release(true);
+  function dropListenClient() {
+    const stop = stopListening;
+    stopListening = null;
+    if (stop) cleanup = Promise.all([cleanup, stop()]).then(() => {});
   }
 
-  function ensureListening(): void {
-    if (closed || connecting || listenClient || listeners.size === 0) return;
-    connecting = true;
-    void (async () => {
-      const client = await (await pg.sessionPool()).connect();
-      client.on("notification", (msg) => {
-        if (msg.channel === CHANNEL && msg.payload) ring(msg.payload);
-      });
-      client.on("error", () => {
-        dropListenClient();
-        setTimeout(() => {
-          ensureListening();
-          for (const runId of listeners.keys()) ring(runId);
-        }, RECONNECT_DELAY_MS).unref?.();
-      });
-      await client.query(`LISTEN ${CHANNEL}`);
-      listenClient = client;
-    })()
-      .catch(swallowAs("run-signals: listen connect", undefined))
-      .finally(() => {
-        connecting = false;
-        if (closed) dropListenClient();
-        else if (!listenClient && listeners.size > 0) {
-          setTimeout(() => ensureListening(), RECONNECT_DELAY_MS).unref?.();
-        }
-      });
+  function ensureListening() {
+    if (closed || stopListening || listeners.size === 0) return;
+    stopListening = subscribePostgresChannel(connectionString, CHANNEL, ring, () => {
+      for (const runId of listeners.keys()) ring(runId);
+    });
   }
 
   return {
@@ -119,27 +97,25 @@ export function createPostgresRunSignalStore(connectionString: string): RunSigna
       return [...new Set(ids)];
     },
 
+    async pending(runId) {
+      const { rows } = await q(
+        "SELECT id, kind, text, payload FROM run_signals WHERE run_id=$1 AND consumed_at IS NULL ORDER BY id",
+        [runId],
+      );
+      return rows.map((row) => ({ id: String(row.id), signal: toSignals([row])[0]! }));
+    },
+    async acknowledge(runId, id) {
+      await q("UPDATE run_signals SET consumed_at=$3 WHERE run_id=$1 AND id=$2 AND consumed_at IS NULL", [
+        runId,
+        id,
+        Date.now(),
+      ]);
+    },
     async takePending(runId) {
       const { rows } = await q(
         `UPDATE run_signals SET consumed_at=$2
          WHERE run_id=$1 AND consumed_at IS NULL
          RETURNING id, kind, text, payload`,
-        [runId, Date.now()],
-      );
-      return toSignals(rows);
-    },
-
-    async takeLive(runId) {
-      const { rows } = await q(
-        `WITH taken AS (
-           UPDATE run_signals SET consumed_at=$2
-           WHERE run_id=$1 AND consumed_at IS NULL AND kind <> 'abort'
-           RETURNING id, kind, text, payload
-         )
-         SELECT id, kind, text, payload FROM taken
-         UNION ALL
-         SELECT id, kind, text, payload FROM run_signals
-         WHERE run_id=$1 AND kind='abort' AND consumed_at IS NULL`,
         [runId, Date.now()],
       );
       return toSignals(rows);
@@ -162,12 +138,14 @@ export function createPostgresRunSignalStore(connectionString: string): RunSigna
       return () => {
         set.delete(cb);
         if (set.size === 0) listeners.delete(runId);
+        if (listeners.size === 0) dropListenClient();
       };
     },
 
     async close() {
       closed = true;
       dropListenClient();
+      await cleanup;
       await pg.close();
     },
   };

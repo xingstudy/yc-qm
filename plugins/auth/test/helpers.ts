@@ -167,6 +167,7 @@ export async function startHarness(
     brandName?: () => string;
     directorySources?: DirectorySourceClient;
     directoryContinuations?: PortalLoginTransactions;
+    trustedSignInLabel?: string;
     emailAllowed?: (email: string) => Promise<boolean>;
     sessions?: RememberedSessions;
   } = {},
@@ -199,6 +200,7 @@ export async function startHarness(
   const pending: Array<Promise<void>> = [];
   const handle = createAuthHandler({
     cfg,
+    trustedSignInLabel: options.trustedSignInLabel,
     signingKey: await loadSigningKey(cfg.signingJwk!),
     signer: new TokenSigner(cfg.tokenSecret, cfg.issuer),
     claims,

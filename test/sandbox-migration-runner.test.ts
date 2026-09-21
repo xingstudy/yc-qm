@@ -14,13 +14,14 @@ import { join, dirname } from "node:path";
 import { createSandboxMigrationRunner } from "../src/sandbox/sandbox-migration-runner.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import type { SandboxRoute } from "../src/sandbox/sandbox-routing.ts";
+import { posixJoin } from "../src/sandbox/exec-file-ops.ts";
 import type { Sandbox, SandboxHandle, ExecResult } from "../src/sandbox/sandbox.ts";
 
 function hostBackend(name: string, homeDir: string): Sandbox & { tornDown: number } {
   mkdirSync(homeDir, { recursive: true });
   const rootDir = join(homeDir, "workspace");
   mkdirSync(rootDir, { recursive: true });
-  const resolve = (rel: string) => join(rootDir, rel);
+  const resolve = (rel: string) => posixJoin(rootDir, rel);
   const s = {
     tornDown: 0,
     profile: { backend: name, writablePersistence: "resident_disk" as const, processSessions: false },
@@ -404,6 +405,26 @@ test("activation cannot pass a running migration before its final route and tear
     assert.equal((await activating.resolve("personal:alice"))?.backend, "sprites");
     assert.equal(readFileSync(join(root, "sprites-home", "notes.txt"), "utf8"), "preserve me\n");
     await assert.rejects(runner.migrateScope("personal:alice", "aws"), /retired/);
+    assert.equal((await routes.get("personal:alice"))?.backend, "sprites");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("migration reads the scope default as its source before installing an explicit route", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mig-scope-default-"));
+  try {
+    const { aws, sprites, routes } = build(root);
+    writeFileSync(join(root, "aws-home", "notes.txt"), "scope default data\n");
+    const runner = createSandboxMigrationRunner({
+      backends: { aws, sprites },
+      routes,
+      defaultBackend: "sprites",
+      scopeDefaults: { personal: "aws" },
+    });
+    const result = await runner.migrateScope("personal:alice", "sprites", "scope policy migration");
+    assert.equal(result.from, "aws");
+    assert.equal(readFileSync(join(root, "sprites-home", "notes.txt"), "utf8"), "scope default data\n");
     assert.equal((await routes.get("personal:alice"))?.backend, "sprites");
   } finally {
     rmSync(root, { recursive: true, force: true });

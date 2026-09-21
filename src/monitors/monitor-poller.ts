@@ -1,3 +1,4 @@
+import type { AdmittedWork } from "../util/admitted-work.ts";
 import type { Monitor, TurnRequest, TurnResult } from "../types.ts";
 import type { MonitorStore } from "./monitor-store.ts";
 import type { ProcessRegistry } from "../processes/process-registry.ts";
@@ -24,10 +25,11 @@ const DEFAULT_MIN_FIRE_INTERVAL_MS = 60_000;
 export interface MonitorPoller {
   tick(now?: number): Promise<void>;
   start(intervalMs: number): void;
-  stop(): void;
+  stop(): Promise<void>;
 }
 
 export interface MonitorPollerDeps {
+  admittedWork?: AdmittedWork;
   monitors: MonitorStore;
   processes: ProcessRegistry;
   sandbox: Sandbox;
@@ -122,6 +124,8 @@ function renderEvent(m: Monitor, output: string, ev: MonitorEvent): { input: str
 }
 
 export function createMonitorPoller(deps: MonitorPollerDeps): MonitorPoller {
+  let stopped = false;
+  let epoch = 0;
   const now = deps.now ?? (() => Date.now());
   const maxFiresPerTick = deps.maxFiresPerTick ?? 20;
   const heartbeatMs = deps.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
@@ -253,7 +257,7 @@ export function createMonitorPoller(deps: MonitorPollerDeps): MonitorPoller {
     return true;
   }
 
-  async function pollAll(t: number): Promise<void> {
+  async function pollAll(t: number, observed: number): Promise<void> {
     if (!supportsProcessSessions(deps.sandbox)) return;
     const sandbox = deps.sandbox;
     const enabled = (await deps.monitors.enabled()).sort((a, b) => a.createdAt - b.createdAt);
@@ -263,6 +267,7 @@ export function createMonitorPoller(deps: MonitorPollerDeps): MonitorPoller {
     let fires = 0;
     try {
       for (const m of enabled) {
+        if (stopped || observed !== epoch) break;
         if (fires >= maxFiresPerTick) {
           console.warn(`[monitor] fan-out capped: fired ${fires}/${enabled.length} watched jobs this tick`);
           break;
@@ -305,7 +310,10 @@ export function createMonitorPoller(deps: MonitorPollerDeps): MonitorPoller {
 
   const tick = async (nowArg?: number): Promise<void> => {
     const t = nowArg ?? now();
-    await leaderLease.hold(TICK_LEASE_KEY, () => pollAll(t));
+    const observed = epoch;
+    const work = () => leaderLease.hold(TICK_LEASE_KEY, () => pollAll(t, observed));
+    if (deps.admittedWork) await deps.admittedWork.run(work);
+    else await work();
   };
 
   const sweeper = createSweeper(
@@ -315,7 +323,14 @@ export function createMonitorPoller(deps: MonitorPollerDeps): MonitorPoller {
   );
   return {
     tick,
-    start: sweeper.start,
-    stop: sweeper.stop,
+    start(intervalMs) {
+      stopped = false;
+      sweeper.start(intervalMs);
+    },
+    stop() {
+      stopped = true;
+      epoch++;
+      return sweeper.stop();
+    },
   };
 }

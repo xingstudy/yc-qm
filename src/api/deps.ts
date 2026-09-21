@@ -1,3 +1,6 @@
+import type { BackgroundOwnershipStore } from "../runs/background-ownership.ts";
+import type { createSuggestedActivityService } from "../suggestions/activities.ts";
+import type { ManagedSlack } from "../surfaces/slack-managed.ts";
 import type { BrokerSessionStore } from "../auth/broker-sessions.ts";
 import type { DirectFileUploads } from "../files/direct-file-upload.ts";
 import type { SandboxResources } from "../sandbox/sandbox-resources.ts";
@@ -79,6 +82,8 @@ import type { DirectoryEmailResolutionService } from "../directory-sources/email
 import type { ManagedDirectoryService } from "../directory-sources/managed-directory-service.ts";
 
 export interface ServerDeps {
+  composioFetch?: typeof fetch;
+  suggestedActivities?: ReturnType<typeof createSuggestedActivityService>;
   production?: boolean;
   allowUnauthenticatedCore?: boolean;
   signingSecret?: string;
@@ -88,8 +93,10 @@ export interface ServerDeps {
   control: ControlService;
   replayDedupe?: ReplayDedupe;
   portalLoginTransactions?: PortalLoginTransactionStore;
+  deploymentLiveSmoke?: () => Promise<void>;
   brokerSessions?: BrokerSessionStore;
   connectorTokens?: ConnectorTokenStore;
+  managedSlack?: ManagedSlack;
   slackInstallation?: SlackInstallationStore;
   slackInstallationFetch?: typeof fetch;
   slackInstallationSocketAppId?: SlackSocketAppIdReader;
@@ -169,6 +176,8 @@ export interface ServerDeps {
   sessionShareBytes?: DurableByteStore;
   environments?: EnvironmentStore;
   deploymentLayer?: DeploymentLayerStore;
+  backgroundOwnership?: { store: BackgroundOwnershipStore; instanceId: string; deploymentId: string };
+  deploymentControlSecret?: string;
   credentialServices?: () => readonly string[];
   brokeredServices?: () => readonly string[];
   deployDialTimeoutMs?: number;
@@ -176,6 +185,7 @@ export interface ServerDeps {
   deployGateSecret?: string;
   deployAppsSessionSecret?: string;
   deployAppsLoginUrl?: string;
+  deployAppsLoginPath?: "/auth/login" | "/auth/trusted/login";
   scheduler?: Scheduler;
   webhookReceiver?: WebhookReceiver;
   identity?: IdentityService;

@@ -3,6 +3,7 @@ import { type ApiCtx, type Route } from "./route.ts";
 import {
   getAdminResources,
   getScopeConfig,
+  getCredentialUsageSummary,
   listAdminScopes,
   putScopeConfig,
   retention,
@@ -40,6 +41,8 @@ import {
   getSlackEmojiList,
   getSlackInstallation,
   putSlackInstallation,
+  startSlackInstallation,
+  managedSlackRequest,
 } from "./admin/slack-installation.ts";
 import { deleteModelProvider, getModelProviders, putModelProvider } from "./admin/model-providers.ts";
 import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./admin/custom-providers.ts";
@@ -66,6 +69,10 @@ const timed =
 
 const routes: ReadonlyArray<Route<ApiCtx>> = [
   ...directorySourceAdminRoutes,
+  { method: "POST", path: "/v1/admin/slack-installation/start", auth: "either", handle: startSlackInstallation },
+  { method: "POST", path: "/v1/slack/managed/installation", auth: "public", handle: managedSlackRequest },
+  { method: "DELETE", path: "/v1/slack/managed/installation", auth: "public", handle: managedSlackRequest },
+  { method: "POST", path: "/v1/slack/managed/events", auth: "public", handle: managedSlackRequest },
   { method: "GET", path: "/v1/admin/slack-installation", auth: "either", handle: getSlackInstallation },
   { method: "GET", path: "/v1/admin/slack-emoji", auth: "either", handle: getSlackEmojiList },
   { method: "PUT", path: "/v1/admin/slack-installation", auth: "either", handle: putSlackInstallation },
@@ -94,6 +101,12 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/admin/whoami", auth: "either", handle: whoami },
   { method: "GET", path: "/v1/admin/scopes", auth: "either", handle: listAdminScopes },
   { method: "GET", path: "/v1/admin/scopes/:scope", auth: "either", handle: getScopeConfig },
+  {
+    method: "GET",
+    path: "/v1/admin/scopes/:scope/credential-usage",
+    auth: "either",
+    handle: getCredentialUsageSummary,
+  },
   { method: "GET", path: "/v1/admin/resources", auth: "either", handle: getAdminResources },
   { method: "GET", path: "/v1/admin/retention", auth: "either", handle: retention },
   { method: "GET", path: "/v1/admin/metrics", auth: "either", handle: metrics },

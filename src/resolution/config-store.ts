@@ -59,6 +59,12 @@ export interface PersistedEgressPolicy {
   scopeId: ScopeId;
   policy: EgressPolicy;
 }
+export type ModelAccount = "company" | "personal" | "anthropic" | "openai";
+
+export interface PersistedModelAccount extends PersistedScopedFlag {
+  provider?: "anthropic" | "openai";
+}
+
 export interface PersistedScopedFlag {
   scopeId: ScopeId;
   on: boolean;
@@ -226,7 +232,9 @@ export interface ScopedConfigStore {
   getInternalMemberOverridesDurable(): Promise<string[]>;
   getIndividualModelAuth(): boolean;
   setIndividualModelAuth(on: boolean): void;
-  getIndividualModelAuthDurable(): Promise<boolean>;
+  getIndividualModelAuthDurable(principalId?: string): Promise<boolean>;
+  setPersonalModelAuth(principalId: string, on: boolean, provider?: "anthropic" | "openai"): Promise<void>;
+  getModelAccountDurable(principalId: string): Promise<ModelAccount>;
   getBaseModelOwnDurable(id: ScopeId): Promise<string | null>;
   getWebuiModels(id: ScopeId): string[] | null;
   setWebuiModels(id: ScopeId, ids: string[] | null): void;
@@ -282,7 +290,7 @@ export function createMemoryConfigStore(
     internalMemberOverrides?: DurableMap<PersistedInternalMemberOverrides>;
     orgAmbient?: DurableMap<PersistedScopedFlag>;
     interactiveFastMode?: DurableMap<PersistedScopedFlag>;
-    individualModelAuth?: DurableMap<PersistedScopedFlag>;
+    individualModelAuth?: DurableMap<PersistedModelAccount>;
     webuiModels?: DurableMap<PersistedWebuiModels>;
     peopleDirectoryUrls?: DurableMap<PersistedPeopleDirectoryUrl>;
     ackEmoji?: DurableMap<PersistedAckEmoji>;
@@ -340,7 +348,7 @@ export function createMemoryConfigStore(
     opts.internalMemberOverrides ?? createMemoryMap<PersistedInternalMemberOverrides>();
   const orgAmbientStore = opts.orgAmbient ?? createMemoryMap<PersistedScopedFlag>();
   const interactiveFastModeStore = opts.interactiveFastMode ?? createMemoryMap<PersistedScopedFlag>();
-  const individualModelAuthStore = opts.individualModelAuth ?? createMemoryMap<PersistedScopedFlag>();
+  const individualModelAuthStore = opts.individualModelAuth ?? createMemoryMap<PersistedModelAccount>();
   const webuiModelStore = opts.webuiModels ?? createMemoryMap<PersistedWebuiModels>();
   const peopleDirectoryUrlStore = opts.peopleDirectoryUrls ?? createMemoryMap<PersistedPeopleDirectoryUrl>();
   const ackEmojiStore = opts.ackEmoji ?? createMemoryMap<PersistedAckEmoji>();
@@ -972,7 +980,21 @@ export function createMemoryConfigStore(
         individualModelAuthStore.put(org, { scopeId: org, on }),
       );
     },
-    getIndividualModelAuthDurable: async () => (await individualModelAuthStore.get(org))?.on ?? false,
+    async getIndividualModelAuthDurable(principalId) {
+      if ((await individualModelAuthStore.get(org))?.on) return true;
+      return principalId
+        ? ((await individualModelAuthStore.get(scopeId("personal", principalId)))?.on ?? false)
+        : false;
+    },
+    async getModelAccountDurable(principalId) {
+      const row = await individualModelAuthStore.get(scopeId("personal", principalId));
+      if (row?.on) return row.provider ?? "personal";
+      return (await individualModelAuthStore.get(org))?.on ? "personal" : "company";
+    },
+    async setPersonalModelAuth(principalId, on, provider) {
+      const id = scopeId("personal", principalId);
+      await individualModelAuthStore.put(id, { scopeId: id, on, ...(on && provider ? { provider } : {}) });
+    },
     getBaseModelOwnDurable: async (id) => (await baseModelStore.get(id))?.modelId ?? null,
     getBaseModelDurable: async (id) =>
       (await baseModelStore.get(id))?.modelId ??

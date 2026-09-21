@@ -204,9 +204,11 @@ test("conditional interface labels pass through the translator", () => {
 
   assert.match(source("connectors.ts"), /\$\{t\(accessModeLabel\(ask\.requestedMode\)\)\}/);
   assert.match(source("skills.ts"), /name: t\("Personal — only you"\)/);
-  assert.match(source("chat.ts"), /return t\(work\.status === "working" \? `Working for \$\{secs\}s`/);
+  assert.match(
+    source("chat.ts"),
+    /return t\(workedLabel\(work\.status === "working" \? "Working" : "Worked", secs\)\)/,
+  );
   assert.match(source("chat.ts"), /return t\("Needs your approval"\)/);
-  assert.match(source("chat.ts"), /t\("Hi — I'm your AI teammate 👋"\)/);
   assert.match(source("chat.ts"), /t\(`\$\{result\.count\} result/);
   assert.match(source("memory.ts"), /memoryNotice = t\("Saved ✓"\)/);
   assert.match(source("memory.ts"), /memoryNotice \|\| t\("Loading…"\)/);

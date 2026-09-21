@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
+import { verifySignedPayload } from "../../auth/signed-token.ts";
+import { AdminError } from "../../admin/admin-service.ts";
 import { sendJson } from "../http.ts";
 import { externalMemberActive } from "../../identity/external-members.ts";
-import { isObj, authorizeAdmin, orgScope, audit } from "./shared.ts";
+import { isObj, authorizeAdmin, orgScope, audit, activePrincipal } from "./shared.ts";
 import { type ApiCtx, type Route } from "./route.ts";
 
 const NAMESPACE = "authbroker:";
@@ -320,7 +323,54 @@ async function brokerSession(ctx: ApiCtx): Promise<void> {
   return sendJson(res, 200, await deps.brokerSessions.create(email, idleS, absoluteS));
 }
 
+async function trustedAdmin(ctx: ApiCtx): Promise<void> {
+  const { deps, res, body } = ctx;
+  const secret = deps.portalIdentitySecret;
+  if (!secret || secret.length < 32 || secret === ctx.secret || !deps.admin || !deps.replayDedupe?.durable)
+    return sendJson(res, 503, { error: "not_configured" });
+  const assertion = isObj(body) && typeof body.assertion === "string" ? body.assertion : "";
+  const claims = await verifySignedPayload(assertion, secret);
+  const now = Date.now();
+  if (
+    !isObj(claims) ||
+    claims.purpose !== "trusted-entry-admin" ||
+    claims.org !== orgScope() ||
+    typeof claims.issuer !== "string" ||
+    typeof claims.subject !== "string" ||
+    !claims.subject ||
+    claims.subject.length > 255 ||
+    claims.imp !== undefined ||
+    typeof claims.exp !== "number" ||
+    !Number.isFinite(claims.exp) ||
+    claims.exp <= now ||
+    claims.exp > now + 60_000 ||
+    typeof claims.jti !== "string" ||
+    !/^[a-f0-9-]{36}$/.test(claims.jti)
+  )
+    return sendJson(res, 403, { error: "invalid_assertion" });
+  const principalId = `oidc:${createHash("sha256").update(claims.issuer).digest("hex")}:${Buffer.from(claims.subject).toString("base64url")}`;
+  if (!(await activePrincipal(deps, principalId))) return sendJson(res, 403, { error: "inactive_principal" });
+  if (!(await deps.replayDedupe.claim(`trusted-admin:${claims.jti}`, claims.exp)))
+    return sendJson(res, 409, { error: "assertion_already_used" });
+  try {
+    const { grant, created } = await deps.admin.provisionTrustedEntry(claims.issuer, claims.subject);
+    if (created)
+      audit(deps, {
+        principalId: grant.grantedBy!,
+        action: "grant.create",
+        resource: `${grant.principalId}/org_admin`,
+        scopeLabel: grant.scopeId,
+      });
+    return sendJson(res, 200, { ok: true });
+  } catch (error) {
+    if (error instanceof AdminError)
+      return sendJson(res, error.status, { error: "grant_failed", message: error.message });
+    throw error;
+  }
+}
+
 export const authBrokerRoutes: ReadonlyArray<Route<ApiCtx>> = [
+  { method: "POST", path: "/v1/auth/trusted/admin", auth: "source", handle: trustedAdmin },
   { method: "POST", path: "/v1/auth/broker/sessions", auth: "source", handle: brokerSession },
   { method: "POST", path: "/v1/auth/broker/sessions/use", auth: "source", handle: brokerSession },
   { method: "POST", path: "/v1/auth/broker/sessions/revoke", auth: "source", handle: brokerSession },

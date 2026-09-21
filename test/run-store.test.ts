@@ -23,6 +23,18 @@ const backends: Backend[] = [{ name: "memory", make: () => createMemoryRunStore(
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 for (const backend of backends) {
+  test(`[${backend.name}] conversation lookup includes independent tasks and status context but excludes neighboring DMs`, async () => {
+    const { runs } = backend.make();
+    for (const ref of ["dm:D1", "dm:D1:task:a", "dm:D1:status:b", "dm:D11:task:c", "dm:D2"]) {
+      await runs.enqueue({ sessionId: ref, request: turn(ref) });
+    }
+    assert.deepEqual((await runs.list({ threadRef: "dm:D1" })).map((run) => run.sessionId).sort(), [
+      "dm:D1",
+      "dm:D1:status:b",
+      "dm:D1:task:a",
+    ]);
+  });
+
   test(`[${backend.name}] enqueue dedups by dedup key`, async () => {
     const { runs } = backend.make();
     const a = await runs.enqueue({ sessionId: "s1", request: turn("hi"), dedupKey: "k1" });
@@ -161,6 +173,19 @@ for (const backend of backends) {
     assert.equal(second?.id, rB.id);
 
     assert.equal(await runs.claim("w3", 5_000), null);
+  });
+
+  test(`[${backend.name}] inline claims cannot overtake an earlier pending run`, async () => {
+    const { runs } = backend.make();
+    const unrelated = (await runs.enqueue({ sessionId: "unrelated", request: turn("other") })).run;
+    const first = (await runs.enqueue({ sessionId: "inline-order", request: turn("first") })).run;
+    const second = (await runs.enqueue({ sessionId: "inline-order", request: turn("second") })).run;
+    assert.equal(await runs.claimById(second.id, "second-worker", 5_000), null);
+    const claimedFirst = await runs.claimForSession("inline-order", "first-worker", 5_000);
+    assert.equal((await runs.get(unrelated.id))?.status, "pending");
+    assert.equal(claimedFirst?.id, first.id);
+    await runs.complete(first.id, claimedFirst!.leaseToken!, { status: "ok" });
+    assert.equal((await runs.claimById(second.id, "second-worker", 5_000))?.id, second.id);
   });
 
   test(`[${backend.name}] lease fencing on heartbeat/complete`, async () => {
@@ -390,3 +415,29 @@ for (const backend of backends) {
     assert.equal(await runs.noteTurnUserSeq("missing-run", 1), false);
   });
 }
+
+test("editing pending text preserves identity, order, attachments and rejects stale or started edits", async () => {
+  const { runs } = createMemoryRunStore();
+  const request = {
+    ...turn("original"),
+    attachments: [{ name: "notes.txt", mimetype: "text/plain", sizeBytes: 5, blobId: "notes-blob" }],
+  };
+  const first = (await runs.enqueue({ sessionId: "edits", request, dedupKey: "edit-key" })).run;
+  const next = (await runs.enqueue({ sessionId: "edits", request: turn("next") })).run;
+  assert.equal(await runs.editPendingText(first.id, "revised", "original"), true);
+  assert.equal(await runs.editPendingText(first.id, "stale", "original"), false);
+  const saved = await runs.get(first.id);
+  assert.equal(saved?.request.text, "revised");
+  assert.equal(saved?.request.displayText, "revised");
+  assert.deepEqual(saved?.request.attachments, request.attachments);
+  assert.equal(saved?.dedupKey, "edit-key");
+  assert.deepEqual(
+    (await runs.inFlightForThread("edits")).map((run) => run.id),
+    [first.id, next.id],
+  );
+  const claimed = await runs.claimById(first.id, "worker", 1000);
+  assert.equal(claimed?.request.text, "revised");
+  assert.equal(await runs.editPendingText(first.id, "late", "revised"), false);
+  await runs.fail(first.id, claimed!.leaseToken!, "retry", { retry: true });
+  assert.equal(await runs.editPendingText(first.id, "retry edit", "revised"), false);
+});

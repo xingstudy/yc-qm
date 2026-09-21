@@ -1,3 +1,5 @@
+import { resolveModalImage } from "./modal-image.ts";
+
 export interface ModalCommandResult {
   stdout: string;
   stderr: string;
@@ -47,8 +49,7 @@ export interface SdkModalClientOptions {
   tokenId: string;
   tokenSecret: string;
   appName: string;
-  image: string;
-  imageSetupCommands?: string[];
+  image?: string;
   environment?: string;
   cpus?: number;
   memoryMb?: number;
@@ -125,8 +126,7 @@ export function createSdkModalClient(opts: SdkModalClientOptions): ModalClient {
       ...(opts.environment ? { environment: opts.environment } : {}),
     });
     const app = await client.apps.fromName(opts.appName, { createIfMissing: true });
-    let image = client.images.fromRegistry(opts.image);
-    if (opts.imageSetupCommands?.length) image = image.dockerfileCommands(opts.imageSetupCommands);
+    const image = await resolveModalImage(client, opts.image);
     return { client, app, image };
   };
   const loadCtx = (): Promise<{ client: SdkClient; app: SdkApp; image: SdkImage }> =>
@@ -168,7 +168,7 @@ export function createSdkModalClient(opts: SdkModalClientOptions): ModalClient {
     },
     async snapshotHome() {
       const expiresAtMs = Date.now() + snapshotRetentionMs;
-      const image = await sbx.snapshotDirectory("/root", { ttlMs: snapshotRetentionMs });
+      const image = await sbx.snapshotDirectory("/root", { ttlMs: snapshotRetentionMs, timeoutMs: 600_000 });
       return { imageId: image.imageId, expiresAtMs };
     },
     async restoreHome(imageId): Promise<void> {

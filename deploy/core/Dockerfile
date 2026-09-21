@@ -1,4 +1,18 @@
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS wireproxy-build
+
+RUN apk add --no-cache go \
+  && CGO_ENABLED=0 GOBIN=/out go install github.com/windtf/wireproxy/cmd/wireproxy@v1.1.2
+
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS connector-sdk-build
+WORKDIR /app
+ARG NPM_INSTALL_REGISTRY=https://registry.npmjs.org
+COPY deploy/connector-sdk ./deploy/connector-sdk
+RUN --mount=type=cache,target=/root/.npm,sharing=shared npm ci --prefix deploy/connector-sdk --ignore-scripts --no-audit --no-fund --prefer-offline --registry="${NPM_INSTALL_REGISTRY}" \
+  && node deploy/connector-sdk/build.mjs
+
 FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS core-base
+
+COPY --from=wireproxy-build /out/wireproxy /usr/local/bin/wireproxy
 
 WORKDIR /app
 
@@ -27,7 +41,10 @@ ENV DATA_DIR=/data
 
 FROM core-base AS core
 
+COPY --from=connector-sdk-build /app/.generated/connector-sdk ./.generated/connector-sdk
 COPY src ./src
+COPY scripts/migrate-transcript-tape.ts ./scripts/migrate-transcript-tape.ts
+COPY scripts/lib/transcript-tape-migration.ts ./scripts/lib/transcript-tape-migration.ts
 COPY cli/templates/slack-manifest.json ./cli/templates/slack-manifest.json
 COPY skills-seed ./skills-seed
 COPY plugins/onboarding ./plugins/onboarding

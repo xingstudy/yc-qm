@@ -2,7 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createMemoryRunStore } from "../src/runs/memory-run-store.ts";
 import { createDeliveryStore } from "../src/delivery/delivery-store.ts";
-import { runResultDelivery, wireRunResultDeliveries } from "../src/delivery/run-result-delivery.ts";
+import {
+  runResultDelivery,
+  wireRunResultDeliveries,
+  recordRunFailureEntry,
+  type TurnFailureSessions,
+} from "../src/delivery/run-result-delivery.ts";
 import type { Run } from "../src/runs/run-store.ts";
 import type { OrchestratorInput } from "../src/core/orchestrator.ts";
 import type { Principal, TurnResult } from "../src/types.ts";
@@ -300,8 +305,14 @@ test("a parked run's failure lands as a turn_failure entry in the run's own sess
     runId: "r-1",
   });
   const tape = await sessions.getTape(session.id);
-  assert.equal(tape.length, 1, "a turnEnd checkpoint keeps the tape projection servable");
-  assert.equal(tape[0]!.kind, "annotation");
+  assert.equal(tape.length, 2);
+  assert.equal(
+    tape.filter((row) => (row.payload as { turnEnd?: boolean }).turnEnd === true).length,
+    1,
+    "exactly one turnEnd checkpoint keeps model coverage intact",
+  );
+  assert.deepEqual(await sessions.getTranscriptEntries(session.id), entries);
+  assert.equal(await sessions.tapeCoverage(session.id), entries.at(-1)!.seq);
 
   assert.equal(await recordRunFailureEntry(sessions, failedRun()), false, "recording is idempotent");
   assert.equal((await sessions.getEntries(session.id)).length, 1);
@@ -376,4 +387,22 @@ test("run result delivery identifies the exact source session for shared attachm
   );
   assert.equal(delivery?.provenance.sourceSessionId, "source-session");
   assert.equal(delivery?.provenance.sourceAssistantEntrySeq, 7);
+});
+
+test("private session turns cannot deliver even with a stale destination", () => {
+  assert.equal(
+    runResultDelivery(run({ request: { ...turn("private", "C9:171.001"), privateSessionMessage: true } })),
+    null,
+  );
+});
+
+test("failed internal swarm notifications never append user-facing failure entries", async () => {
+  const failed = run({ status: "failed", result: { status: "failed", reason: "swarm service unavailable" } });
+  failed.request.swarm = { swarmId: "root", recipientId: "root", messageId: "message" };
+  const sessions = {
+    getByThread: async () => {
+      throw new Error("must not access the transcript");
+    },
+  } as unknown as TurnFailureSessions;
+  assert.equal(await recordRunFailureEntry(sessions, failed), false);
 });

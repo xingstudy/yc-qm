@@ -42,6 +42,8 @@ Point the CLI at a layer with `--config`:
 node cli/bin/qm.ts check --config deploy/layers/<org>/qm.config.jsonc
 ```
 
+For a separate deployment directory, substitute its path in both commands.
+Deploy modified services with the explicit `--build-from` workflow in the README.
 Run the CLI from the tree as shown. `npm exec qm` does not work in a source checkout
 because the workspace symlink points at `cli/`, which is unbuilt.
 

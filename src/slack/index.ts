@@ -1,3 +1,6 @@
+import { SlackPluginStartCleanupError } from "../surfaces/slack-runtime.ts";
+import { createSlackRateLimitNotice } from "./rate-limit-notice.ts";
+import { createSlackHistoryReader } from "./history.ts";
 import { errMessage, swallow, swallowAs } from "../util/errors.ts";
 import { createEnvelopeStaging } from "./envelope-staging.ts";
 import { createSweeper } from "../util/sweeper.ts";
@@ -8,6 +11,7 @@ import { installDevIntrospection } from "./dev-introspection.ts";
 import { setDefaultBotIdentity, createSurfaceHeaderEnsurer, type SurfaceHeaderClient } from "./delivery.ts";
 import {
   NO_RETRY,
+  HISTORY_NO_RETRY,
   type SlackPluginConfig,
   normalizeSlackApiUrl,
   slackAccountConfigsFromEnv,
@@ -43,10 +47,10 @@ export async function startSlackPlugin(
   if (!cfg.botToken) {
     throw new Error("Slack plugin needs botToken (SLACK_BOT_TOKEN, xoxb-…)");
   }
-  if (EVENTS_MODE === "socket" && !cfg.appToken) {
+  if (!cfg.receiverFactory && EVENTS_MODE === "socket" && !cfg.appToken) {
     throw new Error("Slack plugin needs appToken (SLACK_APP_TOKEN, xapp-…) in socket events mode");
   }
-  if (EVENTS_MODE === "http" && (!cfg.signingSecret || !cfg.eventsPort)) {
+  if (!cfg.receiverFactory && EVENTS_MODE === "http" && (!cfg.signingSecret || !cfg.eventsPort)) {
     throw new Error(
       "Slack plugin needs signingSecret (SLACK_SIGNING_SECRET) and eventsPort (SLACK_EVENTS_PORT) in http events mode",
     );
@@ -140,33 +144,38 @@ export async function startSlackPlugin(
     }
   }
 
+  const stagingAccount = cfg.installationId ? `${ACCOUNT_LABEL}:${cfg.installationId}` : ACCOUNT_LABEL;
   const staging = core.stagedEnvelopes
-    ? createEnvelopeStaging(core.stagedEnvelopes, { account: ACCOUNT_LABEL })
+    ? createEnvelopeStaging(core.stagedEnvelopes, { account: stagingAccount })
     : undefined;
+  const receiver = () => {
+    if (cfg.receiverFactory) return cfg.receiverFactory(staging);
+    return EVENTS_MODE === "http"
+      ? createHttpEventsReceiver({
+          signingSecret: cfg.signingSecret!,
+          port: cfg.eventsPort!,
+          ...(cfg.ackCapMs !== undefined ? { capMs: cfg.ackCapMs } : {}),
+          ...(staging ? { staging } : {}),
+        })
+      : createDeferredAckReceiver({
+          appToken: APP_TOKEN!,
+          ...(cfg.logLevel ? { logLevel: cfg.logLevel } : {}),
+          ...(SLACK_API_URL ? { slackApiUrl: SLACK_API_URL } : {}),
+          ...(cfg.ackCapMs !== undefined ? { capMs: cfg.ackCapMs } : {}),
+          ...(staging ? { staging } : {}),
+        });
+  };
   const app = new App({
     token: BOT_TOKEN,
-    receiver:
-      EVENTS_MODE === "http"
-        ? createHttpEventsReceiver({
-            signingSecret: cfg.signingSecret!,
-            port: cfg.eventsPort!,
-            ...(cfg.ackCapMs !== undefined ? { capMs: cfg.ackCapMs } : {}),
-            ...(staging ? { staging } : {}),
-          })
-        : createDeferredAckReceiver({
-            appToken: APP_TOKEN!,
-            ...(cfg.logLevel ? { logLevel: cfg.logLevel } : {}),
-            ...(SLACK_API_URL ? { slackApiUrl: SLACK_API_URL } : {}),
-            ...(cfg.ackCapMs !== undefined ? { capMs: cfg.ackCapMs } : {}),
-            ...(staging ? { staging } : {}),
-          }),
+    ignoreSelf: false,
+    receiver: receiver(),
     logLevel: parseLogLevel(cfg.logLevel),
     clientOptions: { ...CLIENT_OPTIONS },
   });
   const replaySweeper = staging
     ? createSweeper(
         () =>
-          core.holdEnvelopeReplay(ACCOUNT_LABEL, () =>
+          core.holdEnvelopeReplay(stagingAccount, () =>
             staging.sweep((body, ackGate) =>
               app.processEvent({
                 body,
@@ -202,7 +211,41 @@ export async function startSlackPlugin(
     ...(cfg.userCacheTtlMs ? { userCacheTtlMs: cfg.userCacheTtlMs } : {}),
   });
   const mirror = createMirror({ core, ids, directory, externalParticipantsEnabled });
+  const historyRateLimitOptions = {
+    managed: Boolean(cfg.installationId && cfg.sharedServiceUrl?.trim()),
+    ...(cfg.webUiPublicUrl ? { setupUrl: `${cfg.webUiPublicUrl.replace(/\/$/, "")}/admin/?setup=slack` } : {}),
+  };
+  const rateLimitNotice = createSlackRateLimitNotice({
+    ...historyRateLimitOptions,
+    client: new WebClient(BOT_TOKEN, { ...CLIENT_OPTIONS, ...HISTORY_NO_RETRY, timeout: 5000 }),
+  });
+  const historyApi = new WebClient(BOT_TOKEN, { ...CLIENT_OPTIONS, ...HISTORY_NO_RETRY });
+  const historyClient = {
+    conversations: Object.fromEntries(
+      (["history", "replies"] as const).map((method) => [
+        method,
+        async (args: any) => {
+          try {
+            return await historyApi.conversations[method](args);
+          } catch (error) {
+            await rateLimitNotice.observe(error);
+            throw error;
+          }
+        },
+      ]),
+    ) as Pick<typeof historyApi.conversations, "history" | "replies">,
+  };
+  const readHistory = createSlackHistoryReader({
+    historyLimit: cfg.historyLimit,
+    core,
+    ids,
+    historyClient,
+    source: cfg.contextSource ?? "live",
+    ...historyRateLimitOptions,
+  });
   const serializer = createConversationSerializer({
+    readHistory,
+    historyRateLimitOptions,
     ids,
     directory,
     externalParticipantsEnabled,
@@ -252,6 +295,8 @@ export async function startSlackPlugin(
       })();
     });
   const handler = createTurnHandler({
+    rateLimitNotice,
+    readHistory,
     core,
     flow,
     directory,
@@ -307,6 +352,11 @@ export async function startSlackPlugin(
     ensureHeader,
   });
   const surfaceContext = createSurfaceContextFulfiller({
+    historyLimit: cfg.historyLimit,
+    rateLimitNotice,
+    historyClient,
+    readHistory,
+    historyRateLimitOptions,
     core,
     directory,
     serializer,
@@ -318,7 +368,6 @@ export async function startSlackPlugin(
   const deliveries = createDeliveryPoller({
     core,
     flow,
-    mirror,
     threads,
     clientForIdentity,
     webUiPublicUrl: cfg.webUiPublicUrl,
@@ -349,7 +398,13 @@ export async function startSlackPlugin(
   } catch (err) {
     stopped = true;
     await devIntrospection?.close().catch(swallowAs("slack: dev-introspection close on failed start", undefined));
-    await app.stop().catch(swallowAs("slack: app.stop on failed start", undefined));
+    try {
+      await app.stop();
+    } catch (cleanupError) {
+      throw new SlackPluginStartCleanupError(err, cleanupError, async () => {
+        await app.stop();
+      });
+    }
     throw err;
   }
   devIntrospection?.ready({ connectedAs: auth.user ?? "", botUserId: ids.botUserId, teamId: ids.ownTeamId });
@@ -434,11 +489,12 @@ export async function startSlackPlugin(
   return {
     async stop(): Promise<void> {
       if (stopped) {
+        await replaySweeper?.stop();
         await app.stop();
         return;
       }
       stopped = true;
-      replaySweeper?.stop();
+      await replaySweeper?.stop();
       if (deliveriesTimer) clearInterval(deliveriesTimer);
       if (emojiCatalogTimer) clearInterval(emojiCatalogTimer);
       if (followerRetry) clearTimeout(followerRetry);

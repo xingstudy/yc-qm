@@ -12,12 +12,17 @@ store on every call, and every call is audited under their name. Two standing ru
 **confirm before any mutation** (state exactly what you'll change and where), and report
 afterwards exactly what changed. Reads are fine to just do.
 
-Three limits the API enforces (don't offer what it will refuse):
+Limits the API enforces (don't offer what it will refuse):
 
 - Your token elevates only on turns the admin **started themselves** — on autonomous
   runs (crons, webhooks) the admin plane refuses it, whoever owns the run.
 - Reads that return private content — transcripts, files, notebooks, logs, another
-  scope's config — only work from a **DM** with the admin. Two exceptions: org-targeted
+  scope's config — work from a **DM** with the admin, or from an **Open** conversation
+  on a live admin turn. Organization, personal, and conversation sharing restrictions
+  all apply; any Isolated setting keeps the DM requirement. The request uses the
+  authenticated speaker's live admin grant, not another participant's authority.
+  Open reads can expose private data to everyone in the conversation: retrieve and
+  report only what the request needs. Two other exceptions: org-targeted
   memory/config reads work anywhere (org content is ambient to every conversation), and
   a cron can carry **unattended read grants** (`unattendedGrants` on the cron:
   `admin.sessions.read`, `admin.audit.read`, `admin.metrics.read`, `admin.egress.read`,
@@ -26,7 +31,8 @@ Three limits the API enforces (don't offer what it will refuse):
   exactly its own GET routes to that cron's autonomous fires, audited as the owner
   (re-checked live — revoking their admin grant closes it). Other mutations work
   anywhere; the room sees what changed, by design.
-- **Grant changes (promote/revoke) are portal-only** through you — see below.
+- **Grant changes (promote/revoke) and impersonation are portal-only** through you.
+- Bulk configuration import is not supported. Use the individual configuration resources instead.
 
 All calls share one shape — only method/path/body vary:
 
@@ -39,6 +45,59 @@ Anyone can check admin status (this is also how you answer "am I an admin?"):
 ```bash
 GET /v1/admin/whoami        → {"isAdmin":true,"role":"org_admin","scopeId":"org:…"} or {"isAdmin":false}
 ```
+
+## Guide Slack installation
+
+Check this silently before offering Slack bot setup during admin onboarding. It is
+separate from personal account connections. Verify admin status first. On a
+human-started admin turn, read `GET /v1/admin/slack-installation`; it returns setup
+metadata, not tokens. A failed read means unknown, not absent. Never inspect
+deployment secrets to infer status.
+
+- `configured: true`: skip silently during onboarding, including environment-backed
+  installs. Do not add a setup heading, say "already connected", or ask for a test DM.
+  Configuration is not a live connectivity check; troubleshoot only if asked.
+- `managed: true`, `configured: false`: leave disabled setup alone unless the admin
+  asks to resume or re-enable it. Do not advertise it during onboarding.
+- `source: "invalid_environment"`: this is incomplete setup, not an absent app. Do
+  not create a duplicate; offer to finish the existing setup using its secure page.
+- Only a successful read confirming an absent bot warrants a new setup offer.
+  Respect a prior deferral and continue with personal connections.
+
+For company-owned provisioning, the status response supplies `setup.tokenUrl`,
+`setup.submitUrl`, and `setup.installUrl`. They are stable authenticated QM entry
+links, not expiring tickets. Never invent URLs or mint launch tickets in the shell.
+
+On the web surface, post **[Set up Slack](setup.submitUrl)** once, using the returned
+URL. The conversation renders one live checklist with all three links together in one message:
+**Create token**, **Submit token**, and **Add to Slack**, plus the instructional GIF.
+It checks progress in place without another assistant reply. Do not duplicate that
+checklist in prose. On other surfaces, present all three returned links together:
+
+1. Create token: open `setup.tokenUrl`. Under **App Configuration Tokens**, choose
+   **Generate Token**, select the intended workspace, and copy the **access token**,
+   not the refresh token.
+2. Submit token: open `setup.submitUrl`, the secure provisioning form. This is
+   not a generic keychain token-drop. The token can manage other apps they own in
+   that workspace. QM creates/configures its app, then discards the token.
+   Never paste it in chat, memory, files, or the keychain.
+3. Add to Slack: open `setup.installUrl` after submitting the token, review the
+   workspace, and choose **Allow**. The company owns the app.
+
+`setup.appReady` means the app exists; it does not mean it is installed.
+Only verified `setup.connected` together with `configured` warrants **Connected**.
+Require a real reply before claiming the bot works, not as an onboarding prerequisite.
+A failed status read or `setupUnavailable` means unknown, not absent. Do not restart
+provisioning or create a duplicate. Retry the existing links or follow recovery guidance.
+
+Older services may return `installAvailable: true` without `setup`. That only promises
+the authenticated dashboard **Add to Slack** action. Give its known entry link and
+instructions together instead of promising a checklist or fabricating a token-drop.
+
+Without managed installation, use the returned `createUrl` and the known dashboard's
+workspace app guide. Do not ask for a configuration token this flow cannot consume.
+Have them enter credentials only in its secure form. Do not guess scopes, callback
+URLs, or credential requirements. Setup is optional; continue onboarding if deferred.
 
 ## Finding the scope
 
@@ -121,7 +180,7 @@ where the admin acts directly. If asked, point them there — don't try the API
   revoked). Say so; don't retry or work around it.
 - `403 … require a turn the admin started themselves` — this is an autonomous run
   (cron/webhook); admin actions only ride turns the admin personally initiated. Say so.
-- `403 … returns private content — ask the agent in a DM` — you're in a shared room;
+- `403 … returns private content — ask the agent in a DM` — the shared room does not have effective Open access for this live admin turn;
   tell the admin to ask again in a DM with you (or, for reads they want recurring
   on a schedule, to put an unattended read grant on a personal-scope cron — from
   their DM, never from here).
@@ -130,7 +189,8 @@ where the admin acts directly. If asked, point them there — don't try the API
   answer: the dashboard.
 - `409 that address already belongs to a member of the org …` — org email domain, Slack
   directory, sign-in allow-list, or someone who has already used the agent. They are not
-  external; point the admin at Users / Admins for that person instead.
+  external; to promote them, point the admin at Grant org admin in the dashboard and
+  tell them to enter the email as the principal ID. The person need not appear in Users first.
 - `409 that address holds an org admin grant of its own …` — the admin manages that grant
   under Admins in the dashboard first.
 - `403 capability token not valid for this route` — this core predates agent admin

@@ -12,6 +12,7 @@ class FakeEventSource {
   onerror: (() => void) | null = null;
   listeners = new Map<string, Array<(event: { data: string }) => void>>();
   closed = false;
+  controller?: ReadableStreamDefaultController<Uint8Array>;
   url: string;
   constructor(url: string) {
     this.url = url;
@@ -20,11 +21,29 @@ class FakeEventSource {
   addEventListener(name: string, listener: (event: { data: string }) => void) {
     this.listeners.set(name, [...(this.listeners.get(name) ?? []), listener]);
   }
+  response(signal?: AbortSignal | null) {
+    const body = new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        this.controller = controller;
+      },
+    });
+    signal?.addEventListener("abort", () => this.close(), { once: true });
+    this.controller!.enqueue(
+      new TextEncoder().encode(`data: ${JSON.stringify({ type: "RUN_STARTED", threadId: "r1", runId: "r1" })}\n\n`),
+    );
+    return new Response(body, { headers: { "content-type": "text/event-stream" } });
+  }
   emit(name: string, data: unknown) {
+    if (this.controller && !this.closed) {
+      const event = { type: "CUSTOM", name: "run", value: data };
+      this.controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+    }
     for (const listener of this.listeners.get(name) ?? []) listener({ data: JSON.stringify(data) });
   }
   close() {
+    if (this.closed) return;
     this.closed = true;
+    this.controller?.close();
   }
 }
 
@@ -96,9 +115,11 @@ test("post replies remain visible in new and continuing conversations", async (t
   let intercept: ((path: string) => Promise<Response> | undefined) | undefined;
   const requests: string[] = [];
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input) => {
+  globalThis.fetch = async (input, init) => {
     const path = String(input);
     requests.push(path);
+    if (path.includes("/api/runs/") && path.includes("/events"))
+      return new FakeEventSource(new URL(path, "http://localhost").pathname).response(init?.signal);
     const intercepted = intercept?.(path);
     if (intercepted) return intercepted;
     if (path.includes("runtime-config"))
@@ -173,10 +194,19 @@ test("post replies remain visible in new and continuing conversations", async (t
       if (wait) await settle();
       requests.length = 0;
     }
-    const shown = (text: string) =>
-      [...host.querySelectorAll(".assistant-body > .streaming-text, .work-said")].some((el) =>
+    const shownReplies = (text: string) => {
+      const matches = [...host.querySelectorAll(".assistant-body > .streaming-text, .work-message")].filter((el) =>
         el.textContent?.includes(text),
       );
+      for (const match of matches)
+        assert.equal(
+          match.closest("details:not([open])"),
+          null,
+          "delivered replies must remain visible outside closed work",
+        );
+      return matches;
+    };
+    const shown = (text: string) => shownReplies(text).length > 0;
     async function postTurn(index: number, fails = false) {
       const text = `Confirmed answer ${index}`;
       const seq = index * 3;
@@ -205,6 +235,9 @@ test("post replies remain visible in new and continuing conversations", async (t
         ...activity,
       ];
       transcriptFails = fails;
+      run.emit("run", { status: "running", result: null, activity });
+      await settle();
+      assert.equal(shownReplies(text).length, 1, "a confirmed post is visible while the turn continues");
       run.emit("done", { status: "done", result: { status: "silent", sessionId: row.id }, activity });
       await turn;
       await settle();
@@ -252,13 +285,7 @@ test("post replies remain visible in new and continuing conversations", async (t
       delivery.emit("delivery", { threadRef: row.threadRef });
       await settle();
       for (let i = 0; i < 3; i++) {
-        assert.equal(
-          [...host.querySelectorAll(".assistant-body > .streaming-text, .work-said")].filter((el) =>
-            el.textContent?.includes(`Confirmed answer ${i}`),
-          ).length,
-          1,
-          "refresh must not duplicate a displayed post",
-        );
+        assert.equal(shownReplies(`Confirmed answer ${i}`).length, 1, "refresh must not duplicate a displayed post");
       }
     });
     function deferredTranscript(recorded: SessionEntry[]) {
@@ -364,13 +391,20 @@ test("post replies remain visible in new and continuing conversations", async (t
       const run = FakeEventSource.instances.findLast((es) => es.url === "/api/runs/r1/events")!;
       run.onopen?.();
       transcriptFails = true;
+      run.emit("run", { status: "running", result: null, activity });
+      await settle();
+      assert.deepEqual(
+        shownReplies(answer).map((el) => el.textContent?.trim()),
+        [answer],
+      );
+      assert.deepEqual(
+        shownReplies("Second confirmed reply").map((el) => el.textContent?.trim()),
+        ["Second confirmed reply"],
+      );
       run.emit("done", { status: "done", result: { status: "silent", sessionId: row.id }, activity });
       await turn;
       await settle();
-      const count = (text: string) =>
-        [...host.querySelectorAll(".assistant-body > .streaming-text, .work-said")].filter((el) =>
-          el.textContent?.includes(text),
-        ).length;
+      const count = (text: string) => shownReplies(text).length;
       assert.equal(count(answer), 1);
       assert.equal(count("Second confirmed reply"), 1);
       entries = [
@@ -385,6 +419,69 @@ test("post replies remain visible in new and continuing conversations", async (t
       assert.equal(count("Second confirmed reply"), 1);
       assert.equal(count("Replies sent."), 0);
     });
+    for (const edited of [false, true]) {
+      await t.test(
+        `ended-run steer keeps the durable queue and ${edited ? "preserves a newer draft" : "leaves the composer empty"}`,
+        async (sub) => {
+          sub.after(() => {
+            intercept = undefined;
+          });
+          await mount();
+          const agent = conv!.state.agent!;
+          let oldRunLive = true;
+          let signalled = false;
+          let resends = 0;
+          let withdrawals = 0;
+          const queued = [{ runId: "queued", text: "Follow-up question" }];
+          intercept = (path) => {
+            if (path.includes("/api/runs/active"))
+              return Promise.resolve(
+                Response.json({
+                  runId: oldRunLive ? "r1" : null,
+                  run: oldRunLive ? { status: "running" } : null,
+                  queued,
+                }),
+              );
+            if (path === "/api/runs/queued/withdraw") {
+              withdrawals++;
+              return Promise.resolve(Response.json({ withdrawn: true }));
+            }
+            if (path === "/api/runs/r1/signal") {
+              signalled = true;
+              return Promise.resolve(Response.json({ reason: "terminal", replayed: false }, { status: 409 }));
+            }
+            if (path === "/api/turn") {
+              resends++;
+              return Promise.resolve(Response.json({ reply: "Follow-up received" }));
+            }
+          };
+          const before = FakeEventSource.instances.length;
+          conv!.resumeIfIdle();
+          await until(() => FakeEventSource.instances.length > before);
+          const turn = agent.waitForIdle();
+          const run = FakeEventSource.instances.findLast((es) => es.url === "/api/runs/r1/events")!;
+          run.onopen?.();
+          conv!.composer.setQueuedRuns(row.threadRef, [{ runId: "queued", text: "Follow-up question" }]);
+          conv!.drawActiveChat(agent);
+          host.querySelector<HTMLButtonElement>(".queued-steer")!.click();
+          await until(() => signalled);
+          await settle();
+          assert.equal(conv!.composer.state.draft, "");
+          assert.deepEqual(conv!.composer.queuedRunsFor(row.threadRef), queued);
+          if (edited) conv!.composer.state.draft = "New draft";
+          assert.equal(resends, 0);
+          oldRunLive = false;
+          run.emit("done", { status: "done", result: { status: "ok", reply: "Original answer" } });
+          await turn;
+          await settle();
+          assert.equal(resends, 0);
+          assert.equal(withdrawals, 0);
+          assert.deepEqual(conv!.composer.queuedRunsFor(row.threadRef), queued);
+          assert.equal(conv!.composer.state.draft, edited ? "New draft" : "");
+          intercept = undefined;
+        },
+      );
+    }
     if (conv) {
       disposeConversation(conv);
       conv = undefined;

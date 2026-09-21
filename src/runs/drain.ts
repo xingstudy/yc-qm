@@ -5,7 +5,7 @@ import { createSweeper, type Sweeper } from "../util/sweeper.ts";
 
 export interface DrainController {
   start(): void;
-  stop(): void;
+  stop(): Promise<void>;
   canClaim(): boolean;
   noteBusy(): void;
 }
@@ -56,10 +56,10 @@ export function createDrainController(opts: {
       stopped = false;
       sweeper.start();
     },
-    stop: () => {
+    stop: async () => {
       stopped = true;
-      sweeper.stop();
-      void protect(false);
+      await sweeper.stop();
+      await protect(false);
     },
     canClaim: () => !superseded,
     noteBusy: () => {

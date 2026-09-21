@@ -1,4 +1,9 @@
 import { SKILL_IMPORT_BODY_MAX_BYTES } from "../../chassis/src/skill-import.ts";
+import "./instrument.ts";
+import { browserErrorConfig } from "./browser-error-config.ts";
+import { flushErrorReporting, reportBackendError } from "../../chassis/src/error-reporting.ts";
+import { appEditSlug } from "../src/app-edit.ts";
+import { composioCallbackUrl } from "./composio-return.ts";
 import { sharedSessionHtml } from "./shared-session.ts";
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -37,6 +42,8 @@ import {
 } from "../../chassis/src/http.ts";
 import { mintPortalIdentity, verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { createBrandingCache, injectBranding } from "../../chassis/src/branding.ts";
+import { parseSuggestedActivities } from "../../chassis/src/suggested-activities.ts";
+
 import {
   CORE_API_URL as CORE,
   CORE_ORG_ID as ORG,
@@ -45,7 +52,10 @@ import {
   portFromEnv,
 } from "../../chassis/src/env.ts";
 
+const SUBAGENT_THREAD_PREFIX = "agent:main:subagent:";
 const PORT = portFromEnv(8096);
+const welcomeCohort = process.env.WEB_UI_WELCOME_COHORT?.trim().slice(0, 40) || undefined;
+const suggestedActivities = parseSuggestedActivities(process.env.WEB_UI_SUGGESTED_ACTIVITIES);
 const PUBLIC_URL = (process.env.WEB_UI_PUBLIC_URL ?? `http://localhost:${PORT}`).replace(/\/$/, "");
 const WEB_UI_DEV = process.env.WEB_UI_DEV === "1";
 const ALLOW_UNSIGNED_TEST_IDENTITY =
@@ -85,6 +95,7 @@ const brandingCache = createBrandingCache(async () => {
   if (r.status !== 200) throw new Error(`surface-config ${r.status}`);
   const b = (JSON.parse(r.text) as { branding?: Record<string, unknown> }).branding;
   return {
+    ...(typeof b?.orgName === "string" ? { orgName: b.orgName } : {}),
     ...(typeof b?.accent === "string" ? { accent: b.accent } : {}),
     ...(typeof b?.mark === "string" ? { mark: b.mark } : {}),
     ...(typeof b?.markUrl === "string" ? { markUrl: b.markUrl } : {}),
@@ -120,10 +131,6 @@ const portalTokenStore = new AsyncLocalStorage<string | undefined>();
 const runOwners = new Map<string, string>();
 const runThreadKeys = new Map<string, string>();
 const activeRunsByThread = new Map<string, string[]>();
-
-function ownsRun(runId: string, user: string): boolean {
-  return runOwners.get(runId) === user;
-}
 
 function threadKey(user: string, threadRef: string): string {
   return `${user}\0${threadRef}`;
@@ -3286,18 +3293,38 @@ const CONTENT_TYPES: Record<string, string> = {
   ".wasm": "application/wasm",
 };
 
+const analyticsKey = process.env.POSTHOG_API_KEY?.trim();
+if (analyticsKey && !/^phc_[A-Za-z0-9]+$/.test(analyticsKey))
+  throw new Error("POSTHOG_API_KEY must be a public project ingestion token");
+const analyticsHost = new URL((analyticsKey && process.env.POSTHOG_HOST?.trim()) || "https://us.i.posthog.com");
+if (
+  analyticsKey &&
+  (analyticsHost.protocol !== "https:" ||
+    analyticsHost.username ||
+    analyticsHost.password ||
+    analyticsHost.search ||
+    analyticsHost.hash ||
+    analyticsHost.pathname !== "/")
+) {
+  throw new Error("POSTHOG_HOST must be an HTTPS origin");
+}
+const analyticsConfig = analyticsKey ? { apiKey: analyticsKey, host: analyticsHost.origin } : undefined;
+
+const browserErrors = browserErrorConfig(process.env);
+const browserErrorOrigin = browserErrors ? new URL(browserErrors.dsn).origin : undefined;
+
 const SPA_CSP = [
   "default-src 'self'",
   "script-src 'self' 'wasm-unsafe-eval'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  "connect-src 'self'",
+  `connect-src 'self'${analyticsConfig ? ` ${analyticsConfig.host}` : ""}${browserErrorOrigin ? ` ${browserErrorOrigin}` : ""}`,
   "frame-src 'self' data: https:",
   "worker-src 'self' blob:",
   "frame-ancestors 'self'",
   "base-uri 'none'",
-  "form-action 'self'",
+  `form-action 'self'${process.env.QM_SLACK_SERVICE_URL ? ` ${new URL(process.env.QM_SLACK_SERVICE_URL).origin} https://slack.com` : ""}`,
   "object-src 'none'",
 ].join("; ");
 
@@ -3306,7 +3333,7 @@ function withSecurityHeaders(headers: Record<string, string>): Record<string, st
     ...headers,
     "content-security-policy": SPA_CSP,
     "strict-transport-security": "max-age=63072000; includeSubDomains",
-    "referrer-policy": "no-referrer",
+    "referrer-policy": process.env.QM_SLACK_SERVICE_URL ? "strict-origin" : "no-referrer",
     "x-frame-options": "SAMEORIGIN",
     "x-content-type-options": "nosniff",
   };
@@ -3353,21 +3380,15 @@ function relay(res: ServerResponse, r: { status: number; text: string }): void {
   sendBuffered(res, r.status, { "content-type": "application/json", "x-content-type-options": "nosniff" }, r.text);
 }
 
-function sendHtml(res: ServerResponse, status: number, html: string): void {
-  sendBuffered(res, status, withSecurityHeaders({ "content-type": "text/html; charset=utf-8" }), html);
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
 }
 
-const SSE_CORE_POLL_MS = 100;
-const SSE_STALE_POLL_MS = 1_000;
-const SSE_IDLE_MS = 6 * 60_000;
-const SSE_STALE_GRACE_MS = 10 * 60_000;
-const SSE_HEARTBEAT_MS = 15_000;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => {
-    const t = setTimeout(r, ms);
-    t.unref?.();
-  });
+function sendHtml(res: ServerResponse, status: number, html: string): void {
+  sendBuffered(res, status, withSecurityHeaders({ "content-type": "text/html; charset=utf-8" }), html);
 }
 
 function sseEvent(res: ServerResponse, event: string, data: unknown): void {
@@ -3435,7 +3456,11 @@ function resolveWebConversation(
   scope: string | undefined,
   channelName: string | undefined,
 ): { conversation: WebConversation } | { error: string; message: string } {
-  if (!threadRef.startsWith(`web:${user}:`) && !(scope?.startsWith("channel:") || scope?.startsWith("group:"))) {
+  if (
+    !threadRef.startsWith(`web:${user}:`) &&
+    !threadRef.startsWith(SUBAGENT_THREAD_PREFIX) &&
+    !(scope?.startsWith("channel:") || scope?.startsWith("group:"))
+  ) {
     return { error: "forbidden_thread", message: "this conversation can only be continued from its own context" };
   }
   const conversation = conversationForScope(user, threadRef, scope, channelName);
@@ -3456,12 +3481,18 @@ function webTurnBase(
   text: string,
 ) {
   const displayName = resolveIdentity(req)?.name ?? null;
+  const appSlug = appEditSlug(threadRef, user);
   return {
     surface: "web",
     actor: { externalId: user, ...(displayName ? { displayName } : {}) },
     conversation,
     liveActor: true,
     deliveryTarget: threadRef,
+    ...(appSlug
+      ? {
+          conversationHeader: `The user is chatting beside their deployed app ${JSON.stringify(appSlug)}. Requests about this app refer to that deployment. Use the existing app source and publish updates to the same deployment when requested. This context does not grant additional permissions.`,
+        }
+      : {}),
     text,
   };
 }
@@ -3584,6 +3615,7 @@ async function drainWebDeliveries(): Promise<void> {
   }
 }
 
+const SSE_HEARTBEAT_MS = 15_000;
 const STATE_FEED_RECONNECT_MS = Number(process.env.STATE_FEED_RECONNECT_MS ?? 3_000);
 
 interface SessionStateFrame {
@@ -4296,12 +4328,31 @@ function namespacedSendKey(user: string, raw: unknown): string | undefined {
   return SEND_KEY_PATTERN.test(key) ? `web:${encodeURIComponent(user)}:${key}` : undefined;
 }
 
-async function postTurnAndMint(res: ServerResponse, turn: unknown, user: string, threadRef: string): Promise<void> {
-  const r = await coreFetch("POST", `/v1/turns?async=1`, JSON.stringify(turn));
+async function postTurnAndMint(
+  req: IncomingMessage,
+  res: ServerResponse,
+  turn: Record<string, unknown>,
+  user: string,
+  threadRef: string,
+): Promise<void> {
+  const startedAt = performance.now();
+  let runId: string | undefined;
+  res.once("finish", () => {
+    console.info("[web] turn response", {
+      runId,
+      status: res.statusCode,
+      elapsedMs: Math.round(performance.now() - startedAt),
+    });
+  });
+  const r = await coreFetch(
+    "POST",
+    `/v1/turns?async=1`,
+    JSON.stringify({ ...turn, ...(resolveIdentity(req)?.impersonator ? { analyticsSuppressed: true } : {}) }),
+  );
   if (r.status >= 200 && r.status < 300) {
     try {
       const parsed = JSON.parse(r.text) as Record<string, unknown> & { runId?: string };
-      const runId = parsed.runId;
+      runId = parsed.runId;
       if (runId) {
         rememberRun(runId, user, threadRef);
         return json(res, r.status, parsed);
@@ -4727,6 +4778,19 @@ const apiRoutes: readonly WebRoute[] = [
   },
   {
     method: "POST",
+    path: "/api/user-model-auth/account",
+    handle: async (c) => {
+      const p = JSON.parse((await readBody(c.req)) || "{}") as { account?: unknown; provider?: unknown };
+      return relayCore(
+        c.res,
+        "POST",
+        "/v1/user-model-auth/account",
+        JSON.stringify({ principalId: c.user, account: p.account, provider: p.provider }),
+      );
+    },
+  },
+  {
+    method: "POST",
     path: "/api/user-model-auth/api-key",
     handle: async (c) => {
       const p = JSON.parse((await readBody(c.req)) || "{}") as { provider?: unknown; apiKey?: unknown };
@@ -4779,16 +4843,61 @@ const apiRoutes: readonly WebRoute[] = [
   },
 
   {
+    method: "GET",
+    path: "/api/composio/toolkits",
+    handle: async (c) =>
+      relayCore(
+        c.res,
+        "GET",
+        `/v1/composio/toolkits?${new URLSearchParams({ cursor: c.url.searchParams.get("cursor") ?? "" })}`,
+      ),
+  },
+  {
+    method: "GET",
+    path: "/api/composio/connections",
+    handle: async (c) => {
+      c.res.setHeader("Cache-Control", "no-store");
+      return relayCore(
+        c.res,
+        "GET",
+        `/v1/composio/connections?${new URLSearchParams({ cursor: c.url.searchParams.get("cursor") ?? "" })}`,
+      );
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/composio/authorize",
+    handle: async (c) => {
+      const body = await readJson<{ toolkit?: unknown; returnTo?: unknown; state?: unknown }>(c.req, c.res, false);
+      if (!body) return;
+      c.res.setHeader("Cache-Control", "no-store");
+      const callbackUrl = composioCallbackUrl(PUBLIC_URL, body.returnTo, body.state);
+      if (!callbackUrl && (body.returnTo !== undefined || body.state !== undefined)) {
+        return json(c.res, 400, { error: "invalid_return_url" });
+      }
+      return relayCore(
+        c.res,
+        "POST",
+        "/v1/composio/authorize",
+        JSON.stringify({ toolkit: body.toolkit, ...(callbackUrl ? { callbackUrl } : {}) }),
+      );
+    },
+  },
+  {
     match: (_method, pathname) => pathname === "/me",
     handle: async (c) => {
       const { req, res, user } = c;
       res.setHeader("set-cookie", sessionCookie(user));
-      const [allPermissions, workspaceUrl, authStatus] = await Promise.all([
+      const [allPermissions, workspaceUrl, authStatus, activityConfig, companyBranding] = await Promise.all([
         userPermissions(),
         slackWorkspaceUrl(),
         coreFetch("GET", `/v1/user-model-auth/status?principalId=${encodeURIComponent(user)}`, "", 5_000).catch(
           () => null,
         ),
+        coreFetch("GET", "/v1/suggested-activities", "", 2_000)
+          .then((response) => response.status === 200 && JSON.parse(response.text).enabled === true)
+          .catch(() => false),
+        brandingCache.forRender(),
       ]);
       if (authStatus === null || authStatus.status !== 200) {
         return json(res, 503, {
@@ -4798,6 +4907,7 @@ const apiRoutes: readonly WebRoute[] = [
       }
       const parsed = JSON.parse(authStatus.text) as {
         individualModelAuth?: boolean;
+        account?: string;
         connections?: { provider: string }[];
       };
       const permissions = allPermissions.filter((permission) => permission !== "loops" && permission !== "inbox");
@@ -4806,12 +4916,21 @@ const apiRoutes: readonly WebRoute[] = [
       return json(res, 200, {
         user,
         org: ORG,
+        companyName: companyBranding.orgName?.trim() || null,
+        ...(analyticsConfig && !resolveIdentity(req)?.impersonator ? { analytics: analyticsConfig } : {}),
+        ...(browserErrors && !resolveIdentity(req)?.impersonator ? { browserErrors } : {}),
         mode: AUTH_MODE,
         slackWorkspaceUrl: workspaceUrl,
         individualModelAuth: parsed.individualModelAuth === true,
-        modelAuthConnected: (parsed.connections?.length ?? 0) > 0,
+        modelAuthConnected:
+          parsed.connections?.some(
+            (c) => !parsed.account || parsed.account === "personal" || parsed.account === c.provider,
+          ) ?? false,
         impersonatedBy: resolveIdentity(req)?.impersonator ?? null,
         displayName: resolveIdentity(req)?.name ?? null,
+        ...(welcomeCohort ? { welcomeCohort } : {}),
+        ...(suggestedActivities.length ? { suggestedActivities } : {}),
+        ...(activityConfig ? { suggestedActivitiesGeneration: true } : {}),
         permissions,
       });
     },
@@ -4838,6 +4957,16 @@ const apiRoutes: readonly WebRoute[] = [
         uploadFileName(url),
       );
     },
+  },
+  {
+    method: "GET",
+    path: "/api/resources/search",
+    handle: (c) =>
+      relayCore(
+        c.res,
+        "GET",
+        `/v1/resources/search?principalId=${encodeURIComponent(c.user)}&q=${encodeURIComponent((c.url.searchParams.get("q") ?? "").slice(0, 500))}`,
+      ),
   },
   {
     method: "GET",
@@ -5021,6 +5150,20 @@ const apiRoutes: readonly WebRoute[] = [
     },
   },
   {
+    method: "POST",
+    path: "/api/suggested-activities",
+    handle: async (c) => {
+      const input = JSON.parse((await readBody(c.req)) || "{}") as { timezone?: unknown };
+      const response = await coreFetch(
+        "POST",
+        "/v1/suggested-activities",
+        JSON.stringify({ principalId: c.user, seeds: suggestedActivities, timezone: input.timezone }),
+        60_000,
+      );
+      return json(c.res, response.status, JSON.parse(response.text));
+    },
+  },
+  {
     method: "GET",
     path: "/api/surface-config",
     handle: async (c) => {
@@ -5197,6 +5340,15 @@ const apiRoutes: readonly WebRoute[] = [
       const removed = await removeImBinding(user, provider, url.searchParams.get("forget") === "1");
       const state = await readImBindings(user);
       return json(res, 200, { removed, reusable: Boolean(state.resources[provider]) });
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/inbox/sent-chat",
+    handle: async ({ req, res, user }) => {
+      if (!isInboxUser(user)) return json(res, 403, { error: "forbidden" });
+      res.setHeader("Cache-Control", "no-store");
+      return relayCore(res, "POST", "/v1/loops/inbox/sent-chat", await readBody(req));
     },
   },
   {
@@ -5478,6 +5630,35 @@ const apiRoutes: readonly WebRoute[] = [
         res,
         "POST",
         `/v1/sessions/${encodeURIComponent(id)}/title`,
+        JSON.stringify({ principalId: user }),
+      );
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/sessions/:id/adopt",
+    handle: async (c) => {
+      const p = await readJson<{ parentSessionId?: unknown }>(c.req, c.res);
+      if (!p) return;
+      if (typeof p.parentSessionId !== "string") return json(c.res, 400, { error: "bad_request" });
+      return relayCore(
+        c.res,
+        "POST",
+        `/v1/sessions/${encodeURIComponent(c.params.id!)}/adopt`,
+        JSON.stringify({ principalId: c.user, parentSessionId: p.parentSessionId }),
+      );
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/sessions/:id/detach",
+    handle: async (c) => {
+      const { res, user } = c;
+      const id = c.params.id!;
+      return relayCore(
+        res,
+        "POST",
+        `/v1/sessions/${encodeURIComponent(id)}/detach`,
         JSON.stringify({ principalId: user }),
       );
     },
@@ -5776,20 +5957,6 @@ const apiRoutes: readonly WebRoute[] = [
   },
   {
     method: "GET",
-    path: "/api/deployments/:id/owner-url",
-    handle: async (c) => {
-      const { res, user } = c;
-      const id = c.params.id!;
-      if (!id || id.includes("/")) return json(res, 404, { error: "not_found" });
-      return relayCore(
-        res,
-        "GET",
-        `/v1/deployments/${encodeURIComponent(id)}/owner-url?principalId=${encodeURIComponent(user)}`,
-      );
-    },
-  },
-  {
-    method: "GET",
     path: "/api/deployments",
     handle: async (c) => {
       const { res, user } = c;
@@ -5833,6 +6000,25 @@ const apiRoutes: readonly WebRoute[] = [
       } catch {
         return json(res, 502, { error: "bad_core_response" });
       }
+    },
+  },
+  {
+    method: "GET",
+    path: "/api/deployments/:id/share",
+    handle: async ({ res, params }) => relayCap(res, "GET", `/v1/deployments/${encodeURIComponent(params.id!)}/share`),
+  },
+  {
+    method: "POST",
+    path: "/api/deployments/:id/share",
+    handle: async ({ req, res, params }) => {
+      const body = await readJson<{ scope?: unknown; recipient?: unknown; access?: unknown }>(req, res, false);
+      if (!body) return;
+      return relayCap(
+        res,
+        "POST",
+        `/v1/deployments/${encodeURIComponent(params.id!)}/share`,
+        JSON.stringify({ scope: body.scope, recipient: body.recipient, access: body.access }),
+      );
     },
   },
   {
@@ -5918,7 +6104,7 @@ const apiRoutes: readonly WebRoute[] = [
       const threadRef =
         typeof record.request?.conversation?.threadRef === "string" ? record.request.conversation.threadRef : "";
       const actor = typeof record.request?.actor?.externalId === "string" ? record.request.actor.externalId : "";
-      if (!threadRef.startsWith("web:") || actor !== user || !record.request) {
+      if ((!threadRef.startsWith("web:") && !threadRef.startsWith("swarm:")) || actor !== user || !record.request) {
         return json(res, 404, { error: "not_found" });
       }
       if (!threadRef.startsWith(`web:${user}:`)) {
@@ -5930,13 +6116,18 @@ const apiRoutes: readonly WebRoute[] = [
             )
           : null;
         if (visible?.status !== 200) return json(res, 404, { error: "not_found" });
+        if (threadRef.startsWith("swarm:")) {
+          const session = (JSON.parse(visible.text) as { session?: { threadRef?: string; surface?: string } }).session;
+          if (session?.surface !== "swarm" || session.threadRef !== threadRef)
+            return json(res, 404, { error: "not_found" });
+        }
       }
 
       const approval = { requestId, approved, ...(scope ? { scope } : {}) };
       const replay: Record<string, unknown> = { ...record.request, approval };
       delete replay.idempotencyKey;
       if (idempotencyKey) replay.idempotencyKey = idempotencyKey;
-      return postTurnAndMint(res, replay, user, threadRef);
+      return postTurnAndMint(req, res, replay, user, threadRef);
     },
   },
   {
@@ -5978,7 +6169,11 @@ const apiRoutes: readonly WebRoute[] = [
               : {}),
           };
         }
-        if (typeof p.threadRef === "string" && p.threadRef.startsWith("web:")) threadRef = p.threadRef;
+        if (
+          typeof p.threadRef === "string" &&
+          (p.threadRef.startsWith("web:") || p.threadRef.startsWith(SUBAGENT_THREAD_PREFIX))
+        )
+          threadRef = p.threadRef;
         if (typeof p.scopeId === "string" && p.scopeId) scope = p.scopeId;
         if (typeof p.channelName === "string" && p.channelName.trim()) channelName = p.channelName.trim().slice(0, 200);
         if (typeof p.model === "string" && p.model) model = p.model;
@@ -6020,7 +6215,7 @@ const apiRoutes: readonly WebRoute[] = [
         ...(proactiveOpener ? { proactiveOpener: true } : {}),
         ...(idempotencyKey ? { idempotencyKey } : {}),
       };
-      return postTurnAndMint(res, turn, user, threadRef);
+      return postTurnAndMint(req, res, turn, user, threadRef);
     },
   },
   {
@@ -6060,7 +6255,8 @@ const apiRoutes: readonly WebRoute[] = [
     handle: async (c) => {
       const { res, url, user } = c;
       const threadRef = url.searchParams.get("threadRef") ?? "";
-      if (!threadRef.startsWith("web:")) return json(res, 404, { error: "not_found" });
+      if (!threadRef.startsWith("web:") && !threadRef.startsWith(SUBAGENT_THREAD_PREFIX))
+        return json(res, 404, { error: "not_found" });
       let queued: Array<{ runId: string; text: string; hasAttachments?: boolean }> = [];
       let durableRunId: string | null = null;
       const durable = await coreFetch("GET", `/v1/runs?threadRef=${encodeURIComponent(threadRef)}`);
@@ -6116,11 +6312,16 @@ const apiRoutes: readonly WebRoute[] = [
         threadRef?: unknown;
         scopeId?: unknown;
         channelName?: unknown;
+        queuedRunId?: unknown;
       }>(req, res, false);
       if (!p) return;
       const kind = typeof p.kind === "string" ? p.kind : "";
       const text = typeof p.text === "string" ? p.text : undefined;
-      const threadRef = typeof p.threadRef === "string" && p.threadRef.startsWith("web:") ? p.threadRef : "";
+      const threadRef =
+        typeof p.threadRef === "string" &&
+        (p.threadRef.startsWith("web:") || p.threadRef.startsWith(SUBAGENT_THREAD_PREFIX))
+          ? p.threadRef
+          : "";
       let steerFields: { request: ReturnType<typeof webTurnBase> } | undefined;
       if (kind === "steer" && text !== undefined && threadRef) {
         const scope = typeof p.scopeId === "string" && p.scopeId ? p.scopeId : undefined;
@@ -6134,8 +6335,22 @@ const apiRoutes: readonly WebRoute[] = [
         res,
         "POST",
         `/v1/runs/${encodeURIComponent(id)}/signal`,
-        JSON.stringify({ kind, ...(text !== undefined ? { text } : {}), ...steerFields }),
+        JSON.stringify({
+          kind,
+          ...(text !== undefined ? { text } : {}),
+          ...steerFields,
+          ...(typeof p.queuedRunId === "string" ? { queuedRunId: p.queuedRunId } : {}),
+        }),
       );
+    },
+  },
+  {
+    method: "PATCH",
+    path: "/api/runs/:id/input",
+    handle: async (c) => {
+      const body = await readJson<{ text?: unknown; expectedText?: unknown }>(c.req, c.res, false);
+      if (!body) return;
+      return relayCore(c.res, "PATCH", `/v1/runs/${encodeURIComponent(c.params.id!)}/input`, JSON.stringify(body));
     },
   },
   {
@@ -6153,118 +6368,41 @@ const apiRoutes: readonly WebRoute[] = [
     method: "GET",
     path: "/api/runs/:id/events",
     handle: async (c) => {
-      const { req, res, user } = c;
+      const { res } = c;
       const id = c.params.id!;
-      let closed = false;
-      req.on("close", () => {
-        closed = true;
-      });
-      if (!ownsRun(id, user)) {
-        const auth = await coreFetch("GET", `/v1/runs/${encodeURIComponent(id)}`);
-        if (auth.status < 200 || auth.status >= 300)
-          return json(res, auth.status === 404 ? 404 : 502, {
-            error: auth.status === 404 ? "not_found" : "upstream_error",
-          });
+      const controller = new AbortController();
+      res.on("close", () => controller.abort());
+      const path = withSourceAuthNonce(`/v1/runs/${encodeURIComponent(id)}/events`, CORE_SIGNING_SECRET);
+      const portalTok = portalTokenStore.getStore();
+      try {
+        const upstream = await fetch(`${CORE}${path}`, {
+          headers: {
+            ...signedHeaders(CORE_SIGNING_SECRET, "GET", path, ""),
+            ...(portalTok ? { [PORTAL_IDENTITY_HEADER]: portalTok } : {}),
+          },
+          signal: controller.signal,
+          redirect: "manual",
+        });
+        if (controller.signal.aborted) return;
+        if (!upstream.ok || !upstream.body) {
+          json(res, upstream.status, { error: "stream_unavailable" });
+          return;
+        }
+        res.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache, no-transform",
+          connection: "keep-alive",
+          "x-accel-buffering": "no",
+        });
+        const source = Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]);
+        source.on("error", () => res.destroy());
+        source.pipe(res);
+      } catch {
+        if (!controller.signal.aborted) {
+          if (res.headersSent) res.destroy();
+          else json(res, 502, { error: "stream_unavailable" });
+        }
       }
-      if (closed) return;
-      res.writeHead(200, {
-        "content-type": "text/event-stream; charset=utf-8",
-        "cache-control": "no-cache, no-transform",
-        connection: "keep-alive",
-        "x-accel-buffering": "no",
-      });
-      res.write(": open\n\n");
-      let acc = "";
-      let activityLen = 0;
-      let lastStale: boolean | null = null;
-      let staleSince: number | null = null;
-      let lastProgressAt = Date.now();
-      let lastBeat = lastProgressAt;
-      for (;;) {
-        if (closed) return;
-        let r: { status: number; text: string };
-        try {
-          r = await coreFetch("GET", `/v1/runs/${encodeURIComponent(id)}`);
-        } catch {
-          try {
-            r = await coreFetch("GET", `/v1/runs/${encodeURIComponent(id)}`);
-          } catch {
-            sseEvent(res, "failed", { reason: "upstream_unreachable" });
-            break;
-          }
-        }
-        if (closed) return;
-        if (r.status < 200 || r.status >= 300) {
-          sseEvent(res, "failed", { reason: `HTTP ${r.status}` });
-          break;
-        }
-        let run: {
-          status?: string;
-          result?: unknown;
-          partial?: string;
-          alive?: boolean;
-          stale?: boolean;
-          replyComplete?: boolean;
-          activity?: unknown[];
-          startedAt?: number | null;
-          finishedAt?: number | null;
-        } = {};
-        let parsed = true;
-        try {
-          run = JSON.parse(r.text);
-        } catch {
-          parsed = false;
-        }
-        const now = Date.now();
-        const partial = typeof run.partial === "string" ? run.partial : "";
-        const activity = Array.isArray(run.activity) ? run.activity : [];
-        if (partial.length > acc.length) {
-          acc = partial;
-          sseEvent(res, "partial", { partial: acc });
-          lastProgressAt = now;
-          lastBeat = now;
-        }
-        if (activity.length > activityLen) {
-          activityLen = activity.length;
-          sseEvent(res, "activity", { activity, startedAt: run.startedAt ?? null });
-          lastProgressAt = now;
-          lastBeat = now;
-        }
-        if (parsed) {
-          if (run.stale === true) staleSince ??= now;
-          else staleSince = null;
-          if ((run.stale === true) !== lastStale) {
-            lastStale = run.stale === true;
-            sseEvent(res, "stale", { stale: lastStale });
-            lastBeat = now;
-          }
-        }
-        if (now - lastBeat > SSE_HEARTBEAT_MS) {
-          if (run.alive === true) sseEvent(res, "alive", { at: now });
-          else if (lastStale === true) sseEvent(res, "stale", { stale: true });
-          else res.write(": ping\n\n");
-          lastBeat = now;
-        }
-        if (run.alive === true || (staleSince !== null && now - staleSince < SSE_STALE_GRACE_MS)) lastProgressAt = now;
-        const terminal = run.status === "done" || run.status === "failed" || run.result != null;
-        if (terminal || run.replyComplete) {
-          forgetRun(id);
-          sseEvent(res, "done", {
-            status: run.status ?? null,
-            result: run.result ?? null,
-            partial: acc,
-            activity,
-            replyComplete: run.replyComplete ?? false,
-            startedAt: run.startedAt ?? null,
-            finishedAt: run.finishedAt ?? null,
-          });
-          break;
-        }
-        if (now - lastProgressAt > SSE_IDLE_MS) break;
-        await sleep(lastStale === true ? SSE_STALE_POLL_MS : SSE_CORE_POLL_MS);
-      }
-      if (!closed) res.end();
-      return;
     },
   },
   {
@@ -6285,6 +6423,36 @@ const apiRoutes: readonly WebRoute[] = [
   },
   {
     method: "GET",
+    path: "/api/inbox/sent/:messageId",
+    handle: async ({ res, user, params, url }) => {
+      if (!isInboxUser(user)) return json(res, 403, { error: "forbidden" });
+      const query = new URLSearchParams();
+      const accountType = url.searchParams.get("accountType");
+      if (accountType) query.set("accountType", accountType);
+      res.setHeader("Cache-Control", "no-store");
+      return relayCore(
+        res,
+        "GET",
+        `/v1/connectors/gmail/sent/${encodeURIComponent(params.messageId!)}${query.size ? `?${query}` : ""}`,
+      );
+    },
+  },
+  {
+    method: "GET",
+    path: "/api/inbox/sent",
+    handle: async ({ res, user, url }) => {
+      if (!isInboxUser(user)) return json(res, 403, { error: "forbidden" });
+      const params = new URLSearchParams();
+      for (const key of ["pageToken", "accountType"]) {
+        const value = url.searchParams.get(key);
+        if (value) params.set(key, value);
+      }
+      res.setHeader("Cache-Control", "no-store");
+      return relayCore(res, "GET", `/v1/connectors/gmail/sent?${params}`);
+    },
+  },
+  {
+    method: "GET",
     path: "/api/loops",
     handle: async (c) => {
       const { res, user } = c;
@@ -6298,6 +6466,18 @@ const apiRoutes: readonly WebRoute[] = [
       const { res, user } = c;
       return relay(res, await coreFetch("GET", `/v1/webhooks?viewer=${encodeURIComponent(user)}`));
     },
+  },
+  {
+    method: "GET",
+    path: "/api/webhooks/:id/events",
+    handle: async ({ res, user, params }) =>
+      relay(
+        res,
+        await coreFetch(
+          "GET",
+          `/v1/webhooks/${encodeURIComponent(params.id!)}/events?viewer=${encodeURIComponent(user)}`,
+        ),
+      ),
   },
   {
     method: "POST",
@@ -6826,6 +7006,7 @@ export const handler = async (req: IncomingMessage, res: ServerResponse) => {
 
 const server = createServer((req, res) => {
   void handler(req, res).catch((err: unknown) => {
+    reportBackendError(err);
     console.error("%s", `[web-ui] 502 ${req.method ?? "?"} ${req.url ?? "?"}:`, String(err));
     if (!res.headersSent) json(res, 502, { error: "bad_gateway", message: "upstream error" });
     else res.end();
@@ -6864,8 +7045,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
         void runInboxFeed();
       });
     })
-    .catch((err: unknown) => {
+    .catch(async (err: unknown) => {
+      reportBackendError(err);
       console.error("[web-ui] failed to start:", String(err));
+      await flushErrorReporting();
       process.exit(1);
     });
 }

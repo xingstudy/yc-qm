@@ -20,6 +20,7 @@ export interface DeployProvider {
   apply(d: Deployment, version: DeploymentVersion): Promise<DeployEndpoint>;
   reconcile?(d: Deployment, version: DeploymentVersion, input: DeployReconcileInput): Promise<DeployEndpoint>;
   destroy(d: Deployment): Promise<void>;
+  setAlwaysOn?(d: Deployment, alwaysOn: boolean): Promise<void>;
   resolveEndpoint?(d: Deployment, version: DeploymentVersion): Promise<DeployEndpoint | null>;
   logs?(d: Deployment, opts: { tailLines: number }): Promise<string | null>;
 }

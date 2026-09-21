@@ -12,7 +12,40 @@ import { persistedSkillRecordPaths, SKILL_MATERIALIZATION_LOCK } from "../skills
 import { triggerBlocksSharedSkill } from "./artifact-share.ts";
 
 import type { App, AppDeps } from "./app-types.ts";
+import { parseRef } from "../acl/resource-ref.ts";
+import { principalEntitledToScope } from "../resolution/context-filter.ts";
+import type { Principal } from "../types.ts";
 import type { AppHelpers } from "./app-helpers.ts";
+
+export async function skillVisibilityContext(
+  deps: AppDeps,
+  h: AppHelpers,
+  principalId: string,
+  homes: readonly ScopeId[],
+) {
+  const actor = deps.identity.classify(principalId);
+  const sharedHomes = [
+    ...new Set(
+      homes.filter((sid) => {
+        const k = parseScopeId(sid).kind;
+        return k === "channel" || k === "group";
+      }),
+    ),
+  ];
+  const accessibleScopes = new Set(await h.currentResourceScopesForViewer(principalId));
+  const member = sharedHomes.map((sid) => (accessibleScopes.has(sid) ? sid : null));
+  const shared = member.filter((sid): sid is ScopeId => sid !== null);
+  const teams = (actor.teamIds ?? []).map((t) => scopeId("team", t));
+  const ordered = [...new Set([scopeId("personal", principalId), ...shared, ...teams, scopeId("org", orgIdOf())])];
+  const entitled = (p: Principal, label: ScopeId, sess: ScopeId, org: ScopeId) =>
+    principalEntitledToScope(p, label, sess, org) || accessibleScopes.has(label);
+  const granted = (
+    await deps.acl
+      .sharedOfKindForAudience("skill", [actor], scopeId("personal", principalId), scopeId("org", orgIdOf()), entitled)
+      .catch(() => [])
+  ).map((g) => ({ id: parseRef(g.ref).id, ownerScopeId: g.ownerScopeId }));
+  return { ordered, granted };
+}
 
 function requireRegistry(deps: AppDeps): { packs: SkillPackStore; fetcher: SkillPackFetcher } {
   if (!deps.skillPacks || !deps.skillFetcher) throw new Error("skill registry not configured");
@@ -217,7 +250,7 @@ export function createSkillMethods(
   | "importOwnedSkills"
   | "deleteOwnedSkill"
 > {
-  const { canManageSkill, republishIfShared, currentResourceScopesForViewer } = h;
+  const { canManageSkill, republishIfShared } = h;
   const accessActor = async (principalId: string, allowAdminElevation: boolean) => {
     const status = deps.admin
       ? await deps.admin.adminStatusOf({ id: principalId, type: "internal" }).catch(() => ({ isAdmin: false }))
@@ -278,24 +311,14 @@ export function createSkillMethods(
       return deps.skills.archive(id);
     },
     async listVisibleSkills(principalId) {
-      const actor = deps.identity.classify(principalId);
-      const sharedHomes = [
-        ...new Set(
-          (await deps.skills.list())
-            .map((s) => s.scopeId)
-            .filter((sid) => {
-              const k = parseScopeId(sid).kind;
-              return k === "channel" || k === "group";
-            }),
-        ),
-      ];
-      const accessibleScopes = new Set(await currentResourceScopesForViewer(principalId));
-      const member = sharedHomes.map((sid) => (accessibleScopes.has(sid) ? sid : null));
-      const shared = member.filter((sid): sid is ScopeId => sid !== null);
-      const teams = (actor.teamIds ?? []).map((t) => scopeId("team", t));
-      const ordered = [...new Set([scopeId("personal", principalId), ...shared, ...teams, scopeId("org", orgIdOf())])];
+      const { ordered, granted } = await skillVisibilityContext(
+        deps,
+        h,
+        principalId,
+        (await deps.skills.list()).map((s) => s.scopeId),
+      );
       if (deps.skillAccess) return deps.skillAccess.visibleForUser(principalId, ordered);
-      return deps.skills.visibleFor(ordered);
+      return deps.skills.visibleFor(ordered, granted);
     },
     async getSkillAccess(skillId, actor) {
       if (!deps.skillAccessRepository) return null;

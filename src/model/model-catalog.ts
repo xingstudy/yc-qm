@@ -1,3 +1,4 @@
+import { gatewayModelCatalog } from "./gateway-models.ts";
 import {
   modelSupportedByHarness,
   registerOpenRouterCatalogModel,
@@ -48,14 +49,19 @@ export function builtInModelCatalog(): ModelCatalogEntry[] {
     counts.set(id, (counts.get(id) ?? 0) + 1);
   }
   const known = new Set(builtIns.map((model) => model.id));
-  return [
-    ...builtIns,
-    ...overlayModelCatalog().filter((model) => !known.has(model.id)),
+  const extended = [
+    ...overlayModelCatalog(),
     ...custom.map((model) => {
       const id = resolveCustomModel(model.id)!.id;
       return counts.get(id) === 1 && resolveModel(id)?.provider === model.provider ? { ...model, id } : model;
     }),
-  ];
+    ...gatewayModelCatalog(),
+  ].filter((model) => {
+    if (known.has(model.id)) return false;
+    known.add(model.id);
+    return true;
+  });
+  return [...builtIns, ...extended];
 }
 
 async function boundedJson(response: Response): Promise<unknown> {
@@ -213,4 +219,18 @@ export function selectableCatalogForHarness(
     (model) =>
       (model.provider !== "openrouter" || harness !== "opencode") && modelSupportedByHarness(model.id, harness),
   );
+}
+
+export function cachedModelCatalog(fetcher: typeof fetch = fetch): {
+  models: ModelCatalogEntry[];
+  refreshing: boolean;
+} {
+  void selectableModelCatalog(fetcher);
+  const models = builtInModelCatalog();
+  const known = new Set(models.map((model) => model.id));
+  const entry = cache.get(fetcher);
+  return {
+    models: [...models, ...(entry?.dynamic ?? []).filter((model) => !known.has(model.id))],
+    refreshing: !!entry?.inFlight,
+  };
 }

@@ -42,6 +42,8 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install
         run: npm ci
+      - name: Build connector SDK
+        run: npm run build:connector-sdk
       - name: Verify root test shard plan
         if: matrix.shard == 1
         run: npm run test:root:shard:check
@@ -102,7 +104,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          UPSTREAM_SYNC_SHA: 51bf455ea414a58f70274284ce212142518e556a
+          UPSTREAM_SYNC_SHA: 5a5cb51260b13000dda5d890d40c877c88d87555
         run: |
           set -euo pipefail
           base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
@@ -174,10 +176,16 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install
         run: npm ci
+      - name: Build connector SDK
+        run: npm run build:connector-sdk
       - name: Postgres-backed tests (durability + cross-process)
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/qm
         run: npm run test:pg
+      - name: Swarm HTTP runtime tests
+        env:
+          SWARM_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/qm
+        run: node --experimental-test-module-mocks --test test/swarm-orchestrator.test.ts
       - name: Model registry cross-process tests
         env:
           MODEL_OVERLAY_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/qm

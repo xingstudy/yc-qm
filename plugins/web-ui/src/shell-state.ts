@@ -1,6 +1,14 @@
+import type { SuggestedActivity } from "../../chassis/src/suggested-activities.ts";
+
 export type AuthMode = "portal" | "dev";
 
 export interface Me {
+  browserErrors?: { dsn: string; release?: string };
+  analytics?: { apiKey: string; host: string };
+  companyName?: string | null;
+  welcomeCohort?: string;
+  suggestedActivities?: SuggestedActivity[];
+  suggestedActivitiesGeneration?: boolean;
   individualModelAuth?: boolean;
   modelAuthConnected?: boolean;
   mode?: AuthMode;
@@ -15,6 +23,7 @@ export interface Me {
 const VIEWS = [
   "chats",
   "inbox",
+  "calendar",
   "contexts",
   "webhooks",
   "crons",
@@ -47,6 +56,6 @@ export function can(key: string): boolean {
 
 export function canView(view: View): boolean {
   if (view === "loops") return can("loops");
-  if (view === "inbox") return can("inbox");
+  if (view === "inbox" || view === "calendar") return can("inbox");
   return true;
 }

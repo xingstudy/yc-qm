@@ -1,3 +1,5 @@
+import { resolveMentions } from "./mrkdwn.ts";
+export { resolveMentions } from "./mrkdwn.ts";
 import { encodeTs, summarizeReactions, type ReactionTally } from "./reactions.ts";
 import { utcMinute } from "../util/time.ts";
 import { MAX_ATTACHMENTS_PER_TURN } from "./attachments.ts";
@@ -116,16 +118,6 @@ function arrangeForDisplay(messages: readonly RecentMessage[]): Array<{ message:
   return out;
 }
 
-const SLACK_MENTION = /<@([A-Z0-9]+)(?:\|[^>]*)?>/g;
-
-export function resolveMentions(text: string, nameById: ReadonlyMap<string, string> | undefined): string {
-  if (!nameById || !text.includes("<@")) return text;
-  return text.replace(SLACK_MENTION, (m, id) => {
-    const name = nameById.get(id);
-    return name ? `@${name}` : m;
-  });
-}
-
 interface ConversationMember {
   id: string;
   name: string;
@@ -135,6 +127,7 @@ interface ConversationMember {
 }
 
 export interface ConversationView {
+  contextNote?: string;
   channel: { name?: string; kind: "dm" | "channel" | "group"; isPrivate?: boolean };
   members: readonly ConversationMember[];
   messages: readonly RecentMessage[];
@@ -246,7 +239,7 @@ export function renderConversationView(view: ConversationView): RenderedConversa
     ? "Files too big to view this turn: " + view.omittedFiles.map((f) => f.name).join(", ") + "."
     : "";
 
-  const header = [fileLine, omittedLine, where, who, here].filter(Boolean).join(" ");
+  const header = [fileLine, omittedLine, where, who, here, view.contextNote].filter(Boolean).join(" ");
 
   const detectContext = msgs
     .filter((m) => !m.isBot && !m.isSelf && !m.isTrigger)

@@ -246,7 +246,7 @@ test("branding governance validates, round-trips through surface-config, clears,
     ).json()) as { branding?: { accent?: string; orgName?: string } };
     assert.equal(readBack.branding?.accent, "#6366f1");
     assert.equal(readBack.branding?.orgName, "Acme Corp");
-    assert.deepEqual(await surfaceBranding(), { accent: "#6366f1", mark: "Q", selfLabel: "qm" });
+    assert.deepEqual(await surfaceBranding(), { orgName: "Acme Corp", accent: "#6366f1", mark: "Q", selfLabel: "qm" });
     assert.equal(
       (await fetch(url, { method: "PUT", headers: ADMIN, body: JSON.stringify({ mark: "<b>xy" }) })).status,
       200,

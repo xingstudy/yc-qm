@@ -16,16 +16,14 @@ mock.module("pg-boss", { namedExports: { PgBoss: FakePgBoss } });
 
 const { createPgBossCronQueue } = await import("../src/cron/job-queue.ts");
 
-test("pg-boss receives the root CA configured for PostgreSQL pools", () => {
+test("pg-boss delegates SQL through the shared PostgreSQL pool", () => {
   configurePgCaTrust({ cert: "-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----\\n" });
   try {
     createPgBossCronQueue("postgresql://db.example.test/qm?sslmode=require");
-    assert.equal(
-      (config?.ssl as { ca?: string } | undefined)?.ca,
-      "-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----\\n",
-    );
-    assert.equal(config?.host, "db.example.test");
-    assert.equal(config?.database, "qm");
+    assert.equal(typeof (config?.db as { executeSql?: unknown } | undefined)?.executeSql, "function");
+    assert.equal(config?.ssl, undefined);
+    assert.equal(config?.host, undefined);
+    assert.equal(config?.database, undefined);
   } finally {
     configurePgCaTrust({});
   }

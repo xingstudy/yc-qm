@@ -212,7 +212,18 @@ export function createSkillAccessResolver(input: {
       }
     },
     async visibleForUser(principalId, orderedScopes) {
-      return (await build([principalId], orderedScopes, null)).resolutions;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return (await build([principalId], orderedScopes, null)).resolutions;
+        } catch (error) {
+          if (
+            attempt >= 2 ||
+            !(error instanceof Error) ||
+            error.message !== "organization authorization changed while resolving skills"
+          )
+            throw error;
+        }
+      }
     },
     async assertCurrent(snapshot, membership) {
       if (snapshot.orgId !== orgId || (await store.getAuthzRevision(orgId)) !== snapshot.organizationAuthzRevision)

@@ -1449,7 +1449,7 @@ test("the surface tool is NAMED after its surface — a telegram surface produce
   assert.equal(posted.ok, true);
 });
 
-test("readOnly assembles ONLY observational tools — no execute/background/write/publish/control", () => {
+test("readOnly exposes observation and constrained session coordination without execution tools", () => {
   const ref: ToolContextRef = { current: fakeToolContext(), scopeLabel: "personal:U1" };
   const full = createAgentTools(ref, { controlTools: true, scratchExec: true, reachExec: true });
   const readOnly = createAgentTools(ref, { controlTools: true, scratchExec: true, reachExec: true, readOnly: true });
@@ -1458,7 +1458,7 @@ test("readOnly assembles ONLY observational tools — no execute/background/writ
   for (const t of ["execute", "background", "read", "write", "publish", "cron", "webhook", "guidance"]) {
     assert.ok(names(full).has(t), `full toolset has ${t}`);
   }
-  assert.deepEqual([...names(readOnly)].sort(), ["finish_silently", "history", "memory", "runtime"]);
+  assert.deepEqual([...names(readOnly)].sort(), ["finish_silently", "history", "memory", "runtime", "session"]);
   for (const t of ["execute", "background", "read", "write", "publish", "cron", "webhook", "guidance"]) {
     assert.ok(!names(readOnly).has(t), `read-only toolset drops ${t}`);
   }
@@ -3309,4 +3309,147 @@ test("surface messages use Markdown and only Slack tools teach Slack mentions", 
     if (name === "slack") assert.match(text, /<@U…>/);
     else assert.doesNotMatch(text, /Slack|<@U…>|<!subteam/);
   }
+});
+
+test("read passes turn cancellation through and cannot record a late success", async () => {
+  const controller = new AbortController();
+  const started = Promise.withResolvers<void>();
+  const pending = Promise.withResolvers<{ content: string; sourceScopeId: string }>();
+  const emitted: Emitted[] = [];
+  const context = fakeToolContext();
+  let received: AbortSignal | undefined;
+  context.read = async (_path, signal) => {
+    received = signal;
+    started.resolve();
+    return pending.promise;
+  };
+  const read = createAgentTools({
+    current: context,
+    abortSignal: controller.signal,
+    emit: (e) => {
+      emitted.push(e as Emitted);
+    },
+  }).find((t) => t.name === "read");
+  const result = call(read, { path: "notes.md" });
+  await started.promise;
+  controller.abort();
+  pending.resolve({ content: "late data", sourceScopeId: "personal:U1" });
+  await assert.rejects(result, { name: "AbortError" });
+  assert.equal(received, controller.signal);
+  assert.equal(emitted.filter((e) => e.type === "tool_result").length, 0);
+});
+
+test("session tools are omitted when the actor feature is disabled", () => {
+  assert.equal(
+    createAgentTools({ current: fakeToolContext() }, { sessionTools: false }).some((tool) => tool.name === "session"),
+    false,
+  );
+});
+
+test("agent mail is screened separately, logged privately, and delivered once across parallel tools", async () => {
+  const tc = fakeToolContext();
+  const message = {
+    id: "mail",
+    senderId: "child",
+    recipientId: "parent",
+    actor: { id: "U1", type: "internal" as const },
+    audience: [],
+    text: "child finding",
+    createdAt: 1,
+  };
+  let pending = true;
+  const emitted: Emitted[] = [];
+  const screens: Array<{ provenance: string; result: string; unscreenable: boolean }> = [];
+  tc.sessionSyscalls = {
+    open: async () => ({ ok: false, message: "unused" }),
+    write: async () => ({ ok: false, message: "unused" }),
+    read: async () => ({ ok: false, message: "unused" }),
+    receive: async () => (pending ? [message] : []),
+    acknowledge: async () => {
+      pending = false;
+    },
+  };
+  tc.read = async () => ({ content: "workspace data", sourceScopeId: "org:default-org" });
+  const ref: ToolContextRef = {
+    current: tc,
+    scopeLabel: "personal:U1",
+    orgScopeId: "org:default-org",
+    emit: (entry) => {
+      emitted.push(entry as Emitted);
+    },
+    screenToolResult: async (input) => {
+      screens.push(input);
+      return { outcome: "allow" };
+    },
+  };
+  const read = createAgentTools(ref).find((tool) => tool.name === "read");
+  const results = await Promise.all([call(read, { path: "a.txt" }), call(read, { path: "b.txt" })]);
+  assert.equal(results.filter((result) => JSON.stringify(result).includes("child finding")).length, 1);
+  assert.ok(
+    screens.some((input) => input.result === "child finding" && input.provenance === "external" && !input.unscreenable),
+  );
+  const entry = emitted.find(
+    (entry) => entry.type === "tool_result" && String(entry.payload.result).includes("child finding"),
+  )!;
+  assert.equal(entry.scopeLabel, "personal:U1");
+});
+
+test("quarantined mail remains pending for release and mailbox failures preserve carrier output", async () => {
+  const tc = fakeToolContext();
+  let pending = true;
+  let release = false;
+  tc.sessionSyscalls = {
+    open: async () => ({ ok: false, message: "unused" }),
+    write: async () => ({ ok: false, message: "unused" }),
+    read: async () => ({ ok: false, message: "unused" }),
+    receive: async () =>
+      pending
+        ? [
+            {
+              id: "mail",
+              senderId: "child",
+              recipientId: "parent",
+              actor: { id: "U1", type: "internal" },
+              audience: [],
+              text: "held finding",
+              createdAt: 1,
+            },
+          ]
+        : [],
+    acknowledge: async () => {
+      pending = false;
+    },
+  };
+  const ref: ToolContextRef = {
+    current: tc,
+    scopeLabel: "personal:U1",
+    pendingApprovals: [],
+    emit: async () => {},
+    screenToolResult: async (input) => ({
+      outcome: input.source === "session-delegation" && !release ? "quarantine" : "allow",
+    }),
+  };
+  const first = await call(
+    createAgentTools(ref).find((tool) => tool.name === "read"),
+    { path: "a.txt" },
+  );
+  assert.ok(JSON.stringify(first).includes("data"));
+  assert.ok(!JSON.stringify(first).includes("held finding"));
+  assert.equal(pending, true);
+  assert.equal(ref.pausedOnApproval, true);
+  release = true;
+  const second = await call(
+    createAgentTools(ref).find((tool) => tool.name === "read"),
+    { path: "a.txt" },
+  );
+  assert.ok(JSON.stringify(second).includes("held finding"));
+  assert.equal(pending, false);
+  tc.sessionSyscalls.receive = async () => {
+    throw new Error("flag disabled");
+  };
+  const third = await call(
+    createAgentTools(ref).find((tool) => tool.name === "read"),
+    { path: "a.txt" },
+  );
+  assert.ok(JSON.stringify(third).includes("data"));
 });

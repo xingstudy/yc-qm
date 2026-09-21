@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import type { OrchestratorInput } from "../core/orchestrator/types.ts";
 import type { TurnRequest } from "../types.ts";
 
 export type RunSignalKind = "abort" | "steer";
@@ -8,13 +10,16 @@ export interface RunSignal {
   ts?: string;
   request?: TurnRequest;
   dedupeKey?: string;
+  sessionRequest?: OrchestratorInput;
+  queuedRunId?: string;
 }
 
 export interface RunSignalStore {
   send(runId: string, signal: RunSignal): Promise<boolean>;
   hasDedupeKey(dedupeKey: string): Promise<boolean>;
+  pending(runId: string): Promise<Array<{ id: string; signal: RunSignal }>>;
+  acknowledge(runId: string, id: string): Promise<void>;
   takePending(runId: string): Promise<RunSignal[]>;
-  takeLive(runId: string): Promise<RunSignal[]>;
   steerAuthors(runId: string): Promise<string[]>;
   pendingRunIds(): Promise<string[]>;
   prune(olderThanMs: number): Promise<void>;
@@ -26,6 +31,7 @@ const MAX_MEMORY_DEDUPE_KEYS = 10_000;
 
 export function createMemoryRunSignalStore(): RunSignalStore {
   const pending = new Map<string, RunSignal[]>();
+  const receipts = new WeakMap<RunSignal, string>();
   const authors = new Map<string, Array<{ at: number; author: string }>>();
   const listeners = new Map<string, Set<() => void>>();
   const dedupeKeys = new Set<string>();
@@ -37,6 +43,8 @@ export function createMemoryRunSignalStore(): RunSignalStore {
         if (dedupeKeys.size > MAX_MEMORY_DEDUPE_KEYS) dedupeKeys.delete(dedupeKeys.values().next().value!);
       }
       const list = pending.get(runId) ?? [];
+      signal = { ...signal };
+      receipts.set(signal, randomUUID());
       list.push(signal);
       pending.set(runId, list);
       const author = signal.kind === "steer" ? signal.request?.actor?.externalId : undefined;
@@ -50,16 +58,17 @@ export function createMemoryRunSignalStore(): RunSignalStore {
     async steerAuthors(runId) {
       return [...new Set((authors.get(runId) ?? []).map((a) => a.author))];
     },
+    async pending(runId) {
+      return (pending.get(runId) ?? []).map((signal) => ({ id: receipts.get(signal)!, signal }));
+    },
+    async acknowledge(runId, id) {
+      const remaining = (pending.get(runId) ?? []).filter((signal) => receipts.get(signal) !== id);
+      if (remaining.length) pending.set(runId, remaining);
+      else pending.delete(runId);
+    },
     async takePending(runId) {
       const list = pending.get(runId) ?? [];
       pending.delete(runId);
-      return list;
-    },
-    async takeLive(runId) {
-      const list = pending.get(runId) ?? [];
-      const aborts = list.filter((s) => s.kind === "abort");
-      if (aborts.length) pending.set(runId, aborts);
-      else pending.delete(runId);
       return list;
     },
     async pendingRunIds() {
@@ -88,7 +97,7 @@ export function createMemoryRunSignalStore(): RunSignalStore {
 const SIGNAL_POLL_MS = 5_000;
 
 export interface SignalPollHandlers {
-  onSteer(text: string, ts?: string): Promise<void>;
+  onSteer(text: string, ts?: string, request?: TurnRequest): Promise<void | boolean>;
   onAbort(): Promise<void>;
 }
 
@@ -98,6 +107,7 @@ export function startSignalPoll(
   handlers: SignalPollHandlers,
   opts?: { intervalMs?: number; onError?: (e: unknown) => void; drainOnStop?: boolean },
 ): () => Promise<void> {
+  const declined = new Set<string>();
   let draining = false;
   let redrain = false;
   let accepting = true;
@@ -111,13 +121,26 @@ export function startSignalPoll(
     draining = true;
     inFlight = (async () => {
       let abortDelivered = false;
-      for (const s of await signals.takeLive(runId)) {
-        if (s.kind === "abort") {
-          if (!abortDelivered) {
-            await handlers.onAbort();
-            abortDelivered = true;
+      for (const { id, signal: s } of await signals.pending(runId)) {
+        try {
+          if (s.kind === "abort") {
+            if (!abortDelivered) {
+              await handlers.onAbort();
+              abortDelivered = true;
+            }
+          } else if (!declined.has(id)) {
+            if (s.text || s.request?.attachments?.length) {
+              const delivered = await handlers.onSteer(s.text ?? "", s.ts, s.request);
+              if (delivered === false) {
+                declined.add(id);
+                continue;
+              }
+            }
+            await signals.acknowledge(runId, id);
           }
-        } else if (s.text) await handlers.onSteer(s.text, s.ts);
+        } catch (e) {
+          opts?.onError?.(e);
+        }
       }
     })()
       .catch((e: unknown) => opts?.onError?.(e))

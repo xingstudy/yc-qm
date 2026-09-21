@@ -1012,7 +1012,7 @@ function runFlyDeploy(args: string[], cwd: string): Promise<void> {
 }
 
 function unsetDisabledSecurityScreenToken(config: QmConfig, appPrefix: string): void {
-  if (config.securityScreen) return;
+  if (config.securityScreen?.backend === "proxy") return;
   const app = `${appPrefix}-core`;
   if (!secretNames(app)?.has("SECURITY_SCREEN_PROXY_TOKEN")) return;
   fly(["secrets", "unset", "--stage", "-a", app, "SECURITY_SCREEN_PROXY_TOKEN"]);
@@ -1481,8 +1481,13 @@ export function verifyLocalFlyTokens(config: QmConfig, secrets: ReadonlyMap<stri
     }
     step(`${name}: live authorization ok`);
   };
-  if (config.flyOrg && config.env.core?.DEPLOY_PROVIDER === "fly") {
-    verify("FLY_DEPLOY_API_TOKEN", ["apps", "list", "-o", config.flyOrg, "--json"], `organization ${config.flyOrg}`);
+  if (config.env.core?.DEPLOY_PROVIDER === "fly") {
+    const sharedApp = config.env.core.FLY_DEPLOY_SHARED_APP_NAME?.trim();
+    if (sharedApp) {
+      verify("FLY_DEPLOY_API_TOKEN", ["machines", "list", "-a", sharedApp, "--json"], `application ${sharedApp}`);
+    } else if (config.flyOrg) {
+      verify("FLY_DEPLOY_API_TOKEN", ["apps", "list", "-o", config.flyOrg, "--json"], `organization ${config.flyOrg}`);
+    }
   }
 }
 

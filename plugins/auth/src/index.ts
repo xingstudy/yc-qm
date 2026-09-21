@@ -1,3 +1,5 @@
+import { reportBackendError } from "../../chassis/src/error-reporting.ts";
+import "./instrument.ts";
 import { coreRememberedSessions } from "./sessions.ts";
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
@@ -25,7 +27,9 @@ export function bootChecks(): void {
   throw new Error(`auth broker refusing to start: ${problems.length} misconfiguration(s)`);
 }
 
-export async function startServer(options: { port?: number; host?: string } = {}): Promise<import("node:http").Server> {
+export async function startServer(
+  options: { port?: number; host?: string; trustedSignInLabel?: string } = {},
+): Promise<import("node:http").Server> {
   bootChecks();
   const signingKey = await loadSigningKey(CFG.signingJwk!);
   const mailer = mailerFor(CFG);
@@ -41,6 +45,7 @@ export async function startServer(options: { port?: number; host?: string } = {}
   });
   const handle = createAuthHandler({
     cfg: CFG,
+    trustedSignInLabel: options.trustedSignInLabel,
     signingKey,
     signer: new TokenSigner(CFG.tokenSecret, CFG.issuer),
     sessions: coreRememberedSessions(CFG.coreApiUrl, CFG.coreSigningSecret),
@@ -59,6 +64,7 @@ export async function startServer(options: { port?: number; host?: string } = {}
   });
   const server = createServer((req, res) => {
     void handle(req, res).catch((err: unknown) => {
+      reportBackendError(err);
       console.error("[auth] 500 %s %s: %s", req.method ?? "?", (req.url ?? "?").split("?")[0], String(err));
       if (!res.headersSent) json(res, 500, { error: "internal_error" });
       else res.end();

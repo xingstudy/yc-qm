@@ -5,6 +5,7 @@ import { parse, toClientConfig, type ConnectionOptions } from "pg-connection-str
 import {
   applyPgMigrations,
   definePgMigration as defineMigration,
+  pgMigrationChecksum,
   type PgMigration,
   type PgMigrationDefinition,
   type PgMaintenanceDefinition,
@@ -47,6 +48,8 @@ export function configurePgPooling(config: PgPoolingConfig): void {
   poolingConfig = { ...config };
 }
 
+const migrationQueue = createKeyedQueue();
+
 const sharedPools = new Map<string, { pool: Pool; users: number }>();
 
 async function retainPool(connectionString: string, kind: "query" | "session" | "migration"): Promise<Pool> {
@@ -65,9 +68,17 @@ async function retainPool(connectionString: string, kind: "query" | "session" | 
     kind === "query" && connectionString === poolingConfig.poolUrl && poolingConfig.caCert
       ? { ssl: { ca: poolingConfig.caCert } }
       : pgCaOptions();
-  const pool = new pg.Pool({ ...pgConnectionOptions(connectionString, trust), max, connectionTimeoutMillis: 10_000 });
+  const pool = guardedPool(
+    new pg.Pool({ ...pgConnectionOptions(connectionString, trust), max, connectionTimeoutMillis: 10_000 }),
+  );
   pool.on("error", (error) => console.error("[pg] idle client error:", errMessage(error)));
   sharedPools.set(key, { pool, users: 1 });
+  return pool;
+}
+
+function guardedPool(pool: Pool): Pool {
+  pool.on("error", () => {});
+  pool.on("connect", (client) => client.on("error", (error) => console.error("[pg] client error:", errMessage(error))));
   return pool;
 }
 
@@ -155,7 +166,25 @@ export function definePgMigration(
   expectedChecksum?: string,
   legacyId?: string,
 ): PgMigration {
-  return defineMigration({ id, statements, expectedChecksum, legacyId });
+  const concurrent = statements.filter((statement) =>
+    /^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\b/i.test(statement),
+  );
+  if (concurrent.length && (concurrent.length !== statements.length || statements.length !== 1))
+    return {
+      id,
+      statements,
+      expectedChecksum,
+      legacyId,
+      transactional: false,
+      checksum: pgMigrationChecksum(statements),
+    };
+  return defineMigration({
+    id,
+    statements,
+    expectedChecksum,
+    legacyId,
+    ...(concurrent.length ? { transactional: false } : {}),
+  });
 }
 
 export function resolvePgCaTrust(opts: { cert?: string; certFile?: string }): { ssl?: { ca: string } } {
@@ -270,7 +299,7 @@ export async function migrateRegisteredPgSchemas(connectionString?: string): Pro
       if (!migrations.length && !maintenance.length) return;
       const markers = [...(registeredReadyMarkers.get(databaseUrl) ?? [])];
       const pg = (await import("pg")).default;
-      const pool = new pg.Pool({ ...pgConnectionOptions(databaseUrl), connectionTimeoutMillis: 10_000 });
+      const pool = guardedPool(new pg.Pool({ ...pgConnectionOptions(databaseUrl), connectionTimeoutMillis: 10_000 }));
       pool.on("error", (error) => console.error("[pg] migration pool error:", errMessage(error)));
       try {
         await applyPgMigrations(pool, migrations, { maintenance });
@@ -333,12 +362,14 @@ export function createPgPool(
   let closed = false;
   const queryUrl = pooledDatabaseUrl(connectionString);
   async function withMigrationPool<T>(fn: (pool: Pool) => Promise<T>): Promise<T> {
-    const instance = await retainPool(connectionString, "migration");
-    try {
-      return await fn(instance);
-    } finally {
-      await releasePool(connectionString, instance, "migration");
-    }
+    return migrationQueue(connectionString, async () => {
+      const instance = await retainPool(connectionString, "migration");
+      try {
+        return await fn(instance);
+      } finally {
+        await releasePool(connectionString, instance, "migration");
+      }
+    });
   }
   async function ready(): Promise<void> {
     if (closed) throw new Error("Postgres store is closed");

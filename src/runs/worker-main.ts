@@ -1,5 +1,7 @@
+import "./instrument.ts";
 import { loadConfig } from "../config.ts";
 import { buildApp, stopWithBackstop } from "../wiring.ts";
+import { shutdownOnUncaught } from "../util/process-guard.ts";
 
 const config = loadConfig();
 const built = buildApp(config);
@@ -22,3 +24,4 @@ function shutdown(signal: string): void {
 }
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+shutdownOnUncaught("qm:worker", shutdown);
