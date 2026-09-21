@@ -91,6 +91,55 @@ test("admin shell defaults bare admin URLs to org history", () => {
   );
 });
 
+test("focus refresh keeps custom views on their own loaders", () => {
+  const exemptSource = html.match(/const FOCUS_REFRESH_EXEMPT = new Set\((\[[^\]]+\])\);/)?.[1];
+  assert.ok(exemptSource);
+  const exempt = new Set<string>(JSON.parse(exemptSource));
+  assert.ok(exempt.has("design-system"));
+
+  const marker = 'window.addEventListener("focus", () => {';
+  const start = html.indexOf(marker) + marker.length;
+  const end = html.indexOf("\n      });", start);
+  assert.ok(start >= marker.length && end > start);
+  let genericRequests = 0;
+  new Function(
+    "$",
+    "isGovLike",
+    "FOCUS_REFRESH_EXEMPT",
+    "view",
+    "viewLoadedAt",
+    "FOCUS_STALE_MS",
+    "renderData",
+    html.slice(start, end),
+  )(
+    () => ({ classList: { contains: () => false } }),
+    () => false,
+    exempt,
+    "design-system",
+    {},
+    0,
+    () => {
+      genericRequests += 1;
+    },
+  );
+  assert.equal(genericRequests, 0);
+});
+
+test("design system enabled examples expose local feedback handlers", () => {
+  for (const id of [
+    "design-action-apply",
+    "design-action-add",
+    "design-action-delete",
+    "design-quiet-history",
+    "design-quiet-remove",
+    "design-row-edit",
+    "design-row-delete",
+    "design-table-edit",
+  ]) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+    assert.match(html, new RegExp(`setDesignStatus\\(["']${id}["']`));
+  }
+});
 test("connector setup uses the live catalog and shows exact provider and callback links", () => {
   assert.match(html, /api\("GET", "\/api\/connector-catalog"\)/);
   assert.match(html, /setupGuide\.url/);

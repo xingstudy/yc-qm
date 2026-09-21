@@ -5,7 +5,13 @@ import test from "node:test";
 const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 
 function adminDictionary(): Record<string, string> {
-  const body = html.match(/const ADMIN_ZH = \{([\s\S]*?)\n {6}\};\n {6}const normalizeAdminLocale/)?.[1];
+  const body = html.match(/const ADMIN_ZH = \{([\s\S]*?)\n {6}\};\n {6}const DESIGN_SYSTEM_ZH/)?.[1];
+  assert.ok(body);
+  return new Function(`return ({${body}});`)() as Record<string, string>;
+}
+
+function designSystemDictionary(): Record<string, string> {
+  const body = html.match(/const DESIGN_SYSTEM_ZH = \{([\s\S]*?)\n {6}\};\n {6}const normalizeAdminLocale/)?.[1];
   assert.ok(body);
   return new Function(`return ({${body}});`)() as Record<string, string>;
 }
@@ -29,6 +35,30 @@ test("Skill Access dynamic labels are translated in Chinese", () => {
   assert.match(html, /selected subjects\?/);
 });
 
+test("design system localizes its dynamic library and feedback in Chinese", () => {
+  const dictionary = designSystemDictionary();
+  assert.equal(dictionary["Design system"], "设计系统");
+  assert.equal(
+    dictionary[
+      "Components and page patterns from the redesigned admin portal, including Skills, Files, Sessions, Metrics, Audit, and Egress. Examples use fictional data and do not save changes."
+    ],
+    "重新设计的管理门户所用组件和页面模式，涵盖技能、文件、会话、指标、审计和出站。示例使用虚构数据且不会保存更改。",
+  );
+  assert.equal(dictionary["Responsive behavior"], "响应式行为");
+  assert.equal(dictionary["File list and upload toolbar"], "文件列表与上传工具栏");
+  assert.equal(dictionary["Two-way toggle"], "双向切换");
+  assert.equal(dictionary["Enabled table actions remain interactive."], "已启用的表格操作保持可交互。");
+  assert.equal(dictionary["Applied in this example"], "已在此示例中应用");
+  assert.equal(dictionary["Yesterday"], "昨天");
+  assert.equal(dictionary["Path"], "路径");
+  assert.equal(dictionary["Done"], "完成");
+  assert.match(html, /DESIGN_SYSTEM_ZH\[value\] \|\| ADMIN_ZH\[value\]/);
+  assert.match(html, /if \(adminLocale === "zh-CN"\) translateAdminNode\(root\);/);
+  assert.match(html, /\$\("design-search-status"\)\.textContent = value\s*\? adminTr\("Search query: "\) \+ value/);
+  assert.match(html, /\$\("design-status"\)\.textContent = adminTr\(dirty \? "Unsaved changes" : "No changes"\)/);
+  assert.match(html, /\$\("design-disabled"\)\.value = adminTr\("Organization default"\)/);
+  assert.match(html, /root\.querySelector\("\.credential-title strong"\)\.textContent = adminTr\("Example service"\)/);
+});
 test("admin exposes a bilingual control and translates only explicit UI sinks", () => {
   assert.match(html, /id="locale-toggle" type="button" data-i18n-skip>中文<\/button/);
   assert.match(html, /const ADMIN_ZH = \{/);
@@ -168,6 +198,7 @@ test("admin locale also controls date and number formatting", () => {
   assert.equal(translatePattern("1,234 turns"), "1,234 个轮次");
   assert.equal(translatePattern("12 users"), "12 位用户");
   assert.equal(translatePattern("9 sessions"), "9 个会话");
+  assert.equal(translatePattern("152 requests"), "152 个请求");
   assert.equal(translatePattern("3 people"), "3 人");
   assert.equal(translatePattern("1.2k tokens"), "1.2k 个令牌");
   assert.equal(translatePattern("4 errors"), "4 个错误");
