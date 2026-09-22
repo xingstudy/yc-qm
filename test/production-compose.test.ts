@@ -41,6 +41,7 @@ const requiredProductionValues = [
   "PORTAL_SESSION_SECRET",
   "CONNECTOR_SECRET_KEY",
   "WEB_UI_IM_CREDENTIALS_KEY",
+  "WEB_UI_CHAT_CHANNELS_ENABLED",
   "SKILL_SIGNING_SECRET",
   "OIDC_CLIENT_ID",
   "OIDC_CLIENT_SECRET",
@@ -93,6 +94,7 @@ test("the production example is a complete fail-closed template without organiza
   assert.equal(values.get("NODE_ENV"), "production");
   assert.equal(values.get("PORTAL_LOCAL_AUTH_BYPASS"), "0");
   assert.equal(values.get("PORTAL_DEPLOYMENTS_ENABLED"), "1");
+  assert.equal(values.get("WEB_UI_CHAT_CHANNELS_ENABLED"), "1");
   assert.equal(values.get("AUTH_EMAIL_TRANSPORT"), "smtp");
   assert.equal(values.get("QM_COMPOSE_PROJECT"), "qm");
   assert.equal(values.get("QM_RELEASE_TAG"), "prod-v0.0.0");
@@ -117,6 +119,24 @@ test("the production example is a complete fail-closed template without organiza
     }
   }
   assert.doesNotMatch(readFileSync(".env.production.example", "utf8"), /qfpay|aiagents/i);
+});
+
+test("every Chat Channels configuration example documents provider selection", () => {
+  const help = "# 1 = all, 0 = none, or comma-separated: wechat,wecom,feishu,qq,dingtalk";
+  for (const path of [
+    ".env.example",
+    ".env.production.example",
+    "plugins/web-ui/.env.example",
+    "deploy/stacks/acme/.env.example",
+    "docker-compose.yaml",
+    "compose.production.yaml",
+  ]) {
+    const configured = readFileSync(path, "utf8");
+    assert.match(
+      configured,
+      new RegExp(`${help.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n\\s*WEB_UI_CHAT_CHANNELS_ENABLED`),
+    );
+  }
 });
 
 test("the image manifest pins every pull-only first-party image to Docker Hub", () => {
@@ -163,6 +183,11 @@ test("the production Compose stack is image-only and exposes only the edge", () 
     serviceBlock(compose, "web-ui"),
     /WEB_UI_IM_CREDENTIALS_KEY: \$\{WEB_UI_IM_CREDENTIALS_KEY:\?Set WEB_UI_IM_CREDENTIALS_KEY in \.env\.production\}/,
   );
+  assert.match(
+    serviceBlock(developmentCompose, "web-ui"),
+    /WEB_UI_IM_CREDENTIALS_KEY: \$\{WEB_UI_IM_CREDENTIALS_KEY:\?Set WEB_UI_IM_CREDENTIALS_KEY in \.env\}/,
+  );
+  assert.match(serviceBlock(compose, "web-ui"), /WEB_UI_CHAT_CHANNELS_ENABLED: \$\{WEB_UI_CHAT_CHANNELS_ENABLED:-1\}/);
   assert.doesNotMatch(serviceBlock(compose, "web-ui"), /CONNECTOR_SECRET_KEY/);
   assert.doesNotMatch(serviceBlock(compose, "core"), /WEB_UI_IM_CREDENTIALS_KEY/);
   for (const service of ["preflight", "core"]) {

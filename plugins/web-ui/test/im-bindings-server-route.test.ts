@@ -3,6 +3,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import { EventEmitter } from "node:events";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
+import { Readable } from "node:stream";
 import { mock, test } from "node:test";
 
 interface UiStateRecord {
@@ -20,6 +21,7 @@ interface Delivery {
 
 const uiState = new Map<string, UiStateRecord>();
 const coreTurns: unknown[] = [];
+const coreBlobs = new Map<string, Buffer>();
 const ackedDeliveries: string[] = [];
 const ackedDeliveryKeys: string[] = [];
 const releasedDeliveryClaims: string[] = [];
@@ -30,7 +32,17 @@ const weixinSent: Array<{ authorization?: string; body: Record<string, unknown> 
 const imDeliveries: Delivery[] = [];
 const coreTurnResponses: Array<Record<string, unknown>> = [];
 const coreRunResponses = new Map<string, Array<Record<string, unknown>>>();
+const coreActiveRuns = new Map<string, string>();
+const coreSignals: Array<{ runId: string; body: Record<string, unknown> }> = [];
+const coreWithdrawals: string[] = [];
+const coreSignalResponses: Array<{
+  status: number;
+  body: Record<string, unknown>;
+  nextActiveRunId?: string;
+}> = [];
+const coreRunRequests: string[] = [];
 const coreRunIdentityHeaders: string[] = [];
+const coreActiveRunRequests: Array<{ threadRef: string; identity?: string }> = [];
 let weixinQrRequests = 0;
 let weixinStatusRequests = 0;
 let weixinStatusDelayMs = 0;
@@ -46,6 +58,8 @@ let wecomSendFailures = 0;
 const forcedUiStateConflicts = new Map<string, number>();
 const larkDispatchers: MockLarkEventDispatcher[] = [];
 const larkSent: Array<{ receiveIdType: string; receiveId: string; text: string; uuid?: string }> = [];
+const larkResources = new Map<string, Buffer>();
+const larkSubMessages = new Map<string, Array<Record<string, unknown>>>();
 const qqBots: MockQQBot[] = [];
 const qqSent: Array<{ target: { scope: string; targetId: string }; text: string }> = [];
 const dingtalkClients: MockDingTalkClient[] = [];
@@ -54,6 +68,9 @@ const wecomReplies: Array<{ reqId: string; streamId: string; content: string; fi
 const wecomSent: Array<{ target: string; content: string }> = [];
 const wecomWelcomes: Array<{ reqId: string; content: string }> = [];
 const wecomReplyFailures = new Set<string>();
+const wecomDownloads = new Map<string, { buffer: Buffer; filename: string }>();
+const remoteMedia = new Map<string, { body: Buffer; contentType: string }>();
+const dingtalkDownloadUrls = new Map<string, string>();
 
 class MockLarkEventDispatcher {
   handlers: Record<string, (data: unknown) => unknown> = {};
@@ -83,6 +100,24 @@ class MockLarkWsClient {
 
 class MockLarkClient {
   readonly im = {
+    v1: {
+      message: {
+        get: async (request: {
+          path: { message_id: string };
+        }): Promise<{ data: { items: Array<Record<string, unknown>> } }> => ({
+          data: { items: larkSubMessages.get(request.path.message_id) ?? [] },
+        }),
+      },
+      messageResource: {
+        get: async (request: {
+          path: { message_id: string; file_key: string };
+        }): Promise<{ getReadableStream: () => Readable; headers: Record<string, string> }> => {
+          const bytes = larkResources.get(`${request.path.message_id}:${request.path.file_key}`);
+          if (!bytes) throw new Error("missing mocked Lark resource");
+          return { getReadableStream: () => Readable.from(bytes), headers: {} };
+        },
+      },
+    },
     message: {
       create: async (request: {
         params: { receive_id_type: string };
@@ -170,6 +205,15 @@ class MockWeComClient extends EventEmitter {
     this.emit("disconnected", "test");
   }
 
+  simulateNetworkDisconnect(): void {
+    this.isConnected = false;
+    this.emit("disconnected", "network");
+    queueMicrotask(() => {
+      this.isConnected = true;
+      this.emit("authenticated");
+    });
+  }
+
   async replyStream(
     frame: { headers: { req_id: string } },
     streamId: string,
@@ -207,11 +251,18 @@ class MockWeComClient extends EventEmitter {
     wecomWelcomes.push({ reqId: frame.headers.req_id, content: body.text.content });
     return {};
   }
+
+  async downloadFile(url: string): Promise<{ buffer: Buffer; filename: string }> {
+    const downloaded = wecomDownloads.get(url);
+    if (!downloaded) throw new Error("missing mocked WeCom resource");
+    return downloaded;
+  }
 }
 
 const wecomClients: MockWeComClient[] = [];
 mock.module("@wecom/aibot-node-sdk", {
   namedExports: {
+    generateReqId: (prefix: string) => `${prefix}_${Date.now()}_${randomBytes(4).toString("hex")}`,
     WSClient: class extends MockWeComClient {
       constructor() {
         super();
@@ -227,6 +278,75 @@ mock.module("@larksuiteoapi/node-sdk", {
     Client: MockLarkClient,
     EventDispatcher: MockLarkEventDispatcher,
     WSClient: MockLarkWsClient,
+    normalize: async (
+      data: {
+        sender: { sender_id: { open_id?: string } };
+        message: {
+          message_id: string;
+          chat_id: string;
+          chat_type: "p2p" | "group";
+          message_type: string;
+          content: string;
+        };
+      },
+      options?: { fetchSubMessages?: (messageId: string) => Promise<Array<Record<string, unknown>>> },
+    ) => {
+      const content = JSON.parse(data.message.content || "{}") as Record<string, unknown>;
+      const resources: Array<{ type: string; fileKey: string; fileName?: string }> = [];
+      const text: string[] = [];
+      if (data.message.message_type === "text" && typeof content.text === "string") text.push(content.text);
+      if (data.message.message_type === "post") {
+        const localized = Object.values(content).find(
+          (value): value is { title?: string; content?: Array<Array<Record<string, unknown>>> } =>
+            typeof value === "object" && value !== null,
+        );
+        if (localized?.title) text.push(localized.title);
+        for (const row of localized?.content ?? []) {
+          for (const item of row) {
+            if (item.tag === "text" && typeof item.text === "string") text.push(item.text);
+            if (item.tag === "img" && typeof item.image_key === "string")
+              resources.push({ type: "image", fileKey: item.image_key });
+          }
+        }
+      }
+      if (data.message.message_type === "interactive") text.push("[interactive card]");
+      if (data.message.message_type === "merge_forward") {
+        const items = (await options?.fetchSubMessages?.(data.message.message_id)) ?? [];
+        text.push(
+          ...items.map((item) => {
+            const body = item.body as { content?: string } | undefined;
+            const parsed = JSON.parse(body?.content || "{}") as { text?: unknown };
+            return typeof parsed.text === "string" ? parsed.text : `[${String(item.msg_type ?? "message")}]`;
+          }),
+        );
+      }
+      const fileKey = typeof content.file_key === "string" ? content.file_key : undefined;
+      const imageKey = typeof content.image_key === "string" ? content.image_key : undefined;
+      if (imageKey) resources.push({ type: "image", fileKey: imageKey });
+      if (fileKey) {
+        let type = "file";
+        if (data.message.message_type === "audio") type = "audio";
+        else if (data.message.message_type === "media") type = "video";
+        resources.push({
+          type,
+          fileKey,
+          ...(typeof content.file_name === "string" ? { fileName: content.file_name } : {}),
+        });
+      }
+      return {
+        messageId: data.message.message_id,
+        chatId: data.message.chat_id,
+        chatType: data.message.chat_type,
+        senderId: data.sender.sender_id.open_id ?? "",
+        content: text.join("\n"),
+        rawContentType: data.message.message_type,
+        resources,
+        mentions: [],
+        mentionAll: false,
+        mentionedBot: false,
+        createTime: Date.now(),
+      };
+    },
     registerApp: async (options: {
       onQRCodeReady?: (input: { url: string }) => void;
     }): Promise<{ client_id: string; client_secret: string; user_info: { open_id: string } }> => {
@@ -260,7 +380,11 @@ mock.module("dingtalk-stream", {
 
 const core = createServer((req: IncomingMessage, res) => {
   let raw = "";
-  req.on("data", (chunk) => (raw += chunk));
+  const rawChunks: Buffer[] = [];
+  req.on("data", (chunk) => {
+    raw += chunk;
+    rawChunks.push(Buffer.from(chunk));
+  });
   req.on("end", () => {
     const url = new URL(req.url ?? "", "http://core");
     const send = (status: number, body: unknown): void => {
@@ -273,6 +397,12 @@ const core = createServer((req: IncomingMessage, res) => {
     }
     if (req.method === "GET" && /^\/v1\/internal\/auth\/users\/[^/]+\/session-version$/.test(url.pathname)) {
       send(200, { sessionVersion: 1 });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/v1/blobs") {
+      const blobId = `blob-${coreBlobs.size + 1}`;
+      coreBlobs.set(blobId, Buffer.concat(rawChunks));
+      send(200, { blobId, sizeBytes: coreBlobs.get(blobId)?.byteLength ?? 0 });
       return;
     }
     if (req.method === "POST" && url.pathname === "/ilink/bot/get_bot_qrcode") {
@@ -334,8 +464,38 @@ const core = createServer((req: IncomingMessage, res) => {
       }
       return;
     }
+    if (req.method === "GET" && url.pathname === "/v1/runs") {
+      const identity = req.headers["x-portal-identity"];
+      const threadRef = url.searchParams.get("threadRef") ?? "";
+      coreActiveRunRequests.push({ threadRef, ...(typeof identity === "string" ? { identity } : {}) });
+      send(200, { runId: coreActiveRuns.get(threadRef) ?? null });
+      return;
+    }
+    const signalMatch = url.pathname.match(/^\/v1\/runs\/([^/]+)\/signal$/);
+    if (req.method === "POST" && signalMatch) {
+      const body = JSON.parse(raw) as Record<string, unknown>;
+      coreSignals.push({
+        runId: decodeURIComponent(signalMatch[1]!),
+        body,
+      });
+      const response = coreSignalResponses.shift();
+      if (response?.nextActiveRunId) {
+        const request = body.request as { conversation?: { threadRef?: unknown } } | undefined;
+        if (typeof request?.conversation?.threadRef === "string")
+          coreActiveRuns.set(request.conversation.threadRef, response.nextActiveRunId);
+      }
+      send(response?.status ?? 200, response?.body ?? { accepted: true });
+      return;
+    }
+    const withdrawMatch = url.pathname.match(/^\/v1\/runs\/([^/]+)\/withdraw$/);
+    if (req.method === "POST" && withdrawMatch) {
+      coreWithdrawals.push(decodeURIComponent(withdrawMatch[1]!));
+      send(200, { withdrawn: true });
+      return;
+    }
     const runMatch = url.pathname.match(/^\/v1\/runs\/([^/]+)$/);
     if (req.method === "GET" && runMatch) {
+      coreRunRequests.push(decodeURIComponent(runMatch[1]!));
       const identity = req.headers["x-portal-identity"];
       if (typeof identity === "string") coreRunIdentityHeaders.push(identity);
       const runId = decodeURIComponent(runMatch[1]!);
@@ -498,6 +658,25 @@ globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
     const target = new URL(`${url.pathname}${url.search}`, coreBase);
     return nativeFetch(target, init);
   }
+  if (url.origin === "https://api.dingtalk.com" && url.pathname === "/v1.0/robot/messageFiles/download") {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { downloadCode?: string };
+    const downloadUrl = body.downloadCode ? dingtalkDownloadUrls.get(body.downloadCode) : undefined;
+    return Promise.resolve(
+      new Response(JSON.stringify(downloadUrl ? { downloadUrl } : {}), {
+        status: downloadUrl ? 200 : 404,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  }
+  const media = remoteMedia.get(url.toString());
+  if (media) {
+    return Promise.resolve(
+      new Response(new Uint8Array(media.body).buffer, {
+        status: 200,
+        headers: { "content-type": media.contentType, "content-length": String(media.body.byteLength) },
+      }),
+    );
+  }
   return nativeFetch(input, init);
 }) as typeof fetch;
 
@@ -576,6 +755,43 @@ test("IM progress includes visible thinking, tool activity, and partial replies"
   assert.doesNotMatch(progress.text, /\/tmp\/config/);
 });
 
+test("disabled Chat Channels are reported to the UI and reject binding routes", async () => {
+  process.env.WEB_UI_CHAT_CHANNELS_ENABLED = "0";
+  try {
+    const me = await fetch(`${base}/me`, { headers: headers() });
+    assert.equal(me.status, 200);
+    assert.equal(((await me.json()) as { chatChannelsEnabled?: boolean }).chatChannelsEnabled, false);
+    const bindings = await fetch(`${base}/api/im-bindings`, { headers: headers() });
+    assert.equal(bindings.status, 404);
+  } finally {
+    delete process.env.WEB_UI_CHAT_CHANNELS_ENABLED;
+  }
+});
+
+test("Chat Channels can enable only selected providers", async () => {
+  process.env.WEB_UI_CHAT_CHANNELS_ENABLED = "wecom,feishu";
+  try {
+    const me = await fetch(`${base}/me`, { headers: headers() });
+    assert.equal(me.status, 200);
+    const config = (await me.json()) as { chatChannelsEnabled?: boolean; chatChannelProviders?: string[] };
+    assert.equal(config.chatChannelsEnabled, true);
+    assert.deepEqual(config.chatChannelProviders, ["feishu", "work-wechat"]);
+
+    const enabled = await fetch(`${base}/api/im-bindings/status?provider=feishu`, { headers: headers() });
+    assert.equal(enabled.status, 200);
+    const disabled = await fetch(`${base}/api/im-bindings/status?provider=wechat`, { headers: headers() });
+    assert.equal(disabled.status, 404);
+    const disabledStart = await fetch(`${base}/api/im-bindings/start`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ provider: "wechat" }),
+    });
+    assert.equal(disabledStart.status, 404);
+  } finally {
+    delete process.env.WEB_UI_CHAT_CHANNELS_ENABLED;
+  }
+});
+
 test("legacy shared IM progress state is discarded instead of migrated", async () => {
   uiState.set("legacy-user#im-progress", { value: { runs: {} }, updatedAt: Date.now() });
   uiState.set("active-legacy-user#im-progress", {
@@ -616,12 +832,19 @@ async function confirmWechat(user: string, botId: string, externalUserId: string
   return fetch(`${base}/api/im-bindings/status?provider=wechat`, { headers: headers(user) });
 }
 
-async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 150; attempt += 1) {
+async function waitFor(predicate: () => boolean, attempts = 150): Promise<void> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.fail("condition was not met");
+}
+
+function assertActiveRunIdentity(threadRef: string, user: string): void {
+  const identity = coreActiveRunRequests.findLast((request) => request.threadRef === threadRef)?.identity;
+  assert.ok(identity);
+  const claims = JSON.parse(Buffer.from(identity.split(".")[0]!, "base64url").toString("utf8")) as { p?: unknown };
+  assert.equal(claims.p, user);
 }
 
 test("WeChat scan connects directly, persists encrypted credentials, and reuses the Bot", async () => {
@@ -763,11 +986,18 @@ test("WeChat bridge forwards messages and sends deliveries through iLink", async
     ],
   });
   await pollWeixinAccount("alice", "wx-bot-1");
-  const turn = coreTurns[0] as { surface: string; actor: { externalId: string }; text: string; deliveryTarget: string };
+  const turn = coreTurns[0] as {
+    surface: string;
+    actor: { externalId: string };
+    conversation: { threadRef: string };
+    text: string;
+    deliveryTarget: string;
+  };
   assert.equal(turn.surface, "im:wechat");
   assert.equal(turn.actor.externalId, "alice");
   assert.equal(turn.text, "hello from wechat");
   assert.match(turn.deliveryTarget, /^im:wechat:[a-f0-9]{20}:wx-user-1$/);
+  assertActiveRunIdentity(turn.conversation.threadRef, "alice");
   uiState.set("alice#im-progress-wechat", {
     value: {
       runs: {
@@ -807,6 +1037,55 @@ test("WeChat bridge forwards messages and sends deliveries through iLink", async
   assert.match(finalBody, /思考中\\n先检查微信状态/);
   assert.match(finalBody, /回复\\nreply to wechat/);
   assert.ok(ackedDeliveries.includes("delivery-wechat"));
+});
+
+test("IM progress coalesces rapid snapshots instead of sending every poll", async () => {
+  const runId = "run-throttled-progress";
+  coreTurnResponses.push({ status: "queued", runId });
+  coreRunResponses.set(runId, [
+    { status: "running", partial: "第一段", activity: [{ type: "tool_call", payload: { tool: "read" } }] },
+    {
+      status: "running",
+      partial: "第一段第二段",
+      activity: [
+        { type: "tool_call", payload: { tool: "read" } },
+        { type: "tool_result", payload: { tool: "read", ok: true } },
+      ],
+    },
+    {
+      status: "done",
+      partial: "第一段第二段",
+      activity: [
+        { type: "tool_call", payload: { tool: "read" } },
+        { type: "tool_result", payload: { tool: "read", ok: true } },
+      ],
+    },
+  ]);
+  const sentBefore = weixinSent.length;
+  weixinUpdates.push({
+    ret: 0,
+    get_updates_buf: "cursor-throttled-progress",
+    msgs: [
+      {
+        message_id: 988,
+        from_user_id: "wx-user-1",
+        message_type: 1,
+        item_list: [{ type: 1, text_item: { text: "coalesce progress" } }],
+      },
+    ],
+  });
+
+  await pollWeixinAccount("alice", "wx-bot-1");
+  await waitFor(() => {
+    const value = uiState.get("alice#im-progress-wechat")?.value as
+      { runs?: Record<string, { terminal?: boolean }> } | undefined;
+    return value?.runs?.[`wechat:${runId}`]?.terminal === true;
+  }, 350);
+  const progressMessages = weixinSent.slice(sentBefore).filter(({ body }) => {
+    const message = body.msg as { client_id?: unknown } | undefined;
+    return typeof message?.client_id === "string" && message.client_id.startsWith("qm-progress-");
+  });
+  assert.equal(progressMessages.length, 1);
 });
 
 test("WeChat locator send failures are acknowledged after one attempt", async () => {
@@ -895,6 +1174,100 @@ test("Feishu locator requires a real direct conversation before sending", async 
     receiveId: "feishu-chat-id",
     text: "你好，我是你的专属 飞书 Bot。以后可以直接在这里向我提问。",
   });
+
+  const firstTurn = coreTurns.at(-1) as { conversation: { threadRef: string } };
+  coreActiveRuns.set(firstTurn.conversation.threadRef, "feishu-live-run");
+  coreRunResponses.set("feishu-live-run", [{ status: "done" }]);
+  const signalsBefore = coreSignals.length;
+  await handler({
+    sender: { sender_id: { open_id: "feishu-open-id" } },
+    message: {
+      message_id: "feishu-auto-steer-message",
+      chat_id: "feishu-chat-id",
+      chat_type: "p2p",
+      message_type: "text",
+      content: JSON.stringify({ text: "改成只输出三条结论" }),
+    },
+  });
+  await waitFor(() => coreSignals.length === signalsBefore + 1);
+  const steeredTurn = coreTurns.at(-1) as { text: string; idempotencyKey: string };
+  assert.equal(steeredTurn.text, "改成只输出三条结论");
+  assert.match(steeredTurn.idempotencyKey, /feishu-auto-steer-message$/);
+  const steerSignal = coreSignals.at(-1);
+  assert.ok(steerSignal);
+  assert.equal(steerSignal.runId, "feishu-live-run");
+  assert.equal(steerSignal.body.text, "改成只输出三条结论");
+  assert.equal((steerSignal.body.request as { text?: string }).text, "改成只输出三条结论");
+  assertActiveRunIdentity(firstTurn.conversation.threadRef, user);
+
+  const replayRunId = "feishu-replayed-steer-run";
+  coreRunResponses.set(replayRunId, [{ status: "running" }, { status: "done" }]);
+  coreSignalResponses.push({
+    status: 409,
+    body: { accepted: false, reason: "terminal", replayed: true },
+    nextActiveRunId: replayRunId,
+  });
+  await handler({
+    sender: { sender_id: { open_id: "feishu-open-id" } },
+    message: {
+      message_id: "feishu-replayed-steer-message",
+      chat_id: "feishu-chat-id",
+      chat_type: "p2p",
+      message_type: "text",
+      content: JSON.stringify({ text: "任务结束瞬间仍要继续" }),
+    },
+  });
+  await waitFor(() => coreRunRequests.includes(replayRunId), 350);
+
+  const withdrawalsBefore = coreWithdrawals.length;
+  const sendsBeforeFailedSteer = larkSent.length;
+  coreSignalResponses.push({ status: 409, body: { accepted: false, reason: "account_changed" } });
+  await handler({
+    sender: { sender_id: { open_id: "feishu-open-id" } },
+    message: {
+      message_id: "feishu-rejected-steer-message",
+      chat_id: "feishu-chat-id",
+      chat_type: "p2p",
+      message_type: "text",
+      content: JSON.stringify({ text: "/steer 失败时不要变成独立任务" }),
+    },
+  });
+  await waitFor(() => coreWithdrawals.length === withdrawalsBefore + 1);
+  assert.equal(coreWithdrawals.at(-1), (coreSignals.at(-1)?.body.queuedRunId as string | undefined) ?? "");
+  await waitFor(() => larkSent.slice(sendsBeforeFailedSteer).some(({ text }) => /未能调整正在运行的任务/.test(text)));
+
+  const turnsBeforeNew = coreTurns.length;
+  const signalsBeforeNew = coreSignals.length;
+  await handler({
+    sender: { sender_id: { open_id: "feishu-open-id" } },
+    message: {
+      message_id: "feishu-new-message",
+      chat_id: "feishu-chat-id",
+      chat_type: "p2p",
+      message_type: "text",
+      content: JSON.stringify({ text: "/new 另起一个市场调研任务" }),
+    },
+  });
+  await waitFor(() => coreTurns.length === turnsBeforeNew + 1);
+  assert.equal(coreSignals.length, signalsBeforeNew);
+  assert.equal((coreTurns.at(-1) as { text: string }).text, "另起一个市场调研任务");
+
+  coreActiveRuns.delete(firstTurn.conversation.threadRef);
+  const turnsBeforeRefusal = coreTurns.length;
+  const sendsBeforeRefusal = larkSent.length;
+  await handler({
+    sender: { sender_id: { open_id: "feishu-open-id" } },
+    message: {
+      message_id: "feishu-steer-idle",
+      chat_id: "feishu-chat-id",
+      chat_type: "p2p",
+      message_type: "text",
+      content: JSON.stringify({ text: "/steer 没有任务时不要新开" }),
+    },
+  });
+  await waitFor(() => larkSent.slice(sendsBeforeRefusal).some(({ text }) => /当前没有正在运行的任务/.test(text)));
+  assert.equal(coreTurns.length, turnsBeforeRefusal);
+  assert.ok(larkSent.slice(sendsBeforeRefusal).some(({ text }) => /当前没有正在运行的任务/.test(text)));
 });
 
 test("QQ locator requires a real direct conversation before sending", async () => {
@@ -931,6 +1304,8 @@ test("QQ locator requires a real direct conversation before sending", async () =
     },
   );
   await waitFor(() => coreTurns.length === turnsBefore + 1);
+  const turn = coreTurns.at(-1) as { conversation: { threadRef: string } };
+  assertActiveRunIdentity(turn.conversation.threadRef, user);
   await waitFor(() => {
     const stored = uiState.get(`${user}#im-bindings`)?.value as
       { resources?: { qq?: { externalChatId?: string } } } | undefined;
@@ -988,6 +1363,8 @@ test("DingTalk locator requires a real conversation webhook before sending", asy
     }),
   });
   await waitFor(() => coreTurns.length === turnsBefore + 1);
+  const turn = coreTurns.at(-1) as { conversation: { threadRef: string } };
+  assertActiveRunIdentity(turn.conversation.threadRef, user);
   await waitFor(() => {
     const stored = uiState.get(`${user}#im-bindings`)?.value as
       { resources?: { dingtalk?: { externalChatId?: string } } } | undefined;
@@ -1004,6 +1381,511 @@ test("DingTalk locator requires a real conversation webhook before sending", asy
     token: "ding-token-refreshed",
     text: "你好，我是你的专属 QM 钉钉机器人。以后可以直接在这里向我提问。",
   });
+});
+
+test("WeChat sends encrypted image messages to Core as attachments", async () => {
+  const user = "wechat-media-user";
+  assert.equal((await startWechat(user)).status, 200);
+  assert.equal((await confirmWechat(user, "wx-media-bot", "wx-media-user-id")).status, 200);
+  const plain = Buffer.from("wechat-image-bytes");
+  const key = Buffer.from("0123456789abcdef");
+  const cipher = createCipheriv("aes-128-ecb", key, null);
+  const encrypted = Buffer.concat([cipher.update(plain), cipher.final()]);
+  const mediaUrl = "https://novac2c.cdn.weixin.qq.com/c2c/test-image";
+  remoteMedia.set(mediaUrl, { body: encrypted, contentType: "application/octet-stream" });
+  weixinUpdates.push({
+    ret: 0,
+    get_updates_buf: "wechat-media-cursor",
+    msgs: [
+      {
+        message_id: "wechat-media-message",
+        from_user_id: "wx-media-user-id",
+        message_type: 1,
+        item_list: [
+          { type: 1, text_item: { text: "请分析这张图" } },
+          {
+            msg_id: "wechat-image-item",
+            image_item: {
+              media: { url: mediaUrl },
+              aes_key: Buffer.from(key.toString("hex")).toString("base64"),
+            },
+          },
+        ],
+        context_token: "wechat-media-context",
+      },
+    ],
+  });
+  const turnsBefore = coreTurns.length;
+  await pollWeixinAccount(user, "wx-media-bot");
+  assert.equal(coreTurns.length, turnsBefore + 1);
+  const turn = coreTurns.at(-1) as { text: string; attachments: Array<{ blobId: string; mimetype: string }> };
+  assert.match(turn.text, /请分析这张图/);
+  assert.match(turn.text, /图片/);
+  assert.equal(turn.attachments[0]?.mimetype, "image/jpeg");
+  assert.deepEqual(coreBlobs.get(turn.attachments[0]!.blobId), plain);
+});
+
+test("WeChat accepts every observed media item shape without relying on type", async () => {
+  const user = "wechat-all-media-user";
+  assert.equal((await startWechat(user)).status, 200);
+  assert.equal((await confirmWechat(user, "wx-all-media-bot", "wx-all-media-user-id")).status, 200);
+  const key = Buffer.from("fedcba9876543210");
+  const encrypt = (value: string): Buffer => {
+    const cipher = createCipheriv("aes-128-ecb", key, null);
+    return Buffer.concat([cipher.update(Buffer.from(value)), cipher.final()]);
+  };
+  const voiceUrl = "https://novac2c.cdn.weixin.qq.com/c2c/test-voice";
+  const fileUrl = "https://novac2c.cdn.weixin.qq.com/c2c/test-file";
+  const videoUrl = "https://novac2c.cdn.weixin.qq.com/c2c/test-video";
+  remoteMedia.set(voiceUrl, { body: encrypt("wechat-voice"), contentType: "application/octet-stream" });
+  remoteMedia.set(fileUrl, { body: encrypt("wechat-file"), contentType: "application/octet-stream" });
+  remoteMedia.set(videoUrl, { body: encrypt("wechat-video"), contentType: "application/octet-stream" });
+  weixinUpdates.push({
+    ret: 0,
+    get_updates_buf: "wechat-all-media-cursor",
+    msgs: [
+      {
+        message_id: "wechat-all-media-message",
+        from_user_id: "wx-all-media-user-id",
+        message_type: 1,
+        item_list: [
+          {
+            voice_item: {
+              text: "微信语音转写",
+              encode_type: 7,
+              aes_key: key.toString("base64"),
+              media: { download_url: voiceUrl },
+            },
+          },
+          {
+            file_item: {
+              file_name: "报告.pdf",
+              file_size: 11,
+              aeskey: key.toString("hex"),
+              media: { full_url: fileUrl },
+            },
+          },
+          {
+            video_item: {
+              aes_key: key.toString("base64"),
+              media: { url: videoUrl },
+            },
+          },
+        ],
+        context_token: "wechat-all-media-context",
+      },
+    ],
+  });
+  const turnsBefore = coreTurns.length;
+  await pollWeixinAccount(user, "wx-all-media-bot");
+  assert.equal(coreTurns.length, turnsBefore + 1);
+  const turn = coreTurns.at(-1) as { text: string; attachments: Array<{ blobId: string }> };
+  assert.match(turn.text, /微信语音转写/);
+  assert.match(turn.text, /报告\.pdf/);
+  assert.match(turn.text, /视频/);
+  assert.deepEqual(
+    turn.attachments.map(({ blobId }) => coreBlobs.get(blobId)?.toString()),
+    ["wechat-voice", "wechat-file", "wechat-video"],
+  );
+});
+
+test("Feishu sends rich posts and every embedded image to Core", async () => {
+  const user = "feishu-media-user";
+  const credentials = await fetch(`${base}/api/im-bindings/feishu/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { appId: "feishu-media-app", appSecret: "feishu-media-secret" } }),
+  });
+  assert.equal(credentials.status, 200);
+  const handler = larkDispatchers.at(-1)?.handlers["im.message.receive_v1"];
+  if (!handler) throw new Error("missing Feishu event handler");
+  larkResources.set("feishu-media-message:image-key-1", Buffer.from("feishu-image-1"));
+  larkResources.set("feishu-media-message:image-key-2", Buffer.from("feishu-image-2"));
+  const turnsBefore = coreTurns.length;
+  await handler({
+    sender: { sender_id: { open_id: "feishu-media-open-id" } },
+    message: {
+      message_id: "feishu-media-message",
+      chat_id: "feishu-media-chat",
+      chat_type: "p2p",
+      message_type: "post",
+      content: JSON.stringify({
+        zh_cn: {
+          title: "现场照片",
+          content: [
+            [{ tag: "text", text: "请同时查看两张图片" }],
+            [
+              { tag: "img", image_key: "image-key-1" },
+              { tag: "img", image_key: "image-key-2" },
+            ],
+          ],
+        },
+      }),
+    },
+  });
+  await waitFor(() => coreTurns.length === turnsBefore + 1);
+  const turn = coreTurns.at(-1) as { text: string; attachments: Array<{ blobId: string }> };
+  assert.match(turn.text, /现场照片/);
+  assert.equal(turn.attachments.length, 2);
+  assert.deepEqual(
+    turn.attachments.map(({ blobId }) => coreBlobs.get(blobId)?.toString()),
+    ["feishu-image-1", "feishu-image-2"],
+  );
+});
+
+test("IM media limits download attempts, not only successful attachments", async () => {
+  const user = "feishu-media-limit-user";
+  const credentials = await fetch(`${base}/api/im-bindings/feishu/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { appId: "feishu-limit-app", appSecret: "feishu-limit-secret" } }),
+  });
+  assert.equal(credentials.status, 200);
+  const handler = larkDispatchers.at(-1)?.handlers["im.message.receive_v1"];
+  if (!handler) throw new Error("missing Feishu event handler");
+  for (let index = 2; index <= 12; index += 1)
+    larkResources.set(`feishu-limit-message:image-key-${index}`, Buffer.from(`image-${index}`));
+  const turnsBefore = coreTurns.length;
+  await handler({
+    sender: { sender_id: { open_id: "feishu-limit-open-id" } },
+    message: {
+      message_id: "feishu-limit-message",
+      chat_id: "feishu-limit-chat",
+      chat_type: "p2p",
+      message_type: "post",
+      content: JSON.stringify({
+        zh_cn: {
+          content: [Array.from({ length: 12 }, (_, index) => ({ tag: "img", image_key: `image-key-${index + 1}` }))],
+        },
+      }),
+    },
+  });
+  await waitFor(() => coreTurns.length === turnsBefore + 1);
+  const turn = coreTurns.at(-1) as { text: string; attachments: Array<{ blobId: string }> };
+  assert.equal(turn.attachments.length, 9);
+  assert.match(turn.text, /读取失败/);
+  assert.equal(turn.text.match(/最多处理 10 个附件/g)?.length, 2);
+});
+
+test("Feishu keeps card images and merged-forward media from their source messages", async () => {
+  const user = "feishu-nested-media-user";
+  const credentials = await fetch(`${base}/api/im-bindings/feishu/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { appId: "feishu-nested-app", appSecret: "feishu-nested-secret" } }),
+  });
+  assert.equal(credentials.status, 200);
+  const handler = larkDispatchers.at(-1)?.handlers["im.message.receive_v1"];
+  if (!handler) throw new Error("missing Feishu event handler");
+  larkSubMessages.set("feishu-forward-message", [
+    {
+      message_id: "feishu-forward-image",
+      msg_type: "image",
+      body: { content: JSON.stringify({ image_key: "forward-image-key" }) },
+    },
+    {
+      message_id: "feishu-forward-file",
+      msg_type: "file",
+      body: { content: JSON.stringify({ file_key: "forward-file-key", file_name: "forward.pdf" }) },
+    },
+  ]);
+  larkResources.set("feishu-forward-image:forward-image-key", Buffer.from("feishu-forward-image"));
+  larkResources.set("feishu-forward-file:forward-file-key", Buffer.from("feishu-forward-file"));
+  const turnsBefore = coreTurns.length;
+  await handler({
+    sender: { sender_id: { open_id: "feishu-nested-open-id" } },
+    message: {
+      message_id: "feishu-forward-message",
+      chat_id: "feishu-nested-chat",
+      chat_type: "p2p",
+      message_type: "merge_forward",
+      content: "{}",
+    },
+  });
+  await waitFor(() => coreTurns.length === turnsBefore + 1);
+  const forwarded = coreTurns.at(-1) as { attachments: Array<{ blobId: string }> };
+  assert.deepEqual(
+    forwarded.attachments.map(({ blobId }) => coreBlobs.get(blobId)?.toString()),
+    ["feishu-forward-image", "feishu-forward-file"],
+  );
+
+  larkResources.set("feishu-card-message:card-image-key", Buffer.from("feishu-card-image"));
+  await handler({
+    sender: { sender_id: { open_id: "feishu-nested-open-id" } },
+    message: {
+      message_id: "feishu-card-message",
+      chat_id: "feishu-nested-chat",
+      chat_type: "p2p",
+      message_type: "interactive",
+      content: JSON.stringify({ elements: [{ tag: "img", image_key: "card-image-key" }] }),
+    },
+  });
+  await waitFor(() => coreTurns.length === turnsBefore + 2);
+  const card = coreTurns.at(-1) as { attachments: Array<{ blobId: string }> };
+  assert.equal(coreBlobs.get(card.attachments[0]!.blobId)?.toString(), "feishu-card-image");
+});
+
+test("QQ sends image, voice, video, file, and quoted media to Core", async () => {
+  const user = "qq-media-user";
+  const credentials = await fetch(`${base}/api/im-bindings/qq/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { appId: "qq-media-app", appSecret: "qq-media-secret" } }),
+  });
+  assert.equal(credentials.status, 200);
+  const bot = qqBots.at(-1);
+  if (!bot) throw new Error("missing QQ bot");
+  const imageUrl = "https://multimedia.nt.qq.com.cn/media/image";
+  const voiceUrl = "https://multimedia.nt.qq.com.cn/media/voice.wav";
+  const videoUrl = "https://multimedia.nt.qq.com.cn/media/video";
+  const fileUrl = "https://multimedia.nt.qq.com.cn/media/file";
+  const quotedUrl = "https://multimedia.nt.qq.com.cn/media/quoted";
+  remoteMedia.set(imageUrl, { body: Buffer.from("qq-image"), contentType: "image/png" });
+  remoteMedia.set(voiceUrl, { body: Buffer.from("qq-voice"), contentType: "audio/wav" });
+  remoteMedia.set(videoUrl, { body: Buffer.from("qq-video"), contentType: "video/mp4" });
+  remoteMedia.set(fileUrl, { body: Buffer.from("qq-file"), contentType: "application/pdf" });
+  remoteMedia.set(quotedUrl, { body: Buffer.from("qq-quoted"), contentType: "image/jpeg" });
+  const turnsBefore = coreTurns.length;
+  bot.emit(
+    "message",
+    {},
+    {
+      content: "",
+      kind: "c2c",
+      senderId: "qq-media-id",
+      messageId: "qq-media-message",
+      replyTarget: { scope: "c2c", targetId: "qq-media-id" },
+      refMsgIdx: "quoted-1",
+      msgElements: [
+        {
+          content: "之前发的图片",
+          attachments: [{ content_type: "image/jpeg", url: quotedUrl, filename: "quoted.jpg" }],
+        },
+      ],
+      attachments: [
+        { content_type: "image/png", url: imageUrl, filename: "photo.png" },
+        {
+          content_type: "audio/silk",
+          url: "https://multimedia.nt.qq.com.cn/media/voice.silk",
+          voice_wav_url: voiceUrl,
+          asr_refer_text: "明天下午提醒我",
+        },
+        { content_type: "video/mp4", url: videoUrl, filename: "clip.mp4" },
+        { content_type: "application/pdf", url: fileUrl, filename: "report.pdf" },
+      ],
+    },
+  );
+  await waitFor(() => coreTurns.length === turnsBefore + 1);
+  const turn = coreTurns.at(-1) as { text: string; attachments: Array<{ blobId: string; mimetype: string }> };
+  assert.match(turn.text, /之前发的图片/);
+  assert.match(turn.text, /语音转写：明天下午提醒我/);
+  assert.deepEqual(
+    turn.attachments.map(({ mimetype }) => mimetype),
+    ["image/png", "audio/wav", "video/mp4", "application/pdf", "image/jpeg"],
+  );
+  assert.deepEqual(
+    turn.attachments.map(({ blobId }) => coreBlobs.get(blobId)?.toString()),
+    ["qq-image", "qq-voice", "qq-video", "qq-file", "qq-quoted"],
+  );
+});
+
+test("DingTalk sends rich text and all embedded pictures to Core", async () => {
+  const user = "dingtalk-media-user";
+  const credentials = await fetch(`${base}/api/im-bindings/dingtalk/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { clientId: "ding-media-app", clientSecret: "ding-media-secret" } }),
+  });
+  assert.equal(credentials.status, 200);
+  const client = dingtalkClients.at(-1);
+  const callback = client?.callbacks.get(DINGTALK_TOPIC_ROBOT);
+  if (!client || !callback) throw new Error("missing DingTalk callback");
+  const firstUrl = "https://bucket.oss-cn-hangzhou.aliyuncs.com/ding-image-1";
+  const secondUrl = "https://bucket.oss-cn-hangzhou.aliyuncs.com/ding-image-2";
+  dingtalkDownloadUrls.set("ding-code-1", firstUrl);
+  dingtalkDownloadUrls.set("ding-code-2", secondUrl);
+  remoteMedia.set(firstUrl, { body: Buffer.from("ding-image-1"), contentType: "image/jpeg" });
+  remoteMedia.set(secondUrl, { body: Buffer.from("ding-image-2"), contentType: "image/jpeg" });
+  const turnsBefore = coreTurns.length;
+  callback({
+    headers: { messageId: "ding-media-frame" },
+    data: JSON.stringify({
+      msgtype: "richText",
+      content: {
+        richText: [
+          { text: "两张现场图片" },
+          { type: "picture", downloadCode: "ding-code-1" },
+          { type: "picture", downloadCode: "ding-code-2" },
+        ],
+      },
+      senderId: "ding-media-user-id",
+      conversationId: "ding-media-conversation",
+      conversationType: "1",
+      msgId: "ding-media-message",
+      robotCode: "ding-media-app",
+      sessionWebhook: `${coreBase}/ding-reply`,
+    }),
+  });
+  await waitFor(() => coreTurns.length === turnsBefore + 1);
+  const turn = coreTurns.at(-1) as { text: string; attachments: Array<{ blobId: string }> };
+  assert.match(turn.text, /两张现场图片/);
+  assert.equal(turn.attachments.length, 2);
+  assert.deepEqual(
+    turn.attachments.map(({ blobId }) => coreBlobs.get(blobId)?.toString()),
+    ["ding-image-1", "ding-image-2"],
+  );
+});
+
+test("DingTalk sends every official standalone media message type to Core", async () => {
+  const user = "dingtalk-all-media-user";
+  const credentials = await fetch(`${base}/api/im-bindings/dingtalk/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { clientId: "ding-all-app", clientSecret: "ding-all-secret" } }),
+  });
+  assert.equal(credentials.status, 200);
+  const client = dingtalkClients.at(-1);
+  const callback = client?.callbacks.get(DINGTALK_TOPIC_ROBOT);
+  if (!client || !callback) throw new Error("missing DingTalk callback");
+  const cases = [
+    { msgtype: "picture", code: "ding-picture-code", name: undefined, bytes: "ding-picture" },
+    { msgtype: "audio", code: "ding-audio-code", name: undefined, bytes: "ding-audio" },
+    { msgtype: "video", code: "ding-video-code", name: undefined, bytes: "ding-video" },
+    { msgtype: "file", code: "ding-file-code", name: "报告.pdf", bytes: "ding-file" },
+  ] as const;
+  const turnsBefore = coreTurns.length;
+  for (const [index, item] of cases.entries()) {
+    const url = `https://bucket.oss-cn-hangzhou.aliyuncs.com/${item.code}`;
+    dingtalkDownloadUrls.set(item.code, url);
+    remoteMedia.set(url, { body: Buffer.from(item.bytes), contentType: "application/octet-stream" });
+    callback({
+      headers: { messageId: `ding-all-frame-${index}` },
+      data: JSON.stringify({
+        msgtype: item.msgtype,
+        content: {
+          downloadCode: item.code,
+          ...(item.name ? { fileName: item.name } : {}),
+          ...(item.msgtype === "audio" ? { recognition: "钉钉语音转写" } : {}),
+        },
+        senderId: "ding-all-user-id",
+        conversationId: "ding-all-conversation",
+        conversationType: "1",
+        msgId: `ding-all-message-${index}`,
+        robotCode: "ding-all-app",
+        sessionWebhook: `${coreBase}/ding-reply`,
+      }),
+    });
+  }
+  await waitFor(() => coreTurns.length === turnsBefore + cases.length);
+  const turns = coreTurns.slice(-cases.length) as Array<{ text: string; attachments: Array<{ blobId: string }> }>;
+  assert.match(turns[1]!.text, /钉钉语音转写/);
+  assert.match(turns[3]!.text, /报告\.pdf/);
+  assert.deepEqual(
+    turns.map((turn) => coreBlobs.get(turn.attachments[0]!.blobId)?.toString()),
+    cases.map((item) => item.bytes),
+  );
+});
+
+test("WeCom sends mixed text and images to Core", async () => {
+  const user = "wecom-media-user";
+  const credentials = await fetch(`${base}/api/im-bindings/work-wechat/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { botId: "wecom-media-bot", secret: "wecom-media-secret" } }),
+  });
+  assert.equal(credentials.status, 200);
+  const client = wecomClients.at(-1)!;
+  const mediaUrl = "https://wecom.test/media/image";
+  wecomDownloads.set(mediaUrl, { buffer: Buffer.from("wecom-image"), filename: "wecom-photo.jpg" });
+  const turnsBefore = coreTurns.length;
+  client.emit("message.mixed", {
+    headers: { req_id: "wecom-media-request" },
+    body: {
+      msgid: "wecom-media-message",
+      msgtype: "mixed",
+      chattype: "single",
+      from: { userid: "wecom-media-id" },
+      mixed: {
+        msg_item: [
+          { msgtype: "text", text: { content: "分析这张截图" } },
+          { msgtype: "image", image: { url: mediaUrl, aeskey: "mock-key" } },
+        ],
+      },
+    },
+  });
+  await waitFor(() => coreTurns.length === turnsBefore + 1);
+  const turn = coreTurns.at(-1) as { text: string; attachments: Array<{ blobId: string; mimetype: string }> };
+  assert.match(turn.text, /分析这张截图/);
+  assert.equal(turn.attachments[0]?.mimetype, "image/jpeg");
+  assert.equal(coreBlobs.get(turn.attachments[0]!.blobId)?.toString(), "wecom-image");
+});
+
+test("WeCom forwards the official voice transcription content to Core", async () => {
+  const user = "wecom-voice-user";
+  const credentials = await fetch(`${base}/api/im-bindings/work-wechat/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { botId: "wecom-voice-bot", secret: "wecom-voice-secret" } }),
+  });
+  assert.equal(credentials.status, 200);
+  const client = wecomClients.at(-1)!;
+  const turnsBefore = coreTurns.length;
+  client.emit("message.voice", {
+    headers: { req_id: "_hBeUc_qTN-ccH6EH5-mqQAA" },
+    body: {
+      msgid: "7ed9b0cde461622fc8cf2823795346e9",
+      aibotid: "aibZ78yn9sOvGLOgqEJAoPeUWK7DtuC74Oc",
+      chattype: "single",
+      from: { userid: "FuSheng" },
+      msgtype: "voice",
+      response_url: "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=test",
+      voice: { content: "你好，你好。" },
+    },
+  });
+  await waitFor(() => coreTurns.length === turnsBefore + 1);
+  assert.equal((coreTurns.at(-1) as { text: string }).text, "你好，你好。");
+});
+
+test("WeCom downloads official file and video messages", async () => {
+  const user = "wecom-file-video-user";
+  const credentials = await fetch(`${base}/api/im-bindings/work-wechat/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { botId: "wecom-file-video-bot", secret: "wecom-file-video-secret" } }),
+  });
+  assert.equal(credentials.status, 200);
+  const client = wecomClients.at(-1)!;
+  const fileUrl = "https://wecom.test/media/file";
+  const videoUrl = "https://wecom.test/media/video";
+  wecomDownloads.set(fileUrl, { buffer: Buffer.from("wecom-file"), filename: "报告.pdf" });
+  wecomDownloads.set(videoUrl, { buffer: Buffer.from("wecom-video"), filename: "现场.mp4" });
+  const turnsBefore = coreTurns.length;
+  client.emit("message.file", {
+    headers: { req_id: "wecom-file-request" },
+    body: {
+      msgid: "wecom-file-message",
+      msgtype: "file",
+      chattype: "single",
+      from: { userid: "wecom-file-video-id" },
+      file: { url: fileUrl, aeskey: "file-key" },
+    },
+  });
+  client.emit("message.video", {
+    headers: { req_id: "wecom-video-request" },
+    body: {
+      msgid: "wecom-video-message",
+      msgtype: "video",
+      chattype: "single",
+      from: { userid: "wecom-file-video-id" },
+      video: { url: videoUrl, aeskey: "video-key" },
+    },
+  });
+  await waitFor(() => coreTurns.length === turnsBefore + 2);
+  const turns = coreTurns.slice(-2) as Array<{ attachments: Array<{ blobId: string }> }>;
+  assert.deepEqual(
+    turns.map((turn) => coreBlobs.get(turn.attachments[0]!.blobId)?.toString()),
+    ["wecom-file", "wecom-video"],
+  );
 });
 
 test("WeCom starts an official direct scan flow", async () => {
@@ -1191,7 +2073,7 @@ test("WeCom remembers an opened direct chat and sends Bot locator messages", asy
   assert.match(failedBody.message, /wecom proactive send failed/);
 });
 
-test("WeCom reconnects a disconnected idle Bot before draining later replies", async () => {
+test("WeCom leaves idle network reconnection to the SDK before draining later replies", async () => {
   const user = "wecom-idle-user";
   await fetch(`${base}/api/im-bindings/start`, {
     method: "POST",
@@ -1207,11 +2089,12 @@ test("WeCom reconnects a disconnected idle Bot before draining later replies", a
   const disconnected = wecomClients.at(-1)!;
   const clientsBeforeReconnect = wecomClients.length;
 
-  disconnected.disconnect();
-  await waitFor(() => wecomClients.length === clientsBeforeReconnect + 1);
+  disconnected.simulateNetworkDisconnect();
+  await waitFor(() => disconnected.isConnected);
   const reconnected = wecomClients.at(-1)!;
   await waitFor(() => reconnected.isConnected);
-  assert.notEqual(reconnected, disconnected);
+  assert.equal(wecomClients.length, clientsBeforeReconnect);
+  assert.equal(reconnected, disconnected);
   assert.equal(reconnected.isConnected, true);
 
   imDeliveries.push({
@@ -1298,24 +2181,58 @@ test("WeCom matches concurrent replies to their original streams", async () => {
   await waitFor(() => coreTurns.length === turnsBefore + 1);
   await waitFor(() => wecomReplies.some(({ reqId, finish }) => reqId === "wecom-request" && !finish));
   assert.equal(wecomReplies.at(-1)?.reqId, "wecom-request");
+  assert.match(wecomReplies.at(-1)?.streamId ?? "", /^stream_\d+_/);
   assert.equal(wecomReplies.at(-1)?.content, "正在思考...");
   assert.equal(wecomReplies.at(-1)?.finish, false);
-  const turn = coreTurns.at(-1) as { surface: string; deliveryTarget: string; text: string };
+  const turn = coreTurns.at(-1) as {
+    surface: string;
+    conversation: { threadRef: string };
+    deliveryTarget: string;
+    text: string;
+  };
   assert.equal(turn.surface, "im:work-wechat");
   assert.equal(turn.text, "hello from wecom");
+  assertActiveRunIdentity(turn.conversation.threadRef, user);
+  const activeRunId = `run-${coreTurns.length}`;
+  coreActiveRuns.set(turn.conversation.threadRef, activeRunId);
+  const signalsBeforeSteer = coreSignals.length;
+  client.emit("message.text", {
+    headers: { req_id: "wecom-request-steer" },
+    body: {
+      msgid: "wecom-message-steer",
+      msgtype: "text",
+      chattype: "single",
+      chatid: "",
+      from: { userid: "wecom-user-id" },
+      text: { content: "steer the active response" },
+    },
+  });
+  await waitFor(() => coreSignals.length === signalsBeforeSteer + 1);
+  const steeredRequest = coreSignals.at(-1)?.body.request as { deliveryEditRef?: string } | undefined;
+  assert.equal(JSON.parse(steeredRequest?.deliveryEditRef ?? "{}").reqId, "wecom-request-steer");
+  await waitFor(() => wecomReplies.some(({ reqId, finish }) => reqId === "wecom-request-steer" && finish));
+  assert.equal(
+    wecomReplies.findLast(({ reqId, finish }) => reqId === "wecom-request" && finish)?.content,
+    "正在思考...",
+  );
+  assert.equal(
+    wecomReplies.findLast(({ reqId, finish }) => reqId === "wecom-request-steer" && finish)?.content,
+    "已合并。",
+  );
+  const repliesBeforeSteeredDelivery = wecomReplies.length;
   imDeliveries.push({
     id: "delivery-wecom",
     destination: { type: "im:work-wechat", target: turn.deliveryTarget },
     text: "reply to wecom",
-    idempotencyKey: `run:run-${coreTurns.length}`,
+    idempotencyKey: `run:${activeRunId}`,
     createdAt: Date.now(),
   });
   await drainImSdkDeliveries("work-wechat");
-  assert.equal(wecomReplies.at(-1)?.reqId, "wecom-request");
-  assert.equal(wecomReplies.at(-1)?.content, "reply to wecom");
-  assert.equal(wecomReplies.at(-1)?.finish, true);
-  assert.equal(wecomSent.length, 0);
+  assert.equal(wecomReplies.length, repliesBeforeSteeredDelivery);
+  assert.deepEqual(wecomSent.at(-1), { target: "wecom-user-id", content: "reply to wecom" });
+  assert.equal(wecomSent.length, 1);
   assert.ok(ackedDeliveries.includes("delivery-wecom"));
+  coreActiveRuns.delete(turn.conversation.threadRef);
 
   const progressStart = coreTurns.length;
   const progressRunId = `run-${progressStart + 1}`;
@@ -1524,6 +2441,7 @@ test("WeCom matches concurrent replies to their original streams", async () => {
       createdAt: Date.now(),
     },
   );
+  const sentBeforeConcurrentReplies = wecomSent.length;
   await drainImSdkDeliveries("work-wechat");
   assert.deepEqual(
     wecomReplies.slice(-2).map(({ reqId, content }) => ({ reqId, content })),
@@ -1532,7 +2450,7 @@ test("WeCom matches concurrent replies to their original streams", async () => {
       { reqId: "wecom-request-a", content: "first concurrent reply" },
     ],
   );
-  assert.equal(wecomSent.length, 1);
+  assert.equal(wecomSent.length, sentBeforeConcurrentReplies);
 
   const longReplyStart = coreTurns.length;
   client.emit("message.text", {
@@ -1679,18 +2597,17 @@ test("WeCom matches concurrent replies to their original streams", async () => {
     createdAt: Date.now(),
   });
   wecomReplyFailures.add("wecom-request-retry");
+  wecomSendFailures = 1;
   const sentBeforeRetry = wecomSent.length;
   ackByKeyFailures = 1;
   for (let attempt = 0; attempt < 150 && !ackedDeliveries.includes("delivery-wecom-retry"); attempt += 1) {
     await drainImSdkDeliveries("work-wechat").catch(() => undefined);
     if (!ackedDeliveries.includes("delivery-wecom-retry")) await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.deepEqual(
-    wecomReplies
-      .filter(({ reqId, finish }) => reqId === "wecom-request-retry" && finish)
-      .map(({ streamId, content }) => ({ streamId, content })),
-    [{ streamId: wecomReplies.at(-1)?.streamId, content: "retried stream reply" }],
-  );
+  const retriedReplies = wecomReplies
+    .filter(({ reqId, finish }) => reqId === "wecom-request-retry" && finish)
+    .map(({ streamId, content }) => ({ streamId, content }));
+  assert.deepEqual(retriedReplies, [{ streamId: retriedReplies[0]?.streamId, content: "retried stream reply" }]);
   assert.equal(wecomSent.length, sentBeforeRetry);
   assert.ok(ackedDeliveries.includes("delivery-wecom-retry"));
   assert.ok(releasedDeliveryClaims.includes("delivery-wecom-retry"));
@@ -1732,6 +2649,7 @@ test("WeCom matches concurrent replies to their original streams", async () => {
     ({ reqId, streamId, finish }) => reqId === "wecom-request-original" && streamId === "stream-original" && finish,
   );
   assert.equal(completedReplies.length, 1);
+  assert.equal(completedReplies[0]?.content, "already completed reply");
   assert.equal(wecomSent.length, sentBeforeCompleted);
   assert.ok(ackedDeliveryKeys.includes("run:run-completed"));
   assert.ok(ackedDeliveries.includes("delivery-wecom-completed"));

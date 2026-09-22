@@ -241,6 +241,7 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
         runs.set(queuedRunId, queued);
         throw error;
       }
+      if (queued.request.deliveryEditRef) target.deliveryState = { editRef: queued.request.deliveryEditRef };
       retryAfter.delete(queuedRunId);
       if (queued.dedupKey) byKey.delete(queued.dedupKey);
       return true;

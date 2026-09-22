@@ -22,6 +22,23 @@ for (const { label, value } of [
   });
 }
 
+test("production accepts a missing IM credential key when Chat Channels are disabled", () => {
+  const result = spawnSync(
+    process.execPath,
+    ["--input-type=module", "--eval", `await import(${JSON.stringify(server)}); process.exit(0)`],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        NODE_ENV: "production",
+        WEB_UI_CHAT_CHANNELS_ENABLED: "0",
+        WEB_UI_IM_CREDENTIALS_KEY: "",
+      },
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
 for (const { label, value } of [
   { label: "32-byte hexadecimal", value: "0a".repeat(32) },
   { label: "32-character secret", value: "N7m!2Qp#9Vr@4Tx$8Kz&5Bw*3Hy=6Dc!" },

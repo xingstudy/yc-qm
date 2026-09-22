@@ -15,9 +15,10 @@ import { dirname, extname, join, normalize } from "node:path";
 import { LRUCache } from "lru-cache";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import {
+  generateReqId as generateWeComReqId,
   WSClient as WeComWSClient,
+  type BaseMessage as WeComBaseMessage,
   type EventMessage as WeComEventMessage,
-  type TextMessage as WeComTextMessage,
   type WsFrame,
   type WsFrameHeaders,
 } from "@wecom/aibot-node-sdk";
@@ -160,23 +161,47 @@ function rememberRun(runId: string, user: string, threadRef: string): void {
 
 const deliveryClients = new Map<string, Set<ServerResponse>>();
 
-type ImProviderId = "wechat" | "feishu" | "work-wechat" | "qq" | "dingtalk";
+const IM_PROVIDERS = ["wechat", "feishu", "work-wechat", "qq", "dingtalk"] as const;
+type ImProviderId = (typeof IM_PROVIDERS)[number];
 type ImSetupMode = "wechat-qr" | "provision-qr" | "manual-credentials";
 type ImAuthorizationState =
   "waiting" | "scanned" | "verification-required" | "blocked" | "expired" | "unrecoverable" | "error";
 
 const IM_SDK_PROVIDERS = ["feishu", "work-wechat", "qq", "dingtalk"] as const;
-const IM_PROVIDERS = ["wechat", ...IM_SDK_PROVIDERS] as const;
+
+function enabledImProviders(): ImProviderId[] {
+  const configured = (process.env.WEB_UI_CHAT_CHANNELS_ENABLED ?? "1").trim().toLowerCase();
+  if (!configured || configured === "1") return [...IM_PROVIDERS];
+  if (configured === "0") return [];
+  const requested = new Set(
+    configured
+      .split(",")
+      .map((provider) => provider.trim())
+      .filter(Boolean)
+      .map((provider) => (provider === "wecom" ? "work-wechat" : provider)),
+  );
+  const invalid = [...requested].find((provider) => !(IM_PROVIDERS as readonly string[]).includes(provider));
+  if (!requested.size || invalid) {
+    throw new Error(
+      "WEB_UI_CHAT_CHANNELS_ENABLED must be 0, 1, or a comma-separated list of wechat, wecom, feishu, qq, dingtalk",
+    );
+  }
+  return IM_PROVIDERS.filter((provider) => requested.has(provider));
+}
+
+const chatChannelsEnabled = (): boolean => enabledImProviders().length > 0;
+const imProviderEnabled = (provider: ImProviderId): boolean => enabledImProviders().includes(provider);
 
 const IM_BINDINGS_KEY = "im-bindings";
 const IM_PROGRESS_LEGACY_KEY = "im-progress";
 const IM_PROGRESS_KEY_PREFIX = `${IM_PROGRESS_LEGACY_KEY}-`;
 const IM_TOKENS_PRINCIPAL = "web-ui-im";
 const IM_CREDENTIALS_KEY = parseImCredentialsKey(process.env.WEB_UI_IM_CREDENTIALS_KEY);
-if (process.env.NODE_ENV === "production" && !IM_CREDENTIALS_KEY) {
+if (process.env.NODE_ENV === "production" && chatChannelsEnabled() && !IM_CREDENTIALS_KEY) {
   throw new Error("WEB_UI_IM_CREDENTIALS_KEY must be at least 32 characters");
 }
 const WEIXIN_ILINK_BASE_URL = "https://ilinkai.weixin.qq.com";
+const WEIXIN_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
 const WEIXIN_ILINK_BOT_TYPE = "3";
 const WEIXIN_QR_TTL_MS = 5 * 60_000;
 const WEIXIN_API_TIMEOUT_MS = 35_000;
@@ -185,12 +210,16 @@ const IM_RUN_PROGRESS_POLL_MS = 1_000;
 const IM_RUN_PROGRESS_REQUEST_TIMEOUT_MS = 5_000;
 const IM_RUN_FINAL_REQUEST_TIMEOUT_MS = 5_000;
 const IM_DELIVERY_POLL_MS = WEIXIN_BRIDGE_SYNC_MS;
-const IM_PARTIAL_PROGRESS_MS = 2_000;
+const IM_PROGRESS_UPDATE_MS = 8_000;
 const IM_RUN_PROGRESS_MAX_AGE_MS = 24 * 60 * 60_000;
 const IM_PROGRESS_CLAIM_MS = 45_000;
 const IM_SDK_CONNECT_TIMEOUT_MS = 15_000;
+const IM_MEDIA_TIMEOUT_MS = 60_000;
+const IM_MEDIA_MAX_BYTES = 100 * 1024 * 1024;
+const IM_MEDIA_MAX_ATTACHMENTS = 10;
 const IM_RESOURCE_RESERVATION_MS = Math.max(60_000, IM_SDK_CONNECT_TIMEOUT_MS * 4);
 const DINGTALK_REGISTRATION_BASE_URL = "https://oapi.dingtalk.com";
+const DINGTALK_API_BASE_URL = "https://api.dingtalk.com";
 const DINGTALK_REGISTRATION_SOURCE = "qm";
 const IM_BRIDGE_INSTANCE_ID = randomUUID();
 const IM_BRIDGE_LEASE_MS = Math.max(10_000, WEIXIN_BRIDGE_SYNC_MS * 4);
@@ -756,12 +785,13 @@ function publicImBindings(state: ImBindingsState): {
 } {
   return {
     bindings: Object.fromEntries(
-      Object.entries(state.bindings).map(([provider, binding]) => [
-        provider,
-        publicImBinding(binding, state.resources[provider as ImProviderId]),
-      ]),
+      Object.entries(state.bindings)
+        .filter(([provider]) => isImProviderId(provider) && imProviderEnabled(provider))
+        .map(([provider, binding]) => [provider, publicImBinding(binding, state.resources[provider as ImProviderId])]),
     ),
-    reusableProviders: Object.keys(state.resources).filter(isImProviderId),
+    reusableProviders: Object.keys(state.resources).filter(
+      (provider): provider is ImProviderId => isImProviderId(provider) && imProviderEnabled(provider),
+    ),
   };
 }
 
@@ -1591,12 +1621,11 @@ async function finishImRunProgress(
   return progress;
 }
 
-async function fetchImRun(
+async function coreFetchAsImUser(
   user: string,
-  runId: string,
-  timeoutMs = IM_RUN_PROGRESS_REQUEST_TIMEOUT_MS,
+  timeoutMs: number,
+  request: () => Promise<{ status: number; text: string }>,
 ): Promise<{ status: number; text: string }> {
-  const request = () => coreFetch("GET", `/v1/runs/${encodeURIComponent(runId)}`, "", timeoutMs);
   if (!PORTAL_IDENTITY_SECRET) return request();
   const sessionPath = `/v1/internal/auth/users/${encodeURIComponent(user)}/session-version`;
   const session = await coreFetch("GET", sessionPath, "", timeoutMs);
@@ -1617,6 +1646,16 @@ async function fetchImRun(
   return portalTokenStore.run(token, request);
 }
 
+async function fetchImRun(
+  user: string,
+  runId: string,
+  timeoutMs = IM_RUN_PROGRESS_REQUEST_TIMEOUT_MS,
+): Promise<{ status: number; text: string }> {
+  return coreFetchAsImUser(user, timeoutMs, () =>
+    coreFetch("GET", `/v1/runs/${encodeURIComponent(runId)}`, "", timeoutMs),
+  );
+}
+
 async function followImRunProgress(
   user: string,
   provider: ImProviderId,
@@ -1631,7 +1670,7 @@ async function followImRunProgress(
   let sentActivity = progressState?.sentActivity ?? 0;
   let partialLength = progressState?.partialLength ?? 0;
   let partialHash = progressState?.partialHash ?? "";
-  let lastPartialAt = 0;
+  let lastProgressAt = sentInitial ? Date.now() : 0;
   let lastProgressId = progressState?.lastProgressId ?? "";
   let failures = 0;
   if (provider === "wechat") await sleep(100);
@@ -1666,7 +1705,9 @@ async function followImRunProgress(
         let streamed = false;
         const progress = formatImRunProgress(snapshot);
         const progressId = imProgressMessageId(user, provider, runId, progress.text);
+        const progressDue = !sentInitial || Date.now() - lastProgressAt >= IM_PROGRESS_UPDATE_MS;
         if (runtime?.progress) {
+          streamed = !progressDue;
           const partial = typeof snapshot.partial === "string" ? snapshot.partial : "";
           const nextCursor: ImRunProgressCursor = {
             sentInitial: true,
@@ -1675,8 +1716,8 @@ async function followImRunProgress(
             partialHash: imProgressTextHash(partial),
             lastProgressId: progressId,
           };
-          streamed = progressId === lastProgressId;
-          if (!streamed && !canceled()) {
+          if (progressDue) streamed = progressId === lastProgressId;
+          if (progressDue && !streamed && !canceled()) {
             const claim = progressState
               ? await claimStoredImProgressMessage(user, progressState, progressId)
               : "claimed";
@@ -1700,7 +1741,7 @@ async function followImRunProgress(
               if (!streamed && progressState) await releaseStoredImProgressMessage(user, progressState, progressId);
             }
           }
-          if (streamed) {
+          if (streamed && progressDue) {
             if (progressState) Object.assign(progressState, nextCursor);
             lastProgressId = progressId;
             sentInitial = true;
@@ -1715,21 +1756,24 @@ async function followImRunProgress(
                 partialHash,
                 lastProgressId,
               });
+            if (progressDue) lastProgressAt = Date.now();
           }
         }
         if (!streamed && !canceled()) {
           const updates: string[] = [];
           if (!sentInitial && !terminal) updates.push("正在思考...");
-          const activityText = activity
-            .slice(sentActivity)
-            .map(imProgressActivityText)
-            .filter((value): value is string => Boolean(value))
-            .join("\n\n");
+          const activityText = progressDue
+            ? activity
+                .slice(sentActivity)
+                .map(imProgressActivityText)
+                .filter((value): value is string => Boolean(value))
+                .join("\n\n")
+            : "";
           if (activityText) updates.push(activityText);
           const partial = typeof snapshot.partial === "string" ? snapshot.partial : "";
           const currentPartialHash = imProgressTextHash(partial);
           const partialChanged = partial && (partial.length !== partialLength || currentPartialHash !== partialHash);
-          const partialDue = terminal || Date.now() - lastPartialAt >= IM_PARTIAL_PROGRESS_MS;
+          const partialDue = progressDue;
           if (partialChanged && partialDue) {
             const prefixMatches =
               partial.length >= partialLength && imProgressTextHash(partial.slice(0, partialLength)) === partialHash;
@@ -1740,7 +1784,7 @@ async function followImRunProgress(
             throw new ImProgressLeaseLostError();
           const nextCursor: ImRunProgressCursor = {
             sentInitial: true,
-            sentActivity: activity.length,
+            sentActivity: progressDue ? activity.length : sentActivity,
             partialLength: partialChanged && partialDue ? partial.length : partialLength,
             partialHash: partialChanged && partialDue ? currentPartialHash : partialHash,
             lastProgressId,
@@ -1759,14 +1803,12 @@ async function followImRunProgress(
               await sleep(IM_RUN_PROGRESS_POLL_MS);
               continue;
             }
+            lastProgressAt = Date.now();
           }
           sentInitial = nextCursor.sentInitial ?? false;
           sentActivity = nextCursor.sentActivity ?? 0;
           partialLength = nextCursor.partialLength ?? 0;
           partialHash = nextCursor.partialHash ?? "";
-          if (partialChanged && partialDue) {
-            lastPartialAt = Date.now();
-          }
           if (progressState)
             await persistImRunProgressCursor(user, progressState, {
               sentInitial,
@@ -1879,6 +1921,150 @@ interface ImConversationTarget {
   direct?: boolean;
 }
 
+interface ImInboundMessage extends ImConversationTarget {
+  text: string;
+  attachments?: CoreAttachment[];
+  messageId?: string;
+  deliveryEditRef?: string;
+}
+
+interface ImMediaSource {
+  name: string;
+  mimetype: string;
+  sourceId?: string;
+  sizeBytes?: number;
+  load: () => Promise<Uint8Array>;
+}
+
+interface ImMediaResult {
+  attachments: CoreAttachment[];
+  issues: string[];
+}
+
+async function stageImBytes(bytes: Uint8Array): Promise<{ blobId: string }> {
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const corePath = withSourceAuthNonce("/v1/blobs", CORE_SIGNING_SECRET);
+  const response = await fetch(`${CORE}${corePath}`, {
+    method: "POST",
+    headers: {
+      ...signedHeaders(CORE_SIGNING_SECRET, "POST", corePath, "", sha256),
+      "content-type": "application/octet-stream",
+      "x-content-sha256": sha256,
+    },
+    body: new Uint8Array(bytes).buffer,
+    signal: AbortSignal.timeout(IM_MEDIA_TIMEOUT_MS),
+  });
+  const body = (await response.json().catch(() => ({}))) as { blobId?: unknown };
+  if (!response.ok || typeof body.blobId !== "string") throw new Error(`blob staging failed (${response.status})`);
+  return { blobId: body.blobId };
+}
+
+async function processImMedia(sources: readonly ImMediaSource[]): Promise<ImMediaResult> {
+  const attachments: CoreAttachment[] = [];
+  const issues: string[] = [];
+  for (const [index, source] of sources.entries()) {
+    if (index >= IM_MEDIA_MAX_ATTACHMENTS) {
+      issues.push(`附件“${source.name}”已跳过：单条消息最多处理 ${IM_MEDIA_MAX_ATTACHMENTS} 个附件。`);
+      continue;
+    }
+    if (typeof source.sizeBytes === "number" && source.sizeBytes > IM_MEDIA_MAX_BYTES) {
+      issues.push(`附件“${source.name}”已跳过：大小超过 100 MB。`);
+      continue;
+    }
+    try {
+      const bytes = await source.load();
+      if (bytes.byteLength > IM_MEDIA_MAX_BYTES) throw new Error("大小超过 100 MB");
+      const { blobId } = await stageImBytes(bytes);
+      attachments.push({
+        name: source.name,
+        mimetype: source.mimetype,
+        sizeBytes: bytes.byteLength,
+        blobId,
+        ...(source.sourceId ? { sourceId: source.sourceId } : {}),
+      });
+    } catch (error) {
+      issues.push(`附件“${source.name}”读取失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return { attachments, issues };
+}
+
+function withImMediaText(text: string, fallback: string, issues: readonly string[]): string {
+  return [text.trim() || fallback, ...issues].filter(Boolean).join("\n").slice(0, 40_000);
+}
+
+function imFileName(name: string | undefined, fallback: string): string {
+  const normalized = name
+    ?.trim()
+    .replace(/[\\/\0]/g, "_")
+    .slice(0, 240);
+  return normalized || fallback;
+}
+
+function mimeFromName(name: string, fallback = "application/octet-stream"): string {
+  const extension = extname(name).toLowerCase();
+  return (
+    {
+      ".aac": "audio/aac",
+      ".amr": "audio/amr",
+      ".doc": "application/msword",
+      ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ".gif": "image/gif",
+      ".jpeg": "image/jpeg",
+      ".jpg": "image/jpeg",
+      ".m4a": "audio/mp4",
+      ".mov": "video/quicktime",
+      ".mp3": "audio/mpeg",
+      ".mp4": "video/mp4",
+      ".ogg": "audio/ogg",
+      ".opus": "audio/opus",
+      ".pdf": "application/pdf",
+      ".png": "image/png",
+      ".ppt": "application/vnd.ms-powerpoint",
+      ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      ".silk": "audio/silk",
+      ".txt": "text/plain",
+      ".wav": "audio/wav",
+      ".webm": "video/webm",
+      ".xls": "application/vnd.ms-excel",
+      ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      ".zip": "application/zip",
+    }[extension] ?? fallback
+  );
+}
+
+function trustedImMediaUrl(rawUrl: string, suffixes: readonly string[]): URL {
+  const url = new URL(rawUrl);
+  const host = url.hostname.toLowerCase();
+  if (url.protocol !== "https:" || !suffixes.some((suffix) => host === suffix || host.endsWith(`.${suffix}`))) {
+    throw new Error("媒体地址不属于该平台");
+  }
+  return url;
+}
+
+async function downloadImMedia(rawUrl: string, trustedSuffixes: readonly string[]): Promise<Uint8Array> {
+  const url = trustedImMediaUrl(rawUrl, trustedSuffixes);
+  const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(IM_MEDIA_TIMEOUT_MS) });
+  if (!response.ok) throw new Error(`下载失败 (${response.status})`);
+  const declaredSize = Number(response.headers.get("content-length") ?? "0");
+  if (declaredSize > IM_MEDIA_MAX_BYTES) throw new Error("大小超过 100 MB");
+  const reader = response.body?.getReader();
+  if (!reader) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > IM_MEDIA_MAX_BYTES) {
+      await reader.cancel();
+      throw new Error("大小超过 100 MB");
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks, size);
+}
+
 async function rememberImConversation(
   user: string,
   provider: Exclude<ImProviderId, "wechat">,
@@ -1973,35 +2159,44 @@ function persistImConversation(
 async function postImSdkMessageNow(
   user: string,
   provider: Exclude<ImProviderId, "wechat">,
-  input: {
-    externalUserId: string;
-    externalChatId: string;
-    externalDisplayName: string;
-    externalTenantId?: string;
-    externalTenantName?: string;
-    text: string;
-    messageId?: string;
-    replyWebhook?: string;
-    deliveryEditRef?: string;
-    direct?: boolean;
-  },
-): Promise<{ runId?: string; reply?: string; replayed?: true }> {
+  input: ImInboundMessage,
+): Promise<{ runId?: string; reply?: string; replayed?: true; steered?: true }> {
   const remembered = await rememberImConversation(user, provider, input);
   if (!remembered) return {};
   const { binding, resource } = remembered;
-  const { turn } = imTurn(provider, { user, binding }, input);
-  const posted = await coreFetch("POST", "/v1/turns?async=1", JSON.stringify(turn), IM_SDK_CONNECT_TIMEOUT_MS);
+  const { turn, threadRef } = imTurn(provider, { user, binding }, input);
+  const posted = await postImTurn(user, turn as Record<string, unknown>, threadRef);
   if (posted.status < 200 || posted.status >= 300) throw new Error(`core turn failed (${posted.status})`);
-  let body: { runId?: unknown; status?: unknown; reply?: unknown; reason?: unknown };
+  let body: {
+    runId?: unknown;
+    status?: unknown;
+    reply?: unknown;
+    reason?: unknown;
+    replayed?: unknown;
+    steered?: unknown;
+  };
   try {
     body = JSON.parse(posted.text) as typeof body;
   } catch {
     return {};
   }
+  if (body.status === "refused" && typeof body.reason === "string") {
+    if (provider === "work-wechat") return { reply: body.reason };
+    await imSdkRuntimes
+      .get(imRuntimeKey(user, provider))
+      ?.send(
+        input.externalChatId,
+        body.reason,
+        input.messageId ? `im-command:${provider}:${input.messageId}` : undefined,
+      );
+    return { replayed: true };
+  }
+  if (body.replayed === true) return { replayed: true };
   const runId = typeof body.runId === "string" ? body.runId : undefined;
   const active = body.status === "queued" || body.status === "pending" || body.status === "running";
   if (runId && (posted.status !== 200 || active))
     startImRunProgress(user, provider, resource.resourceId, input.externalChatId, runId, input.messageId);
+  if (body.steered === true && runId) return { runId, steered: true };
   if (posted.status === 200 && runId) return { runId, replayed: true };
   if (body.status === "queued") return runId ? { runId } : {};
   let reply = "消息已处理。";
@@ -2014,63 +2209,405 @@ async function postImSdkMessageNow(
 function postImSdkMessage(
   user: string,
   provider: Exclude<ImProviderId, "wechat">,
-  input: {
-    externalUserId: string;
-    externalChatId: string;
-    externalDisplayName: string;
-    externalTenantId?: string;
-    externalTenantName?: string;
-    text: string;
-    messageId?: string;
-    replyWebhook?: string;
-    deliveryEditRef?: string;
-    direct?: boolean;
-  },
-): Promise<{ runId?: string; reply?: string; replayed?: true }> {
+  input: ImInboundMessage,
+): Promise<{ runId?: string; reply?: string; replayed?: true; steered?: true }> {
   return queueImSdkMessage(imRuntimeKey(user, provider), () => postImSdkMessageNow(user, provider, input));
 }
 
-function larkText(data: unknown): {
-  externalUserId: string;
-  externalChatId: string;
-  externalDisplayName: string;
-  externalTenantId?: string;
-  externalTenantName?: string;
-  text: string;
-  messageId?: string;
-  direct?: boolean;
-} | null {
-  if (typeof data !== "object" || data === null) return null;
-  const event = data as {
-    sender?: { sender_id?: { open_id?: unknown } };
-    message?: {
-      message_id?: unknown;
-      chat_id?: unknown;
-      chat_type?: unknown;
-      message_type?: unknown;
-      content?: unknown;
-    };
-  };
-  const externalUserId = typeof event.sender?.sender_id?.open_id === "string" ? event.sender.sender_id.open_id : "";
-  const externalChatId = typeof event.message?.chat_id === "string" ? event.message.chat_id : "";
-  if (!externalUserId || !externalChatId || event.message?.message_type !== "text") return null;
-  let text = "";
-  try {
-    const content = JSON.parse(typeof event.message.content === "string" ? event.message.content : "{}") as {
-      text?: unknown;
-    };
-    if (typeof content.text === "string") text = content.text.trim().slice(0, 40_000);
-  } catch {
-    return null;
+async function readImStream(stream: Readable): Promise<Uint8Array> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of stream) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+    size += bytes.byteLength;
+    if (size > IM_MEDIA_MAX_BYTES) {
+      stream.destroy();
+      throw new Error("大小超过 100 MB");
+    }
+    chunks.push(bytes);
   }
-  if (!text) return null;
+  return Buffer.concat(chunks, size);
+}
+
+type LarkResource = Awaited<ReturnType<typeof Lark.normalize>>["resources"][number];
+
+function larkExtraResources(messageType: string, content: string): LarkResource[] {
+  if (messageType === "sticker" || messageType === "folder") return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return [];
+  }
+  const resources: LarkResource[] = [];
+  const add = (type: "image" | "file" | "audio" | "video", fileKey: unknown, fileName?: unknown): void => {
+    if (typeof fileKey !== "string" || !fileKey) return;
+    resources.push({
+      type,
+      fileKey,
+      ...(typeof fileName === "string" && fileName ? { fileName } : {}),
+    });
+  };
+  if (typeof parsed === "object" && parsed !== null) {
+    const value = parsed as Record<string, unknown>;
+    if (messageType === "image") add("image", value.image_key);
+    else if (messageType === "audio") add("audio", value.file_key, value.file_name);
+    else if (messageType === "video" || messageType === "media") add("video", value.file_key, value.file_name);
+    else if (messageType === "file") add("file", value.file_key, value.file_name);
+  }
+  if (messageType !== "post" && messageType !== "interactive") return resources;
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value !== "object" || value === null) return;
+    const object = value as Record<string, unknown>;
+    add("image", object.image_key);
+    add("file", object.file_key, object.file_name);
+    Object.values(object).forEach(visit);
+  };
+  visit(parsed);
+  return resources;
+}
+
+async function larkMessage(client: Lark.Client, data: unknown, botName: string): Promise<ImInboundMessage | null> {
+  if (typeof data !== "object" || data === null) return null;
+  const event = data as Lark.RawMessageEvent;
+  const subMessages: Lark.ApiMessageItem[] = [];
+  const normalized = await Lark.normalize(event, {
+    botIdentity: { openId: "", name: botName },
+    stripBotMentions: false,
+    fetchSubMessages: async (messageId) => {
+      const response = await client.im.v1.message.get({ path: { message_id: messageId } });
+      const items = (response.data?.items ?? []) as unknown as Lark.ApiMessageItem[];
+      subMessages.push(...items);
+      return items;
+    },
+  });
+  if (!normalized.senderId || !normalized.chatId || !normalized.messageId) return null;
+  const resourceRefs: Array<{ messageId: string; resource: LarkResource }> = normalized.resources.map((resource) => ({
+    messageId: normalized.messageId,
+    resource,
+  }));
+  resourceRefs.push(
+    ...larkExtraResources(event.message.message_type, event.message.content).map((resource) => ({
+      messageId: normalized.messageId,
+      resource,
+    })),
+  );
+  for (const item of subMessages) {
+    if (!item.message_id || !item.msg_type || !item.body?.content) continue;
+    resourceRefs.push(
+      ...larkExtraResources(item.msg_type, item.body.content).map((resource) => ({
+        messageId: item.message_id!,
+        resource,
+      })),
+    );
+  }
+  const dedupedResources = resourceRefs.filter(
+    ({ messageId, resource }, index, values) =>
+      values.findIndex(
+        (candidate) =>
+          candidate.messageId === messageId &&
+          candidate.resource.type === resource.type &&
+          candidate.resource.fileKey === resource.fileKey,
+      ) === index,
+  );
+  const sources: ImMediaSource[] = [];
+  const unsupported: string[] = [];
+  for (const { messageId, resource } of dedupedResources) {
+    const fallbackName = `${resource.type}-${resource.fileKey.slice(0, 12)}`;
+    let defaultName = fallbackName;
+    if (resource.type === "image") defaultName += ".png";
+    else if (resource.type === "audio") defaultName += ".opus";
+    else if (resource.type === "video") defaultName += ".mp4";
+    const name = imFileName(resource.fileName, defaultName);
+    if (resource.type === "sticker") {
+      unsupported.push(`飞书表情“${name}”当前不提供下载接口，已保留消息描述。`);
+      continue;
+    }
+    let mimetype = mimeFromName(name);
+    if (resource.type === "image") mimetype = mimeFromName(name, "image/png");
+    else if (resource.type === "audio") mimetype = mimeFromName(name, "audio/opus");
+    else if (resource.type === "video") mimetype = mimeFromName(name, "video/mp4");
+    sources.push({
+      name,
+      mimetype,
+      sourceId: resource.fileKey,
+      load: async () => {
+        const response = await client.im.v1.messageResource.get({
+          params: { type: resource.type === "image" ? "image" : "file" },
+          path: { message_id: messageId, file_key: resource.fileKey },
+        });
+        return readImStream(response.getReadableStream());
+      },
+    });
+  }
+  const media = await processImMedia(sources);
   return {
-    externalUserId,
-    externalChatId,
-    externalDisplayName: externalUserId,
-    text,
-    direct: event.message.chat_type === "p2p",
-    ...(typeof event.message.message_id === "string" ? { messageId: event.message.message_id } : {}),
+    externalUserId: normalized.senderId,
+    externalChatId: normalized.chatId,
+    externalDisplayName: normalized.senderName || normalized.senderId,
+    text: withImMediaText(
+      normalized.content,
+      dedupedResources.length ? `[飞书 ${normalized.rawContentType} 消息]` : `[飞书消息：${normalized.rawContentType}]`,
+      [...unsupported, ...media.issues],
+    ),
+    attachments: media.attachments,
+    direct: normalized.chatType === "p2p",
+    messageId: normalized.messageId,
+  };
+}
+
+async function qqMessage(message: QQBotInboundMessage): Promise<ImInboundMessage | null> {
+  if (message.kind !== "c2c" && message.kind !== "group") return null;
+  const quoted = message.refMsgIdx ? message.msgElements?.[0] : undefined;
+  const allMedia = [...(message.attachments ?? []), ...(quoted?.attachments ?? [])].filter(
+    (attachment, index, values) => values.findIndex((candidate) => candidate.url === attachment.url) === index,
+  );
+  const transcripts = allMedia
+    .map((attachment) => attachment.asr_refer_text?.trim())
+    .filter((text): text is string => Boolean(text));
+  const textParts = [
+    quoted?.content?.trim() ? `[引用消息]\n${quoted.content.trim()}` : "",
+    message.content.trim(),
+    ...transcripts.map((text) => `语音转写：${text}`),
+  ].filter(Boolean);
+  const sources: ImMediaSource[] = allMedia.map((attachment, index) => {
+    const url = attachment.voice_wav_url || attachment.url;
+    const mimetype = attachment.voice_wav_url ? "audio/wav" : attachment.content_type || "application/octet-stream";
+    let extension = "";
+    if (mimetype.startsWith("image/")) extension = `.${mimetype.slice("image/".length).replace("jpeg", "jpg")}`;
+    else if (mimetype.startsWith("audio/")) extension = `.${mimetype.slice("audio/".length)}`;
+    else if (mimetype.startsWith("video/")) extension = `.${mimetype.slice("video/".length)}`;
+    return {
+      name: imFileName(attachment.filename, `qq-attachment-${index + 1}${extension}`),
+      mimetype,
+      sourceId: url,
+      ...(typeof attachment.size === "number" ? { sizeBytes: attachment.size } : {}),
+      load: () =>
+        downloadImMedia(url, ["qq.com", "qq.com.cn", "qpic.cn", "gtimg.cn", "myqcloud.com", "tencent-cloud.net"]),
+    };
+  });
+  const media = await processImMedia(sources);
+  return {
+    externalUserId: message.senderId,
+    externalChatId: `${message.replyTarget.scope}|${message.replyTarget.targetId}`,
+    externalDisplayName: message.senderName || message.senderId,
+    text: withImMediaText(textParts.join("\n"), allMedia.length ? "[QQ 媒体消息]" : "[QQ 消息]", media.issues),
+    attachments: media.attachments,
+    messageId: message.messageId,
+    direct: message.kind === "c2c",
+  };
+}
+
+async function weComMessageContent(
+  client: WeComWSClient,
+  body: WeComBaseMessage,
+): Promise<{
+  text: string;
+  attachments: CoreAttachment[];
+}> {
+  const textParts: string[] = [];
+  const sources: ImMediaSource[] = [];
+  const addDownload = (
+    value: { url?: string; aeskey?: string } | undefined,
+    name: string,
+    mimetype: string,
+    sourceId: string,
+  ): void => {
+    if (!value?.url) return;
+    sources.push({
+      name,
+      mimetype,
+      sourceId,
+      load: async () => (await client.downloadFile(value.url!, value.aeskey)).buffer,
+    });
+  };
+  const addMixed = (
+    mixed:
+      | {
+          msg_item?: Array<{
+            msgtype?: string;
+            text?: { content?: string };
+            image?: { url?: string; aeskey?: string };
+          }>;
+        }
+      | undefined,
+    prefix: string,
+  ): void => {
+    for (const [index, item] of (mixed?.msg_item ?? []).entries()) {
+      if (item.msgtype === "text" && item.text?.content?.trim()) textParts.push(`${prefix}${item.text.content.trim()}`);
+      if (item.msgtype === "image") {
+        textParts.push(`${prefix}[图片]`);
+        addDownload(item.image, `wecom-image-${index + 1}.jpg`, "image/jpeg", `${body.msgid}:${prefix}${index}`);
+      }
+    }
+  };
+  if (body.quote) {
+    const prefix = "[引用] ";
+    if (body.quote.msgtype === "text" && body.quote.text?.content?.trim())
+      textParts.push(`${prefix}${body.quote.text.content.trim()}`);
+    else if (body.quote.msgtype === "mixed") addMixed(body.quote.mixed, prefix);
+    else if (body.quote.msgtype === "voice")
+      textParts.push(`${prefix}${body.quote.voice?.content?.trim() || "[语音消息]"}`);
+    else if (body.quote.msgtype === "image") {
+      textParts.push(`${prefix}[图片]`);
+      addDownload(body.quote.image, "wecom-quoted-image.jpg", "image/jpeg", `${body.msgid}:quote-image`);
+    } else if (body.quote.msgtype === "file") {
+      textParts.push(`${prefix}[文件]`);
+      addDownload(body.quote.file, "wecom-quoted-file", "application/octet-stream", `${body.msgid}:quote-file`);
+    }
+  }
+  if (body.msgtype === "text") {
+    const text = (body as { text?: { content?: string } }).text?.content?.trim();
+    if (text) textParts.push(text);
+  } else if (body.msgtype === "mixed") {
+    addMixed((body as { mixed?: Parameters<typeof addMixed>[0] }).mixed, "");
+  } else if (body.msgtype === "voice") {
+    const text = (body as { voice?: { content?: string } }).voice?.content?.trim();
+    textParts.push(text || "[语音消息]");
+  } else if (body.msgtype === "image") {
+    textParts.push("[图片]");
+    addDownload(
+      (body as { image?: { url?: string; aeskey?: string } }).image,
+      "wecom-image.jpg",
+      "image/jpeg",
+      `${body.msgid}:image`,
+    );
+  } else if (body.msgtype === "file") {
+    const file = (body as { file?: { url?: string; aeskey?: string; filename?: string; name?: string } }).file;
+    const name = imFileName(file?.filename || file?.name, "wecom-file");
+    textParts.push(`[文件：${name}]`);
+    addDownload(file, name, mimeFromName(name), `${body.msgid}:file`);
+  } else if (body.msgtype === "video") {
+    textParts.push("[视频]");
+    addDownload(
+      (body as { video?: { url?: string; aeskey?: string } }).video,
+      "wecom-video.mp4",
+      "video/mp4",
+      `${body.msgid}:video`,
+    );
+  } else {
+    textParts.push(`[企业微信消息：${body.msgtype}]`);
+  }
+  const media = await processImMedia(sources);
+  return {
+    text: withImMediaText(textParts.join("\n"), `[企业微信消息：${body.msgtype}]`, media.issues),
+    attachments: media.attachments,
+  };
+}
+
+function dingtalkContent(value: unknown): Record<string, unknown> {
+  if (typeof value === "object" && value !== null) return value as Record<string, unknown>;
+  if (typeof value !== "string") return {};
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+async function dingtalkDownload(
+  client: DingTalkStreamRuntimeClient,
+  robotCode: string,
+  codes: readonly unknown[],
+): Promise<Uint8Array> {
+  let lastError: unknown;
+  for (const code of codes) {
+    if (typeof code !== "string" || !code) continue;
+    try {
+      const accessToken = String(await client.getAccessToken());
+      const response = await fetch(`${DINGTALK_API_BASE_URL}/v1.0/robot/messageFiles/download`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-acs-dingtalk-access-token": accessToken },
+        body: JSON.stringify({ downloadCode: code, robotCode }),
+        signal: AbortSignal.timeout(IM_MEDIA_TIMEOUT_MS),
+      });
+      const body = (await response.json().catch(() => ({}))) as { downloadUrl?: unknown };
+      if (!response.ok || typeof body.downloadUrl !== "string")
+        throw new Error(`下载地址获取失败 (${response.status})`);
+      return await downloadImMedia(body.downloadUrl, ["dingtalk.com", "alicdn.com", "aliyuncs.com", "aliyuncs.com.cn"]);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError ?? new Error("消息中缺少下载凭据");
+}
+
+async function normalizeDingTalkMessage(
+  client: DingTalkStreamRuntimeClient,
+  clientId: string,
+  message: DingTalkStreamMessage,
+): Promise<ImInboundMessage> {
+  const content = dingtalkContent(message.content);
+  const textParts: string[] = [];
+  const sources: ImMediaSource[] = [];
+  const robotCode = message.robotCode || clientId;
+  const addMedia = (value: Record<string, unknown>, name: string, mimetype: string, sourceId: string): void => {
+    sources.push({
+      name,
+      mimetype,
+      sourceId,
+      load: () =>
+        dingtalkDownload(client, robotCode, [value.downloadCode, value.pictureDownloadCode, value.download_code]),
+    });
+  };
+  if (message.msgtype === "text") {
+    const text = message.text?.content?.trim();
+    if (text) textParts.push(text);
+  } else if (message.msgtype === "richText") {
+    const items = Array.isArray(content.richText) ? content.richText : [];
+    for (const [index, rawItem] of items.entries()) {
+      const item = dingtalkContent(rawItem);
+      if (typeof item.text === "string" && item.text.trim()) textParts.push(item.text.trim());
+      if (item.type === "at" && typeof item.userId === "string") textParts.push(`@${item.userId}`);
+      const mediaType = typeof item.type === "string" ? item.type : "picture";
+      if (item.downloadCode || item.pictureDownloadCode || item.download_code) {
+        const name = imFileName(
+          typeof item.fileName === "string" ? item.fileName : undefined,
+          mediaType === "picture" ? `dingtalk-image-${index + 1}.jpg` : `dingtalk-${mediaType}-${index + 1}`,
+        );
+        textParts.push(mediaType === "picture" ? "[图片]" : `[${mediaType}：${name}]`);
+        let mimetype = mimeFromName(name);
+        if (mediaType === "picture") mimetype = "image/jpeg";
+        else if (mediaType === "video") mimetype = mimeFromName(name, "video/mp4");
+        else if (mediaType === "audio" || mediaType === "voice") mimetype = mimeFromName(name, "audio/ogg");
+        addMedia(item, name, mimetype, `${message.msgId}:rich:${index}`);
+      }
+    }
+  } else if (message.msgtype === "picture" || message.msgtype === "image") {
+    textParts.push("[图片]");
+    addMedia(content, "dingtalk-image.jpg", "image/jpeg", `${message.msgId}:image`);
+  } else if (message.msgtype === "audio" || message.msgtype === "voice") {
+    const recognition = typeof content.recognition === "string" ? content.recognition.trim() : "";
+    textParts.push(recognition || "[语音消息]");
+    addMedia(content, "dingtalk-audio.ogg", "audio/ogg", `${message.msgId}:audio`);
+  } else if (message.msgtype === "video") {
+    textParts.push("[视频]");
+    addMedia(content, "dingtalk-video.mp4", "video/mp4", `${message.msgId}:video`);
+  } else if (message.msgtype === "file") {
+    const name = imFileName(typeof content.fileName === "string" ? content.fileName : undefined, "dingtalk-file");
+    textParts.push(`[文件：${name}]`);
+    addMedia(content, name, mimeFromName(name), `${message.msgId}:file`);
+  } else {
+    const description = Object.values(content).find(
+      (value): value is string => typeof value === "string" && Boolean(value.trim()),
+    );
+    textParts.push(description?.trim() || `[钉钉消息：${message.msgtype}]`);
+  }
+  const media = await processImMedia(sources);
+  return {
+    externalUserId: message.senderStaffId || message.senderId,
+    externalChatId: message.conversationId,
+    externalDisplayName: message.senderNick || message.senderStaffId || message.senderId,
+    text: withImMediaText(textParts.join("\n"), `[钉钉消息：${message.msgtype}]`, media.issues),
+    attachments: media.attachments,
+    messageId: message.msgId,
+    replyWebhook: message.sessionWebhook,
+    direct: message.conversationType === "1",
   };
 }
 
@@ -2092,7 +2629,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
     const dispatcher = new Lark.EventDispatcher({}).register({
       "im.message.receive_v1": async (data: unknown) => {
         if (!ownsImBridge(user, resource.provider, resource.resourceId)) return;
-        const message = larkText(data);
+        const message = await larkMessage(client, data, resource.botName);
         if (message) await postImSdkMessage(user, "feishu", message);
       },
     });
@@ -2136,16 +2673,9 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
     const bot = new QQBot({ appId, appSecret, accountId: resource.resourceId, tokenPrefetch: "sync" });
     bot.on("message", (_context, message: QQBotInboundMessage) => {
       if (!ownsImBridge(user, resource.provider, resource.resourceId)) return;
-      const text = message.content.trim().slice(0, 40_000);
-      if (!text || (message.kind !== "c2c" && message.kind !== "group")) return;
-      void postImSdkMessage(user, "qq", {
-        externalUserId: message.senderId,
-        externalChatId: `${message.replyTarget.scope}|${message.replyTarget.targetId}`,
-        externalDisplayName: message.senderName || message.senderId,
-        text,
-        messageId: message.messageId,
-        direct: message.kind === "c2c",
-      }).catch((error: unknown) => console.error("[web-ui] QQ message failed:", String(error)));
+      void qqMessage(message)
+        .then((normalized) => (normalized ? postImSdkMessage(user, "qq", normalized) : undefined))
+        .catch((error: unknown) => console.error("[web-ui] QQ message failed:", String(error)));
     });
     await waitForImConnection((resolve, reject) => {
       bot.on("ready", resolve);
@@ -2178,16 +2708,6 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
       maxAuthFailureAttempts: 1,
       maxReconnectAttempts: -1,
     });
-    let stopped = false;
-    let workWechatReady = false;
-    const discardDisconnectedRuntime = (): void => {
-      if (stopped || !workWechatReady || imSdkRuntimes.get(key) !== runtime) return;
-      runtime.stop();
-      imSdkRuntimes.delete(key);
-      void syncImBridges().catch((error: unknown) =>
-        console.error("[web-ui] work-wechat reconnection failed:", String(error)),
-      );
-    };
     type PendingReply = {
       frame: WsFrameHeaders;
       streamId: string;
@@ -2197,10 +2717,11 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
       activityText?: string;
     };
     const pendingRepliesByRun = new Map<string, PendingReply>();
+    const steeredRunIds = new LRUCache<string, true>({ max: 10_000, ttl: 10 * 60_000 });
     const completedMessageIds = new LRUCache<string, true>({ max: 10_000, ttl: 10 * 60_000 });
     const inFlightMessageIds = new Set<string>();
     const inFlightWelcomeIds = new Set<string>();
-    const retryMessageFrames = new Map<string, WsFrame<WeComTextMessage>>();
+    const retryMessageFrames = new Map<string, WsFrame<WeComBaseMessage>>();
     const sentDeliveryKeys = new LRUCache<string, true>({ max: 100_000 });
     const pendingRunMappings = new Set<Promise<void>>();
     const removePendingReply = (pending: PendingReply): void => {
@@ -2218,27 +2739,26 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
       }
       return pending;
     };
-    const handleWeComText = (frame: WsFrame<WeComTextMessage>): void => {
+    const handleWeComMessage = (frame: WsFrame<WeComBaseMessage>): void => {
       if (!ownsImBridge(user, resource.provider, resource.resourceId)) return;
       const body = frame.body;
       if (!body) return;
       if (completedMessageIds.has(body.msgid)) return;
       const tenant = weComTenantInfo(body.from as unknown as Record<string, unknown>);
-      const text = body.text.content.trim().slice(0, 40_000);
-      if (!text) return;
       if (inFlightMessageIds.has(body.msgid)) {
         retryMessageFrames.set(body.msgid, frame);
         return;
       }
       inFlightMessageIds.add(body.msgid);
       const target = body.chatid || body.from.userid;
-      const streamId = `qm-${randomUUID()}`;
+      const streamId = generateWeComReqId("stream");
       let finishRunMapping!: () => void;
       const runMapping = new Promise<void>((resolve) => {
         finishRunMapping = resolve;
       });
       pendingRunMappings.add(runMapping);
       void (async () => {
+        const content = await weComMessageContent(client, body);
         const pending: PendingReply = {
           frame: { headers: frame.headers },
           streamId,
@@ -2249,7 +2769,8 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
           externalChatId: target,
           externalDisplayName: body.from.userid,
           ...tenant,
-          text,
+          text: content.text,
+          attachments: content.attachments,
           messageId: body.msgid,
           direct: body.chattype === "single",
           deliveryEditRef: JSON.stringify({
@@ -2260,7 +2781,18 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
           }),
         });
         if (posted.replayed) return;
-        if (posted.runId && !posted.reply) {
+        if (posted.steered && posted.runId) {
+          const previous = pendingRepliesByRun.get(posted.runId);
+          if (previous) pendingRepliesByRun.delete(posted.runId);
+          steeredRunIds.set(posted.runId, true);
+          if (previous) {
+            const previousText = previous.progressText ?? "正在思考...";
+            await client
+              .replyStream(previous.frame, previous.streamId, previousText, true)
+              .catch((error: unknown) => console.error("[web-ui] WeCom previous stream close failed:", String(error)));
+          }
+          await client.replyStream(pending.frame, pending.streamId, "已合并。", true);
+        } else if (posted.runId && !posted.reply) {
           await client.replyStream(frame, streamId, "正在思考...", false);
           pending.runId = posted.runId;
           pending.progressText = "正在思考...";
@@ -2284,7 +2816,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
           inFlightMessageIds.delete(body.msgid);
           const retry = retryMessageFrames.get(body.msgid);
           retryMessageFrames.delete(body.msgid);
-          if (retry && !completedMessageIds.has(body.msgid)) handleWeComText(retry);
+          if (retry && !completedMessageIds.has(body.msgid)) handleWeComMessage(retry);
         });
     };
     const handleWeComEnter = (frame: WsFrame<WeComEventMessage>): void => {
@@ -2317,9 +2849,13 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         .catch((error: unknown) => console.error("[web-ui] WeCom welcome failed:", String(error)))
         .finally(() => inFlightWelcomeIds.delete(body.msgid));
     };
-    client.on("message.text", handleWeComText);
+    client.on("message.text", handleWeComMessage);
+    client.on("message.image", handleWeComMessage);
+    client.on("message.mixed", handleWeComMessage);
+    client.on("message.voice", handleWeComMessage);
+    client.on("message.file", handleWeComMessage);
+    client.on("message.video", handleWeComMessage);
     client.on("event.enter_chat", handleWeComEnter);
-    client.on("disconnected", discardDisconnectedRuntime);
     await waitForImConnection((resolve, reject) => {
       client.on("authenticated", resolve);
       client.on("error", reject);
@@ -2332,8 +2868,8 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
       resourceId: resource.resourceId,
       fingerprint,
       stop: () => {
-        stopped = true;
         pendingRepliesByRun.clear();
+        steeredRunIds.clear();
         completedMessageIds.clear();
         inFlightMessageIds.clear();
         inFlightWelcomeIds.clear();
@@ -2355,6 +2891,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         if (idempotencyKey && sentDeliveryKeys.has(idempotencyKey)) return;
         const runId = idempotencyKey?.startsWith("run:") ? idempotencyKey.slice("run:".length) : undefined;
         const pending = runId ? await pendingReplyForRun(runId) : undefined;
+        const wasSteered = runId ? steeredRunIds.has(runId) : false;
         const finalText = truncateUtf8(
           text,
           pending?.activityText && !activityIncluded ? 12_000 : 20_480,
@@ -2388,26 +2925,30 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
             frame = undefined;
           }
         }
-        if (frame && streamId) {
-          await client.replyStream(frame, streamId, content, true);
-          if (pending) removePendingReply(pending);
-          if (idempotencyKey) {
-            sentDeliveryKeys.set(idempotencyKey, true);
-            const acked = await coreFetch(
-              "POST",
-              "/v1/deliveries/ack-by-key",
-              JSON.stringify({ idempotencyKey }),
-              IM_SDK_CONNECT_TIMEOUT_MS,
-            );
-            if (acked.status !== 200) throw new Error(`core delivery ack failed (${acked.status})`);
+        let replied = false;
+        if (!wasSteered && frame && streamId) {
+          try {
+            await client.replyStream(frame, streamId, content, true);
+            replied = true;
+          } catch (error) {
+            console.error("[web-ui] WeCom final stream reply failed:", String(error));
           }
-          return;
         }
-        await client.sendMessage(target, { msgtype: "markdown", markdown: { content } });
-        if (idempotencyKey) sentDeliveryKeys.set(idempotencyKey, true);
+        if (!replied) await client.sendMessage(target, { msgtype: "markdown", markdown: { content } });
+        if (pending) removePendingReply(pending);
+        if (runId) steeredRunIds.delete(runId);
+        if (idempotencyKey) {
+          sentDeliveryKeys.set(idempotencyKey, true);
+          const acked = await coreFetch(
+            "POST",
+            "/v1/deliveries/ack-by-key",
+            JSON.stringify({ idempotencyKey }),
+            IM_SDK_CONNECT_TIMEOUT_MS,
+          );
+          if (acked.status !== 200) throw new Error(`core delivery ack failed (${acked.status})`);
+        }
       },
     };
-    workWechatReady = true;
   } else {
     const clientId = credentials.clientId;
     const clientSecret = credentials.clientSecret;
@@ -2418,17 +2959,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         try {
           if (!ownsImBridge(user, resource.provider, resource.resourceId)) return;
           const message = JSON.parse(frame.data) as DingTalkStreamMessage;
-          const content = message.text?.content?.trim();
-          if (message.msgtype !== "text" || !content) return;
-          await postImSdkMessage(user, "dingtalk", {
-            externalUserId: message.senderStaffId || message.senderId,
-            externalChatId: message.conversationId,
-            externalDisplayName: message.senderNick || message.senderStaffId || message.senderId,
-            text: content.slice(0, 40_000),
-            messageId: message.msgId,
-            replyWebhook: message.sessionWebhook,
-            direct: message.conversationType === "1",
-          });
+          await postImSdkMessage(user, "dingtalk", await normalizeDingTalkMessage(client, clientId, message));
         } finally {
           client.socketCallBackResponse(frame.headers.messageId, {});
         }
@@ -2506,6 +3037,8 @@ interface DingTalkStreamMessage {
   senderStaffId?: string;
   sessionWebhook?: string;
   text?: { content?: string };
+  content?: unknown;
+  robotCode?: string;
 }
 
 interface DingTalkStreamRuntimeClient {
@@ -3815,6 +4348,7 @@ function imTurn(
     externalTenantId?: string;
     externalTenantName?: string;
     text: string;
+    attachments?: CoreAttachment[];
     messageId?: string;
     deliveryEditRef?: string;
   },
@@ -3838,6 +4372,7 @@ function imTurn(
       deliveryTarget: threadRef,
       ...(input.deliveryEditRef ? { deliveryEditRef: input.deliveryEditRef } : {}),
       text: input.text,
+      ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       origin: {
         kind: "human",
         ...(input.messageId ? { messageTs: input.messageId, entryTs: input.messageId } : {}),
@@ -3858,14 +4393,139 @@ function imTurn(
   };
 }
 
+function imSteerText(text: string): string | undefined {
+  const match = text.match(/^\/steer(?:\s+([\s\S]*))?$/i);
+  return match ? (match[1] ?? "").trim() : undefined;
+}
+
+function imNewTurnText(text: string): string | undefined {
+  const match = text.match(/^\/new(?:\s+([\s\S]*))?$/i);
+  return match ? (match[1] ?? "").trim() : undefined;
+}
+
+async function postImTurn(
+  user: string,
+  turn: Record<string, unknown>,
+  threadRef: string,
+): Promise<{ status: number; text: string }> {
+  return coreFetchAsImUser(user, IM_SDK_CONNECT_TIMEOUT_MS, () => postImTurnAsPrincipal(turn, threadRef));
+}
+
+async function postImTurnAsPrincipal(
+  turn: Record<string, unknown>,
+  threadRef: string,
+): Promise<{ status: number; text: string }> {
+  const text = typeof turn.text === "string" ? turn.text : "";
+  const steerText = imSteerText(text);
+  const newTurnText = imNewTurnText(text);
+  if (newTurnText !== undefined) {
+    if (!newTurnText)
+      return {
+        status: 200,
+        text: JSON.stringify({ status: "refused", reason: "用法：/new 需要补充新任务内容。" }),
+      };
+    return coreFetch(
+      "POST",
+      "/v1/turns?async=1",
+      JSON.stringify({ ...turn, text: newTurnText }),
+      IM_SDK_CONNECT_TIMEOUT_MS,
+    );
+  }
+  if (steerText !== undefined && !steerText)
+    return {
+      status: 200,
+      text: JSON.stringify({ status: "refused", reason: "用法：/steer 需要补充要调整的内容。" }),
+    };
+  const active = await coreFetch(
+    "GET",
+    `/v1/runs?threadRef=${encodeURIComponent(threadRef)}`,
+    "",
+    IM_SDK_CONNECT_TIMEOUT_MS,
+  );
+  if (active.status !== 200) throw new Error(`core active run failed (${active.status})`);
+  const activeRunId = (JSON.parse(active.text) as { runId?: unknown }).runId;
+  if (typeof activeRunId !== "string") {
+    if (steerText === undefined)
+      return coreFetch("POST", "/v1/turns?async=1", JSON.stringify(turn), IM_SDK_CONNECT_TIMEOUT_MS);
+    return {
+      status: 200,
+      text: JSON.stringify({
+        status: "refused",
+        reason: "当前没有正在运行的任务；请先发起任务，再用 /steer 调整方向。",
+      }),
+    };
+  }
+  const nextText = steerText ?? text;
+  const request = { ...turn, text: nextText };
+  const queued = await coreFetch("POST", "/v1/turns?async=1", JSON.stringify(request), IM_SDK_CONNECT_TIMEOUT_MS);
+  if (queued.status < 200 || queued.status >= 300) return queued;
+  const queuedRunId = (JSON.parse(queued.text) as { runId?: unknown }).runId;
+  if (typeof queuedRunId !== "string") return queued;
+  const signaled = await coreFetch(
+    "POST",
+    `/v1/runs/${encodeURIComponent(activeRunId)}/signal`,
+    JSON.stringify({ kind: "steer", text: nextText, queuedRunId, request }),
+    IM_SDK_CONNECT_TIMEOUT_MS,
+  );
+  if (signaled.status < 200 || signaled.status >= 300) {
+    let replayed: boolean;
+    try {
+      replayed = (JSON.parse(signaled.text) as { replayed?: unknown }).replayed === true;
+    } catch {
+      replayed = false;
+    }
+    if (!replayed) {
+      const withdrawn = await coreFetch(
+        "POST",
+        `/v1/runs/${encodeURIComponent(queuedRunId)}/withdraw`,
+        "",
+        IM_SDK_CONNECT_TIMEOUT_MS,
+      );
+      if (withdrawn.status === 200)
+        return {
+          status: 200,
+          text: JSON.stringify({ status: "refused", reason: "未能调整正在运行的任务，请重试。" }),
+        };
+      return queued;
+    }
+    const replay = await coreFetch(
+      "GET",
+      `/v1/runs?threadRef=${encodeURIComponent(threadRef)}`,
+      "",
+      IM_SDK_CONNECT_TIMEOUT_MS,
+    );
+    if (replay.status === 200) {
+      const replayRunId = (JSON.parse(replay.text) as { runId?: unknown }).runId;
+      if (typeof replayRunId === "string")
+        return { status: 202, text: JSON.stringify({ status: "queued", runId: replayRunId }) };
+    }
+    return { status: 200, text: JSON.stringify({ status: "replayed", replayed: true }) };
+  }
+  return { status: 202, text: JSON.stringify({ status: "queued", runId: activeRunId, steered: true }) };
+}
+
+interface WeixinCdnMedia {
+  encrypt_query_param?: string;
+  aes_key?: string;
+  full_url?: string;
+  download_url?: string;
+  url?: string;
+  media?: WeixinCdnMedia;
+}
+
 interface WeixinMessageItem {
   type?: number;
   msg_id?: string;
   text_item?: { text?: string };
+  image_item?: WeixinCdnMedia & { aeskey?: string; thumb_media?: WeixinCdnMedia };
+  voice_item?: WeixinCdnMedia & { aeskey?: string; text?: string; encode_type?: number };
+  file_item?: WeixinCdnMedia & { aeskey?: string; file_name?: string; file_size?: number | string; len?: string };
+  video_item?: WeixinCdnMedia & { aeskey?: string; thumb_media?: WeixinCdnMedia };
+  ref_msg?: { title?: string; message_item?: WeixinMessageItem };
 }
 
 interface WeixinMessage {
-  message_id?: number;
+  message_id?: number | string;
   client_id?: string;
   from_user_id?: string;
   message_type?: number;
@@ -3929,13 +4589,135 @@ async function ackFailedImLocatorDelivery(
   return true;
 }
 
-function weixinMessageText(message: WeixinMessage): string {
-  return (message.item_list ?? [])
-    .filter((item) => item.type === 1 && typeof item.text_item?.text === "string")
-    .map((item) => item.text_item!.text!.trim())
-    .filter(Boolean)
-    .join("\n")
-    .slice(0, 40_000);
+function weixinAesKey(value: string): Buffer {
+  if (/^[0-9a-f]{32}$/i.test(value)) return Buffer.from(value, "hex");
+  const decoded = Buffer.from(value, "base64");
+  if (decoded.length === 16) return decoded;
+  if (decoded.length === 32 && /^[0-9a-f]{32}$/i.test(decoded.toString("ascii"))) {
+    return Buffer.from(decoded.toString("ascii"), "hex");
+  }
+  throw new Error("微信媒体密钥格式无效");
+}
+
+async function downloadWeixinMedia(media: WeixinCdnMedia, aesKey?: string, plainAllowed = false): Promise<Uint8Array> {
+  const nested = media.media;
+  const rawUrl =
+    media.full_url ||
+    media.download_url ||
+    media.url ||
+    nested?.full_url ||
+    nested?.download_url ||
+    nested?.url ||
+    (media.encrypt_query_param || nested?.encrypt_query_param
+      ? `${WEIXIN_CDN_BASE_URL}/download?encrypted_query_param=${encodeURIComponent(
+          media.encrypt_query_param || nested?.encrypt_query_param || "",
+        )}`
+      : "");
+  if (!rawUrl) throw new Error("消息中缺少媒体地址");
+  const encrypted = await downloadImMedia(new URL(rawUrl, WEIXIN_CDN_BASE_URL).toString(), ["weixin.qq.com"]);
+  if (!aesKey) {
+    if (plainAllowed) return encrypted;
+    throw new Error("消息中缺少媒体密钥");
+  }
+  const decipher = createDecipheriv("aes-128-ecb", weixinAesKey(aesKey), null);
+  decipher.setAutoPadding(true);
+  return Buffer.concat([decipher.update(encrypted), decipher.final()]);
+}
+
+async function normalizeWeixinMessage(
+  message: WeixinMessage,
+): Promise<{ text: string; attachments: CoreAttachment[] }> {
+  const textParts: string[] = [];
+  const sources: ImMediaSource[] = [];
+  const addItem = (item: WeixinMessageItem, prefix: string, index: number): void => {
+    let itemType = item.type;
+    if (itemType === undefined) {
+      if (item.text_item) itemType = 1;
+      else if (item.image_item) itemType = 2;
+      else if (item.voice_item) itemType = 3;
+      else if (item.file_item) itemType = 4;
+      else if (item.video_item) itemType = 5;
+    }
+    if (item.ref_msg) {
+      if (item.ref_msg.title?.trim()) textParts.push(`[引用] ${item.ref_msg.title.trim()}`);
+      if (item.ref_msg.message_item) addItem(item.ref_msg.message_item, "quote-", index);
+      if (itemType === undefined) return;
+    }
+    if (itemType === 1) {
+      const text = item.text_item?.text?.trim();
+      if (text) textParts.push(text);
+      return;
+    }
+    if (itemType === 2) {
+      textParts.push(`${prefix ? "[引用] " : ""}[图片]`);
+      const image = item.image_item;
+      if (image) {
+        sources.push({
+          name: `${prefix}weixin-image-${index + 1}.jpg`,
+          mimetype: "image/jpeg",
+          sourceId: item.msg_id,
+          load: () => downloadWeixinMedia(image, image.aeskey || image.aes_key || image.media?.aes_key, true),
+        });
+      }
+      return;
+    }
+    if (itemType === 3) {
+      const voice = item.voice_item;
+      const transcript = voice?.text?.trim();
+      textParts.push(`${prefix ? "[引用] " : ""}${transcript || "[语音消息]"}`);
+      if (voice) {
+        let extension = "silk";
+        if (voice.encode_type === 7) extension = "mp3";
+        else if (voice.encode_type === 8) extension = "ogg";
+        sources.push({
+          name: `${prefix}weixin-voice-${index + 1}.${extension}`,
+          mimetype: mimeFromName(`voice.${extension}`),
+          sourceId: item.msg_id,
+          load: () => downloadWeixinMedia(voice, voice.aeskey || voice.aes_key || voice.media?.aes_key),
+        });
+      }
+      return;
+    }
+    if (itemType === 4) {
+      const file = item.file_item;
+      const name = imFileName(file?.file_name, `${prefix}weixin-file-${index + 1}`);
+      textParts.push(`${prefix ? "[引用] " : ""}[文件：${name}]`);
+      if (file) {
+        const size = Number(file.file_size ?? file.len ?? "");
+        sources.push({
+          name,
+          mimetype: mimeFromName(name),
+          sourceId: item.msg_id,
+          ...(Number.isFinite(size) && size > 0 ? { sizeBytes: size } : {}),
+          load: () => downloadWeixinMedia(file, file.aeskey || file.aes_key || file.media?.aes_key),
+        });
+      }
+      return;
+    }
+    if (itemType === 5) {
+      textParts.push(`${prefix ? "[引用] " : ""}[视频]`);
+      if (item.video_item) {
+        sources.push({
+          name: `${prefix}weixin-video-${index + 1}.mp4`,
+          mimetype: "video/mp4",
+          sourceId: item.msg_id,
+          load: () =>
+            downloadWeixinMedia(
+              item.video_item!,
+              item.video_item!.aeskey || item.video_item!.aes_key || item.video_item!.media?.aes_key,
+            ),
+        });
+      }
+      return;
+    }
+    textParts.push(`[微信消息类型 ${itemType ?? "unknown"}]`);
+  };
+  for (const [index, item] of (message.item_list ?? []).entries()) addItem(item, "", index);
+  const media = await processImMedia(sources);
+  return {
+    text: withImMediaText(textParts.join("\n"), "[微信消息]", media.issues),
+    attachments: media.attachments,
+  };
 }
 
 function weixinMessageId(message: WeixinMessage): string | undefined {
@@ -4005,30 +4787,38 @@ export async function pollWeixinAccount(user: string, expectedResourceId: string
   }
   if (requireLease && !ownsImBridge(user, "wechat", expectedResourceId)) return;
   const messages = (response.msgs ?? []).filter(
-    (message) =>
-      message.message_type === 1 && message.from_user_id === resource.externalUserId && weixinMessageText(message),
+    (message) => message.message_type === 1 && message.from_user_id === resource.externalUserId,
   );
   for (const message of messages) {
+    const normalized = await normalizeWeixinMessage(message);
     const externalChatId = binding.externalChatId ?? secret.userId;
-    const { turn } = imTurn(
+    const { turn, threadRef } = imTurn(
       "wechat",
       { user, binding },
       {
         externalUserId: secret.userId,
         externalChatId,
         externalDisplayName: binding.externalDisplayName ?? "微信用户",
-        text: weixinMessageText(message),
+        text: normalized.text,
+        attachments: normalized.attachments,
         ...(weixinMessageId(message) ? { messageId: weixinMessageId(message)! } : {}),
       },
     );
-    const posted = await coreFetch("POST", "/v1/turns?async=1", JSON.stringify(turn));
+    const posted = await postImTurn(user, turn as Record<string, unknown>, threadRef);
     if (posted.status < 200 || posted.status >= 300) throw new Error(`core turn failed (${posted.status})`);
     try {
-      const body = JSON.parse(posted.text) as { runId?: unknown; status?: unknown };
+      const body = JSON.parse(posted.text) as { runId?: unknown; status?: unknown; reason?: unknown };
       const active = body.status === "queued" || body.status === "pending" || body.status === "running";
       if (typeof body.runId === "string" && (posted.status !== 200 || active)) {
         const messageId = weixinMessageId(message);
         startImRunProgress(user, "wechat", resource.resourceId, externalChatId, body.runId, messageId);
+      } else if (body.status === "refused" && typeof body.reason === "string") {
+        await sendWeixinProgress(
+          user,
+          externalChatId,
+          body.reason,
+          `qm-steer-${weixinMessageId(message) ?? randomUUID()}`,
+        );
       }
     } catch {
       void 0;
@@ -4081,6 +4871,7 @@ async function listStoredImBindings(): Promise<StoredImBindings[]> {
 }
 
 export async function drainWeixinDeliveries(stored?: StoredImBindings[]): Promise<void> {
+  if (!imProviderEnabled("wechat")) return;
   const bindings = stored ?? (await listStoredImBindings());
   await Promise.all(
     bindings.map(async ({ user, state }) => {
@@ -4147,6 +4938,7 @@ export async function drainWeixinDeliveries(stored?: StoredImBindings[]): Promis
 }
 
 async function syncWeixinBridge(): Promise<void> {
+  if (!imProviderEnabled("wechat")) return;
   const stored = await listStoredImBindings();
   for (const { user, state } of stored) {
     const resourceId = state.resources.wechat?.resourceId;
@@ -4171,6 +4963,7 @@ export async function drainImSdkDeliveries(
   provider: Exclude<ImProviderId, "wechat">,
   stored?: StoredImBindings[],
 ): Promise<void> {
+  if (!imProviderEnabled(provider)) return;
   if (![...imSdkRuntimes.keys()].some((key) => key.endsWith(`\0${provider}`))) return;
   const bindings = stored ?? (await listStoredImBindings());
   await Promise.all(
@@ -4223,7 +5016,7 @@ async function syncImSdkBridges(): Promise<void> {
   const stored = await listStoredImBindings();
   const active = new Set<string>();
   for (const { user, state } of stored) {
-    for (const provider of IM_SDK_PROVIDERS) {
+    for (const provider of IM_SDK_PROVIDERS.filter(imProviderEnabled)) {
       const resource = state.resources[provider];
       if (!resource || !state.bindings[provider] || !readImSdkSecret(resource)) continue;
       const key = imRuntimeKey(user, provider);
@@ -4258,7 +5051,7 @@ async function syncImSdkBridges(): Promise<void> {
 
 export async function syncImRunProgress(): Promise<void> {
   const [recordsByProvider, legacyRecords, bindings] = await Promise.all([
-    Promise.all(IM_PROVIDERS.map((provider) => listUiStateRecords(imProgressStateKey(provider)))),
+    Promise.all(enabledImProviders().map((provider) => listUiStateRecords(imProgressStateKey(provider)))),
     listUiStateRecords(IM_PROGRESS_LEGACY_KEY),
     listStoredImBindings(),
   ]);
@@ -4437,6 +5230,8 @@ interface CoreAttachment {
   mimetype: string;
   sizeBytes: number;
   blobId: string;
+  sourceId?: string;
+  author?: string;
 }
 
 interface CoreApprovalRecord {
@@ -4931,6 +5726,8 @@ const apiRoutes: readonly WebRoute[] = [
         ...(welcomeCohort ? { welcomeCohort } : {}),
         ...(suggestedActivities.length ? { suggestedActivities } : {}),
         ...(activityConfig ? { suggestedActivitiesGeneration: true } : {}),
+        chatChannelsEnabled: chatChannelsEnabled(),
+        chatChannelProviders: enabledImProviders(),
         permissions,
       });
     },
@@ -5206,6 +6003,7 @@ const apiRoutes: readonly WebRoute[] = [
       const { res, url, user } = c;
       const provider = url.searchParams.get("provider") ?? "";
       if (!isImProviderId(provider)) return json(res, 400, { error: "bad_request", message: "provider required" });
+      if (!imProviderEnabled(provider)) return json(res, 404, { error: "not_found" });
       try {
         if (provider === "wechat") await refreshWeixinBinding(user);
         const state = await readImBindings(user);
@@ -5237,6 +6035,7 @@ const apiRoutes: readonly WebRoute[] = [
       if (!body) return;
       const provider = typeof body.provider === "string" ? body.provider : "";
       if (!isImProviderId(provider)) return json(res, 400, { error: "bad_request", message: "unknown provider" });
+      if (!imProviderEnabled(provider)) return json(res, 404, { error: "not_found" });
       try {
         const binding = await startImBinding(user, provider);
         const state = await readImBindings(user);
@@ -5253,6 +6052,7 @@ const apiRoutes: readonly WebRoute[] = [
     path: "/api/im-bindings/wechat/verify",
     handle: async (c) => {
       const { req, res, user } = c;
+      if (!imProviderEnabled("wechat")) return json(res, 404, { error: "not_found" });
       const body = await readJson<{ code?: unknown }>(req, res, false);
       if (!body) return;
       const code = typeof body.code === "string" ? body.code.trim() : "";
@@ -5271,6 +6071,7 @@ const apiRoutes: readonly WebRoute[] = [
       if (!isImProviderId(provider) || provider === "wechat") {
         return json(res, 400, { error: "bad_request", message: "unknown provider" });
       }
+      if (!imProviderEnabled(provider)) return json(res, 404, { error: "not_found" });
       const body = await readJson<{ credentials?: unknown; externalTenantId?: unknown; externalTenantName?: unknown }>(
         req,
         res,
@@ -5311,6 +6112,7 @@ const apiRoutes: readonly WebRoute[] = [
       const { res, user } = c;
       const provider = c.params.provider ?? "";
       if (!isImProviderId(provider)) return json(res, 400, { error: "bad_request", message: "unknown provider" });
+      if (!imProviderEnabled(provider)) return json(res, 404, { error: "not_found" });
       try {
         const result = await locateImBot(user, provider);
         return json(res, 200, {
@@ -5337,6 +6139,7 @@ const apiRoutes: readonly WebRoute[] = [
       const { res, url, user } = c;
       const provider = c.params.provider ?? "";
       if (!isImProviderId(provider)) return json(res, 400, { error: "bad_request", message: "unknown provider" });
+      if (!imProviderEnabled(provider)) return json(res, 404, { error: "not_found" });
       const removed = await removeImBinding(user, provider, url.searchParams.get("forget") === "1");
       const state = await readImBindings(user);
       return json(res, 200, { removed, reusable: Boolean(state.resources[provider]) });
@@ -6921,6 +7724,9 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
   if (path === "/me" || path.startsWith("/api/")) {
     const user = await currentBrowserUser(req);
     if (!user) return unauthorized(res, req);
+    if (!chatChannelsEnabled() && (path === "/api/im-bindings" || path.startsWith("/api/im-bindings/"))) {
+      return json(res, 404, { error: "not found" });
+    }
     const loopsPath = path === "/api/loops" || path.startsWith("/api/loops/");
     const ledgerPath = /^\/api\/loops\/[^/]+\/items(\/|$)/.test(path);
     if (loopsPath && !isLoopsUser(user) && !(ledgerPath && isInboxUser(user))) {
@@ -7027,20 +7833,22 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
           console.warn("[web-ui] WEB_UI_PRINCIPALS unset, any principal id may sign in (dev only)");
         const t = setInterval(() => void drainWebDeliveries(), WEB_DELIVERY_POLL_MS);
         t.unref?.();
-        const imBridgeTimer = setInterval(() => {
+        if (chatChannelsEnabled()) {
+          const imBridgeTimer = setInterval(() => {
+            void syncImBridges().catch((error: unknown) => console.error("[web-ui] IM bridge failed:", String(error)));
+          }, WEIXIN_BRIDGE_SYNC_MS);
+          imBridgeTimer.unref?.();
+          const imDeliveryTimer = setInterval(() => {
+            void drainImDeliveries().catch((error: unknown) =>
+              console.error("[web-ui] IM delivery failed:", String(error)),
+            );
+          }, IM_DELIVERY_POLL_MS);
+          imDeliveryTimer.unref?.();
           void syncImBridges().catch((error: unknown) => console.error("[web-ui] IM bridge failed:", String(error)));
-        }, WEIXIN_BRIDGE_SYNC_MS);
-        imBridgeTimer.unref?.();
-        const imDeliveryTimer = setInterval(() => {
           void drainImDeliveries().catch((error: unknown) =>
             console.error("[web-ui] IM delivery failed:", String(error)),
           );
-        }, IM_DELIVERY_POLL_MS);
-        imDeliveryTimer.unref?.();
-        void syncImBridges().catch((error: unknown) => console.error("[web-ui] IM bridge failed:", String(error)));
-        void drainImDeliveries().catch((error: unknown) =>
-          console.error("[web-ui] IM delivery failed:", String(error)),
-        );
+        }
         void runStateFeed();
         void runInboxFeed();
       });
