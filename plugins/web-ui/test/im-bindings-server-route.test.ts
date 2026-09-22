@@ -768,6 +768,30 @@ test("disabled Chat Channels are reported to the UI and reject binding routes", 
   }
 });
 
+test("Chat Channels can enable only selected providers", async () => {
+  process.env.WEB_UI_CHAT_CHANNELS_ENABLED = "wecom,feishu";
+  try {
+    const me = await fetch(`${base}/me`, { headers: headers() });
+    assert.equal(me.status, 200);
+    const config = (await me.json()) as { chatChannelsEnabled?: boolean; chatChannelProviders?: string[] };
+    assert.equal(config.chatChannelsEnabled, true);
+    assert.deepEqual(config.chatChannelProviders, ["feishu", "work-wechat"]);
+
+    const enabled = await fetch(`${base}/api/im-bindings/status?provider=feishu`, { headers: headers() });
+    assert.equal(enabled.status, 200);
+    const disabled = await fetch(`${base}/api/im-bindings/status?provider=wechat`, { headers: headers() });
+    assert.equal(disabled.status, 404);
+    const disabledStart = await fetch(`${base}/api/im-bindings/start`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ provider: "wechat" }),
+    });
+    assert.equal(disabledStart.status, 404);
+  } finally {
+    delete process.env.WEB_UI_CHAT_CHANNELS_ENABLED;
+  }
+});
+
 test("legacy shared IM progress state is discarded instead of migrated", async () => {
   uiState.set("legacy-user#im-progress", { value: { runs: {} }, updatedAt: Date.now() });
   uiState.set("active-legacy-user#im-progress", {

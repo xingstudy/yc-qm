@@ -43,8 +43,9 @@ Env (see `.env.example`): `CORE_API_URL` (default `http://localhost:8080`),
 `WEB_UI_PRINCIPALS` (csv allowlist; empty = any id, **dev only**),
 `CORE_SIGNING_SECRET` (same value as the core when source-auth is enabled), and
 `WEB_UI_IM_CREDENTIALS_KEY` (a dedicated high-entropy secret of at least 32 characters for IM Bot credentials;
-a 32-byte hexadecimal key is also accepted directly), and `WEB_UI_CHAT_CHANNELS_ENABLED` (`0` disables all Chat
-Channels UI, API routes, connections, and delivery polling; enabled by default).
+a 32-byte hexadecimal key is also accepted directly), and `WEB_UI_CHAT_CHANNELS_ENABLED` (`1` or unset enables
+all providers, `0` disables all providers, and a comma-separated list enables only those providers). Provider ids
+are `wechat`, `wecom`, `feishu`, `qq`, and `dingtalk`; legacy `work-wechat` is also accepted for WeCom.
 
 ## IM commands
 

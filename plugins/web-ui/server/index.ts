@@ -59,7 +59,6 @@ const welcomeCohort = process.env.WEB_UI_WELCOME_COHORT?.trim().slice(0, 40) || 
 const suggestedActivities = parseSuggestedActivities(process.env.WEB_UI_SUGGESTED_ACTIVITIES);
 const PUBLIC_URL = (process.env.WEB_UI_PUBLIC_URL ?? `http://localhost:${PORT}`).replace(/\/$/, "");
 const WEB_UI_DEV = process.env.WEB_UI_DEV === "1";
-const chatChannelsEnabled = (): boolean => process.env.WEB_UI_CHAT_CHANNELS_ENABLED !== "0";
 const ALLOW_UNSIGNED_TEST_IDENTITY =
   process.env.NODE_ENV === "test" && process.env.ALLOW_UNSIGNED_TEST_IDENTITY === "1";
 const COOKIE_AUTH = !CORE_SIGNING_SECRET || ALLOW_UNSIGNED_TEST_IDENTITY;
@@ -162,13 +161,36 @@ function rememberRun(runId: string, user: string, threadRef: string): void {
 
 const deliveryClients = new Map<string, Set<ServerResponse>>();
 
-type ImProviderId = "wechat" | "feishu" | "work-wechat" | "qq" | "dingtalk";
+const IM_PROVIDERS = ["wechat", "feishu", "work-wechat", "qq", "dingtalk"] as const;
+type ImProviderId = (typeof IM_PROVIDERS)[number];
 type ImSetupMode = "wechat-qr" | "provision-qr" | "manual-credentials";
 type ImAuthorizationState =
   "waiting" | "scanned" | "verification-required" | "blocked" | "expired" | "unrecoverable" | "error";
 
 const IM_SDK_PROVIDERS = ["feishu", "work-wechat", "qq", "dingtalk"] as const;
-const IM_PROVIDERS = ["wechat", ...IM_SDK_PROVIDERS] as const;
+
+function enabledImProviders(): ImProviderId[] {
+  const configured = (process.env.WEB_UI_CHAT_CHANNELS_ENABLED ?? "1").trim().toLowerCase();
+  if (!configured || configured === "1") return [...IM_PROVIDERS];
+  if (configured === "0") return [];
+  const requested = new Set(
+    configured
+      .split(",")
+      .map((provider) => provider.trim())
+      .filter(Boolean)
+      .map((provider) => (provider === "wecom" ? "work-wechat" : provider)),
+  );
+  const invalid = [...requested].find((provider) => !(IM_PROVIDERS as readonly string[]).includes(provider));
+  if (!requested.size || invalid) {
+    throw new Error(
+      "WEB_UI_CHAT_CHANNELS_ENABLED must be 0, 1, or a comma-separated list of wechat, wecom, feishu, qq, dingtalk",
+    );
+  }
+  return IM_PROVIDERS.filter((provider) => requested.has(provider));
+}
+
+const chatChannelsEnabled = (): boolean => enabledImProviders().length > 0;
+const imProviderEnabled = (provider: ImProviderId): boolean => enabledImProviders().includes(provider);
 
 const IM_BINDINGS_KEY = "im-bindings";
 const IM_PROGRESS_LEGACY_KEY = "im-progress";
@@ -763,12 +785,13 @@ function publicImBindings(state: ImBindingsState): {
 } {
   return {
     bindings: Object.fromEntries(
-      Object.entries(state.bindings).map(([provider, binding]) => [
-        provider,
-        publicImBinding(binding, state.resources[provider as ImProviderId]),
-      ]),
+      Object.entries(state.bindings)
+        .filter(([provider]) => isImProviderId(provider) && imProviderEnabled(provider))
+        .map(([provider, binding]) => [provider, publicImBinding(binding, state.resources[provider as ImProviderId])]),
     ),
-    reusableProviders: Object.keys(state.resources).filter(isImProviderId),
+    reusableProviders: Object.keys(state.resources).filter(
+      (provider): provider is ImProviderId => isImProviderId(provider) && imProviderEnabled(provider),
+    ),
   };
 }
 
@@ -4848,6 +4871,7 @@ async function listStoredImBindings(): Promise<StoredImBindings[]> {
 }
 
 export async function drainWeixinDeliveries(stored?: StoredImBindings[]): Promise<void> {
+  if (!imProviderEnabled("wechat")) return;
   const bindings = stored ?? (await listStoredImBindings());
   await Promise.all(
     bindings.map(async ({ user, state }) => {
@@ -4914,6 +4938,7 @@ export async function drainWeixinDeliveries(stored?: StoredImBindings[]): Promis
 }
 
 async function syncWeixinBridge(): Promise<void> {
+  if (!imProviderEnabled("wechat")) return;
   const stored = await listStoredImBindings();
   for (const { user, state } of stored) {
     const resourceId = state.resources.wechat?.resourceId;
@@ -4938,6 +4963,7 @@ export async function drainImSdkDeliveries(
   provider: Exclude<ImProviderId, "wechat">,
   stored?: StoredImBindings[],
 ): Promise<void> {
+  if (!imProviderEnabled(provider)) return;
   if (![...imSdkRuntimes.keys()].some((key) => key.endsWith(`\0${provider}`))) return;
   const bindings = stored ?? (await listStoredImBindings());
   await Promise.all(
@@ -4990,7 +5016,7 @@ async function syncImSdkBridges(): Promise<void> {
   const stored = await listStoredImBindings();
   const active = new Set<string>();
   for (const { user, state } of stored) {
-    for (const provider of IM_SDK_PROVIDERS) {
+    for (const provider of IM_SDK_PROVIDERS.filter(imProviderEnabled)) {
       const resource = state.resources[provider];
       if (!resource || !state.bindings[provider] || !readImSdkSecret(resource)) continue;
       const key = imRuntimeKey(user, provider);
@@ -5025,7 +5051,7 @@ async function syncImSdkBridges(): Promise<void> {
 
 export async function syncImRunProgress(): Promise<void> {
   const [recordsByProvider, legacyRecords, bindings] = await Promise.all([
-    Promise.all(IM_PROVIDERS.map((provider) => listUiStateRecords(imProgressStateKey(provider)))),
+    Promise.all(enabledImProviders().map((provider) => listUiStateRecords(imProgressStateKey(provider)))),
     listUiStateRecords(IM_PROGRESS_LEGACY_KEY),
     listStoredImBindings(),
   ]);
@@ -5701,6 +5727,7 @@ const apiRoutes: readonly WebRoute[] = [
         ...(suggestedActivities.length ? { suggestedActivities } : {}),
         ...(activityConfig ? { suggestedActivitiesGeneration: true } : {}),
         chatChannelsEnabled: chatChannelsEnabled(),
+        chatChannelProviders: enabledImProviders(),
         permissions,
       });
     },
@@ -5976,6 +6003,7 @@ const apiRoutes: readonly WebRoute[] = [
       const { res, url, user } = c;
       const provider = url.searchParams.get("provider") ?? "";
       if (!isImProviderId(provider)) return json(res, 400, { error: "bad_request", message: "provider required" });
+      if (!imProviderEnabled(provider)) return json(res, 404, { error: "not_found" });
       try {
         if (provider === "wechat") await refreshWeixinBinding(user);
         const state = await readImBindings(user);
@@ -6007,6 +6035,7 @@ const apiRoutes: readonly WebRoute[] = [
       if (!body) return;
       const provider = typeof body.provider === "string" ? body.provider : "";
       if (!isImProviderId(provider)) return json(res, 400, { error: "bad_request", message: "unknown provider" });
+      if (!imProviderEnabled(provider)) return json(res, 404, { error: "not_found" });
       try {
         const binding = await startImBinding(user, provider);
         const state = await readImBindings(user);
@@ -6023,6 +6052,7 @@ const apiRoutes: readonly WebRoute[] = [
     path: "/api/im-bindings/wechat/verify",
     handle: async (c) => {
       const { req, res, user } = c;
+      if (!imProviderEnabled("wechat")) return json(res, 404, { error: "not_found" });
       const body = await readJson<{ code?: unknown }>(req, res, false);
       if (!body) return;
       const code = typeof body.code === "string" ? body.code.trim() : "";
@@ -6041,6 +6071,7 @@ const apiRoutes: readonly WebRoute[] = [
       if (!isImProviderId(provider) || provider === "wechat") {
         return json(res, 400, { error: "bad_request", message: "unknown provider" });
       }
+      if (!imProviderEnabled(provider)) return json(res, 404, { error: "not_found" });
       const body = await readJson<{ credentials?: unknown; externalTenantId?: unknown; externalTenantName?: unknown }>(
         req,
         res,
@@ -6081,6 +6112,7 @@ const apiRoutes: readonly WebRoute[] = [
       const { res, user } = c;
       const provider = c.params.provider ?? "";
       if (!isImProviderId(provider)) return json(res, 400, { error: "bad_request", message: "unknown provider" });
+      if (!imProviderEnabled(provider)) return json(res, 404, { error: "not_found" });
       try {
         const result = await locateImBot(user, provider);
         return json(res, 200, {
@@ -6107,6 +6139,7 @@ const apiRoutes: readonly WebRoute[] = [
       const { res, url, user } = c;
       const provider = c.params.provider ?? "";
       if (!isImProviderId(provider)) return json(res, 400, { error: "bad_request", message: "unknown provider" });
+      if (!imProviderEnabled(provider)) return json(res, 404, { error: "not_found" });
       const removed = await removeImBinding(user, provider, url.searchParams.get("forget") === "1");
       const state = await readImBindings(user);
       return json(res, 200, { removed, reusable: Boolean(state.resources[provider]) });
