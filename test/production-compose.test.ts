@@ -121,6 +121,24 @@ test("the production example is a complete fail-closed template without organiza
   assert.doesNotMatch(readFileSync(".env.production.example", "utf8"), /qfpay|aiagents/i);
 });
 
+test("every Chat Channels configuration example documents provider selection", () => {
+  const help = "# 1 = all, 0 = none, or comma-separated: wechat,wecom,feishu,qq,dingtalk";
+  for (const path of [
+    ".env.example",
+    ".env.production.example",
+    "plugins/web-ui/.env.example",
+    "deploy/stacks/acme/.env.example",
+    "docker-compose.yaml",
+    "compose.production.yaml",
+  ]) {
+    const configured = readFileSync(path, "utf8");
+    assert.match(
+      configured,
+      new RegExp(`${help.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n\\s*WEB_UI_CHAT_CHANNELS_ENABLED`),
+    );
+  }
+});
+
 test("the image manifest pins every pull-only first-party image to Docker Hub", () => {
   const values = envValues("images.production.env");
   const refs: string[] = [];
@@ -164,6 +182,10 @@ test("the production Compose stack is image-only and exposes only the edge", () 
   assert.match(
     serviceBlock(compose, "web-ui"),
     /WEB_UI_IM_CREDENTIALS_KEY: \$\{WEB_UI_IM_CREDENTIALS_KEY:\?Set WEB_UI_IM_CREDENTIALS_KEY in \.env\.production\}/,
+  );
+  assert.match(
+    serviceBlock(developmentCompose, "web-ui"),
+    /WEB_UI_IM_CREDENTIALS_KEY: \$\{WEB_UI_IM_CREDENTIALS_KEY:\?Set WEB_UI_IM_CREDENTIALS_KEY in \.env\}/,
   );
   assert.match(serviceBlock(compose, "web-ui"), /WEB_UI_CHAT_CHANNELS_ENABLED: \$\{WEB_UI_CHAT_CHANNELS_ENABLED:-1\}/);
   assert.doesNotMatch(serviceBlock(compose, "web-ui"), /CONNECTOR_SECRET_KEY/);

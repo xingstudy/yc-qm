@@ -297,6 +297,7 @@ services:
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET:?Set CORE_SIGNING_SECRET in .env.production}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET:?Set PORTAL_IDENTITY_SECRET in .env.production}
       WEB_UI_IM_CREDENTIALS_KEY: ${WEB_UI_IM_CREDENTIALS_KEY:?Set WEB_UI_IM_CREDENTIALS_KEY in .env.production}
+      # 1 = all, 0 = none, or comma-separated: wechat,wecom,feishu,qq,dingtalk
       WEB_UI_CHAT_CHANNELS_ENABLED: ${WEB_UI_CHAT_CHANNELS_ENABLED:-1}
       WEB_UI_PUBLIC_URL: ${PORTAL_PUBLIC_URL:?Set PORTAL_PUBLIC_URL in .env.production}
       WEB_UI_PRINCIPALS: ${WEB_UI_PRINCIPALS:-}
