@@ -2,7 +2,8 @@ FROM golang:1.26.6-alpine@sha256:af8d6740070b8906d12eae1c3e3ea0957fb63f492051ea0
 
 ARG GH_VERSION=2.99.0
 ARG X_MOD_VERSION=0.40.0
-RUN go mod download "github.com/cli/cli/v2@v${GH_VERSION}" \
+ARG GOPROXY=https://proxy.golang.org,direct
+RUN GOPROXY="$GOPROXY" go mod download "github.com/cli/cli/v2@v${GH_VERSION}" \
   && mkdir /tmp/gh \
   && cp -a "/go/pkg/mod/github.com/cli/cli/v2@v${GH_VERSION}/." /tmp/gh \
   && cd /tmp/gh \
@@ -94,6 +95,7 @@ RUN claude --version \
   && aws --version \
   && gh --version
 
+ARG PIP_INDEX_URL=https://pypi.org/simple
 RUN python3 -m venv /opt/agent-venv \
   && /opt/agent-venv/bin/pip install --no-cache-dir --upgrade "pip==${PIP_VERSION}"
 ENV PATH="/opt/agent-venv/bin:${PATH}"

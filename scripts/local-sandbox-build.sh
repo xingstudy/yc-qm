@@ -5,6 +5,8 @@ cd "$(dirname "$0")/.."
 BASE_TAG="qm-sandbox-base:dev"
 LOCAL_TAG="${LOCAL_SANDBOX_IMAGE:-qm-sandbox-local:latest}"
 PLATFORM="linux/amd64"
+GOPROXY="${GOPROXY:-https://proxy.golang.org,direct}"
+PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.org/simple}"
 
 FINGERPRINT="$(node --input-type=module -e '
 const { computeSandboxImageFingerprint } = await import("./src/sandbox/sandbox-fingerprint.ts");
@@ -24,7 +26,9 @@ if [[ -n "${FLY_SANDBOX_APP_NAME:-}" ]] && command -v flyctl >/dev/null 2>&1; th
   docker tag "${BASE_REF}" "${BASE_TAG}"
 else
   echo "==> building ${BASE_TAG} from fly/Dockerfile (${PLATFORM})"
-  docker build --platform "${PLATFORM}" -f fly/Dockerfile --build-arg INSTALL_BROWSER_ENGINE=1 -t "${BASE_TAG}" .
+  docker build --platform "${PLATFORM}" -f fly/Dockerfile --build-arg INSTALL_BROWSER_ENGINE=1 \
+    --build-arg "GOPROXY=${GOPROXY}" --build-arg "PIP_INDEX_URL=${PIP_INDEX_URL}" \
+    -t "${BASE_TAG}" .
 fi
 
 echo "==> building ${LOCAL_TAG} from local/Dockerfile (fingerprint ${FINGERPRINT})"
