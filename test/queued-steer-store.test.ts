@@ -28,8 +28,14 @@ for (const backend of ["memory", "postgres"] as const) {
       };
       const attachments = [{ name: "file.txt", blobId: "queued-blob", sizeBytes: 3, mimetype: "text/plain" }];
       try {
-        const { run: target } = await runs.enqueue({ sessionId, request: { ...request, text: "working" } });
-        const { run: queued } = await runs.enqueue({ sessionId, request: { ...request, attachments } });
+        const { run: target } = await runs.enqueue({
+          sessionId,
+          request: { ...request, text: "working", deliveryEditRef: "old-reply" },
+        });
+        const { run: queued } = await runs.enqueue({
+          sessionId,
+          request: { ...request, attachments, deliveryEditRef: "new-reply" },
+        });
         const signal: RunSignal = {
           kind: "steer",
           text: "",
@@ -48,6 +54,7 @@ for (const backend of ["memory", "postgres"] as const) {
         ]);
         assert.equal(moved.filter(Boolean).length, 1);
         assert.equal(await runs.get(queued.id), null);
+        assert.deepEqual((await runs.get(target.id))?.deliveryState, { editRef: "new-reply" });
         const pending = await signals.takePending(target.id);
         assert.equal(pending.length, 1);
         assert.deepEqual(pending[0]?.request?.attachments, attachments);

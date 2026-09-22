@@ -1556,16 +1556,20 @@ export function renderSidebarFooter(): void {
             </a>`
           : nothing
       }
-      <button
-        class="icon-btn subtle"
-        type="button"
-        aria-label="Open IM channel settings"
-        ${tip("Chat channels")}
-        @click=${toggleImPanel}
-      >
-        ${icon(ExternalLink, 17)}
-      </button>
-      <div id="im-panel-host"></div>
+      ${
+        appState.me?.chatChannelsEnabled !== false
+          ? html`<button
+                class="icon-btn subtle"
+                type="button"
+                aria-label="Open IM channel settings"
+                ${tip("Chat channels")}
+                @click=${toggleImPanel}
+              >
+                ${icon(ExternalLink, 17)}
+              </button>
+              <div id="im-panel-host"></div>`
+          : nothing
+      }
       <button
         class="language-toggle"
         type="button"

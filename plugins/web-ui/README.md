@@ -43,7 +43,31 @@ Env (see `.env.example`): `CORE_API_URL` (default `http://localhost:8080`),
 `WEB_UI_PRINCIPALS` (csv allowlist; empty = any id, **dev only**),
 `CORE_SIGNING_SECRET` (same value as the core when source-auth is enabled), and
 `WEB_UI_IM_CREDENTIALS_KEY` (a dedicated high-entropy secret of at least 32 characters for IM Bot credentials;
-a 32-byte hexadecimal key is also accepted directly).
+a 32-byte hexadecimal key is also accepted directly), and `WEB_UI_CHAT_CHANNELS_ENABLED` (`0` disables all Chat
+Channels UI, API routes, connections, and delivery polling; enabled by default).
+
+## IM commands
+
+WeChat, WeCom, Feishu, QQ, and DingTalk use the same live-task behavior. While a task is running, ordinary
+messages automatically steer that task. Send `/new <instruction>` to queue a separate task instead. The explicit
+`/steer <instruction>` form remains available and reports an error when no task is running. Intermediate thinking,
+tool, and partial-reply updates are coalesced to at most one update every eight seconds; the final reply still
+includes any unsent status.
+
+Inbound message normalization is shared across all five providers. The accepted platform formats are kept aligned
+with the installed official SDK/protocol definitions:
+
+| Provider | Inbound formats                                                                                                                                                                                                                                                       |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| WeChat   | `text`, `image`, `voice` (including transcription), `file`, `video`, and quoted/nested items                                                                                                                                                                          |
+| WeCom    | `text`, `image`, `mixed` text/image, transcribed `voice`, `file`, `video`, and quoted text/image/mixed/voice/file                                                                                                                                                     |
+| Feishu   | `text`, `post`, `image`, `file`, `audio`, `video`/`media`, `sticker`, `interactive`, `merge_forward`, `share_chat`, `share_user`, `location`, `system`, `vote`, `todo`, `calendar`, `general_calendar`, `share_calendar_event`, `folder`, `hongbao`, and `video_chat` |
+| QQ       | C2C/group text, mentions, image, voice (including ASR), video, file, and quoted `msg_elements` content/media                                                                                                                                                          |
+| DingTalk | `text`, `richText` (including multiple embedded media items), `picture`, `audio`/`voice`, `video`, and `file`                                                                                                                                                         |
+
+Downloadable media, including multiple and nested attachments, is staged as a Core attachment in the same turn. If
+a platform withholds a resource or the Bot lacks download permission, the turn includes an explicit readable
+fallback instead of dropping the message.
 
 ## Suggested activities
 

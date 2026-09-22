@@ -427,11 +427,18 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
          ), moved AS (
            DELETE FROM runs WHERE id=$1 AND id<>$2 AND status='pending'
            AND COALESCE(request::jsonb->>'displayText',request::jsonb->>'text') = $5::jsonb->'request'->>'text'
-           AND EXISTS (SELECT 1 FROM target) RETURNING id
+           AND EXISTS (SELECT 1 FROM target) RETURNING id, request
          ), sent AS (
            INSERT INTO run_signals(run_id,kind,text,payload,created_at,dedupe_key)
            SELECT $2,$3,$4,$5,$6,$7 FROM moved RETURNING id
-         ) SELECT pg_notify('run_signals',$2) FROM sent`,
+         ), updated AS (
+           UPDATE runs SET delivery_state = jsonb_build_object(
+             'editRef', moved.request::jsonb->>'deliveryEditRef'
+           )::text FROM moved, sent
+           WHERE runs.id=$2 AND moved.request::jsonb ? 'deliveryEditRef'
+           RETURNING runs.id
+         ) SELECT pg_notify('run_signals',$2) FROM sent
+           LEFT JOIN updated ON true`,
         [
           queuedRunId,
           targetRunId,

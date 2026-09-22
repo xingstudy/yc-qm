@@ -84,6 +84,7 @@ test("the footer channel button opens the IM channel popover", () => {
   assert.match(shell, /class="im-resource-id"><span>Bot ID<\/span><code>\$\{binding\.resourceId\}<\/code>/);
   assert.match(shell, /aria-label="Open IM channel settings"[\s\S]*@click=\$\{toggleImPanel\}/);
   assert.match(shell, /<div id="im-panel-host"><\/div>/);
+  assert.match(shell, /appState\.me\?\.chatChannelsEnabled !== false/);
   assert.match(shell, /function renderImPanel\(\): void/);
 });
 
@@ -130,7 +131,10 @@ test("each IM platform uses its official authorization and message client", () =
   );
   assert.match(server, /encryptedSecret: encryptImSecret/);
   assert.match(server, /process\.env\.WEB_UI_IM_CREDENTIALS_KEY/);
-  assert.match(server, /process\.env\.NODE_ENV === "production" && !IM_CREDENTIALS_KEY/);
+  assert.match(server, /process\.env\.NODE_ENV === "production" && chatChannelsEnabled\(\) && !IM_CREDENTIALS_KEY/);
+  assert.match(server, /process\.env\.WEB_UI_CHAT_CHANNELS_ENABLED !== "0"/);
+  assert.match(server, /chatChannelsEnabled: chatChannelsEnabled\(\)/);
+  assert.match(server, /if \(chatChannelsEnabled\(\)\) \{/);
   assert.doesNotMatch(server, /process\.env\.CONNECTOR_SECRET_KEY|\/im\/gateway|\/im\/pair|pairCode/);
   assert.match(server, /const IM_DELIVERY_POLL_MS = WEIXIN_BRIDGE_SYNC_MS/);
   assert.match(server, /setInterval\(\(\) => \{\s+void drainImDeliveries\(\)/);

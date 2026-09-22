@@ -9,6 +9,7 @@ export interface Me {
   welcomeCohort?: string;
   suggestedActivities?: SuggestedActivity[];
   suggestedActivitiesGeneration?: boolean;
+  chatChannelsEnabled?: boolean;
   individualModelAuth?: boolean;
   modelAuthConnected?: boolean;
   mode?: AuthMode;
