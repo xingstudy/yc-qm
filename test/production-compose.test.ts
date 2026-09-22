@@ -41,6 +41,7 @@ const requiredProductionValues = [
   "PORTAL_SESSION_SECRET",
   "CONNECTOR_SECRET_KEY",
   "WEB_UI_IM_CREDENTIALS_KEY",
+  "WEB_UI_CHAT_CHANNELS_ENABLED",
   "SKILL_SIGNING_SECRET",
   "OIDC_CLIENT_ID",
   "OIDC_CLIENT_SECRET",
@@ -93,6 +94,7 @@ test("the production example is a complete fail-closed template without organiza
   assert.equal(values.get("NODE_ENV"), "production");
   assert.equal(values.get("PORTAL_LOCAL_AUTH_BYPASS"), "0");
   assert.equal(values.get("PORTAL_DEPLOYMENTS_ENABLED"), "1");
+  assert.equal(values.get("WEB_UI_CHAT_CHANNELS_ENABLED"), "1");
   assert.equal(values.get("AUTH_EMAIL_TRANSPORT"), "smtp");
   assert.equal(values.get("QM_COMPOSE_PROJECT"), "qm");
   assert.equal(values.get("QM_RELEASE_TAG"), "prod-v0.0.0");
@@ -163,6 +165,7 @@ test("the production Compose stack is image-only and exposes only the edge", () 
     serviceBlock(compose, "web-ui"),
     /WEB_UI_IM_CREDENTIALS_KEY: \$\{WEB_UI_IM_CREDENTIALS_KEY:\?Set WEB_UI_IM_CREDENTIALS_KEY in \.env\.production\}/,
   );
+  assert.match(serviceBlock(compose, "web-ui"), /WEB_UI_CHAT_CHANNELS_ENABLED: \$\{WEB_UI_CHAT_CHANNELS_ENABLED:-1\}/);
   assert.doesNotMatch(serviceBlock(compose, "web-ui"), /CONNECTOR_SECRET_KEY/);
   assert.doesNotMatch(serviceBlock(compose, "core"), /WEB_UI_IM_CREDENTIALS_KEY/);
   for (const service of ["preflight", "core"]) {
