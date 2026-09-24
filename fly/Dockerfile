@@ -42,7 +42,7 @@ ARG INSTALL_BROWSER_ENGINE=0
 ARG CHROME_VERSION=151.0.7922.137-1
 ARG CHROME_SHA=e6dabf044cf9cd0279cfe86efa431682c18bfc06d06339ce055aaa87ae871727
 ARG PIP_VERSION=26.2.1
-ARG PKG_REFRESH_WEEK=
+ARG PKG_REFRESH_RUN_ID=
 
 RUN cp /etc/apt/sources.list.d/ubuntu.sources /tmp/ubuntu.sources \
   && if [ -n "$APT_MIRROR" ]; then \
@@ -53,7 +53,7 @@ RUN cp /etc/apt/sources.list.d/ubuntu.sources /tmp/ubuntu.sources \
      fi \
   && apt-get update \
   && apt-get upgrade -y \
-  && printf 'os packages refreshed for week %s\n' "${PKG_REFRESH_WEEK:-unknown}" \
+  && printf 'os packages refreshed for run %s\n' "${PKG_REFRESH_RUN_ID:-unknown}" \
   && apt-get install -y --no-install-recommends \
       bash coreutils findutils grep sed gawk \
       git curl wget jq unzip \

@@ -70,7 +70,7 @@ test("scheduled OS refreshes cannot invalidate production payload layers", () =>
   ];
   for (const path of productionDockerfiles) {
     const dockerfile = readFileSync(join(repoRoot, path), "utf8");
-    const refresh = dockerfile.lastIndexOf("ARG PKG_REFRESH_WEEK");
+    const refresh = dockerfile.lastIndexOf("ARG PKG_REFRESH_RUN_ID");
     assert.notEqual(refresh, -1, `${path} must schedule OS refreshes`);
     assert.ok(dockerfile.lastIndexOf("COPY ") < refresh, `${path} must refresh after its final payload copy`);
     const productionInstall = dockerfile.lastIndexOf("npm ci --omit=dev");
@@ -82,7 +82,7 @@ test("scheduled OS refreshes cannot invalidate production payload layers", () =>
   const core = readFileSync(join(repoRoot, "deploy/core/Dockerfile"), "utf8");
   const baseStage = core.indexOf(" AS core-base");
   const runtimeStage = core.indexOf("FROM core-base AS core");
-  const refresh = core.indexOf("ARG PKG_REFRESH_WEEK");
+  const refresh = core.indexOf("ARG PKG_REFRESH_RUN_ID");
   assert.notEqual(baseStage, -1);
   assert.ok(baseStage < refresh);
   assert.ok(refresh < runtimeStage);
@@ -120,6 +120,9 @@ test("deploy image package installs reuse BuildKit caches", () => {
   ];
   for (const path of apkDockerfiles) {
     const dockerfile = readFileSync(join(repoRoot, path), "utf8");
-    assert.match(dockerfile, /--mount=type=cache,target=\/var\/cache\/apk,sharing=locked[\s\S]*?apk upgrade/);
+    assert.match(
+      dockerfile,
+      /--mount=type=cache,target=\/var\/cache\/apk,sharing=locked[\s\S]*?apk upgrade --no-cache/,
+    );
   }
 });

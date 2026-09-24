@@ -38,15 +38,34 @@ test("the release is the sole sandbox-base publisher and bakes in the browser en
   );
   assert.match(
     workflow,
-    /build-args: \|\n\s+\$\{\{ matrix\.build-args \}\}\n\s+PKG_REFRESH_WEEK=\$\{\{ steps\.refresh\.outputs\.week \}\}/,
+    /build-args: \|\n\s+\$\{\{ matrix\.build-args \}\}\n\s+PKG_REFRESH_RUN_ID=\$\{\{ github\.run_id \}\}/,
   );
   assert.match(
     workflow,
-    /build-args: \|\n\s+\$\{\{ matrix\.build-args \}\}\n\s+PKG_REFRESH_WEEK=\$\{\{ steps\.refresh\.outputs\.week \}\}\n\s+GIT_SHA=\$\{\{ github\.sha \}\}/,
+    /build-args: \|\n\s+\$\{\{ matrix\.build-args \}\}\n\s+PKG_REFRESH_RUN_ID=\$\{\{ github\.run_id \}\}\n\s+GIT_SHA=\$\{\{ github\.sha \}\}/,
   );
 
   assert.equal(existsSync(".github/workflows/publish-sandbox-base.yml"), false);
   assert.equal(existsSync(".github/workflows/publish-images.yml"), false);
+});
+
+test("production image releases refresh OS packages on every run", () => {
+  const workflow = readFileSync(".github/workflows/release-production-images.yml", "utf8");
+  assert.equal((workflow.match(/PKG_REFRESH_RUN_ID=\$\{\{ github\.run_id \}\}/g) ?? []).length, 3);
+  assert.doesNotMatch(workflow, /PKG_REFRESH_WEEK/);
+  for (const path of [
+    "deploy/core/Dockerfile",
+    "deploy/web-ui/Dockerfile",
+    "deploy/admin/Dockerfile",
+    "deploy/portal/Dockerfile",
+    "deploy/auth/Dockerfile",
+    "deploy/edge/Dockerfile",
+    "fly/Dockerfile",
+  ]) {
+    const dockerfile = readFileSync(path, "utf8");
+    assert.match(dockerfile, /ARG PKG_REFRESH_RUN_ID=/);
+    assert.match(dockerfile, /\$\{PKG_REFRESH_RUN_ID:-unknown\}/);
+  }
 });
 
 test("the release verifies the sandbox base digest is anonymously pullable", () => {
