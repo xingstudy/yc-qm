@@ -5952,11 +5952,16 @@ const apiRoutes: readonly WebRoute[] = [
     method: "POST",
     path: "/api/suggested-activities",
     handle: async (c) => {
-      const input = JSON.parse((await readBody(c.req)) || "{}") as { timezone?: unknown };
+      const input = JSON.parse((await readBody(c.req)) || "{}") as { timezone?: unknown; locale?: unknown };
       const response = await coreFetch(
         "POST",
         "/v1/suggested-activities",
-        JSON.stringify({ principalId: c.user, seeds: suggestedActivities, timezone: input.timezone }),
+        JSON.stringify({
+          principalId: c.user,
+          seeds: suggestedActivities,
+          timezone: input.timezone,
+          locale: input.locale,
+        }),
         60_000,
       );
       return json(c.res, response.status, JSON.parse(response.text));

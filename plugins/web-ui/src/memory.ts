@@ -187,13 +187,13 @@ function drawMemory(loading = false): void {
           memoryConfirmation
             ? html` <section class="card memory-confirm" role="alertdialog" aria-labelledby="memory-confirm-title">
                 <div class="card-head">
-                  <h2 class="card-title" id="memory-confirm-title">${memoryConfirmation.title}</h2>
+                  <h2 class="card-title" id="memory-confirm-title">${t(memoryConfirmation.title)}</h2>
                   <span class="badge warn">Check impact</span>
                 </div>
-                <p class="memory-help">${memoryConfirmation.body}</p>
+                <p class="memory-help">${t(memoryConfirmation.body)}</p>
                 <div class="actions">
                   <button class="btn danger" type="button" @click=${() => void memoryConfirmation?.run()}>
-                    ${memoryConfirmation.action}</button
+                    ${t(memoryConfirmation.action)}</button
                   ><button
                     class="btn"
                     type="button"

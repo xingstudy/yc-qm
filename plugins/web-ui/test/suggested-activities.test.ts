@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseSuggestedActivities } from "../../chassis/src/suggested-activities.ts";
+import { localizedActivity } from "../src/suggested-activities.ts";
 
 const activity = {
   id: "weekly-brief",
@@ -18,6 +19,19 @@ test("configured activities preserve order and discard unrelated fields", () => 
     parseSuggestedActivities(JSON.stringify([{ ...activity, title: ` ${activity.title} `, secret: "not returned" }])),
     [activity],
   );
+});
+
+test("generated activities retain a complete Chinese variant", () => {
+  const bilingual = { ...activity, titleZh: "查看每周简报", promptZh: "帮我设置每周简报。" };
+  assert.deepEqual(parseSuggestedActivities(JSON.stringify([bilingual])), [bilingual]);
+  assert.deepEqual(localizedActivity(bilingual, "zh-CN"), {
+    ...bilingual,
+    title: bilingual.titleZh,
+    prompt: bilingual.promptZh,
+  });
+  assert.deepEqual(localizedActivity(bilingual, "en"), bilingual);
+  assert.deepEqual(localizedActivity(activity, "zh-CN"), activity);
+  assert.throws(() => parseSuggestedActivities(JSON.stringify([{ ...activity, titleZh: bilingual.titleZh }])));
 });
 
 test("invalid configuration fails without echoing its contents", () => {

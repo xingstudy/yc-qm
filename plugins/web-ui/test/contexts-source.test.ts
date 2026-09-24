@@ -31,6 +31,11 @@ test("member search commits the typed query to state on input", () => {
   assert.match(input, /\.value=\$\{contextsState\.memberQuery\}/);
 });
 
+test("project member search uses one all-field query", () => {
+  assert.match(source, /placeholder="Search account, email, name, or profile details"/);
+  assert.doesNotMatch(source, /memberSearchField|project-member-search-field/);
+});
+
 test("member search runs debounced as you type", () => {
   const input = source.match(/<input\s+id="project-member-search"[^]*?\/>/)?.[0] ?? "";
   assert.match(input, /@input=\$\{[^]*?scheduleMemberSearch\(/);

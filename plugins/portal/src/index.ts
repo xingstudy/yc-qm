@@ -5,6 +5,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createHash, createHmac } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { ADMIN_LOGIN_SCRIPT, ADMIN_LOGIN_SCRIPT_HASH, openAdminLogin } from "./admin-login.ts";
+import { PORTAL_I18N_SCRIPT, PORTAL_I18N_SCRIPT_HASH } from "./portal-i18n.ts";
 import { LRUCache } from "lru-cache";
 import { createTrustedEntry, trustedEntryConfig } from "./trusted-entry.ts";
 import {
@@ -401,8 +402,7 @@ async function isAdmin(session: SessionClaims): Promise<boolean> {
   return (await adminProbe(session)).isAdmin;
 }
 
-const PAGE_CSP =
-  "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+const PAGE_CSP = `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; script-src '${PORTAL_I18N_SCRIPT_HASH}'`;
 
 function sendHtml(res: ServerResponse, status: number, html: string, csp = PAGE_CSP): void {
   sendBuffered(
@@ -604,6 +604,8 @@ const CARD_STYLE = `<style>
   .btn.ghost:hover{ background:var(--secondary); color:var(--text); }
   .btn:focus-visible{ outline:2px solid color-mix(in srgb, var(--text) 35%, transparent); outline-offset:2px; }
   .help{ color:var(--muted); font-size:12.5px; margin:20px 0 0; }
+  .locale-toggle{ position:fixed; top:16px; right:16px; z-index:1; border:1px solid var(--border); border-radius:6px;
+    background:var(--bg); color:var(--text); padding:6px 10px; cursor:pointer; }
   @media (prefers-reduced-motion:reduce){ *{ transition:none !important; } }
   @media (max-width:860px){
     input:not([type=checkbox]):not([type=radio]),textarea,select,[contenteditable]:not([contenteditable=false]){
@@ -649,6 +651,7 @@ ${CARD_STYLE}
       <p class="help">${escapeHtml(o.help)}</p>
     </section>
   </main>
+  <script>${PORTAL_I18N_SCRIPT}</script>
 </body>
 </html>`;
 }
@@ -724,12 +727,14 @@ const connectStyle = (): string => `<style>
   .btn{ display:inline-block; font-weight:600; min-height:40px; line-height:40px; padding:0 18px;
     border:1px solid var(--brand); border-radius:var(--radius-md); background:var(--brand); color:#fff; text-decoration:none; }
   a.muted{ color:var(--muted); display:inline-block; margin-top:14px; }
+  .locale-toggle{ position:fixed; top:16px; right:16px; border:1px solid var(--border); border-radius:6px;
+    background:var(--bg); color:var(--text); padding:6px 10px; cursor:pointer; }
 </style>`;
 
 function connectPage(o: { title: string; body: string; action?: string }): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"><title>${escapeHtml(o.title)} · Portal</title>${connectStyle()}</head>
-<body><div class="card"><h1>${escapeHtml(o.title)}</h1><p>${escapeHtml(o.body)}</p>${o.action ?? ""}</div></body></html>`;
+<body><div class="card"><h1>${escapeHtml(o.title)}</h1><p>${escapeHtml(o.body)}</p>${o.action ?? ""}</div><script>${PORTAL_I18N_SCRIPT}</script></body></html>`;
 }
 
 function providerLabel(provider: string): string {
@@ -853,11 +858,7 @@ async function handleSecretDrop(
         error: "unreachable",
         message: "couldn't reach the credential service, try again in a moment",
       });
-    return sendHtml(
-      res,
-      502,
-      '<!doctype html><meta charset=utf-8><body style="font-family:system-ui;max-width:32rem;margin:4rem auto"><h2>Service unavailable</h2><p>Try the link again in a moment.</p></body>',
-    );
+    return sendHtml(res, 502, connectPage({ title: "Service unavailable", body: "Try the link again in a moment." }));
   }
   const bodyText = await r.text();
   const ct = r.headers.get("content-type") ?? (isPost ? "application/json" : "text/html; charset=utf-8");
@@ -1465,7 +1466,7 @@ async function adminLogin(req: IncomingMessage, res: ServerResponse): Promise<vo
         actions: `<form method="post" action="/auth/admin-login"><input id="admin-token" name="token" type="hidden"><button id="admin-confirm" class="btn primary" style="width:100%" type="submit" disabled>Sign in</button></form><script>${ADMIN_LOGIN_SCRIPT}</script>`,
         help: "This link expires after five minutes and can be used once. Generate another with qm admin-login.",
       }),
-      `${PAGE_CSP}; script-src '${ADMIN_LOGIN_SCRIPT_HASH}'`,
+      `${PAGE_CSP} '${ADMIN_LOGIN_SCRIPT_HASH}'`,
     );
   }
   if (req.method !== "POST") return json(res, 405, { error: "method_not_allowed" });
@@ -1647,14 +1648,13 @@ async function authLogin(req: IncomingMessage, res: ServerResponse, url: URL): P
 }
 
 const LOGIN_DENIAL_MESSAGES: Record<string, string> = {
-  suspended: "account suspended / 账号已暂停",
-  deprovisioned: "account deactivated / 账号已停用",
-  not_invited: "account not invited / 账号尚未受邀",
-  source_disabled: "enterprise identity source is disabled / 企业身份源未启用",
-  external_inactive: "enterprise account is inactive / 企业账号未激活",
-  identity_unmatched: "enterprise account is not linked yet; contact an administrator / 企业账号尚未关联，请联系管理员",
-  identity_conflict:
-    "enterprise account has conflicting matches; contact an administrator / 企业账号存在匹配冲突，请联系管理员",
+  suspended: "account suspended",
+  deprovisioned: "account deactivated",
+  not_invited: "account not invited",
+  source_disabled: "enterprise identity source is disabled",
+  external_inactive: "enterprise account is inactive",
+  identity_unmatched: "enterprise account is not linked yet; contact an administrator",
+  identity_conflict: "enterprise account has conflicting matches; contact an administrator",
 };
 
 async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {

@@ -1,4 +1,5 @@
-import { html, render, nothing, type TemplateResult } from "lit";
+import { render, nothing, type TemplateResult } from "lit";
+import { html, t } from "./i18n.ts";
 import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { brandMark, brandName } from "./ui";
@@ -417,8 +418,8 @@ function methodRow(title: string, detail: string, selected: boolean, onPick: () 
     >
       <span class="mc-method-radio" aria-hidden="true"></span>
       <span class="mc-method-text">
-        <span class="mc-method-title">${title}</span>
-        <span class="mc-method-detail">${detail}</span>
+        <span class="mc-method-title">${t(title)}</span>
+        <span class="mc-method-detail">${t(detail)}</span>
       </span>
     </button>
   `;
@@ -451,7 +452,7 @@ function claudeSteps(): TemplateResult {
       </li>
       <li>
         <button class="btn primary" ?disabled=${!flow.code.trim() || s.busy} @click=${finishClaude}>
-          ${s.busy ? "Connecting…" : "Connect account"}
+          ${t(s.busy ? "Connecting…" : "Connect account")}
         </button>
       </li>
     </ol>
@@ -471,7 +472,7 @@ function chatgptSteps(): TemplateResult {
           @click=${() => copyCode(device.userCode)}
         >
           <span class="mc-code">${device.userCode}</span>
-          <span class="mc-copy-hint">${s.copied ? "Copied ✓" : "Click to copy"}</span>
+          <span class="mc-copy-hint">${t(s.copied ? "Copied ✓" : "Click to copy")}</span>
         </button>
       </li>
       <li>
@@ -505,7 +506,7 @@ function apikeySteps(p: ProviderMeta): TemplateResult {
         />
       </label>
       <button class="btn primary" ?disabled=${!flow.value.trim() || s.busy} @click=${() => saveKey(p)}>
-        ${s.busy ? "Checking…" : "Connect"}
+        ${t(s.busy ? "Checking…" : "Connect")}
       </button>
     </div>
   `;
@@ -524,7 +525,7 @@ function connectBody(p: ProviderMeta): TemplateResult {
         ?disabled=${s.busy || s.saving}
         @click=${() => (s.method === "apikey" ? void pickSubscription(p) : pickApiKey())}
       >
-        ${s.method === "apikey" ? "Use my subscription instead" : "Use an API key instead"}
+        ${t(s.method === "apikey" ? "Use my subscription instead" : "Use an API key instead")}
       </button>
     </div>`;
   }
@@ -561,9 +562,9 @@ function providerRow(p: ProviderMeta): TemplateResult {
         ?disabled=${s.busy || s.saving || s.account === p.apiName}
         @click=${() => switchAccount("personal", p.apiName)}
       >
-        ${s.account === p.apiName ? "In use" : "Use account"}</button
+        ${t(s.account === p.apiName ? "In use" : "Use account")}</button
       ><button class="btn mc-quiet-danger" ?disabled=${s.busy || s.saving} @click=${() => disconnect(p)}>
-        ${s.busy ? "…" : "Disconnect"}
+        ${s.busy ? "…" : t("Disconnect")}
       </button>`;
   } else if (open) {
     action = html`<button
@@ -597,7 +598,7 @@ function providerRow(p: ProviderMeta): TemplateResult {
         <span class="mc-mark ${p.markClass}" aria-hidden="true">${p.mark}</span>
         <div class="mc-provider-text">
           <strong>${p.name}</strong>
-          <small>${statusLine}</small>
+          <small>${t(statusLine)}</small>
         </div>
         <div class="mc-provider-actions">${action}</div>
       </div>
@@ -666,7 +667,7 @@ function view(): TemplateResult {
         },
       )}
       <p class="mc-account-hint">
-        ${s.personal ? "Using a personal account. Choose a connected provider below." : "Or use your own account. Connect a provider, then choose Use account."}
+        ${t(s.personal ? "Using a personal account. Choose a connected provider below." : "Or use your own account. Connect a provider, then choose Use account.")}
       </p>
       ${PROVIDERS.map((p) => providerRow(p))}
     </div>`;
@@ -676,7 +677,7 @@ function view(): TemplateResult {
     ? html`<div class="mc-waiting"><span class="mc-spinner" aria-hidden="true"></span>Loading…</div>`
     : html`
         ${s.error ? html`<div class="mc-error" role="alert">${s.error}</div>` : nothing}
-        ${s.saving || s.notice ? html`<p class="mc-notice" role="status">${s.saving ? "Saving changes…" : s.notice}</p>` : nothing}
+        ${s.saving || s.notice ? html`<p class="mc-notice" role="status">${t(s.saving ? "Saving changes…" : s.notice)}</p>` : nothing}
         ${choices} ${s.intent ? nothing : cta}
       `;
   const personalCopy =
@@ -709,8 +710,8 @@ function view(): TemplateResult {
             : nothing
         }
         ${s.mode === "gate" ? html`<div class="signin-brand">${brandMark()}<span>${brandName()}</span></div>` : nothing}
-        <h1 id="mc-title">${title}</h1>
-        <p class="signin-body">${subCopy}</p>
+        <h1 id="mc-title">${t(title)}</h1>
+        <p class="signin-body">${t(subCopy)}</p>
         ${body}
       </div>
     </div>

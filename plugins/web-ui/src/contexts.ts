@@ -774,7 +774,7 @@ function memberPicker(context: CoreContext): TemplateResult {
           type="search"
           autocomplete="off"
           maxlength="80"
-          placeholder="Search by name or handle"
+          placeholder="Search account, email, name, or profile details"
           .value=${contextsState.memberQuery}
           ?disabled=${contextsState.memberBusy}
           @input=${(event: InputEvent) => {
@@ -855,7 +855,7 @@ const resourceBusy = new Set<string>();
 async function manageCron(id: string, action: "enable" | "disable" | "delete"): Promise<void> {
   const key = `cron:${id}`;
   if (resourceBusy.has(key)) return;
-  if (action === "delete" && !confirm("Delete this cron? This can't be undone.")) return;
+  if (action === "delete" && !confirm(t("Delete this cron? This can't be undone."))) return;
   resourceBusy.add(key);
   drawContexts();
   try {
@@ -874,7 +874,7 @@ async function manageCron(id: string, action: "enable" | "disable" | "delete"): 
 async function deleteScopeSkill(id: string): Promise<void> {
   const key = `skill:${id}`;
   if (resourceBusy.has(key)) return;
-  if (!confirm("Delete this skill? This can't be undone.")) return;
+  if (!confirm(t("Delete this skill? This can't be undone."))) return;
   resourceBusy.add(key);
   drawContexts();
   try {

@@ -1,4 +1,5 @@
-import { html, render, nothing } from "lit";
+import { render, nothing } from "lit";
+import { html } from "./i18n.ts";
 import { live } from "lit/directives/live.js";
 import { Search, X } from "lucide";
 import { api } from "./core-bridge";

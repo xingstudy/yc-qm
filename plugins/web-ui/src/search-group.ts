@@ -1,4 +1,5 @@
-import { html, nothing, type TemplateResult } from "lit";
+import { nothing, type TemplateResult } from "lit";
+import { html } from "./i18n.ts";
 
 export function searchGroup(title: string, archived: boolean, recency: string): TemplateResult {
   return html`<div class="chat-search-group ${archived ? "archived" : ""}">

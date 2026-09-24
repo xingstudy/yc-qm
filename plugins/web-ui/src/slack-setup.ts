@@ -1,4 +1,5 @@
-import { html, LitElement, nothing } from "lit";
+import { LitElement, nothing } from "lit";
+import { html, t } from "./i18n.ts";
 import { brandName } from "./ui.ts";
 
 // This is a bot installation, not a personal Slack account connection.
@@ -91,12 +92,12 @@ class SlackSetup extends LitElement {
       </div>`;
     if (!this.links)
       return html`<p role="status">
-        ${this.unavailable ? "Slack setup status is unavailable." : "Checking Slack setup…"}
+        ${t(this.unavailable ? "Slack setup status is unavailable." : "Checking Slack setup…")}
         <button type="button" @click=${() => void this.refresh()}>Retry</button>
       </p>`;
     let progress = this.appReady ? "Waiting for Slack approval." : "Waiting for token submission.";
     if (this.unavailable) progress = "Could not check progress. Your setup has not been reset.";
-    return html`<section class="slack-setup-checklist" aria-label=${`Add ${brandName()} to Slack`}>
+    return html`<section class="slack-setup-checklist" aria-label=${t(`Add ${brandName()} to Slack`)}>
       <strong>Add ${brandName()} to Slack</strong>
       <ol>
         <li>
@@ -115,7 +116,7 @@ class SlackSetup extends LitElement {
         </li>
         <li>
           <a href=${this.links.submitUrl} target="_blank" rel="noopener">Submit token securely</a><br /><small
-            >${this.appReady ? "App created. No more token copying needed." : `Paste it only in the secure form, never in this conversation. ${brandName()} uses it to create its app, then discards it.`}</small
+            >${t(this.appReady ? "App created. No more token copying needed." : `Paste it only in the secure form, never in this conversation. ${brandName()} uses it to create its app, then discards it.`)}</small
           >
         </li>
         <li>
@@ -123,7 +124,7 @@ class SlackSetup extends LitElement {
             ><span class="connector-widget-text"
               ><strong>Add to Slack</strong
               ><small
-                >${this.appReady ? "Review the workspace and choose Allow." : "Submit the token first, then choose Allow in Slack."}</small
+                >${t(this.appReady ? "Review the workspace and choose Allow." : "Submit the token first, then choose Allow in Slack.")}</small
               ></span
             ></a
           >

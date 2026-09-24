@@ -95,3 +95,20 @@ test("hoverless devices do not create a visible tooltip or anchor", () => {
   assert.equal(pane.hasAttribute("data-qm-tooltip-anchor"), false);
   Reflect.deleteProperty(dom.window, "matchMedia");
 });
+
+test("tooltips follow the selected interface language", () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: { getItem: () => "zh-CN" },
+  });
+  try {
+    assert.equal(hover("pane", "Project options").textContent, "项目选项");
+    assert.equal(hover("pane", "Settings").textContent, "设置");
+    assert.equal(hover("pane", "Chat options").textContent, "对话选项");
+  } finally {
+    hideTooltip();
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});

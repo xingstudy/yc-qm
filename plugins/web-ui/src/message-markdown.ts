@@ -1,5 +1,6 @@
 import "./stable-markdown";
-import { html, type TemplateResult } from "lit";
+import { type TemplateResult } from "lit";
+import { html } from "./i18n.ts";
 import { normalizePlainTextFences } from "./text-code";
 import { escapeLoneDollars } from "./markdown-dollars";
 

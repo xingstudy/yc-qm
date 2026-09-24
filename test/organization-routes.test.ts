@@ -424,9 +424,17 @@ test("project member candidates and add validation both use the organization dir
   const srv = await startAdmin();
   try {
     for (const principalId of ["owner", "candidate"]) await seedActive(srv.built, principalId);
+    const profile = await srv.built.organization.updateUserProfile({
+      principalId: "candidate",
+      patch: { jobTitle: "Research Scout" },
+      expectedProfileRevision: 1,
+      actor: "admin-alice",
+    });
+    assert.equal(profile.ok, true);
     const project = await srv.built.app.createProject("owner", "Directory project");
     assert.ok(project);
     const path = `/v1/projects/${project!.id}/member-candidates?principalId=owner&q=cand`;
+    const profilePath = `/v1/projects/${project!.id}/member-candidates?principalId=owner&q=Research`;
     const hidden = await srv.built.organization.setDirectoryPolicy({
       subjectKind: "user",
       subjectId: "owner",
@@ -439,6 +447,7 @@ test("project member candidates and add validation both use the organization dir
     const hiddenCandidates = await adminGet(srv.base, path, "owner");
     assert.equal(hiddenCandidates.status, 200);
     assert.deepEqual((await hiddenCandidates.json()) as any, { matches: [] });
+    assert.deepEqual(await (await adminGet(srv.base, profilePath, "owner")).json(), { matches: [] });
     assert.equal((await srv.built.app.addProjectMember(project!.id, "owner", "candidate")).status, "invalid_member");
     const restored = await srv.built.organization.deleteDirectoryPolicy({
       subjectKind: "user",
@@ -451,6 +460,12 @@ test("project member candidates and add validation both use the organization dir
     assert.equal(candidates.status, 200);
     assert.deepEqual(
       ((await candidates.json()) as any).matches.map((match: any) => match.principalId),
+      ["candidate"],
+    );
+    assert.deepEqual(
+      ((await (await adminGet(srv.base, profilePath, "owner")).json()) as any).matches.map(
+        (match: any) => match.principalId,
+      ),
       ["candidate"],
     );
     assert.equal((await srv.built.app.addProjectMember(project!.id, "owner", "candidate")).status, "ok");

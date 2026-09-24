@@ -1,4 +1,5 @@
-import { html, nothing, type TemplateResult } from "lit";
+import { nothing, type TemplateResult } from "lit";
+import { html, localeCode, t } from "./i18n.ts";
 import { ArrowUpRight, ChevronRight, Mail } from "lucide";
 import type { LedgerItem } from "./inbox";
 import { api } from "./core-bridge";
@@ -300,7 +301,7 @@ export function sentMailTpl(
 ): TemplateResult {
   return html`
     ${error ? html`<div class="inbox-notice" role="alert">${error} <button class="btn" ?disabled=${loading} @click=${() => void loadSentMail(draw, Boolean(nextPageToken))}>Try again</button></div>` : nothing}
-    ${!messages.length && !error ? html`<div class="empty compact">${loading ? "Loading sent mail…" : "No sent emails in this account."}</div>` : nothing}
+    ${!messages.length && !error ? html`<div class="empty compact">${t(loading ? "Loading sent mail…" : "No sent emails in this account.")}</div>` : nothing}
     <div class="inbox-list">
       ${messages.map(
         (message) =>
@@ -310,7 +311,7 @@ export function sentMailTpl(
                 class="inbox-item-row inbox-sent-row"
                 type="button"
                 @click=${() => open(message)}
-                aria-label=${`Open sent email: ${message.subject || "No subject"}`}
+                aria-label=${t(`Open sent email: ${message.subject || t("No subject")}`)}
               >
                 <span class="inbox-item-glyph">${icon(Mail, 14)}</span>
                 <span class="inbox-item-main">
@@ -321,7 +322,7 @@ export function sentMailTpl(
                   <span class="inbox-item-snippet">${plainSnippet(message.snippet)}</span>
                 </span>
                 <span class="inbox-item-side"
-                  ><span class="inbox-item-time" title=${new Date(message.sentAt).toLocaleString()}
+                  ><span class="inbox-item-time" title=${new Date(message.sentAt).toLocaleString(localeCode())}
                     >${relTime(message.sentAt)}</span
                   >${icon(ChevronRight, 13)}</span
                 >
@@ -330,7 +331,7 @@ export function sentMailTpl(
           </div>`,
       )}
     </div>
-    ${nextPageToken ? html`<button class="btn inbox-sent-more" ?disabled=${loading} @click=${() => void loadSentMail(draw, true)}>${loading ? "Loading…" : "Load more"}</button>` : nothing}
+    ${nextPageToken ? html`<button class="btn inbox-sent-more" ?disabled=${loading} @click=${() => void loadSentMail(draw, true)}>${t(loading ? "Loading…" : "Load more")}</button>` : nothing}
   `;
 }
 
@@ -340,7 +341,9 @@ function sentMessageTpl(entry: SentThreadMessage): TemplateResult {
     <div class="inbox-context-body">
       <div class="inbox-context-head">
         <span class="inbox-context-author">${entry.from}</span>
-        <span class="inbox-context-at" title=${new Date(entry.sentAt).toLocaleString()}>${relTime(entry.sentAt)}</span>
+        <span class="inbox-context-at" title=${new Date(entry.sentAt).toLocaleString(localeCode())}
+          >${relTime(entry.sentAt)}</span
+        >
       </div>
       <div class="inbox-sent-recipients">
         To: ${entry.to}${entry.cc ? html`<span> · Cc: ${entry.cc}</span>` : nothing}
@@ -388,7 +391,7 @@ export function sentEmailPageTpl(
           <span>To: ${message.to || "Undisclosed recipients"}</span>
           <span class="inbox-item-head-meta">
             <span class="inbox-item-state">Sent</span>
-            <span class="inbox-item-time" title=${new Date(message.sentAt).toLocaleString()}
+            <span class="inbox-item-time" title=${new Date(message.sentAt).toLocaleString(localeCode())}
               >${relTime(message.sentAt)}</span
             >
           </span>

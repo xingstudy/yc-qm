@@ -984,7 +984,10 @@ export function createMemoryOrganizationStore(
             (needle.length === 0 ||
               user.principalId.toLowerCase().includes(needle) ||
               user.displayName.toLowerCase().includes(needle) ||
-              user.email?.toLowerCase().includes(needle)),
+              user.email?.toLowerCase().includes(needle) ||
+              user.jobTitle?.toLowerCase().includes(needle) ||
+              user.mobile?.toLowerCase().includes(needle) ||
+              user.employeeNumber?.toLowerCase().includes(needle)),
         )
         .sort(
           (left, right) =>

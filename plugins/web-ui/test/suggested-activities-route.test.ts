@@ -45,8 +45,8 @@ test("generation requires sign-in and derives identity and seeds server-side", a
   const result = await fetch(`${base}/api/suggested-activities`, {
     method: "POST",
     headers: { cookie: "webuiuser=alice", "content-type": "application/json" },
-    body: JSON.stringify({ principalId: "bob", seeds: [] }),
+    body: JSON.stringify({ principalId: "bob", seeds: [], locale: "zh-CN" }),
   });
   assert.equal(result.status, 200);
-  assert.deepEqual(generatedRequest, { principalId: "alice", seeds: activities });
+  assert.deepEqual(generatedRequest, { principalId: "alice", seeds: activities, locale: "zh-CN" });
 });

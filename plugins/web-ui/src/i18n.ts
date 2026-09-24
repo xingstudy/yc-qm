@@ -5,6 +5,91 @@ export type AppLocale = "en" | "zh-CN";
 export const LOCALE_KEY = "qm:locale";
 
 const ZH: Record<string, string> = {
+  "What should I change?": "需要我修改什么？",
+  "Summarize this email": "总结这封邮件",
+  "What should I follow up on?": "有哪些事项需要跟进？",
+  "Make it shorter": "写得更简短",
+  "Make it more friendly": "语气更亲切",
+  "Remove the salutations": "去掉问候语",
+  "Send it": "发送",
+  "Sending…": "正在发送…",
+  "Undoing…": "正在撤销…",
+  "Checking…": "正在检查…",
+  "attached image": "附加图片",
+  "Generate a Slack app configuration token and copy its access token": "生成 Slack 应用配置令牌并复制其访问令牌",
+  "Company access": "公司账户访问",
+  "Your organization requires a personal account.": "你的组织要求使用个人账户。",
+  "Use the access provided by your organization.": "使用组织提供的访问权限。",
+  "Connected with your API key": "已通过你的 API 密钥连接",
+  "Account disconnected.": "账户已断开连接。",
+  "Account disconnected. Reconnect it or choose company access to continue chatting.":
+    "账户已断开连接。请重新连接，或选择公司账户访问以继续对话。",
+  "New chats will use company access.": "新对话将使用公司账户访问。",
+  "Connect your AI account": "连接你的 AI 账户",
+  "AI accounts": "AI 账户",
+  "New chats will be billed to this API key.": "新对话将通过此 API 密钥计费。",
+  "Choose who provides access for your chats on the web and in Slack. Background tasks continue using company access.":
+    "选择网页和 Slack 对话的账户来源。后台任务继续使用公司账户访问。",
+  "App created. No more token copying needed.": "应用已创建，无需再复制令牌。",
+  "Approval denied": "审批已拒绝",
+  "Approved once": "已批准一次",
+  "Approved for this session": "已批准本会话",
+  "Approved always": "已始终批准",
+  Approved: "已批准",
+  deleted: "已删除",
+  edited: "已编辑",
+  "Send reply": "发送回复",
+  "Nothing is waiting on you. Clear water ahead.": "目前没有待你处理的事项。",
+  "No items yet. Set up sync and the agent will surface everything waiting on a reply, drafted and ready.":
+    "暂无事项。设置同步后，智能体会整理待回复内容并准备草稿。",
+  "Copied ✓": "已复制 ✓",
+  "Click to copy": "点击复制",
+  "Use my subscription instead": "改用我的订阅",
+  "Use an API key instead": "改用 API 密钥",
+  "In use": "使用中",
+  "Use account": "使用此账户",
+  "Using a personal account. Choose a connected provider below.": "正在使用个人账户。请在下方选择已连接的提供商。",
+  "Or use your own account. Connect a provider, then choose Use account.":
+    "也可以使用自己的账户。连接提供商后选择“使用此账户”。",
+  "Saving changes…": "正在保存更改…",
+  "Account connected. Choose Use account to use it for your chats.": "账户已连接。选择“使用此账户”即可用于对话。",
+  "Loading sent mail…": "正在加载已发送邮件…",
+  "No sent emails in this account.": "此账户暂无已发送邮件。",
+  "Anyone in your organization": "组织内的任何人",
+  "Connection problem": "连接问题",
+  "Couldn't load conversation": "无法加载对话",
+  "Conversation not found": "未找到对话",
+  "Something went wrong loading this conversation. Please try again.": "加载对话时出错，请重试。",
+  "This conversation may have been deleted, or you may be signed into an account that doesn’t have access.":
+    "此对话可能已被删除，或你当前登录的账户没有访问权限。",
+  "Slack setup status is unavailable.": "暂时无法获取 Slack 设置状态。",
+  "Checking Slack setup…": "正在检查 Slack 设置…",
+  "Review the workspace and choose Allow.": "检查工作区后选择“允许”。",
+  "Submit the token first, then choose Allow in Slack.": "先提交令牌，再在 Slack 中选择“允许”。",
+  "Refreshing…": "正在刷新…",
+  "Generic HMAC-SHA256": "通用 HMAC-SHA256",
+  "Send the digest in X-Signature as hex or sha256=<hex>.": "在 X-Signature 中以十六进制或 sha256=<hex> 格式发送摘要。",
+  "Use this URL as the payload URL and the signing secret as GitHub's webhook secret.":
+    "将此 URL 用作负载 URL，并将签名密钥设为 GitHub 的 Webhook 密钥。",
+  "Use the Slack app signing secret. Requests older than five minutes are rejected.":
+    "使用 Slack 应用签名密钥。超过五分钟的请求会被拒绝。",
+  "Use the endpoint signing secret shown by Stripe for this destination.": "使用 Stripe 为此目标显示的端点签名密钥。",
+  "Use the webhook signing secret shown by Linear. Payloads older than one minute are rejected.":
+    "使用 Linear 显示的 Webhook 签名密钥。超过一分钟的负载会被拒绝。",
+  "Invalid filters.": "筛选条件无效。",
+  "create failed": "创建失败",
+  "Extra high": "极高",
+  Ultracode: "超强编码",
+  "Sync paused": "同步已暂停",
+  "First sync pending": "等待首次同步",
+  "Set up sync": "设置同步",
+  "Setting up…": "正在设置…",
+  Sync: "同步",
+  "Syncing…": "正在同步…",
+  "Refreshing will replace this draft with the latest memory. Copy anything you want to keep before continuing.":
+    "刷新会用最新记忆替换此草稿。继续前请复制需要保留的内容。",
+  "The selected notebook will become current. The version you have now remains available in history.":
+    "所选记忆本将成为当前版本。现有版本仍可在历史记录中查看。",
   Home: "首页",
   Search: "搜索",
   "Create New Chat": "新建对话",
@@ -103,6 +188,7 @@ const ZH: Record<string, string> = {
   "Nothing running can take this — it will go out as its own turn": "当前没有可接收此消息的任务——它将作为独立轮次发送",
   "Open project": "打开项目",
   "open chat": "打开对话",
+  open: "打开",
   "open the original": "打开原始对话",
   "Preparing files...": "正在准备文件…",
   "Pinned header": "置顶消息",
@@ -208,6 +294,8 @@ const ZH: Record<string, string> = {
   "Can manage": "可管理",
   "Can view": "可查看",
   Cancel: "取消",
+  Loading: "加载中",
+  "Agent is working": "智能体正在工作",
   Channel: "频道",
   "Channels & messages": "频道和消息",
   "Chat channels": "聊天频道",
@@ -220,7 +308,6 @@ const ZH: Record<string, string> = {
   "Color scheme: light / dark / system": "颜色模式：浅色 / 深色 / 跟随系统",
   "Color row": "设置行颜色",
   "Clear color": "清除颜色",
-  "Clear row color": "清除行颜色",
   "Connect account": "连接账户",
   "Connected accounts": "已连接账户",
   Conversations: "对话",
@@ -723,6 +810,7 @@ const ZH: Record<string, string> = {
   used: "已使用",
   "Watch — wakes on": "监视——唤醒条件",
   "Add people": "添加人员",
+  "Search account, email, name, or profile details": "搜索账户、邮箱、姓名或其他目录资料",
   "Agent behavior": "智能体行为",
   "Choose what this project should notice and act on.": "选择此项目中智能体应关注并采取行动的内容。",
   "Give this project a home channel on Slack — the agent will post updates there, and everyone in the channel joins the project.":
@@ -833,6 +921,492 @@ const ZH: Record<string, string> = {
     "允许智能体代表你浏览、下载和上传 Dropbox 文件，并管理共享链接。",
   "Lets the agent read X and post, like, and follow as you — used when an action should come from your account rather than the org's.":
     "允许智能体读取 X，并代表你发布、点赞和关注——适用于操作应来自你的账户而非组织的场景。",
+  Destinations: "目的地",
+  Calendar: "日历",
+  "Coming soon.": "即将推出。",
+  "Connect your apps": "连接你的应用",
+  "Search apps…": "搜索应用…",
+  Connected: "已连接",
+  "Ready to use in chat": "可在对话中使用",
+  "Opens in a new tab": "在新标签页打开",
+  "Authorize access · New tab": "授权访问 · 新标签页",
+  "App permissions": "应用权限",
+  "People with access": "有权限的人员",
+  "Cancel selection": "取消选择",
+  "Add people by name or handle": "按姓名或账号添加人员",
+  "No additional people found.": "未找到其他人员。",
+  "Dismissed from inbox": "已从收件箱移除",
+  Ask: "询问",
+  Dismiss: "忽略",
+  "Draft reply": "回复草稿",
+  "See how the agent arrived at this draft": "查看智能体如何生成此草稿",
+  "Open agent session": "打开智能体会话",
+  "Open in": "打开位置",
+  To: "收件人",
+  Subject: "主题",
+  Cc: "抄送",
+  "A reply is drafted and ready": "回复草稿已就绪",
+  Reopen: "重新打开",
+  "Reply sent": "回复已发送",
+  "You replied in": "你已回复于",
+  Dismissed: "已忽略",
+  "Inbox views": "收件箱视图",
+  "Reading your inbox…": "正在读取收件箱…",
+  "Couldn't load the inbox:": "无法加载收件箱：",
+  "Probably resolved · no reply likely needed": "可能已解决 · 通常无需回复",
+  "Reply sent.": "回复已发送。",
+  "Write another reply": "再写一条回复",
+  "Work ledger": "工作记录",
+  "Fire now": "立即执行",
+  "Ready to ship": "可以交付",
+  "Needs confirmation": "需要确认",
+  Playbook: "行动手册",
+  "success condition": "成功条件",
+  "Done when:": "完成条件：",
+  Pause: "暂停",
+  Autopilot: "自动执行",
+  "Nothing waiting on you.": "没有等待你处理的事项。",
+  "Nothing needs confirmation.": "没有待确认事项。",
+  "Save playbook": "保存行动手册",
+  "No items yet. Fire the loop.": "暂无事项。执行循环以开始。",
+  Decided: "已决定",
+  "last fire": "上次执行",
+  "Continue to Claude ↗": "前往 Claude ↗",
+  "Authorization code": "授权码",
+  "Paste the code from Claude": "粘贴来自 Claude 的授权码",
+  "Copy code to clipboard": "复制授权码",
+  "Open chatgpt.com and paste it ↗": "打开 chatgpt.com 并粘贴 ↗",
+  "Waiting for your approval…": "等待你批准…",
+  "Connecting…": "正在连接…",
+  "Sign in with": "登录方式：",
+  Connect: "连接",
+  "Start chatting": "开始对话",
+  "Connected to Slack": "已连接到 Slack",
+  "Check again": "重新检查",
+  "Approve connection": "批准连接",
+  "Simulate provider error": "模拟提供方错误",
+  "Callback URL": "回调 URL",
+  "Connection preview · No accounts are linked": "连接预览 · 尚未关联账户",
+  Reset: "重置",
+  "More ideas": "更多想法",
+  "The easiest way to get up and running:": "最快的开始方式：",
+  "Loading your available apps…": "正在加载可用应用…",
+  "Ask about this email": "询问这封邮件",
+  "Loading chat…": "正在加载对话…",
+  "To:": "收件人：",
+  "· Cc:": "· 抄送：",
+  "Attachments:": "附件：",
+  Sent: "已发送",
+  "Open in Gmail": "在 Gmail 中打开",
+  "Loading email…": "正在加载邮件…",
+  "Share conversation": "分享对话",
+  "Who can view": "谁可以查看",
+  "Subsequent messages will not be visible unless you re-share.": "后续消息不会显示，除非你再次分享。",
+  "⚠️ External. Double-check what you're sharing.": "⚠️ 外部分享。请确认分享内容。",
+  "Share link": "分享链接",
+  Preview: "预览",
+  "Shared conversation": "已分享的对话",
+  "This link is unavailable": "此链接不可用",
+  "The conversation is unavailable or you may not have access.": "对话不可用，或你没有访问权限。",
+  "Sidebar conversations": "侧边栏对话",
+  "Web only hides the Slack channels and DMs the agent also works in.":
+    "仅显示网页对话时，会隐藏智能体参与的 Slack 频道和私信。",
+  "AI access": "AI 访问",
+  "Use company access or your own subscription.": "使用公司提供的访问权限或你自己的订阅。",
+  "Connection settings": "连接设置",
+  "Org settings, people, and policy.": "组织设置、人员和策略。",
+  "Open admin": "打开管理后台",
+  "This conversation's workspace": "此对话的工作区",
+  "Session tools": "会话工具",
+  "Close session tools": "关闭会话工具",
+  "New webhook": "新建 Webhook",
+  Webhook: "Webhook",
+  Action: "操作",
+  Verification: "验证",
+  "Inbound URL": "接收 URL",
+  "Configure your sender (GitHub / Stripe / Slack / …) to POST events here.":
+    "配置发送方（GitHub / Stripe / Slack / …），将事件 POST 到此处。",
+  Filters: "筛选条件",
+  "Last delivery ID": "上次投递 ID",
+  "Last error": "上次错误",
+  "Re-enable": "重新启用",
+  "Message history": "消息历史",
+  "Loading messages…": "正在加载消息…",
+  "Latest 50 accepted events. Payloads show what was passed to the agent, capped at 16,000 characters. Earlier events are not backfilled.":
+    "显示最近 50 条已接收事件。载荷展示发送给智能体的内容，最多 16,000 个字符；不会补录更早的事件。",
+  "Open session": "打开会话",
+  "No session available.": "没有可用会话。",
+  "No messages recorded yet.": "尚无消息记录。",
+  "Verification scheme": "验证方式",
+  "Signing secret": "签名密钥",
+  Generate: "生成",
+  "Create webhook": "创建 Webhook",
+  "Webhook created ✓": "Webhook 已创建 ✓",
+  "Copy the secret now. It won't be shown again.": "请立即复制密钥，此后不会再次显示。",
+  "Point your sender at this URL.": "让发送方请求此 URL。",
+  "No readable messages in this conversation.": "此对话中没有可读取的消息。",
+  "Copy message": "复制消息",
+  "Fork conversation from here": "从这里分叉对话",
+  "Drop files or folders to attach": "拖入文件或文件夹以添加附件",
+  "You stopped": "你已停止",
+  "Show full output": "显示完整输出",
+  "Dismiss preview": "关闭预览",
+  "Archive session": "归档会话",
+  "Drop to make a top-level session": "拖放以设为顶层会话",
+  "Clear selection": "清除选择",
+  "Conversation status": "对话状态",
+  "Waiting for your reply": "等待你的回复",
+  "View project": "查看项目",
+  "Row color": "行颜色",
+  "Clear row color": "清除行颜色",
+  "Color selected conversations": "为选中的对话设置颜色",
+  "Clear color on selected conversations": "清除选中对话的颜色",
+  "No apps match “": "没有匹配“",
+  "”. Try another name.": "”的应用。请尝试其他名称。",
+  "Handled (": "已处理（",
+  Return: "返回",
+  parked: "已暂停",
+  "API key · from": "API 密钥 · 来自",
+  "is ready in your workspace.": "已在你的工作区中就绪。",
+  "Work with": "与",
+  "where your team already talks.": "一起在团队日常交流的地方工作。",
+  "Provider simulation · No account access": "提供方模拟 · 无账户访问权限",
+  "This stands in for the provider’s consent page. Choose an outcome to return to":
+    "此页面模拟提供方的授权页面。请选择结果并返回",
+  "through the callback URL.": "的回调 URL。",
+  "Back to": "返回",
+  "Welcome to": "欢迎使用",
+  "And welcome to": "欢迎使用",
+  ", the agent harness we use to run YC.": "，我们用于运营 YC 的智能体平台。",
+  "Use it to research customers and investors, fundraise, and automate the everyday work of running":
+    "你可以用它研究客户和投资人、筹款，并自动处理日常运营工作：",
+  "Think of it as your YC partner in a box. The more you use": "把它看作随时可用的 YC 伙伴。你使用",
+  ", the more context we have, the more we can help.": "越多，我们掌握的背景就越充分，也越能帮到你。",
+  ", your agent harness. Use it to research customers, build tools, and automate the everyday work of running":
+    "，你的智能体平台。用它研究客户、构建工具，并自动处理日常运营工作：",
+  Theme: "主题",
+  Account: "账户",
+  "Only an administrator of": "只有以下工作区的管理员可以设置 Slack 机器人：",
+  "can set up the Slack bot.": "。",
+  "The bot is installed. You can return to onboarding.": "机器人已安装。你可以返回引导页面。",
+  "to Slack": "添加到 Slack",
+  "Create token": "创建令牌",
+  "Under App Configuration Tokens, choose Generate Token, select your workspace, and copy the access token (not the refresh token).":
+    "在应用配置令牌中选择生成令牌，选择工作区，并复制访问令牌（不是刷新令牌）。",
+  "Show me how": "查看操作步骤",
+  "Submit token securely": "安全提交令牌",
+  "Add to Slack": "添加到 Slack",
+  "This token can manage other apps you own in the selected workspace. Your company owns the app":
+    "此令牌可以管理你在所选工作区拥有的其他应用。你的公司拥有应用",
+  "creates.": "创建的内容。",
+  "Check progress": "查看进度",
+  "You can retry the existing links.": "你可以重试现有链接。",
+  "(what the agent should do for each event)": "（智能体应如何处理每个事件）",
+  "(leave blank to auto-generate)": "（留空以自动生成）",
+  "(optional; one per line as": "（可选；每行一项，格式为",
+  "The event runs in your personal context. After creation, ask the agent to route notable results to a teammate or channel by name.":
+    "事件将在你的个人上下文中运行。创建后，可以要求智能体按名称将重要结果发送给同事或频道。",
+  "Configure your sender to sign requests with this secret (scheme:": "请配置发送方使用此密钥签署请求（方式：",
+  "No signing secret for scheme": "此验证方式没有签名密钥：",
+  "Playground actions": "体验环境操作",
+  "Cron:": "定时任务：",
+  "Show full": "显示全部",
+  "Replacement model": "替代模型",
+  "Refresh models": "刷新模型",
+  "Select a model…": "选择模型…",
+  "Remove attachment": "移除附件",
+  "View pasted text": "查看粘贴的文字",
+  "Pasted text": "粘贴的文字",
+  "Insert into message": "插入消息",
+  "Edit queued message": "编辑排队中的消息",
+  "Command approval": "命令批准",
+  Deny: "拒绝",
+  "my default": "我的默认值",
+  "My default": "我的默认值",
+  "Search models…": "搜索模型…",
+  "Search models": "搜索模型",
+  "No models found": "未找到模型",
+  "Run with": "使用以下配置运行",
+  "Model settings": "模型设置",
+  Presets: "预设",
+  "Add models": "添加模型",
+  "Use org default": "使用组织默认值",
+  "Default effort": "默认思考强度",
+  "Cron view": "定时任务视图",
+  "Enable cron": "启用定时任务",
+  "Unarchive cron": "取消归档定时任务",
+  "Disable cron": "停用定时任务",
+  "Cron actions": "定时任务操作",
+  "Edit cron": "编辑定时任务",
+  "Archive cron": "归档定时任务",
+  "Run now": "立即运行",
+  Schedule: "计划",
+  Status: "状态",
+  "Next run": "下次运行",
+  "Last fired": "上次触发",
+  Destination: "目的地",
+  "Shared from": "分享来源",
+  "Recent runs": "最近运行",
+  "No runs yet.": "尚无运行记录。",
+  Worklog: "工作日志",
+  "This permanently removes the schedule and its retained run history. Archive it instead if you may need it later.":
+    "这将永久删除计划及保留的运行历史。如果将来可能需要，请改为归档。",
+  "Delete permanently": "永久删除",
+  "Edit behavior with agent": "与智能体一起编辑行为",
+  "App view": "应用视图",
+  "App status and actions": "应用状态与操作",
+  Manage: "管理",
+  Overview: "概览",
+  "Live version": "线上版本",
+  "Latest version": "最新版本",
+  "Last deployed": "上次部署",
+  "Last opened": "上次打开",
+  "Ownership and access": "所有权与访问权限",
+  "Created in": "创建于",
+  "Version history": "版本历史",
+  "Open app": "打开应用",
+  "Copy URL": "复制 URL",
+  "Loading authoritative app details…": "正在加载应用详情…",
+  Permissions: "权限",
+  "Created by": "创建者",
+  "Git remote": "Git 远程地址",
+  "Copy Git remote": "复制 Git 远程地址",
+  "Shown in the app bar and app list.": "显示在应用栏和应用列表中。",
+  "App URL": "应用 URL",
+  "Changes the app URL. Existing links do not redirect.": "更改应用 URL 后，旧链接不会自动跳转。",
+  "Restore deployment": "恢复部署",
+  "Archive deployment": "归档部署",
+  Live: "线上",
+  Latest: "最新",
+  "No version history available.": "没有可用的版本历史。",
+  "Show older versions": "显示旧版本",
+  "This takes the app offline immediately, so its current URL will stop working. Its source and version history are kept, and you can restore it later.":
+    "这会立即使应用下线，当前 URL 将停止工作。源代码和版本历史会保留，之后可以恢复。",
+  "Archive and take offline": "归档并下线",
+  "Dismiss notification": "关闭通知",
+  "Search memory": "搜索记忆",
+  "Search resources": "搜索资源",
+  "Loading resources…": "正在加载资源…",
+  "Could not search:": "无法搜索：",
+  ". Try searching again.": "。请重试搜索。",
+  "Refine your search to see more resource matches.": "缩小搜索范围以查看更多匹配的资源。",
+  "Loading this context's files, webhooks, crons, apps and skills…":
+    "正在加载此上下文的文件、Webhook、定时任务、应用和技能…",
+  "No skills match these filters.": "没有技能符合这些筛选条件。",
+  "Clear filters": "清除筛选条件",
+  "Back to chats": "返回对话",
+  "Viewing the assistant as": "正在以以下身份查看助手：",
+  "Exit impersonation": "退出模拟身份",
+  "Dev mode": "开发模式",
+  "Sign in through the portal": "通过门户登录",
+  "This surface is reached through the portal, and signing in there didn't produce a session for it. Open the portal address directly rather than this one.":
+    "此页面需要通过门户访问，但门户登录后没有为它建立会话。请直接打开门户地址。",
+  "If you opened this surface's own address, that's the cause — it can't authenticate anyone on its own.":
+    "如果你直接打开了此页面的地址，这就是原因：它无法独立验证身份。",
+  "Your session ended": "会话已结束",
+  "You've been signed out. Sign in again and you'll come back to this page.": "你已退出登录。重新登录后将返回此页面。",
+  "You don't have access": "你没有访问权限",
+  "Your account is signed in and verified — it just isn't allowed on this instance. Ask an administrator to add you.":
+    "你的账户已登录并通过验证，但此实例尚未授予访问权限。请联系管理员添加你。",
+  "This instance lists its principals in": "此实例的可访问账户列在",
+  "We couldn't reach the assistant": "无法连接助手",
+  "The service didn't respond. This is usually temporary.": "服务没有响应。这通常是暂时的问题。",
+  "If this keeps happening, the core service may be down.": "如果问题持续，核心服务可能不可用。",
+  "Dev sign-in": "开发环境登录",
+  "No identity provider is configured, so this instance trusts a local cookie. Set":
+    "尚未配置身份提供方，此实例使用本地 Cookie。设置",
+  "and run the portal to use real sign-in.": "并运行门户，即可使用正式登录。",
+  Principal: "账户主体",
+  Now: "现在",
+  "↪ steered the running task": "↪ 调整了正在运行的任务",
+  "deleted their message": "删除了消息",
+  "edited their message:": "编辑了消息：",
+  "at least": "至少",
+  Done: "完成",
+  Back: "返回",
+  Add: "添加",
+  Pending: "待处理",
+  "· expires": "· 到期时间",
+  Access: "访问权限",
+  "You’ll paste the secret on an encrypted one-time page next.": "接下来你将在加密的一次性页面上粘贴密钥。",
+  "Your one-time page is ready": "一次性页面已就绪",
+  "Open it in a new tab and paste the secret there.": "在新标签页打开并粘贴密钥。",
+  "Open the one-time page": "打开一次性页面",
+  Service: "服务",
+  "Environment variable": "环境变量",
+  optional: "可选",
+  Purpose: "用途",
+  "Check impact": "检查影响",
+  Context: "上下文",
+  Title: "标题",
+  ". You can view it, but not change it.": "。你可以查看，但不能修改。",
+  Settings: "设置",
+  Change: "更改",
+  Undo: "撤销",
+  Inbox: "收件箱",
+  "Try again": "重试",
+  connected: "已连接",
+  Opening: "正在打开",
+  selected: "已选择",
+  "Bot ID": "机器人 ID",
+  ". You are": "。你是",
+  "— no identity provider, signed in as": "— 未配置身份提供方，当前登录身份：",
+  "Sign in": "登录",
+  Version: "版本",
+  Assets: "资源",
+  "New Skills start with Home context access. After publishing, open Edit to configure Skill Access.":
+    "新技能默认可以在首页上下文中使用。发布后，打开编辑以配置技能访问权限。",
+  Local: "本地",
+  Copy: "复制",
+  "Allow custom": "允许自定义",
+  "Open subagent · Drag to the sidebar to make a top-level session": "打开子智能体 · 拖到侧边栏以设为顶层会话",
+  "What may the agent use this credential for?": "智能体可以将此凭据用于什么用途？",
+  "Refresh keychain and discover MCP tools": "刷新密钥链并发现 MCP 工具",
+  "return note…": "返回说明…",
+  "Remove imported theme": "移除已导入的主题",
+  "One line: what it does / when to use it": "一句话描述它的作用和使用时机",
+  "The SKILL.md contents: the steps to follow when this skill is used.": "SKILL.md 内容：使用此技能时要遵循的步骤。",
+  "When a GitHub issue is opened, triage it and post a one-paragraph summary.":
+    "当 GitHub 问题被创建时，进行分类并发布一段摘要。",
+  "auto-generated if blank": "留空则自动生成",
+  "Opening Slack…": "正在打开 Slack…",
+  "An action is required.": "必须填写操作。",
+  Webhooks: "Webhook",
+  Loops: "持续任务",
+  "Group chats, files, and automations": "集中管理对话、文件和自动化任务",
+  "Everything you and QM have shared": "你与 QM 共享的所有文件",
+  "Work that runs on a schedule": "按计划自动运行的任务",
+  "Inbound events that wake QM": "唤醒 QM 的外部事件",
+  "Connected accounts and credentials": "已连接的账户和凭据",
+  "What QM has shipped for you": "QM 为你发布的应用",
+  "What QM remembers about your work": "QM 记住的工作信息",
+  "Reusable procedures QM can follow": "QM 可执行的复用流程",
+  "Standing work QM keeps pushing forward": "QM 持续推进的工作",
+  "Org settings, people, and policy": "组织设置、人员和策略",
+  "What can I help with?": "有什么需要我帮忙？",
+  "Ahoy, what are we after?": "今天想做什么？",
+  "What are we charting today?": "今天要规划什么？",
+  "Where shall we set sail?": "今天从哪里开始？",
+  "What's the heading, captain?": "今天要朝什么目标前进？",
+  "Clarify your next priorities": "梳理下一步重点",
+  "Set up a useful workspace": "搭建实用的工作空间",
+  "Plan the week ahead": "规划本周工作",
+  "Suggested activities": "建议活动",
+  "Your keychain": "你的密钥链",
+  "Search QM": "搜索 QM",
+  "Search chats, skills, crons, apps…": "搜索对话、技能、定时任务和应用…",
+  "No results match": "没有匹配结果：",
+  "starts a new chat where QM finds the matching resource and links it": "新建对话，让 QM 查找匹配资源并提供链接",
+  "System follows your device's light or dark setting. Import an iTerm2 .itermcolors or a VS Code color theme .json to paint the app with its palette.":
+    "跟随系统时使用设备的深浅色设置。也可以导入 iTerm2 的 .itermcolors 或 VS Code 的主题 .json 文件。",
+  Light: "浅色",
+  Dark: "深色",
+  System: "跟随系统",
+  "Replace theme file": "替换主题文件",
+  "Import theme file": "导入主题文件",
+  "All conversations": "所有对话",
+  Company: "公司",
+  "Not signed in": "未登录",
+  "Couldn't read that theme file.": "无法读取该主题文件。",
+  active: "最近活动",
+  "No files yet.": "暂无文件。",
+  "Search webhooks": "搜索 Webhook",
+  "No webhooks yet.": "暂无 Webhook。",
+  "Loading webhooks…": "正在加载 Webhook…",
+  "No webhooks in this context.": "此上下文中暂无 Webhook。",
+  "Filter by context": "按上下文筛选",
+  "Refresh my suggested activities": "刷新我的建议活动",
+  "Hi there.": "你好。",
+  "your company": "你的公司",
+  "This connection attempt has expired": "此连接请求已过期",
+  "Choose an app below to start again.": "请在下方选择应用重新开始。",
+  "Confirming access before marking it connected.": "正在确认访问权限。",
+  "You cancelled authorization. You can try again whenever you’re ready.": "你已取消授权，随时可以重试。",
+  "We couldn’t confirm an active connection yet. Try checking again, or restart authorization.":
+    "尚未确认连接成功。请重新检查或再次授权。",
+  "Chat options": "对话选项",
+  "Start a new chat": "新建对话",
+  "Clear selection (Esc)": "清除选择（Esc）",
+  "Pin selected": "置顶选中对话",
+  "Unpin selected": "取消置顶选中对话",
+  "Archive selected": "归档选中对话",
+  "Unarchive selected": "取消归档选中对话",
+  "Color selected": "设置选中对话的颜色",
+  "Expand this pane": "展开此窗格",
+  "Make default": "设为默认",
+  "Remove from presets": "从预设中移除",
+  "Read-only. Replies happen on the original surface": "只读。请在原始会话中回复",
+  "Ask. Enter to send, Shift+Enter for a new line": "提问。按 Enter 发送，Shift+Enter 换行",
+  "Nothing running can take this. It will go out as its own turn": "当前没有可接收此消息的任务，它将作为独立轮次发送",
+  "Note from last fire": "上次运行的备注",
+  "When off, the agent never acts on overheard messages here; it only responds to direct @mentions. Default: on only when standing orders (or an action-mode bot) are set below, otherwise mention-only.":
+    "关闭后，智能体不会因这里的旁听消息采取行动，只响应直接 @提及。默认仅在下方设置长期指令（或行动模式机器人）时启用；否则仅响应提及。",
+  healthy: "运行正常",
+  degraded: "性能下降",
+  failing: "运行失败",
+  quarantined: "已隔离",
+  paused: "已暂停",
+  ready: "待处理",
+  unconfirmed: "待确认",
+  shipped: "已交付",
+  returned: "已退回",
+  expired: "已过期",
+  never: "从未",
+  "Clear quarantine": "解除隔离",
+  Resume: "恢复",
+  "Shipping without review": "无需审查直接交付",
+  "Ships outputs without review": "无需审查即可交付产出",
+  "a return needs a note for the next attempt": "退回时需要填写供下次尝试参考的备注",
+  "Collapse pins": "收起置顶内容",
+  "Show pins": "显示置顶内容",
+  "Connecting Slack": "正在连接 Slack",
+  "Refresh sent mail": "刷新已发送邮件",
+  "Create the inbox loop and the personal cron that scans your connected apps and drafts replies":
+    "创建收件箱循环任务和个人定时任务，扫描已连接的应用并草拟回复",
+  "Sync now": "立即同步",
+  "Send the drafted reply in Gmail": "在 Gmail 中发送已起草的回复",
+  "Send the drafted reply to Slack": "将已起草的回复发送到 Slack",
+  "The sync cron is on": "同步定时任务已开启",
+  "The sync cron is paused. Manage it under Crons": "同步定时任务已暂停。请在定时任务中管理",
+  "Stopping…": "正在停止…",
+  "Interrupted, resuming…": "已中断，正在恢复…",
+  "You stopped after": "你已停止，运行时长",
+  "Describe a change…": "描述需要修改的内容…",
+  "The pinned Slack header (when enabled below) names this model.": "下方启用 Slack 置顶消息后，其中会显示此模型名称。",
+  this: "此",
+  "Shared snapshot": "共享快照",
+  "Anyone with the link": "知道链接的任何人",
+  "Organization only": "仅限组织成员",
+  completed: "已完成",
+  running: "运行中",
+  ok: "成功",
+  failed: "失败",
+  refused: "已拒绝",
+  pending_approval: "等待审批",
+  queued: "排队中",
+  silent: "无回复",
+  react: "已回应",
+  deferred: "已延后",
+  skipped: "已跳过",
+  "edit failed": "编辑失败",
+  "archive failed": "归档失败",
+  "unarchive failed": "取消归档失败",
+  "enable failed": "启用失败",
+  "disable failed": "停用失败",
+  "delete failed": "删除失败",
+  Goal: "目标",
+  "Goal paused": "目标已暂停",
+  "Pursuing goal": "正在执行目标",
+  "Effort levels": "思考强度选项",
+  "Unpin selected conversations": "取消置顶选中的对话",
+  "Pin selected conversations": "置顶选中的对话",
+  "Unarchive selected conversations": "取消归档选中的对话",
+  "Archive selected conversations": "归档选中的对话",
+  "Write a reply…": "撰写回复…",
+  "No draft yet. The next sync writes one, or write your own.": "暂无回复草稿。下次同步会生成草稿，你也可以自行撰写。",
+  "No subject": "无主题",
+  "Popular apps": "热门应用",
+  "Show fewer apps": "收起应用列表",
 };
 
 export function normalizeLocale(value: string | null | undefined): AppLocale | null {
@@ -876,7 +1450,58 @@ export function localeCode(locale: AppLocale = currentLocale()): string {
 }
 
 function translatePattern(source: string): string | null {
-  let match = source.match(/^(\d+)m ago$/);
+  let match: RegExpMatchArray | null;
+  if ((match = source.match(/^Sign in with (.+)$/))) return `使用 ${match[1]} 登录`;
+  if ((match = source.match(/^Uses your (.+) subscription and its usage limits\.$/)))
+    return `使用你的 ${match[1]} 订阅及其用量限制。`;
+  if ((match = source.match(/^Paste a key from (.+) — usage is billed to the key\.$/)))
+    return `粘贴来自 ${match[1]} 的密钥，用量将计入该密钥。`;
+  if ((match = source.match(/^Chat with (.+) on your own account$/))) return `使用你自己的 ${match[1]} 账户对话`;
+  if ((match = source.match(/^Connected with your (.+) subscription$/))) return `已通过你的 ${match[1]} 订阅连接`;
+  if ((match = source.match(/^New chats will use your (.+) account\.$/))) return `新对话将使用你的 ${match[1]} 账户。`;
+  if ((match = source.match(/^Use your (.+) subscription for new chats\.$/)))
+    return `新对话将使用你的 ${match[1]} 订阅。`;
+  if (
+    (match = source.match(
+      /^Paste it only in the secure form, never in this conversation\. (.+) uses it to create its app, then discards it\.$/,
+    ))
+  )
+    return `只在安全表单中粘贴令牌，切勿在此对话中发送。${match[1]} 会用它创建应用，随后将其丢弃。`;
+  if ((match = source.match(/^(.+) — in flight for (\d+)m$/))) return `${match[1]} — 已运行 ${match[2]} 分钟`;
+  if ((match = source.match(/^(.+) — took (\d+)s$/))) return `${match[1]} — 耗时 ${match[2]} 秒`;
+  if ((match = source.match(/^(.+) settings saved\.$/))) return `${match[1]} 的设置已保存。`;
+  if ((match = source.match(/^(.+) is offline and archived\.$/))) return `${match[1]} 已下线并归档。`;
+  if ((match = source.match(/^(.+) is restored and running\.$/))) return `${match[1]} 已恢复运行。`;
+  if ((match = source.match(/^Reorder (.+); use Up or Down$/))) return `调整 ${match[1]} 的顺序；使用向上或向下键`;
+  if ((match = source.match(/^Make (.+) default$/))) return `将 ${match[1]} 设为默认`;
+  if ((match = source.match(/^Remove (.+) from presets$/))) return `从预设中移除 ${match[1]}`;
+  if ((match = source.match(/^Add (.+) to presets$/))) return `将 ${match[1]} 添加到预设`;
+  if ((match = source.match(/^Back to parent: (.+)$/))) return `返回上级：${match[1]}`;
+  if ((match = source.match(/^Open sent email: (.+)$/))) return `打开已发送邮件：${match[1]}`;
+  if ((match = source.match(/^Add (.+) to Slack$/))) return `将 ${match[1]} 添加到 Slack`;
+  if ((match = source.match(/^Connect (.+)$/))) return `连接 ${match[1]}`;
+  if ((match = source.match(/^In this conversation: (.+)$/))) return `此对话中的人员：${match[1]}`;
+  if ((match = source.match(/^Ask (.+) for something$/))) return `向 ${match[1]} 提问`;
+  if ((match = source.match(/^(\d+) apps? found$/))) return `找到 ${match[1]} 个应用`;
+  if ((match = source.match(/^Browse all (\d+) apps$/))) return `浏览全部 ${match[1]} 个应用`;
+  if ((match = source.match(/^No apps match “(.+)”\. Try another name\.$/)))
+    return `没有匹配“${match[1]}”的应用。请尝试其他名称。`;
+  if ((match = source.match(/^(\d+) turns$/))) return `${match[1]} 轮`;
+  if ((match = source.match(/^([\d,]+) tokens$/))) return `${match[1]} 个令牌`;
+  if ((match = source.match(/^(\d+)h (\d+)m$/))) return `${match[1]} 小时 ${match[2]} 分钟`;
+  if ((match = source.match(/^(\d+)m (\d+)s$/))) return `${match[1]} 分钟 ${match[2]} 秒`;
+  if ((match = source.match(/^(\d+)h$/))) return `${match[1]} 小时`;
+  if ((match = source.match(/^([\d.]+)m$/))) return `${match[1]} 分钟`;
+  if ((match = source.match(/^(\d+)s$/))) return `${match[1]} 秒`;
+  if ((match = source.match(/^(\d+)d$/))) return `${match[1]} 天`;
+  if ((match = source.match(/^(\d+)w$/))) return `${match[1]} 周`;
+  if ((match = source.match(/^Hi, (.+)\.$/))) return `你好，${match[1]}。`;
+  if ((match = source.match(/^(.+) connected$/))) return `${match[1]} 已连接`;
+  if ((match = source.match(/^Opening (.+)…$/))) return `正在打开 ${match[1]}…`;
+  if ((match = source.match(/^Checking (.+) connection…$/))) return `正在检查 ${match[1]} 的连接…`;
+  if ((match = source.match(/^(.+) wasn’t connected$/))) return `${match[1]} 未连接`;
+  if ((match = source.match(/^Couldn’t connect (.+)$/))) return `无法连接 ${match[1]}`;
+  match = source.match(/^(\d+)m ago$/);
   if (match) return `${match[1]} 分钟前`;
   match = source.match(/^(\d+)h ago$/);
   if (match) return `${match[1]} 小时前`;
@@ -884,6 +1509,10 @@ function translatePattern(source: string): string | null {
   if (match) return `${match[1]} 天前`;
   match = source.match(/^(\d+) selected subjects?$/);
   if (match) return `已选择 ${match[1]} 个主体`;
+  match = source.match(/^(\d+) conversations selected$/);
+  if (match) return `已选择 ${match[1]} 个对话`;
+  match = source.match(/^Model: (.+), (.+) effort(, Fast)?$/);
+  if (match) return `模型：${match[1]}，思考强度：${translateText(match[2]!, "zh-CN")}${match[3] ? "，快速模式" : ""}`;
   match = source.match(/^No people found for “(.+)”\.$/);
   if (match) return `没有找到匹配“${match[1]}”的人员。`;
   match = source.match(
@@ -940,16 +1569,29 @@ function translatePattern(source: string): string | null {
   if (match) return `工作了 ${match[1]} 秒`;
   match = source.match(/^Failed after (\d+)s$/);
   if (match) return `${match[1]} 秒后失败`;
-  match = source.match(/^Saved — new conversations here run on (.+)\.$/);
-  if (match) return `已保存——此处的新对话将使用 ${match[1]}。`;
+  match = source.match(/^Saved — new conversations here run on (.+?)(?: · (.+) effort)?\.$/);
+  if (match)
+    return `已保存——此处的新对话将使用 ${match[1]}${match[2] ? ` · 思考强度：${translateText(match[2]!, "zh-CN")}` : ""}。`;
+  match = source.match(/^Restore memory from (.+)\?$/);
+  if (match) return `从 ${match[1]} 恢复记忆？`;
+  match = source.match(/^Synced (.+)$/);
+  if (match) return `已同步 ${match[1]}`;
   match = source.match(/^Remove (.+) from (.+)\?$/);
   if (match) return `从 ${match[2]} 移除 ${match[1]}？`;
   match = source.match(/^every (.+)$/);
-  if (match) return `每 ${match[1]}`;
+  if (match) return `每 ${translateText(match[1]!, "zh-CN")}`;
   match = source.match(/^New chat in (.+)$/);
+  if (match) return `在 ${match[1]} 中新建对话`;
+  match = source.match(/^Start a new chat in (.+)$/);
   if (match) return `在 ${match[1]} 中新建对话`;
   match = source.match(/^Options for (.+)$/);
   if (match) return `${match[1]} 的选项`;
+  match = source.match(/^Share (.+)$/);
+  if (match) return `分享 ${match[1]}`;
+  match = source.match(/^Open \/(.+)$/);
+  if (match) return `打开 /${match[1]}`;
+  match = source.match(/^Color selected conversations (.+)$/);
+  if (match) return `将选中的对话设为${match[1]}色`;
   match = source.match(/^Copy link to (.+)$/);
   if (match) return `复制 ${match[1]} 的链接`;
   match = source.match(/^Unlink #(.+) from (.+)\?$/);
@@ -988,6 +1630,34 @@ function translatePattern(source: string): string | null {
   if (match) return `修订版 ${match[1]}`;
   match = source.match(/^No matches for “(.+)”\.$/);
   if (match) return `没有匹配“${match[1]}”的人员。`;
+  match = source.match(/^No results match “(.+)”\.$/);
+  if (match) return `没有匹配“${match[1]}”的结果。`;
+  match = source.match(/^Note left by (.+)$/);
+  if (match) return `${match[1]} 留下的备注`;
+  match = source.match(/^(\d+) waiting on you$/);
+  if (match) return `${match[1]} 项待你处理`;
+  match = source.match(/^(.+)\. Click to inspect$/);
+  if (match) return `${translateText(match[1]!, "zh-CN")}。点击查看详情`;
+  match = source.match(/^Forked from (.+)\. Open the original$/);
+  if (match) return `从 ${match[1]} 分支。打开原始对话`;
+  match = source.match(/^Forked from (.+)$/);
+  if (match) return `分支来源：${match[1]}`;
+  match = source.match(/^Back to (.+)$/);
+  if (match) return `返回${match[1]}`;
+  match = source.match(/^Open the (.+) project$/);
+  if (match) return `打开${match[1]}项目`;
+  match = source.match(/^Remove (.+)$/);
+  if (match) return `移除${match[1]}`;
+  match = source.match(/^Open (.+)$/);
+  if (match) return `打开 ${match[1]}`;
+  match = source.match(/^Manage (.+)$/);
+  if (match) return `管理 ${match[1]}`;
+  match = source.match(/^Color selected (#[\da-f]{6})$/i);
+  if (match) return `将选中对话设为 ${match[1]}`;
+  match = source.match(/^Invalid filter: "(.+)"\. Use path: value1, value2\.$/);
+  if (match) return `筛选条件“${match[1]}”无效。请使用 path: value1, value2。`;
+  match = source.match(/^Invalid filter: "(.+)"\. Both path and value are required\.$/);
+  if (match) return `筛选条件“${match[1]}”无效。路径和值都必填。`;
   return null;
 }
 
@@ -1002,6 +1672,13 @@ export function translateText(source: string, locale: AppLocale = currentLocale(
 }
 
 export const t = (source: string): string => translateText(source);
+
+export function formatChatCta(prompt: string, name?: string | null, locale: AppLocale = currentLocale()): string {
+  const translated = translateText(prompt, locale);
+  const person = name?.trim();
+  if (!person) return translated;
+  return locale === "zh-CN" ? `你好，${person}。${translated}` : `Hi, ${person}. ${translated}`;
+}
 
 const localizedTemplates = new WeakMap<TemplateStringsArray, TemplateStringsArray>();
 

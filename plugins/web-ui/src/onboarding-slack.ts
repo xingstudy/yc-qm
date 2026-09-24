@@ -1,4 +1,5 @@
-import { LitElement, html, nothing } from "lit";
+import { LitElement, nothing } from "lit";
+import { html, t } from "./i18n.ts";
 import { ArrowUpRight, Check } from "lucide";
 import { brandName, icon, slackMark } from "./ui";
 
@@ -85,8 +86,8 @@ export class OnboardingSlack extends LitElement {
       popup.location.href = `${this.adminBase}/connectors?setup=slack`;
       return;
     }
-    popup.document.title = "Connecting Slack";
-    popup.document.body.textContent = "Opening Slack…";
+    popup.document.title = t("Connecting Slack");
+    popup.document.body.textContent = t("Opening Slack…");
     this.busy = true;
     this.error = "";
     try {

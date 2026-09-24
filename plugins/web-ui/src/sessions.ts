@@ -393,7 +393,7 @@ const PROJECT_OPTIONS_TOOLTIP = "Project options";
 const CHAT_OPTIONS_TOOLTIP = "Chat options";
 
 function newChatHint(name: string): string {
-  return `Start a new chat in ${name}`;
+  return t(`Start a new chat in ${name}`);
 }
 
 function recentItem(item: RecentItem): TemplateResult {
@@ -438,7 +438,6 @@ function recentItem(item: RecentItem): TemplateResult {
                   class="session-menu-btn"
                   data-menu-id=${menuKey}
                   type="button"
-                  ${tip(t("Project options"))}
                   aria-label=${t(`Options for ${name}`)}
                   aria-haspopup="menu"
                   aria-expanded=${menuOpen ? "true" : "false"}
@@ -753,7 +752,7 @@ function chatPageRow(s: CoreSession): TemplateResult {
                 class="icon-btn"
                 type="button"
                 ${tip(s.pinned ? "Unpin" : "Pin")}
-                aria-label=${`${s.pinned ? "Unpin" : "Pin"} ${sessionTitle(s)}`}
+                aria-label=${`${t(s.pinned ? "Unpin" : "Pin")} ${sessionTitle(s)}`}
                 @click=${() => {
                   setPinned(s, !s.pinned);
                   drawChatsPage();
@@ -765,7 +764,7 @@ function chatPageRow(s: CoreSession): TemplateResult {
                 class="icon-btn"
                 type="button"
                 ${tip("Share conversation")}
-                aria-label=${`Share ${sessionTitle(s)}`}
+                aria-label=${t(`Share ${sessionTitle(s)}`)}
                 @click=${() => void openSessionShare(s.id)}
               >
                 ${icon(Link, 13.5)}
@@ -965,7 +964,7 @@ function sessionRow(s: CoreSession, projectChild = false): TemplateResult {
                 class="session-menu-btn session-share-btn"
                 type="button"
                 ${tip("Share conversation")}
-                aria-label=${`Share ${sessionTitle(s)}`}
+                aria-label=${t(`Share ${sessionTitle(s)}`)}
                 @click=${(e: Event) => {
                   e.stopPropagation();
                   void openSessionShare(s.id);
@@ -990,7 +989,7 @@ function sessionRow(s: CoreSession, projectChild = false): TemplateResult {
                 data-menu-id=${s.id}
                 type="button"
                 ${tip(CHAT_OPTIONS_TOOLTIP)}
-                aria-label=${`Options for ${sessionTitle(s)}`}
+                aria-label=${t(`Options for ${sessionTitle(s)}`)}
                 aria-haspopup="menu"
                 aria-expanded=${menuOpen ? "true" : "false"}
                 @click=${(e: Event) => toggleSessionMenu(e, s.id)}
@@ -1307,7 +1306,7 @@ export function sessionSelectionBar(): TemplateResult | null {
     <div
       class="section-label recents-label multi-select-bar"
       role="toolbar"
-      aria-label=${`${n} conversations selected`}
+      aria-label=${t(`${n} conversations selected`)}
     >
       <span class="multi-select-summary">
         <button
@@ -1326,7 +1325,7 @@ export function sessionSelectionBar(): TemplateResult | null {
           class="icon-btn"
           type="button"
           ${tip(allPinned ? "Unpin selected" : "Pin selected")}
-          aria-label=${allPinned ? "Unpin selected conversations" : "Pin selected conversations"}
+          aria-label=${t(allPinned ? "Unpin selected conversations" : "Pin selected conversations")}
           @click=${() => void bulkPatch({ pinned: !allPinned })}
         >
           ${allPinned ? icon(PinOff, 14) : icon(Pin, 14)}
@@ -1352,7 +1351,7 @@ export function sessionSelectionBar(): TemplateResult | null {
           class="icon-btn"
           type="button"
           ${tip(allArchived ? "Unarchive selected" : "Archive selected")}
-          aria-label=${allArchived ? "Unarchive selected conversations" : "Archive selected conversations"}
+          aria-label=${t(allArchived ? "Unarchive selected conversations" : "Archive selected conversations")}
           @click=${() => void bulkPatch({ archived: !allArchived })}
         >
           ${allArchived ? icon(ArchiveRestore, 14) : icon(Archive, 14)}
@@ -1385,7 +1384,7 @@ function colorPopover(): TemplateResult {
               type="button"
               style=${`--swatch:${c}`}
               ${tip(`Color selected ${c}`)}
-              aria-label=${`Color selected conversations ${c}`}
+              aria-label=${t(`Color selected conversations ${c}`)}
               @click=${() => void bulkPatch({ color: c })}
             ></button>
           `,

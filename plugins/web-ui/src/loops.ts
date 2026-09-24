@@ -1,8 +1,9 @@
-import { html, nothing, render, type TemplateResult } from "lit";
+import { nothing, render, type TemplateResult } from "lit";
+import { html, t } from "./i18n.ts";
 import { CheckCircle2, CornerUpLeft, Pause, Play, Zap } from "lucide";
 import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
-import { icon } from "./ui";
+import { icon, relTime } from "./ui";
 import { listBackLink, listPageTpl } from "./list-page";
 import { appState, can } from "./shell";
 
@@ -74,17 +75,11 @@ export function resetActiveLoop(): void {
 
 function healthBadge(loop: LoopView): TemplateResult {
   const label = loop.state === "enabled" ? loop.health : loop.state;
-  return html`<span class="loop-health loop-health-${label}" title=${loop.healthReason ?? ""}>${label}</span>`;
+  return html`<span class="loop-health loop-health-${label}" title=${loop.healthReason ?? ""}>${t(label)}</span>`;
 }
 
 function ago(ts?: number): string {
-  if (!ts) return "never";
-  const mins = Math.round((Date.now() - ts) / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.round(mins / 60);
-  if (hours < 48) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
+  return ts ? relTime(ts) : t("never");
 }
 
 async function refreshLoops(): Promise<void> {
@@ -158,7 +153,7 @@ function setAutopilot(loop: LoopView, enabled: boolean): void {
 function decide(loop: LoopView, output: LoopOutputView, decision: "ship" | "return"): void {
   const note = returnDrafts.get(output.id)?.trim();
   if (decision === "return" && !note) {
-    loopsNotice = "a return needs a note for the next attempt";
+    loopsNotice = t("a return needs a note for the next attempt");
     paint();
     return;
   }
@@ -210,7 +205,7 @@ function reviewRow(loop: LoopView, output: LoopOutputView, shipLabel = "Ship"): 
           ${icon(CornerUpLeft, 14)}<span>Return</span>
         </button>
         <button class="btn primary" type="button" ?disabled=${loopBusy} @click=${() => decide(loop, output, "ship")}>
-          ${icon(CheckCircle2, 14)}<span>${shipLabel}</span>
+          ${icon(CheckCircle2, 14)}<span>${t(shipLabel)}</span>
         </button>
       </div>
     </div>
@@ -220,11 +215,11 @@ function reviewRow(loop: LoopView, output: LoopOutputView, shipLabel = "Ship"): 
 function itemRow(item: LoopItemView): TemplateResult {
   return html`
     <div class="loop-item">
-      <span class="loop-item-status loop-item-${item.status}">${item.status}</span>
+      <span class="loop-item-status loop-item-${item.status}">${t(item.status)}</span>
       <span class="loop-item-key">${item.sourceKey}</span>
       <span class="loop-item-summary">${item.sourceSummary ?? ""}</span>
       <span class="loop-item-meta">
-        ${item.attempts > 0 ? `${item.attempts} attempt${item.attempts === 1 ? "" : "s"}` : ""}
+        ${item.attempts > 0 ? t(`${item.attempts} attempt${item.attempts === 1 ? "" : "s"}`) : ""}
         ${item.parkedReason ? html` · <span title=${item.parkedReason}>parked</span>` : nothing}
       </span>
     </div>
@@ -261,13 +256,13 @@ function detailTpl(detail: LoopDetail): TemplateResult {
                 ?disabled=${loopBusy}
                 @click=${() => setState(loop, "enabled")}
               >
-                ${icon(Play, 14)}<span>${loop.state === "quarantined" ? "Clear quarantine" : "Resume"}</span>
+                ${icon(Play, 14)}<span>${t(loop.state === "quarantined" ? "Clear quarantine" : "Resume")}</span>
               </button>`
         }
       </div>
     </div>
     ${loop.healthReason ? html`<p class="loop-health-reason">${loop.healthReason}</p>` : nothing}
-    ${loopsNotice ? html`<p class="error-banner">${loopsNotice}</p>` : nothing}
+    ${loopsNotice ? html`<p class="error-banner">${t(loopsNotice)}</p>` : nothing}
     ${
       loop.shipActions.length
         ? html`<button
@@ -281,7 +276,7 @@ function detailTpl(detail: LoopDetail): TemplateResult {
             <span class="loop-autopilot-copy">
               <span class="loop-autopilot-label">Autopilot</span>
               <span class="loop-autopilot-sublabel"
-                >${autopilot ? "Shipping without review" : "Ships outputs without review"}</span
+                >${t(autopilot ? "Shipping without review" : "Ships outputs without review")}</span
               >
             </span>
             <span class="loop-autopilot-switch"><span></span></span>
@@ -331,7 +326,7 @@ function detailTpl(detail: LoopDetail): TemplateResult {
             ${decided.map(
               (o) => html`
                 <div class="loop-output loop-output-decided">
-                  <span class="loop-output-state loop-output-${o.state}">${o.state}</span>
+                  <span class="loop-output-state loop-output-${o.state}">${t(o.state)}</span>
                   <span class="loop-output-title">${o.title}</span>
                   <span class="loop-output-meta"
                     >${o.decidedBy ?? ""} ${o.decisionNote ? `· ${o.decisionNote}` : ""}</span
