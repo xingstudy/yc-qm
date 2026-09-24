@@ -156,6 +156,11 @@ test("the quick nav is home, search, browse; create sits under the divider", () 
   assert.doesNotMatch(css, /\.nav-section-toggle|\.nav-group/);
 });
 
+test("Home opens a fresh conversation", () => {
+  const click = shell.match(/function onNavClick\([^]*?\n\}/)?.[0] ?? "";
+  assert.match(click, /if \(view === "chats"\) startNewChatInLastScope\(\)/);
+});
+
 test("impersonation mode keeps its critical exit control below the top safe area", () => {
   assert.match(compactCss, /height: calc\(38px \+ env\(safe-area-inset-top\)\)/);
   assert.match(compactCss, /padding: env\(safe-area-inset-top\)/);

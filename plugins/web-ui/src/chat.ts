@@ -24,7 +24,7 @@ import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import type { UserMessageWithAttachments } from "@earendil-works/pi-web-ui";
 import { markdown } from "./message-markdown";
 import { nothing, render, type TemplateResult } from "lit";
-import { html, localeCode, t } from "./i18n.ts";
+import { formatChatCta, html, localeCode, t } from "./i18n.ts";
 import { repeat } from "lit/directives/repeat.js";
 import { ref } from "lit/directives/ref.js";
 import {
@@ -1229,7 +1229,11 @@ export function createChatSurface(
                 >${linkifiedText(first.text ?? first.preview ?? `entry #${first.entrySeq}`)}</span
               >`
         }
-        <button class="pinned-strip-toggle" aria-expanded=${expanded} title=${expanded ? "Collapse pins" : "Show pins"}>
+        <button
+          class="pinned-strip-toggle"
+          aria-expanded=${expanded}
+          title=${t(expanded ? "Collapse pins" : "Show pins")}
+        >
           ${icon(expanded ? ChevronUp : ChevronDown, 13)}
         </button>
       </div>
@@ -1252,7 +1256,7 @@ export function createChatSurface(
       ctaThreadRef = chatState.threadRef;
       ctaText = nextChatCta();
     }
-    return ctaText;
+    return formatChatCta(ctaText, appState.me?.displayName || appState.me?.user);
   }
 
   function setTranscriptWindow(anchorSeq: number | null, earlierCount: number, hasEarlier = earlierCount > 0): void {
@@ -1636,7 +1640,7 @@ export function createChatSurface(
           <div class="message-bubble user-bubble ${deleted ? "deleted-bubble" : ""}">
             <div class="pin-content">
               ${isReadOnlySlackView() ? slackWireBubble(messageText(message)) : markdown(messageText(message))}
-              ${edited || deleted ? html`<span class="revision-badge">(${deleted ? "deleted" : "edited"})</span>` : nothing}
+              ${edited || deleted ? html`<span class="revision-badge">(${t(deleted ? "deleted" : "edited")})</span>` : nothing}
             </div>
             <button class="pin-toggle" type="button" hidden aria-expanded="false">Show more</button>
             ${attachments.length ? html`<div class="message-files">${attachments.map(userAttachmentBadge)}</div>` : nothing}
@@ -1667,7 +1671,7 @@ export function createChatSurface(
         label = labels[decision.scope ?? "once"] ?? "Approved";
       }
       return html`<article class="message-row system-note-row" data-index=${index}>
-        <div class="system-note">${label}: <code>${decision.command}</code></div>
+        <div class="system-note">${t(label)}: <code>${decision.command}</code></div>
       </article>`;
     }
     if (role === "system-note") {
@@ -2254,7 +2258,7 @@ export function createChatSurface(
     return html`
       <section class="goal-strip ${paused ? "paused" : ""}" aria-live="polite" title=${goal.objective}>
         <span class="goal-strip-icon">${icon(paused ? Pause : Target, 13)}</span>
-        <span class="goal-strip-title">${title}</span>
+        <span class="goal-strip-title">${t(title)}</span>
         <span class="goal-strip-objective" dir="auto">${goalObjectiveLabel(goal.objective)}</span>
         ${goal.floor ? html`<span class="goal-strip-meta">at least ${goal.floor}</span>` : nothing}
         ${paused ? nothing : html`<span class="goal-strip-meta">· ${elapsed}</span>`}

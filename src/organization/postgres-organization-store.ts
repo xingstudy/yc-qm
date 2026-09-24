@@ -2180,6 +2180,9 @@ async function searchDirectoryUsersOn(
           OR strpos(lower(account.principal_id), lower($2)) > 0
           OR strpos(lower(account.display_name), lower($2)) > 0
           OR strpos(lower(coalesce(account.email, '')), lower($2)) > 0
+          OR strpos(lower(coalesce(account.job_title, '')), lower($2)) > 0
+          OR strpos(lower(coalesce(account.mobile, '')), lower($2)) > 0
+          OR strpos(lower(coalesce(account.employee_number, '')), lower($2)) > 0
         )
         AND (
           $3::text[] IS NULL

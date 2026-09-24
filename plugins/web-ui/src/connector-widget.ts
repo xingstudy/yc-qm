@@ -1,4 +1,5 @@
-import { html, type TemplateResult } from "lit";
+import { type TemplateResult } from "lit";
+import { html } from "./i18n.ts";
 import { ArrowUpRight, Check } from "lucide";
 import { icon } from "./ui";
 import { connectorLogo } from "./connector-logo";

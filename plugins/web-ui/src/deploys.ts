@@ -70,9 +70,9 @@ function statusLabel(d: DeploymentView): string {
     d.currentVersion !== undefined &&
     d.appliedVersion !== d.currentVersion
   )
-    return "Deploying";
+    return t("Deploying");
   const status = d.status || "unknown";
-  return status.charAt(0).toLocaleUpperCase() + status.slice(1);
+  return t(status.charAt(0).toLocaleUpperCase() + status.slice(1));
 }
 
 function statusClass(d: DeploymentView): string {
@@ -169,7 +169,7 @@ function deploymentRow(d: DeploymentView): TemplateResult {
               href=${withBase(d.webUrl)}
               target="_blank"
               rel="noreferrer"
-              aria-label=${`Open ${deploymentTitle(d)}`}
+              aria-label=${t(`Open ${deploymentTitle(d)}`)}
               >${title}</a
             >`
           : html`<span class="deploy-row-main">${title}</span>`
@@ -540,7 +540,7 @@ async function commitEditDeploy(d: DeploymentView): Promise<void> {
     if (currentDeployActionView(d.id) === "target") {
       await openDeploy(updated);
     } else {
-      deployToast = { deployment: updated, text: `${deploymentTitle(updated)} settings saved.` };
+      deployToast = { deployment: updated, text: t(`${deploymentTitle(updated)} settings saved.`) };
       drawCurrentDeployView();
     }
   } catch (error) {
@@ -656,7 +656,7 @@ async function archiveDeploy(d: DeploymentView): Promise<void> {
     deploySaving = false;
     deployToast = {
       deployment: { ...d, status: "archived" },
-      text: `${deploymentTitle(d)} is offline and archived.`,
+      text: t(`${deploymentTitle(d)} is offline and archived.`),
       undo: true,
     };
     await refreshDeployments();
@@ -696,7 +696,7 @@ async function restoreDeploy(d: DeploymentView): Promise<void> {
     );
     deploySaving = false;
     const restoredResponse = deploymentAfterRestore(d, response.deployment);
-    deployToast = { deployment: restoredResponse, text: `${deploymentTitle(d)} is restored and running.` };
+    deployToast = { deployment: restoredResponse, text: t(`${deploymentTitle(d)} is restored and running.`) };
     const refreshResult = await refreshDeployments();
     const authoritative = refreshResult === "failed" ? undefined : deployList.find((item) => item.id === d.id);
     const restored = deploymentAfterRestore(d, response.deployment, authoritative);

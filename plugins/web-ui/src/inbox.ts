@@ -14,7 +14,8 @@ import {
   updateSentChat,
   sentMailTpl,
 } from "./sent-mail";
-import { html, nothing, render, type TemplateResult } from "lit";
+import { nothing, render, type TemplateResult } from "lit";
+import { html, t } from "./i18n.ts";
 import {
   Archive,
   ArrowUp,
@@ -224,7 +225,7 @@ function showArchiveToast(item: InboxItem): void {
             }
           }}
         >
-          ${busy ? "Undoing…" : "Undo"}
+          ${t(busy ? "Undoing…" : "Undo")}
         </button>
         <button class="icon-btn" type="button" aria-label="Dismiss notification" @click=${closeArchiveToast}>
           ${icon(X, 14)}
@@ -820,7 +821,10 @@ export function participantsTpl(item: InboxItem): TemplateResult | typeof nothin
   if (!people.length) return nothing;
   const shown = people.length > AVATARS_SHOWN ? people.slice(0, AVATARS_SHOWN - 1) : people;
   const rest = people.slice(shown.length);
-  return html`<span class="inbox-avatars" aria-label=${`In this conversation: ${people.map((p) => p.name).join(", ")}`}>
+  return html`<span
+    class="inbox-avatars"
+    aria-label=${t(`In this conversation: ${people.map((p) => p.name).join(", ")}`)}
+  >
     ${shown.map(
       (p) =>
         html`<span class="inbox-avatar" style=${`--avatar-hue:${avatarHue(p.key)}`} ${tip(p.name)} aria-hidden="true"
@@ -917,7 +921,7 @@ export function chatTpl(item: InboxItem): TemplateResult {
       ${
         empty
           ? html`<div class="inbox-chat-empty">
-              <h2 class="inbox-chat-cta">${item.sentChat ? "Ask about this email" : "What should I change?"}</h2>
+              <h2 class="inbox-chat-cta">${t(item.sentChat ? "Ask about this email" : "What should I change?")}</h2>
               <div class="inbox-chat-suggestions">
                 ${(item.sentChat ? ["Summarize this email", "What should I follow up on?"] : DRAFT_SUGGESTIONS).map(
                   (prompt) =>
@@ -927,7 +931,7 @@ export function chatTpl(item: InboxItem): TemplateResult {
                       ?disabled=${busy}
                       @click=${() => void askAgent(item, prompt)}
                     >
-                      ${prompt}
+                      ${t(prompt)}
                     </button>`,
                 )}
               </div>
@@ -946,7 +950,7 @@ export function chatTpl(item: InboxItem): TemplateResult {
         <textarea
           class="inbox-chat-input"
           rows="1"
-          placeholder=${`Ask ${brandName()} for something`}
+          placeholder=${t(`Ask ${brandName()} for something`)}
           .value=${pending}
           @input=${(e: Event) => {
             const box = e.currentTarget as HTMLTextAreaElement;
@@ -974,7 +978,7 @@ export function chatTpl(item: InboxItem): TemplateResult {
                       ${tip(item.source === "gmail" ? "Send the drafted reply in Gmail" : "Send the drafted reply to Slack")}
                       @click=${() => void sendItem(item)}
                     >
-                      ${icon(Send, 12)}<span>${sending.has(item.id) ? "Sending…" : "Send it"}</span>
+                      ${icon(Send, 12)}<span>${t(sending.has(item.id) ? "Sending…" : "Send it")}</span>
                     </button>
                     <button
                       class="inbox-suggest-chip"
@@ -1083,7 +1087,7 @@ export function draftEditorTpl(item: InboxItem, opts: { chat?: boolean } = {}): 
         <textarea
           class="inbox-draft-body"
           rows=${gmail ? 7 : 3}
-          placeholder=${item.draft ? "Write a reply…" : "No draft yet. The next sync writes one, or write your own."}
+          placeholder=${t(item.draft ? "Write a reply…" : "No draft yet. The next sync writes one, or write your own.")}
           .value=${draft.body}
           @input=${(e: Event) => editDraft(item, { body: (e.currentTarget as HTMLTextAreaElement).value })}
           @blur=${() => void persistDraft(item)}
@@ -1192,7 +1196,7 @@ function itemRowTpl(surface: InboxSurface, item: InboxItem): TemplateResult {
             ? html`<button
                 class="session-menu-btn inbox-item-dismiss"
                 type="button"
-                aria-label=${`Archive ${item.title || heading}`}
+                aria-label=${t(`Archive ${item.title || heading}`)}
                 ${tip("Archive")}
                 ?disabled=${acting.has(item.id)}
                 @click=${() => void setItemStatus(item, "dismissed")}
@@ -1214,8 +1218,8 @@ function itemRowTpl(surface: InboxSurface, item: InboxItem): TemplateResult {
 }
 
 function syncStatusLabel(cron: InboxSyncCron): string {
-  if (!cron.enabled) return "Sync paused";
-  return cron.lastFiredAt ? `Synced ${relTime(cron.lastFiredAt)}` : "First sync pending";
+  if (!cron.enabled) return t("Sync paused");
+  return cron.lastFiredAt ? t(`Synced ${relTime(cron.lastFiredAt)}`) : t("First sync pending");
 }
 
 function syncActionTpl(opts: {
@@ -1232,7 +1236,7 @@ function syncActionTpl(opts: {
     ?disabled=${opts.busy}
     @click=${opts.action}
   >
-    ${icon(RefreshCw, 13)}<span>${opts.busy ? opts.busyLabel : opts.label}</span>
+    ${icon(RefreshCw, 13)}<span>${t(opts.busy ? opts.busyLabel : opts.label)}</span>
   </button>`;
 }
 
@@ -1320,11 +1324,11 @@ function surfaceTpl(surface: InboxSurface): TemplateResult {
     ${
       inboxState.loaded && openItems.length === 0
         ? html`<div class="empty compact inbox-zero">
-            ${
+            ${t(
               inboxState.syncCron
                 ? "Nothing is waiting on you. Clear water ahead."
-                : "No items yet. Set up sync and the agent will surface everything waiting on a reply, drafted and ready."
-            }
+                : "No items yet. Set up sync and the agent will surface everything waiting on a reply, drafted and ready.",
+            )}
           </div>`
         : nothing
     }
@@ -1426,7 +1430,7 @@ function sentDraftTpl(): TemplateResult | undefined {
       ?disabled=${sending.has(item.id)}
       @click=${() => void sendItem(item)}
     >
-      ${sending.has(item.id) ? "Sending…" : "Send reply"}
+      ${t(sending.has(item.id) ? "Sending…" : "Send reply")}
     </button>`;
 }
 

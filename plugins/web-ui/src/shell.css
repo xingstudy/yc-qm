@@ -6764,6 +6764,14 @@ a.connector-widget:focus-visible {
   white-space: nowrap;
   font-size: 13px;
 }
+.project-member-identity {
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
 .project-icon-button {
   width: 30px;
   height: 30px;

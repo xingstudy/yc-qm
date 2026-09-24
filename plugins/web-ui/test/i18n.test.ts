@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 import { JSDOM } from "jsdom";
-import { html, installI18n, LOCALE_KEY, normalizeLocale, resolveLocale, translateText } from "../src/i18n.ts";
+import {
+  formatChatCta,
+  html,
+  installI18n,
+  LOCALE_KEY,
+  normalizeLocale,
+  resolveLocale,
+  translateText,
+} from "../src/i18n.ts";
 
 test("locale resolution prefers the saved choice and otherwise follows the browser", () => {
   assert.equal(normalizeLocale("zh-TW"), "zh-CN");
@@ -13,8 +21,65 @@ test("locale resolution prefers the saved choice and otherwise follows the brows
   assert.equal(resolveLocale(null, ["fr-FR"]), "en");
 });
 
+test("all visible templates use the localized html tag", () => {
+  const root = new URL("../src/", import.meta.url);
+  for (const name of readdirSync(root).filter((file) => file.endsWith(".ts") && file !== "i18n.ts")) {
+    const source = readFileSync(new URL(name, root), "utf8");
+    if (!source.includes("html`")) continue;
+    assert.doesNotMatch(source, /import\s*\{[^}]*\bhtml\b[^}]*\}\s*from\s*["']lit["']/, name);
+  }
+});
+
+test("explicit UI translations and hover labels have Chinese copy", () => {
+  const root = new URL("../src/", import.meta.url);
+  for (const name of readdirSync(root).filter((file) => file.endsWith(".ts") && file !== "i18n.ts")) {
+    const source = readFileSync(new URL(name, root), "utf8");
+    for (const match of source.matchAll(/\b(?:t|tip)\("([^"\\]+)"\)/g)) {
+      const value = match[1]!;
+      if (!/[A-Za-z]/.test(value)) continue;
+      assert.notEqual(translateText(value, "zh-CN"), value, `${name}: ${value}`);
+    }
+  }
+});
+
 test("Chinese translations cover exact UI copy and dynamic counters", () => {
+  assert.equal(translateText("Sign in with Claude", "zh-CN"), "使用 Claude 登录");
+  assert.equal(translateText("Chat with Claude on your own account", "zh-CN"), "使用你自己的 Claude 账户对话");
+  assert.equal(translateText("New chats will use your Claude account.", "zh-CN"), "新对话将使用你的 Claude 账户。");
+  assert.equal(translateText("What should I change?", "zh-CN"), "需要我修改什么？");
+  assert.equal(translateText("Sending…", "zh-CN"), "正在发送…");
+  assert.equal(translateText("Anyone in your organization", "zh-CN"), "组织内的任何人");
   assert.equal(translateText("New chat", "zh-CN"), "新建对话");
+  assert.equal(translateText("running", "zh-CN"), "运行中");
+  assert.equal(translateText("ok", "zh-CN"), "成功");
+  for (const status of ["refused", "pending_approval", "queued", "silent", "react", "deferred"]) {
+    assert.notEqual(translateText(status, "zh-CN"), status);
+  }
+  assert.equal(translateText("completed", "zh-CN"), "已完成");
+  assert.equal(
+    translateText("9/24/2026, 10:00:00 AM — in flight for 3m", "zh-CN"),
+    "9/24/2026, 10:00:00 AM — 已运行 3 分钟",
+  );
+  assert.equal(translateText("9/24/2026, 10:00:00 AM — took 5s", "zh-CN"), "9/24/2026, 10:00:00 AM — 耗时 5 秒");
+  assert.equal(translateText("Demo settings saved.", "zh-CN"), "Demo 的设置已保存。");
+  assert.equal(translateText("Demo is offline and archived.", "zh-CN"), "Demo 已下线并归档。");
+  assert.equal(translateText("Demo is restored and running.", "zh-CN"), "Demo 已恢复运行。");
+  assert.equal(translateText("Shared snapshot", "zh-CN"), "共享快照");
+  assert.equal(translateText("5 turns", "zh-CN"), "5 轮");
+  assert.equal(translateText("2,000 tokens", "zh-CN"), "2,000 个令牌");
+  assert.equal(translateText("every 2h", "zh-CN"), "每 2 小时");
+  assert.equal(translateText("Reorder GPT-6; use Up or Down", "zh-CN"), "调整 GPT-6 的顺序；使用向上或向下键");
+  assert.equal(translateText("Back to parent: Demo", "zh-CN"), "返回上级：Demo");
+  assert.equal(translateText("3 apps found", "zh-CN"), "找到 3 个应用");
+  assert.equal(
+    translateText("No apps match “demo”. Try another name.", "zh-CN"),
+    "没有匹配“demo”的应用。请尝试其他名称。",
+  );
+  assert.equal(translateText("open", "zh-CN"), "打开");
+  assert.equal(translateText("Chat options", "zh-CN"), "对话选项");
+  assert.equal(translateText("Note from last fire", "zh-CN"), "上次运行的备注");
+  assert.equal(formatChatCta("What can I help with?", "小明", "zh-CN"), "你好，小明。有什么需要我帮忙？");
+  assert.equal(formatChatCta("What can I help with?", "Alice", "en"), "Hi, Alice. What can I help with?");
   assert.equal(translateText("New project", "zh-CN"), "新建项目");
   assert.equal(translateText("Search projects…", "zh-CN"), "搜索项目…");
   assert.equal(translateText("Active only", "zh-CN"), "仅显示使用中");
@@ -26,6 +91,11 @@ test("Chinese translations cover exact UI copy and dynamic counters", () => {
     "此处的每个对话都会以该模型开始。",
   );
   assert.equal(translateText("Add people", "zh-CN"), "添加人员");
+  assert.equal(
+    translateText("Search account, email, name, or profile details", "zh-CN"),
+    "搜索账户、邮箱、姓名或其他目录资料",
+  );
+  assert.equal(translateText("People with access", "zh-CN"), "有权限的人员");
   assert.equal(translateText("You", "zh-CN"), "你");
   assert.equal(translateText("Owner", "zh-CN"), "所有者");
   assert.equal(translateText("Agent behavior", "zh-CN"), "智能体行为");
@@ -73,6 +143,20 @@ test("Chinese translations cover exact UI copy and dynamic counters", () => {
     "智能体会将此项目的更新发布到 #build，频道中的所有人都属于该项目。",
   );
   assert.equal(translateText("New chat", "en"), "New chat");
+  assert.equal(translateText("What can I help with?", "zh-CN"), "有什么需要我帮忙？");
+  assert.equal(translateText("Start a new chat in Research", "zh-CN"), "在 Research 中新建对话");
+  assert.equal(translateText("Hi, Alice.", "zh-CN"), "你好，Alice。");
+  assert.equal(translateText("GitHub connected", "zh-CN"), "GitHub 已连接");
+  assert.equal(translateText("Options for Roadmap", "zh-CN"), "Roadmap 的选项");
+  assert.equal(translateText("Share Roadmap", "zh-CN"), "分享 Roadmap");
+  assert.equal(translateText("Model: GPT-5.6 Terra, Auto effort", "zh-CN"), "模型：GPT-5.6 Terra，思考强度：自动");
+  assert.equal(
+    translateText(
+      "System follows your device's light or dark setting. Import an iTerm2 .itermcolors or a VS Code color theme .json to paint the app with its palette.",
+      "zh-CN",
+    ),
+    "跟随系统时使用设备的深浅色设置。也可以导入 iTerm2 的 .itermcolors 或 VS Code 的主题 .json 文件。",
+  );
   assert.equal(translateText("New project", "en"), "New project");
   assert.equal(translateText("User supplied content", "zh-CN"), "User supplied content");
 });
@@ -158,7 +242,7 @@ test("template localization translates authored UI copy and preserves every dyna
     const boundaries = html`<span>Pinned</span><span>Allow once</span><span>Allow custom</span>` as unknown as {
       strings: readonly string[];
     };
-    assert.match(boundaries.strings.join(""), /<span>已置顶<\/span><span>允许一次<\/span><span>Allow custom<\/span>/);
+    assert.match(boundaries.strings.join(""), /<span>已置顶<\/span><span>允许一次<\/span><span>允许自定义<\/span>/);
   } finally {
     for (const name of names) {
       const descriptor = descriptors.get(name);
@@ -172,6 +256,8 @@ test("template localization translates authored UI copy and preserves every dyna
 test("conditional interface labels pass through the translator", () => {
   const source = (name: string) => readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
   assert.match(source("crons.ts"), /t\(showDisabledCrons \? "Hide disabled" : "Show disabled"\)/);
+  assert.match(source("crons.ts"), /title === "Refresh my suggested activities" \? t\(title\) : title/);
+  assert.doesNotMatch(source("crons.ts"), /t\(c\.title\)/);
   assert.match(source("contexts.ts"), /t\(contextsState\.createSaving \? "Close" : "Cancel"\)/);
   assert.match(source("sessions.ts"), /\$\{tip\(t\(s\.archived \? "Unarchive" : "Archive"\)\)\}/);
   assert.match(source("shell.ts"), /t\(gate\.pending \? "Signing in…" : "Continue"\)/);

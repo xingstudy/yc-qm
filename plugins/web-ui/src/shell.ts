@@ -1529,7 +1529,7 @@ function inboxNavRow(): TemplateResult {
     }}
     @dragend=${() => endPaneDrag()}
   >
-    ${icon(ICON.inbox, 17)}<span>Inbox</span>${count > 0 ? html`<span class="nav-badge" aria-label=${`${count} waiting on you`}>${count > 99 ? "99+" : count}</span>` : nothing}
+    ${icon(ICON.inbox, 17)}<span>Inbox</span>${count > 0 ? html`<span class="nav-badge" aria-label=${t(`${count} waiting on you`)}>${count > 99 ? "99+" : count}</span>` : nothing}
   </a>`;
 }
 
@@ -1677,7 +1677,8 @@ function onNavClick(e: Event): void {
   if (e instanceof MouseEvent && !isPlainLeftClick(e)) return;
   e.preventDefault();
   setScopedSession(null);
-  switchView(view);
+  if (view === "chats") startNewChatInLastScope();
+  else switchView(view);
   closeSidebarOnNarrowView();
 }
 
@@ -1828,12 +1829,12 @@ function showConversationError(unavailable: boolean): void {
   render(
     html`
       <section class="conversation-error" aria-labelledby="conversation-error-title">
-        <span class="conversation-error-code">${unavailable ? "Connection problem" : "404"}</span>
+        <span class="conversation-error-code">${unavailable ? t("Connection problem") : "404"}</span>
         <h1 id="conversation-error-title" tabindex="-1">
-          ${unavailable ? "Couldn't load conversation" : "Conversation not found"}
+          ${t(unavailable ? "Couldn't load conversation" : "Conversation not found")}
         </h1>
         <p>
-          ${unavailable ? "Something went wrong loading this conversation. Please try again." : "This conversation may have been deleted, or you may be signed into an account that doesn’t have access."}
+          ${t(unavailable ? "Something went wrong loading this conversation. Please try again." : "This conversation may have been deleted, or you may be signed into an account that doesn’t have access.")}
         </p>
         <div class="conversation-error-actions">
           <a class="btn" href=${withBase("/")}>Back to chats</a>
@@ -1845,7 +1846,7 @@ function showConversationError(unavailable: boolean): void {
   );
   appState.mainEl.querySelector<HTMLElement>("h1")?.focus();
   renderList();
-  document.title = `${unavailable ? "Couldn't load conversation" : "Conversation not found"} · ${brandName()}`;
+  document.title = `${t(unavailable ? "Couldn't load conversation" : "Conversation not found")} · ${brandName()}`;
 }
 
 function toggleSidebar(): void {

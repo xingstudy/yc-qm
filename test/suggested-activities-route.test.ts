@@ -56,6 +56,7 @@ test("generation validates inputs before invoking the model", async () => {
     { principalId: "" },
     { principalId: "alice", seeds: [{}] },
     { principalId: "alice", timezone: "not/a/timezone" },
+    { principalId: "alice", locale: "fr" },
   ]) {
     assert.equal((await request(body, true)).status, 400);
   }

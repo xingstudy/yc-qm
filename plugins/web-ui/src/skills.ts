@@ -1,7 +1,7 @@
 import { icon } from "./ui";
 import { SkillImportForm } from "./skill-import-form.ts";
 import { nothing, render, type TemplateResult } from "lit";
-import { html, t } from "./i18n.ts";
+import { html, localeCode, t } from "./i18n.ts";
 import { Search } from "lucide";
 import { api, type CoreContext } from "./core-bridge";
 import type { SkillItem } from "./composer";
@@ -282,7 +282,7 @@ function skillVariant(s: SkillItem, hasScopeVariants: boolean): TemplateResult {
       <a
         class="skill-variant-main"
         href=${deepLinkPath(UI_BASE, "skills", null, null, s.id ?? null)}
-        aria-label=${`Open /${s.name}`}
+        aria-label=${t(`Open /${s.name}`)}
         @click=${(event: MouseEvent) => {
           if (!isPlainLeftClick(event)) return;
           event.preventDefault();
@@ -346,7 +346,9 @@ function openSkill(s: SkillItem, opts: { push?: boolean } = {}): void {
       </div>
       <div class="field">
         <label>Capabilities</label>
-        <div class="value">${s.requiredCapabilities?.length ? s.requiredCapabilities.join(", ") : "None required"}</div>
+        <div class="value">
+          ${s.requiredCapabilities?.length ? s.requiredCapabilities.join(", ") : t("None required")}
+        </div>
       </div>
       <div class="field">
         <label>Assets</label>
@@ -575,8 +577,8 @@ function skillAccessPane(): TemplateResult | typeof nothing {
     <div class="card-meta">${t("Change preview")}: ${accessPreview(access)} ${t("will be evaluated at use time.")}</div>
     <div class="card-meta">
       ${t("Effective active users")}: ${access.effectiveSummary.activeUsers ?? t("Unavailable for this home context")} ·
-      ${t("Last updated by")} ${access.updatedBy} ${t("at")} ${new Date(access.updatedAt).toLocaleString()} ·
-      ${t("Changes are recorded in Audit.")}
+      ${t("Last updated by")} ${access.updatedBy} ${t("at")} ${new Date(access.updatedAt).toLocaleString(localeCode())}
+      · ${t("Changes are recorded in Audit.")}
     </div>
     ${accessError ? html`<div class="form-error" role="alert">${accessError}</div>` : nothing}
     <div class="actions">

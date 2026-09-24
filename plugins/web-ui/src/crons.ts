@@ -52,13 +52,13 @@ interface CronRunView {
 }
 
 function cronRunTiming(run: CronRunView): string {
-  const fired = new Date(run.firedAt).toLocaleString();
+  const fired = new Date(run.firedAt).toLocaleString(localeCode());
   if (run.status === "running") {
     const min = Math.max(0, Math.round((Date.now() - run.firedAt) / 60_000));
-    return `${fired} — in flight for ${min}m`;
+    return t(`${fired} — in flight for ${min}m`);
   }
   if (run.endedAt === undefined) return fired;
-  return `${fired} — took ${Math.max(0, Math.round((run.endedAt - run.firedAt) / 1000))}s`;
+  return t(`${fired} — took ${Math.max(0, Math.round((run.endedAt - run.firedAt) / 1000))}s`);
 }
 
 type CronTab = "yours" | "shared" | "archived";
@@ -126,7 +126,7 @@ async function refreshCrons(opts: { showLoading?: boolean } = {}): Promise<boole
     return true;
   } catch (e) {
     if (seq !== cronRefreshSeq) return false;
-    cronsNotice = errMessage(e, "Failed to load crons.");
+    cronsNotice = t(errMessage(e, "Failed to load crons."));
     return false;
   } finally {
     if (seq === cronRefreshSeq) cronsLoading = false;
@@ -166,7 +166,10 @@ function suggestedCronTitle(text: string): string {
 }
 
 function cronTitle(c: CronView): string {
-  return c.title?.trim() || suggestedCronTitle(cronText(c));
+  const title = c.title?.trim();
+  if (title) return title === "Refresh my suggested activities" ? t(title) : title;
+  const suggested = suggestedCronTitle(cronText(c));
+  return suggested === "(untitled cron)" ? t(suggested) : suggested;
 }
 
 function cronScopeLabel(c: CronView): string {
@@ -536,8 +539,8 @@ function openCron(c: CronView, opts: { push?: boolean; refreshRuns?: boolean } =
           c.lastFireNote
             ? html`<div class="field">
                 <label>
-                  ${c.lastFireNote.by ? `Note left by ${c.lastFireNote.by}` : "Note from last fire"}
-                  (${new Date(c.lastFireNote.at).toLocaleString()})
+                  ${t(c.lastFireNote.by ? `Note left by ${c.lastFireNote.by}` : "Note from last fire")}
+                  (${new Date(c.lastFireNote.at).toLocaleString(localeCode())})
                 </label>
                 <div class="value" dir="auto">${c.lastFireNote.text}</div>
               </div>`
@@ -589,7 +592,7 @@ function cronRunHistory(c: CronView): TemplateResult {
       ${[...runs].reverse().map((run) => {
         const detail = run.note ?? (run.reply ? clipWords(run.reply, 120) : "");
         return html` <div class="cron-run-row">
-          <span class="badge">${run.status ?? "completed"}</span>
+          <span class="badge">${t(run.status ?? "completed")}</span>
           <span class="cron-run-time">${cronRunTiming(run)}</span>
           <span class=${run.note ? "cron-run-detail cron-run-error" : "cron-run-detail"} ${tip(detail)}>
             ${detail}
@@ -611,7 +614,7 @@ async function loadCronRuns(id: string): Promise<void> {
     const result = await api<{ runs: CronRunView[] }>(`/api/crons/${encodeURIComponent(id)}/runs`);
     cronRuns.set(id, result.runs ?? []);
   } catch (error) {
-    cronActionNotice = errMessage(error, "Couldn't load run history.");
+    cronActionNotice = t(errMessage(error, "Couldn't load run history."));
     cronRuns.set(id, []);
   } finally {
     cronRunsLoading.delete(id);
@@ -645,7 +648,7 @@ function runCronNow(id: string): Promise<void> {
       await api(`/api/crons/${encodeURIComponent(id)}/run`, { method: "POST" });
       cronActionNotice = t("Run started. Refresh recent runs after it completes.");
     } catch (e) {
-      cronActionNotice = errMessage(e, "run failed");
+      cronActionNotice = t(errMessage(e, "run failed"));
     }
     await reopenCron(id);
   }, undefined);
@@ -661,7 +664,7 @@ function patchCron(
       await api(`/api/crons/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) });
       return true;
     } catch (e) {
-      cronActionNotice = errMessage(e, errorLabel);
+      cronActionNotice = t(errMessage(e, errorLabel));
       await reopenCron(id);
       return false;
     }
@@ -794,7 +797,7 @@ function setCronEnabled(id: string, enabled: boolean): Promise<void> {
       cronTab = "yours";
       if (!enabled) showDisabledCrons = true;
     } catch (e) {
-      cronActionNotice = errMessage(e, enabled ? "enable failed" : "disable failed");
+      cronActionNotice = t(errMessage(e, enabled ? "enable failed" : "disable failed"));
     }
     await reopenCron(id);
   }, undefined);
@@ -806,7 +809,7 @@ async function confirmDeleteCron(id: string): Promise<void> {
     try {
       await api(`/api/crons/${encodeURIComponent(id)}`, { method: "DELETE" });
     } catch (e) {
-      cronActionNotice = errMessage(e, "delete failed");
+      cronActionNotice = t(errMessage(e, "delete failed"));
     }
     await reopenCron(id);
   }, undefined);

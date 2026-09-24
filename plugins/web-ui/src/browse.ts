@@ -1,4 +1,5 @@
-import { html, nothing, render, type TemplateResult } from "lit";
+import { nothing, render, type TemplateResult } from "lit";
+import { html, t } from "./i18n.ts";
 import { Box, Brain, Clock, Files, Folder, KeyRound, Repeat, Rocket, ShieldUser, Webhook, type IconNode } from "lucide";
 import { deepLinkPath, isPlainLeftClick, UI_BASE } from "./deep-link";
 import { nextGridIndex } from "./grid-nav";
@@ -26,8 +27,8 @@ export function destinations(): Destination[] {
     view,
     href: deepLinkPath(UI_BASE, view, null),
     glyph,
-    label,
-    blurb: brandText(blurb),
+    label: t(label),
+    blurb: brandText(t(blurb)),
   });
   const list: Destination[] = [
     to("contexts", Folder, "Projects", "Group chats, files, and automations"),
@@ -45,8 +46,8 @@ export function destinations(): Destination[] {
       view: null,
       href: ADMIN_HOME_URL,
       glyph: ShieldUser,
-      label: "Admin",
-      blurb: "Org settings, people, and policy",
+      label: t("Admin"),
+      blurb: t("Org settings, people, and policy"),
     });
   }
   return list;
@@ -149,6 +150,7 @@ function paletteTpl(): TemplateResult {
         <div class="chat-search-inputrow browse-head">
           <span class="browse-title">Browse</span>
           <span class="chat-search-kbd">esc</span>
+          <button class="chat-search-cancel" type="button" @click=${closeBrowse}>Cancel</button>
         </div>
         <div class="browse-grid" role="group" aria-label="Destinations">${destinations().map(tile)}</div>
       </div>
