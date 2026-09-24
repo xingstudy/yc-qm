@@ -24,11 +24,11 @@ COPY plugins/admin/public /admin/public
 COPY plugins/chassis/src /chassis/src
 COPY --from=build /app/dist-web ./dist-web
 
-ARG PKG_REFRESH_WEEK=
-RUN --mount=type=cache,target=/var/cache/apk,sharing=locked apk upgrade \
+ARG PKG_REFRESH_RUN_ID=
+RUN --mount=type=cache,target=/var/cache/apk,sharing=locked apk upgrade --no-cache \
   && rm -rf /tmp/node-compile-cache /usr/local/lib/node_modules/npm \
   && rm -f /usr/local/bin/npm /usr/local/bin/npx \
-  && printf 'os packages refreshed for week %s\n' "${PKG_REFRESH_WEEK:-unknown}"
+  && printf 'os packages refreshed for run %s\n' "${PKG_REFRESH_RUN_ID:-unknown}"
 
 ARG GIT_SHA=
 ENV GIT_SHA=$GIT_SHA

@@ -32,15 +32,15 @@ RUN --mount=type=cache,target=/root/.npm,sharing=shared npm ci --omit=dev --pref
 COPY licenses/earendil-works-pi-coding-agent.LICENSE /usr/share/licenses/qm/pi-coding-agent.LICENSE
 RUN mkdir -p /data && chown node:node /data
 
-ARG PKG_REFRESH_WEEK=
+ARG PKG_REFRESH_RUN_ID=
 RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
     --mount=type=cache,target=/root/.npm,sharing=shared \
-    apk upgrade \
+    apk upgrade --no-cache \
   && apk add ca-certificates curl git git-daemon docker-cli \
   && npm audit --omit=dev --audit-level=moderate --registry=https://registry.npmjs.org \
   && rm -rf /tmp/node-compile-cache /usr/local/lib/node_modules/npm \
   && rm -f /usr/local/bin/npm /usr/local/bin/npx \
-  && printf 'os packages refreshed and dependencies audited for week %s\n' "${PKG_REFRESH_WEEK:-unknown}"
+  && printf 'os packages refreshed and dependencies audited for run %s\n' "${PKG_REFRESH_RUN_ID:-unknown}"
 
 ENV NODE_ENV=production
 ENV DATA_DIR=/data
