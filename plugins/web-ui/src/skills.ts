@@ -6,6 +6,7 @@ import { Search } from "lucide";
 import { api, type CoreContext } from "./core-bridge";
 import type { SkillItem } from "./composer";
 import { errMessage } from "../../chassis/src/errors";
+import { focusTextInputOnDesktop } from "./viewport";
 import { fieldSelect } from "./ui";
 import { appState } from "./shell";
 import { skillActions } from "./skill-actions";
@@ -258,7 +259,9 @@ function startCreate(): void {
   createError = "";
   creatingSaving = false;
   drawSkills();
-  queueMicrotask(() => skillsPageHost?.querySelector<HTMLInputElement>('[data-focus-key="skill-import-url"]')?.focus());
+  queueMicrotask(() =>
+    focusTextInputOnDesktop(skillsPageHost?.querySelector<HTMLInputElement>('[data-focus-key="skill-import-url"]')),
+  );
 }
 
 function skillScopeTitle(s: SkillItem): string {

@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
     <title>QM Admin</title>
     <meta name="brand-self-label" content="Agent" />
     <style>
@@ -7081,7 +7081,7 @@
                           data-choice-for="sharing-posture"
                         /><span
                           ><strong>Open</strong
-                          ><small
+                          ><small data-brand-copy
                             >QM can use your saved memories, files, and skills across conversations when you ask it for
                             help. In a group conversation, this could risk revealing private information to
                             others.</small
@@ -7459,9 +7459,10 @@
                     <h2>Branding</h2>
                     <p>
                       How this org's surfaces look. Accent is the highlight color across the web UI, admin, and portal;
-                      icon is the square image beside the name in the top left; mark is a 1–2 character badge drawn over
-                      that icon instead; label is the assistant's name everywhere it introduces itself; organization
-                      name is how the assistant refers to this org. Leave a field blank to use the deployment default.
+                      icon is the square image beside the name in the top left and the browser/PWA icon; mark is a 1–2
+                      character badge drawn over that square instead; label is the assistant's name everywhere it
+                      introduces itself; organization name is how the assistant refers to this org. Leave a field blank
+                      to use the deployment default.
                     </p>
                   </div>
                   <div class="body">
@@ -7859,7 +7860,9 @@
                 <div class="slack-connection">
                   <div class="slack-connection-info">
                     <h3 id="slack-installation-state">Connect your workspace</h3>
-                    <p class="hint" id="slack-installation-description">Add the QM app to get started.</p>
+                    <p class="hint" id="slack-installation-description" data-brand-copy>
+                      Add the QM app to get started.
+                    </p>
                   </div>
                   <div class="slack-connection-actions">
                     <button class="hidden" id="slack-installation-start">
@@ -7912,8 +7915,9 @@
                     </li>
                     <li>
                       In <strong>Basic Information → App-Level Tokens</strong>, click
-                      <strong>Generate Token and Scopes</strong>. Name it <strong>QM connection</strong>, add
-                      <code>connections:write</code>, and generate it. Copy the token starting with <code>xapp-</code>.
+                      <strong>Generate Token and Scopes</strong>. Name it
+                      <strong data-brand-copy>QM connection</strong>, add <code>connections:write</code>, and generate
+                      it. Copy the token starting with <code>xapp-</code>.
                     </li>
                     <li>
                       Paste both tokens below and click <strong>Validate and connect</strong>. Keep this page open while
@@ -7927,7 +7931,7 @@
                   <p class="hint">
                     Replacing a connected app changes the bot identity. Invite the new bot to your channels and start a
                     new DM with it. The old app stays installed until a workspace admin removes it.
-                    <span id="slack-hosted-switch" class="hidden"
+                    <span id="slack-hosted-switch" class="hidden" data-brand-copy
                       >To switch back to the QM app, disconnect here first, then choose Add to Slack.</span
                     >
                   </p>
@@ -8046,7 +8050,7 @@
                 <p class="field-hint" id="mcp-credential-hint">
                   Leave a stored credential blank to retain it when the URL and authentication mode do not change.
                 </p>
-                <p class="field-hint" id="mcp-user-oauth-hint" hidden>
+                <p class="field-hint" id="mcp-user-oauth-hint" data-brand-copy hidden>
                   Each user connects their own Atlassian account in Keychain. QM stores no shared Atlassian token.
                 </p>
                 <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 10px"
@@ -8160,6 +8164,14 @@
 
     <script>
       const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");
+      function browserRandomUUID() {
+        if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+      }
       function syncAdminTheme() {
         const saved = localStorage.getItem("theme") || "system";
         const dark = saved === "dark" || (saved === "system" && themeMedia.matches);
@@ -8924,6 +8936,7 @@
         "Codex requires an OpenAI Responses model.": "Codex 需要 OpenAI Responses 协议的模型。",
         Branding: "品牌",
         "Accent color": "强调色",
+        "Brand icon (https image URL)": "品牌图标（HTTPS 图片 URL）",
         "Brand mark (1–2 chars)": "品牌标记（1–2 个字符）",
         "Assistant label": "助手名称",
         "People directory": "人员目录",
@@ -9585,8 +9598,8 @@
           "组织级设置，默认关闭。开启后，内部成员可在含外部用户（Connect 成员或访客）的 Slack 聊天室中与智能体对话；智能体的回复以及它在其中读取的内容对这些外部用户可见。外部用户自身仍无法与智能体交互。",
         "Restrict which models the web UI offers and accepts, org-wide. Add the models to allow and pick which is pre-selected by default. Remove every chip to allow the deployment's full model set.":
           "在组织范围内限制 Web UI 可提供和接受的模型。添加允许的模型并选择默认预选项。移除所有模型标签即可允许部署提供的全部模型。",
-        "How this org's surfaces look. Accent is the highlight color across the web UI, admin, and portal; mark is the 1–2 character badge in the web UI; label is the assistant's name in transcripts. Leave a field blank to use the deployment default.":
-          "设置此组织各界面的外观。强调色用于 Web UI、管理端和门户中的高亮；品牌标记是 Web UI 中的 1–2 字符徽标；助手名称显示在对话记录中。留空字段即可使用部署默认值。",
+        "How this org's surfaces look. Accent is the highlight color across the web UI, admin, and portal; icon is the square image beside the name in the top left and the browser/PWA icon; mark is a 1–2 character badge drawn over that square instead; label is the assistant's name everywhere it introduces itself; organization name is how the assistant refers to this org. Leave a field blank to use the deployment default.":
+          "设置此组织各界面的外观。强调色用于 Web UI、管理端和门户中的高亮；品牌图标用于左上角名称旁的方形图标以及浏览器/PWA 图标；品牌标记会改为在该方形区域显示 1–2 个字符；助手名称用于助手自称；组织名称用于助手称呼本组织。留空字段即可使用部署默认值。",
         "Server-side credentials vended through the broker. Review the complete effective capability—destination, authentication, methods, paths, and principals—before saving. Secrets never reach a sandbox.":
           "由代理提供的服务端凭据。保存前请检查完整的生效能力，包括目标、认证、方法、路径和主体。密钥绝不会进入沙箱。",
         "+ Add model": "+ 添加模型",
@@ -10941,8 +10954,10 @@
 
       const brandSelfLabel = () =>
         document.querySelector('meta[name="brand-self-label"]')?.getAttribute("content") || "Agent";
+      const brandAdminText = (source) => String(source).replace(/\bQM\b/g, () => brandSelfLabel());
       document.getElementById("brand-product").textContent = brandSelfLabel();
       document.querySelectorAll("[data-brand-product]").forEach((el) => (el.textContent = brandSelfLabel()));
+      document.querySelectorAll("[data-brand-copy]").forEach((el) => (el.textContent = brandAdminText(el.textContent)));
       document.title = `${brandSelfLabel()} ${adminTr("Admin")}`;
       let page = 1;
 
@@ -15372,13 +15387,15 @@
             ? "Remove your current connection before switching to the hosted app."
             : "";
         $("slack-installation-start-label").textContent = r.data.configured ? "Re-add to Slack" : "Add to Slack";
-        $("slack-installation-description").textContent = r.data.configured
-          ? r.data.source === "service"
-            ? "QM app"
-            : "Custom app"
-          : r.data.installAvailable
-            ? "Add the QM app or connect your own below."
-            : "Create a Slack app from our manifest, then connect it here.";
+        $("slack-installation-description").textContent = brandAdminText(
+          r.data.configured
+            ? r.data.source === "service"
+              ? "QM app"
+              : "Custom app"
+            : r.data.installAvailable
+              ? "Add the QM app or connect your own below."
+              : "Create a Slack app from our manifest, then connect it here.",
+        );
         $("slack-own-app-label").textContent = r.data.installAvailable ? "Use your own Slack app" : "Set up Slack";
         $("slack-hosted-switch").classList.toggle("hidden", !r.data.installAvailable);
         if (!r.data.installAvailable && !r.data.configured) $("slack-own-app-guide").open = true;
@@ -15414,7 +15431,11 @@
           }
         }
         if (step === "connected" && r.data.configured && r.data.setup?.connected) {
-          setStatus("st-slack-installation", "Connected. You can return to your QM conversation.", "ok");
+          setStatus(
+            "st-slack-installation",
+            brandAdminText("Connected. You can return to your QM conversation."),
+            "ok",
+          );
         }
       }
       async function startSlackInstallation(step = "install") {
@@ -22110,7 +22131,7 @@
               actionBody.keepPreviousMembership = true;
             const response = await fetch(API_BASE + "/api/org-users/batches/preview", {
               method: "POST",
-              headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
+              headers: { "content-type": "application/json", "idempotency-key": browserRandomUUID() },
               body: JSON.stringify({
                 ...(orgMemberSelectionMode === "filter"
                   ? {
@@ -22141,7 +22162,7 @@
             if (!file) return;
             const response = await fetch(API_BASE + "/api/org-users/imports/preview", {
               method: "POST",
-              headers: { "content-type": "text/csv", "idempotency-key": crypto.randomUUID() },
+              headers: { "content-type": "text/csv", "idempotency-key": browserRandomUUID() },
               body: file,
             });
             const data = await response.json().catch(() => ({}));

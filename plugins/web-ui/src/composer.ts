@@ -68,6 +68,7 @@ import { clearDraft, newChatDraftKey, saveDraft } from "./drafts";
 import { html, t } from "./i18n.ts";
 import { tip } from "./tooltip";
 import { isPhone } from "./viewport";
+import { randomUUID } from "./random";
 import {
   LOADOUT_CAP,
   parseLoadout,
@@ -219,7 +220,7 @@ export function resyncModelSelection(): void {
 export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
   const refreshAccount = () => ctx.chat.drawActiveChat();
   window.addEventListener("model-account-changed", refreshAccount);
-  const loadoutMenuId = `composer-loadout-${crypto.randomUUID()}`;
+  const loadoutMenuId = `composer-loadout-${randomUUID()}`;
   let runtimeRequest = 0;
   let runtimeIdentity = "";
   let unsubscribeRuntime: (() => void) | undefined;
@@ -1730,6 +1731,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
   let pendingComposerFocus = false;
 
   function focusComposerEnd(): void {
+    if (isPhone()) return;
     requestAnimationFrame(() => {
       const ta = ctx.chat.state.host?.querySelector<HTMLTextAreaElement>(".composer-input");
       if (!ta) return;
@@ -1811,12 +1813,17 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     const armed = slashQuery(composerState.draft) !== null;
     if (armed && skillsCache === null && !skillsLoading) void loadSkills(agent);
     const popoverShown = Boolean(ctx.chat.state.host?.querySelector(".slash-popover"));
-    if (
-      armed ||
-      popoverShown ||
-      hadError ||
-      (Boolean(appState.me?.suggestedActivities?.length) && wasEmpty !== !composerState.draft)
-    ) {
+    if (Boolean(appState.me?.suggestedActivities?.length) && wasEmpty !== !composerState.draft) {
+      const collapsed = Boolean(composerState.draft);
+      const region = ctx.chat.state.host?.querySelector<HTMLElement>(".suggested-activities");
+      region?.classList.toggle("is-collapsed", collapsed);
+      region?.setAttribute("aria-hidden", String(collapsed));
+      region?.toggleAttribute("inert", collapsed);
+      for (const button of region?.querySelectorAll<HTMLButtonElement>(".suggested-activity") ?? []) {
+        button.disabled = collapsed;
+      }
+    }
+    if (armed || popoverShown || hadError) {
       ctx.chat.drawActiveChat(agent);
       return;
     }

@@ -127,6 +127,20 @@ export function createSuggestedActivityService(deps: {
       let profile = await deps.store.putIfAbsent(principalId, { timezone, lastSeenAt: now() });
       await deps.store.merge(principalId, { lastSeenAt: now(), seeds });
       profile = { ...profile, lastSeenAt: now(), seeds };
+      if (profile.cronId && !(await deps.crons.get(profile.cronId))) {
+        const missingCronId = profile.cronId;
+        const stored = await deps.store.update?.(principalId, (value) => {
+          if (value.cronId !== missingCronId) return value;
+          const next = { ...value };
+          delete next.cronId;
+          delete next.managedSchedule;
+          delete next.managedAction;
+          delete next.lastBootstrapAt;
+          return next;
+        });
+        if (!stored) throw new Error("Suggested activities require an atomic profile store");
+        profile = stored;
+      }
       if (!profile.cronId) {
         const schedule = scheduleFor(principalId, profile.timezone);
         const cron = await deps.crons.create({

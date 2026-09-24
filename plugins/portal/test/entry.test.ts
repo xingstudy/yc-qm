@@ -53,6 +53,25 @@ test("boot refuses an own-origin OIDC endpoint when no broker upstream is wired"
   assert.equal(wired.status, 0, wired.stderr);
 });
 
+test("local auth bypass refuses a non-loopback public URL", () => {
+  const child = spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", "import('./src/index.ts').then(m => m.bootChecks())"],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        NODE_ENV: "development",
+        PORTAL_PUBLIC_URL: "http://qm-test.local:8088",
+        PORTAL_LOCAL_AUTH_BYPASS: "1",
+      },
+      encoding: "utf8",
+    },
+  );
+  assert.notEqual(child.status, 0);
+  assert.match(child.stderr, /PORTAL_LOCAL_AUTH_BYPASS requires a localhost/);
+});
+
 test("production boot requires an explicit OIDC tenant trust boundary", () => {
   const command = "import('./src/index.ts').then(m => m.bootChecks())";
   const baseEnv: NodeJS.ProcessEnv = {

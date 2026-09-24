@@ -28,6 +28,7 @@ import {
 import { UI_BASE } from "./deep-link";
 import { errMessage } from "../../chassis/src/errors";
 import { actionSnippet, fieldSelect, formatBytes, icon, initials, menuSelect, relTime } from "./ui";
+import { focusTextInputOnDesktop } from "./viewport";
 import { appState, replacePanePreservingFocus, switchView, syncUrlFromState } from "./shell";
 import { startNewChat } from "./sessions";
 import { groupDmTitle, openSession, refreshSessions, sessionsState, slackLogo, surfaceOf } from "./sessions";
@@ -1026,7 +1027,7 @@ function openCreateProject(): void {
   contextsState.createName = "";
   contextsState.createError = "";
   drawContexts();
-  queueMicrotask(() => document.querySelector<HTMLInputElement>("#project-name")?.focus());
+  queueMicrotask(() => focusTextInputOnDesktop(document.querySelector<HTMLInputElement>("#project-name")));
 }
 
 function closeCreateProject(): void {
@@ -1159,7 +1160,7 @@ async function createProject(event: SubmitEvent): Promise<void> {
   if (!name) {
     contextsState.createError = "Enter a project name.";
     drawContexts();
-    queueMicrotask(() => document.querySelector<HTMLInputElement>("#project-name")?.focus());
+    queueMicrotask(() => focusTextInputOnDesktop(document.querySelector<HTMLInputElement>("#project-name")));
     return;
   }
   const seq = ++createProjectSeq;
@@ -1190,7 +1191,7 @@ async function createProject(event: SubmitEvent): Promise<void> {
     contextsState.createSaving = false;
     contextsState.createError = errMessage(error, "Couldn't create that project.");
     drawContexts();
-    queueMicrotask(() => document.querySelector<HTMLInputElement>("#project-name")?.focus());
+    queueMicrotask(() => focusTextInputOnDesktop(document.querySelector<HTMLInputElement>("#project-name")));
   }
 }
 
@@ -1210,7 +1211,7 @@ function toggleMemberPicker(context: CoreContext): void {
   contextsState.slackError = "";
   drawContexts();
   if (contextsState.memberProjectId)
-    queueMicrotask(() => document.querySelector<HTMLInputElement>("#project-member-search")?.focus());
+    queueMicrotask(() => focusTextInputOnDesktop(document.querySelector<HTMLInputElement>("#project-member-search")));
 }
 
 function closeMemberPicker(): void {

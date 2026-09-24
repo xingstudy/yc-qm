@@ -70,6 +70,7 @@ import {
 import { tip } from "./tooltip";
 import { errMessage } from "../../chassis/src/errors";
 import { copyText, icon, menuSelect, relTime, workingWave } from "./ui";
+import { focusTextInputOnDesktop } from "./viewport";
 import { listPageTpl } from "./list-page";
 import {
   contextsState,
@@ -1245,9 +1246,7 @@ function beginRename(key: string, draft: string): void {
   renderList();
   requestAnimationFrame(() => {
     const input = appState.listEl?.querySelector<HTMLInputElement>(".session-rename-input");
-    if (!input) return;
-    input.focus();
-    input.select();
+    if (focusTextInputOnDesktop(input)) input?.select();
   });
 }
 

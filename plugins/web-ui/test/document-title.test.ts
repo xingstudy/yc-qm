@@ -13,6 +13,22 @@ test("page titles retain the static product title", () => {
   assert.equal(documentTitle(), PRODUCT_TITLE);
 });
 
+test("runtime page titles use the configured brand name", () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const dom = new JSDOM('<meta name="brand-self-label" content="Zed">');
+  Object.defineProperty(globalThis, "document", { configurable: true, value: dom.window.document });
+  try {
+    assert.equal(documentTitle("chats", "Quarterly planning", true), "Quarterly planning · Zed · Web");
+    assert.equal(documentTitle(), "Zed · Web");
+    dom.window.document.querySelector("meta")!.content = "Acme";
+    assert.equal(documentTitle("chats", null, true), "New chat · Acme · Web");
+  } finally {
+    dom.window.close();
+    if (previous) Object.defineProperty(globalThis, "document", previous);
+    else delete (globalThis as { document?: Document }).document;
+  }
+});
+
 test("chat and non-chat views have useful fallbacks", () => {
   assert.equal(documentTitle("chats"), `Chats · ${PRODUCT_TITLE}`);
   assert.equal(documentTitle("chats", null, true), `New chat · ${PRODUCT_TITLE}`);

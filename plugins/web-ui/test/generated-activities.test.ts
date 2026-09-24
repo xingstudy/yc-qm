@@ -64,3 +64,25 @@ test("a pending refresh displays its cached result and then publishes the comple
     await vite.close();
   }
 });
+
+test("an unchanged activity response does not redraw the chat", async () => {
+  const oldFetch = globalThis.fetch;
+  const activities = [{ id: "app", title: "Build my project tracker", prompt: "Help build my tracker.", icon: "🛠️" }];
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return Response.json({ activities });
+  };
+  const vite = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom" });
+  try {
+    const { loadGeneratedActivities } = await vite.ssrLoadModule("/src/generated-activities.ts");
+    const me = { user: "alice", org: "test", suggestedActivitiesGeneration: true, suggestedActivities: activities };
+    let redraws = 0;
+    await Promise.all([loadGeneratedActivities(me, () => redraws++), loadGeneratedActivities(me, () => redraws++)]);
+    assert.equal(calls, 1);
+    assert.equal(redraws, 0);
+  } finally {
+    globalThis.fetch = oldFetch;
+    await vite.close();
+  }
+});

@@ -1,4 +1,5 @@
 import { html, LitElement, nothing } from "lit";
+import { brandName } from "./ui.ts";
 
 // This is a bot installation, not a personal Slack account connection.
 class SlackSetup extends LitElement {
@@ -81,7 +82,7 @@ class SlackSetup extends LitElement {
   }
 
   protected render() {
-    if (this.forbidden) return html`<p>Only a QM administrator can set up the Slack bot.</p>`;
+    if (this.forbidden) return html`<p>Only an administrator of ${brandName()} can set up the Slack bot.</p>`;
     if (this.connected)
       return html`<div class="connector-widget connected" role="status">
         <span class="connector-widget-text"
@@ -95,8 +96,8 @@ class SlackSetup extends LitElement {
       </p>`;
     let progress = this.appReady ? "Waiting for Slack approval." : "Waiting for token submission.";
     if (this.unavailable) progress = "Could not check progress. Your setup has not been reset.";
-    return html`<section class="slack-setup-checklist" aria-label="Add QM to Slack">
-      <strong>Add QM to Slack</strong>
+    return html`<section class="slack-setup-checklist" aria-label=${`Add ${brandName()} to Slack`}>
+      <strong>Add ${brandName()} to Slack</strong>
       <ol>
         <li>
           <a href=${this.links.tokenUrl} target="_blank" rel="noreferrer">Create token</a><br /><small
@@ -114,7 +115,7 @@ class SlackSetup extends LitElement {
         </li>
         <li>
           <a href=${this.links.submitUrl} target="_blank" rel="noopener">Submit token securely</a><br /><small
-            >${this.appReady ? "App created. No more token copying needed." : "Paste it only in the secure form, never in this conversation. QM uses it to create its app, then discards it."}</small
+            >${this.appReady ? "App created. No more token copying needed." : `Paste it only in the secure form, never in this conversation. ${brandName()} uses it to create its app, then discards it.`}</small
           >
         </li>
         <li>
@@ -129,7 +130,7 @@ class SlackSetup extends LitElement {
         </li>
       </ol>
       <small
-        >This token can manage other apps you own in the selected workspace. Your company owns the app QM
+        >This token can manage other apps you own in the selected workspace. Your company owns the app ${brandName()}
         creates.</small
       >
       <p role="status">${progress}</p>

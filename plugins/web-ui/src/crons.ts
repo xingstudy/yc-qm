@@ -18,6 +18,7 @@ import {
   cronScheduleSummary,
 } from "./cron-format";
 import { tip } from "./tooltip";
+import { focusTextInputOnDesktop } from "./viewport";
 
 export interface CronView {
   id: string;
@@ -670,7 +671,7 @@ function patchCron(
 function showCronDialog(kind: "rename" | "delete", cron: CronView): void {
   cronDialog = { kind, cron };
   openCron(cron);
-  queueMicrotask(() => document.querySelector<HTMLInputElement>(".cron-edit-dialog input")?.focus());
+  queueMicrotask(() => focusTextInputOnDesktop(document.querySelector<HTMLInputElement>(".cron-edit-dialog input")));
 }
 
 function closeCronDialog(c: CronView): void {

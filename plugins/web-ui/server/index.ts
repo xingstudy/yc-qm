@@ -105,7 +105,7 @@ const brandingCache = createBrandingCache(async () => {
 });
 
 async function serveWebManifest(res: ServerResponse): Promise<void> {
-  const branding = await brandingCache.forRender();
+  const branding = await brandingCache.forRender(true);
   const name = branding.selfLabel || "QM";
   const manifest = {
     name,
@@ -116,14 +116,16 @@ async function serveWebManifest(res: ServerResponse): Promise<void> {
     orientation: "any",
     background_color: "#ffffff",
     theme_color: "#ffffff",
-    icons: [{ src: "/brand-mark.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }],
+    icons: branding.markUrl
+      ? [{ src: branding.markUrl, sizes: "any", purpose: "any maskable" }]
+      : [{ src: "/brand-mark.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }],
   };
   res.writeHead(200, { "content-type": "application/manifest+json; charset=utf-8", "cache-control": "no-cache" });
   res.end(JSON.stringify(manifest));
 }
 
 async function brandIndexHtml(html: string): Promise<string> {
-  const branding = await brandingCache.forRender();
+  const branding = await brandingCache.forRender(true);
   return injectBranding(html, branding, { titleSuffix: "· Web" });
 }
 
@@ -5692,7 +5694,7 @@ const apiRoutes: readonly WebRoute[] = [
         coreFetch("GET", "/v1/suggested-activities", "", 2_000)
           .then((response) => response.status === 200 && JSON.parse(response.text).enabled === true)
           .catch(() => false),
-        brandingCache.forRender(),
+        brandingCache.forRender(true),
       ]);
       if (authStatus === null || authStatus.status !== 200) {
         return json(res, 503, {

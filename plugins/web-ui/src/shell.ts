@@ -46,7 +46,7 @@ import {
 import { seedRuntimeConfig } from "./runtime-config-store";
 import { errMessage, swallow } from "../../chassis/src/errors";
 import { brandMark, brandName, icon } from "./ui";
-import { PHONE_MAX_WIDTH, trackVisualViewport } from "./viewport";
+import { isPhone, PHONE_MAX_WIDTH, trackVisualViewport } from "./viewport";
 import { markConnectorConnected } from "./chat";
 import { clearSkillsCache, resyncModelSelection } from "./composer";
 import { ensureDeliveryStream, mainConversation, onExitCanvas } from "./conversations";
@@ -139,6 +139,7 @@ function signOutFromMenu(): void {
 
 let authMode: AuthMode = "portal";
 let shellMounted = false;
+let bootPromise: Promise<void> | null = null;
 
 setSigninRequiredHandler((detail) => {
   authMode = detail.mode ?? authMode;
@@ -1403,7 +1404,7 @@ function devGate(gate: { value?: string; error?: string; pending?: boolean }) {
         autocomplete="username"
         spellcheck="false"
         required
-        autofocus
+        ?autofocus=${!isPhone()}
         placeholder="you@org.com"
         .value=${gate.value ?? ""}
         ?disabled=${gate.pending === true}
@@ -2008,12 +2009,16 @@ function openAppEditChat(slug: string): void {
 }
 
 export async function bootSafely(): Promise<void> {
-  try {
-    await boot();
-  } catch (e) {
-    if (shellMounted) swallow("web-ui: boot", e);
-    else renderAuthGate({ kind: "unreachable" });
-  }
+  if (bootPromise) return bootPromise;
+  bootPromise = boot()
+    .catch((e: unknown) => {
+      if (shellMounted) swallow("web-ui: boot", e);
+      else renderAuthGate({ kind: "unreachable" });
+    })
+    .finally(() => {
+      bootPromise = null;
+    });
+  return bootPromise;
 }
 
 export async function boot(): Promise<void> {

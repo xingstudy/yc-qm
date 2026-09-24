@@ -251,6 +251,8 @@ test("channelWelcomeMessage includes the link when present, omits it cleanly whe
   const linkless = channelWelcomeMessage(undefined);
   assert.ok(!linkless.includes("http"));
   assert.ok(linkless.length > 0);
+  assert.equal(channelWelcomeMessage(undefined, "Acme"), "Acme here, ready to assist.");
+  assert.equal(channelWelcomeMessage(undefined, "<Acme>"), "&lt;Acme&gt; here, ready to assist.");
 });
 
 test("onBotJoinedChannel: posts welcome with the deep link and asks the ensurer to pin the header", async () => {
@@ -263,6 +265,7 @@ test("onBotJoinedChannel: posts welcome with the deep link and asks the ensurer 
     joinerUserId: BOT,
     botUserId: BOT,
     webUiPublicUrl: WEB_BASE,
+    agentLabel: async () => "Acme",
     syncDirectory: async () => {
       synced++;
     },
@@ -272,8 +275,25 @@ test("onBotJoinedChannel: posts welcome with the deep link and asks the ensurer 
   assert.equal(calls.posted.length, 1);
   assert.equal(calls.posted[0]!.channel, "C123");
   assert.ok(calls.posted[0]!.text.includes(expectedUrl), "welcome message must contain the channel surface deep link");
+  assert.match(calls.posted[0]!.text, /^Acme here/);
   assert.deepEqual(ensured, ["C123"], "the pinned header is the ensurer's to post, not join's");
   assert.equal(synced, 1, "directory sync must run on bot join");
+});
+
+test("onBotJoinedChannel: a branding lookup failure still posts the default welcome", async () => {
+  const { client, calls } = fakeJoinClient();
+  await onBotJoinedChannel({
+    client,
+    channel: "C123",
+    joinerUserId: BOT,
+    botUserId: BOT,
+    webUiPublicUrl: WEB_BASE,
+    syncDirectory: async () => {},
+    agentLabel: async () => {
+      throw new Error("branding unavailable");
+    },
+  });
+  assert.match(calls.posted[0]!.text, /^QM here/);
 });
 
 test("onBotJoinedChannel: ignores a human joining (only the bot itself triggers it)", async () => {

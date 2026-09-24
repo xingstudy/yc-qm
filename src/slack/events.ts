@@ -48,6 +48,7 @@ export function registerSlackEvents(
     allowActor?: (actor: ActorAssertion) => boolean;
     denyResponder?: DenyResponder;
     webUiPublicUrl?: string;
+    agentLabel?: (scopeId: string) => Promise<string | undefined>;
     ensureHeader?: (
       client: SurfaceHeaderClient,
       channel: string,
@@ -359,6 +360,7 @@ export function registerSlackEvents(
         botUserId: ids.botUserId,
         webUiPublicUrl: deps.webUiPublicUrl,
         syncDirectory: () => forceDirectorySync(client),
+        ...(deps.agentLabel ? { agentLabel: () => deps.agentLabel!(`channel:${e.channel}`) } : {}),
         ...(deps.ensureHeader
           ? {
               ensureHeader: (channel: string) =>

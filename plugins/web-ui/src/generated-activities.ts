@@ -6,16 +6,25 @@ const requests = new WeakMap<Me, { until: number; pending: Promise<void> }>();
 
 export function loadGeneratedActivities(me: Me, onChange?: () => void): Promise<void> {
   if (!me.suggestedActivitiesGeneration) return Promise.resolve();
+  const snapshot = () => JSON.stringify(me.suggestedActivities ?? []);
   const cached = requests.get(me);
-  if (cached && cached.until > Date.now()) return cached.pending.then(onChange);
+  if (cached && cached.until > Date.now()) {
+    const before = snapshot();
+    return cached.pending.then(() => {
+      if (snapshot() !== before) onChange?.();
+    });
+  }
   const pending = (async () => {
     for (let attempt = 0; attempt < 19; attempt++) {
       const response = await api<{ activities: unknown; pending?: boolean }>("/api/suggested-activities", {
         method: "POST",
         body: JSON.stringify({ timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
       });
-      me.suggestedActivities = parseSuggestedActivities(JSON.stringify(response.activities));
-      onChange?.();
+      const activities = parseSuggestedActivities(JSON.stringify(response.activities));
+      if (JSON.stringify(activities) !== snapshot()) {
+        me.suggestedActivities = activities;
+        onChange?.();
+      }
       if (!response.pending) return;
       await new Promise((resolve) => setTimeout(resolve, 10_000));
     }

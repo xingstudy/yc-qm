@@ -349,6 +349,8 @@ export async function startSlackPlugin(
     ...(allowActor ? { allowActor } : {}),
     ...(denyResponder ? { denyResponder } : {}),
     ...(cfg.webUiPublicUrl ? { webUiPublicUrl: cfg.webUiPublicUrl } : {}),
+    agentLabel: async (scope) =>
+      (await core.surfaceHeaderFacts(scope as Parameters<typeof core.surfaceHeaderFacts>[0])).agentLabel,
     ensureHeader,
   });
   const surfaceContext = createSurfaceContextFulfiller({

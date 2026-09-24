@@ -1,6 +1,6 @@
 import { LitElement, html, nothing } from "lit";
 import { ArrowUpRight, Check } from "lucide";
-import { icon, slackMark } from "./ui";
+import { brandName, icon, slackMark } from "./ui";
 
 export class OnboardingSlack extends LitElement {
   static properties = {
@@ -123,7 +123,8 @@ export class OnboardingSlack extends LitElement {
     return html`${
       this.connected
         ? html`<div class="welcome-slack" role="status">
-            ${slackMark(24)}<span><strong>Connected to Slack</strong><small>QM is ready in your workspace.</small></span
+            ${slackMark(24)}<span
+              ><strong>Connected to Slack</strong><small>${brandName()} is ready in your workspace.</small></span
             >${icon(Check, 16)}
           </div>`
         : html`<button
@@ -133,7 +134,7 @@ export class OnboardingSlack extends LitElement {
             @click=${() => void this.install()}
           >
             ${slackMark(24)}<span
-              ><strong>${label}</strong><small>Work with QM where your team already talks.</small></span
+              ><strong>${label}</strong><small>Work with ${brandName()} where your team already talks.</small></span
             >${icon(ArrowUpRight, 16)}
           </button>`
     }

@@ -1,7 +1,7 @@
 import { openModelConnectManager, type StatusResponse } from "./model-connect";
 import { api } from "./core-bridge";
 import { html, nothing, render, type TemplateResult } from "lit";
-import { BookOpen, ExternalLink, LogOut, Monitor, Moon, ShieldUser, Sun, type IconNode } from "lucide";
+import { ExternalLink, LogOut, Monitor, Moon, ShieldUser, Sun, type IconNode } from "lucide";
 import { icon } from "./ui";
 import { ADMIN_HOME_URL, appState, can, signOut } from "./shell";
 import { sessionsState, setWebOnly } from "./sessions";
@@ -14,8 +14,6 @@ const THEME_KEY = "theme";
 const CUSTOM_THEME_KEY = "theme:custom";
 const CUSTOM_THEME_STYLE_ID = "custom-theme";
 const THEME_FILE_ACCEPT = ".itermcolors,.plist,.json,.jsonc,application/json,text/xml,application/xml";
-
-const QM_ABOUT_URL = "https://github.com/yc-software/qm";
 
 const THEME_OPTIONS: Array<{ value: ThemeChoice; label: string; glyph: IconNode }> = [
   { value: "light", label: "Light", glyph: Sun },
@@ -360,22 +358,6 @@ function adminRow(): TemplateResult {
   `;
 }
 
-function aboutRow(): TemplateResult {
-  return html`
-    <div class="settings-row">
-      <div class="settings-row-copy">
-        <div class="settings-row-title">Learn more about QM</div>
-        <div class="settings-row-note">
-          Why Y Combinator built this open-source agent harness, and how to run your own.
-        </div>
-      </div>
-      <a class="btn settings-row-action" href=${QM_ABOUT_URL} target="_blank" rel="noreferrer noopener">
-        ${icon(BookOpen, 15)}<span>Read the announcement</span>${icon(ExternalLink, 14)}
-      </a>
-    </div>
-  `;
-}
-
 function accountRow(): TemplateResult {
   const me = appState.me;
   return html`
@@ -399,8 +381,7 @@ function settingsPane(): TemplateResult {
       <h1 class="pane-title">Settings</h1>
     </div>
     <div class="settings-group">
-      ${aiAccountsRow()} ${themeRow()} ${sidebarSurfaceRow()} ${can("admin") ? adminRow() : nothing} ${aboutRow()}
-      ${accountRow()}
+      ${aiAccountsRow()} ${themeRow()} ${sidebarSurfaceRow()} ${can("admin") ? adminRow() : nothing} ${accountRow()}
     </div>
   `;
 }

@@ -4,10 +4,18 @@ function escAttr(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
-export function appShellHtml(opts: { slug: string; name?: string; portalUrl: string; path: string }): string {
+export function appShellHtml(opts: {
+  slug: string;
+  name?: string;
+  portalUrl: string;
+  path: string;
+  accent?: string;
+}): string {
   const slug = escAttr(opts.slug);
   const path = escAttr(opts.path);
   const name = escAttr(opts.name ?? opts.slug);
+  const accent =
+    opts.accent && /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(opts.accent) ? opts.accent : "#4f46e5";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -22,7 +30,7 @@ export function appShellHtml(opts: { slug: string; name?: string; portalUrl: str
     --secondary: oklch(0.97 0 0);
     --muted-foreground: oklch(0.556 0 0);
     --border: oklch(0.922 0 0);
-    --brand-accent: #4f46e5;
+    --brand-accent: ${accent};
     --radius-sm: 8px;
     --app-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     color-scheme: light;

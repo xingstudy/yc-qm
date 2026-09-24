@@ -154,8 +154,9 @@ Below 860px the same build behaves like an app rather than a shrunken desktop:
 - **Drawer, not rail.** The sidebar slides over the content from a floating menu button (or an
   edge swipe); a leftward swipe or a tap on the scrim closes it. Every top bar reserves the
   button's column so nothing renders under it.
-- **Bottom sheets.** Popover menus — composer settings, a session's ⋯, the user menu, the
-  per-session tools — render as sheets with a backdrop; tap outside or swipe down to dismiss.
+- **Mobile menus.** Composer settings, a session's ⋯, and the user menu render as bottom sheets;
+  the top-right conversation tools use a right drawer matching the navigation drawer. Tap the
+  backdrop to dismiss either treatment.
 - **Compact composer.** Attach · input · settings · send on one row; model, harness, effort, and
   Fast live in the settings sheet. Inputs are 16px so iOS never zooms on focus, and the layout
   tracks the visual viewport so the composer stays above the on-screen keyboard.

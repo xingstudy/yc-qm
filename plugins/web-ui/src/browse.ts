@@ -4,7 +4,7 @@ import { deepLinkPath, isPlainLeftClick, UI_BASE } from "./deep-link";
 import { nextGridIndex } from "./grid-nav";
 import { setScopedSession } from "./session-scope";
 import { ADMIN_HOME_URL, appState, can, switchView } from "./shell";
-import { icon } from "./ui";
+import { brandText, icon } from "./ui";
 import type { View } from "./shell-state";
 
 interface Destination {
@@ -27,7 +27,7 @@ export function destinations(): Destination[] {
     href: deepLinkPath(UI_BASE, view, null),
     glyph,
     label,
-    blurb,
+    blurb: brandText(blurb),
   });
   const list: Destination[] = [
     to("contexts", Folder, "Projects", "Group chats, files, and automations"),

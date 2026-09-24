@@ -62,12 +62,17 @@ test("one checklist updates from token to consent to connected and clears stale 
 });
 
 test("non-admins receive no setup controls and unverified configuration is not Connected", async (t) => {
+  const brand = document.createElement("meta");
+  brand.name = "brand-self-label";
+  brand.content = "Acme";
+  document.head.append(brand);
+  t.after(() => brand.remove());
   t.mock.method(globalThis, "fetch", async () => new Response("", { status: 403 }));
   const card = document.createElement("qm-slack-setup");
   document.body.append(card);
   t.after(() => card.remove());
   await settle();
-  assert.match(card.textContent!, /Only a QM administrator/);
+  assert.match(card.textContent!, /Only an administrator of Acme/);
   assert.equal(card.querySelectorAll("a").length, 0);
 });
 

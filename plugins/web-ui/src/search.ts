@@ -10,7 +10,8 @@ import { openSession, refreshSessions, sessionsState, sessionTitle } from "./ses
 import { destinations } from "./browse";
 import { UI_BASE } from "./deep-link";
 import { resourceResults, matchResources, type ResourceHit, type ResourceSearchResponse } from "./search-resources";
-import { icon } from "./ui";
+import { brandName, brandText, icon } from "./ui";
+import { focusTextInputOnDesktop } from "./viewport";
 
 interface ChatSearchHit {
   sessionId: string;
@@ -73,7 +74,7 @@ export function openChatSearch(): void {
   searchState.resourcesLimited = false;
   searchState.resourcesLoading = false;
   draw();
-  requestAnimationFrame(() => host?.querySelector<HTMLInputElement>(".chat-search-input")?.focus());
+  requestAnimationFrame(() => focusTextInputOnDesktop(host?.querySelector<HTMLInputElement>(".chat-search-input")));
 }
 
 function closeChatSearch(): void {
@@ -322,7 +323,7 @@ function resultRows(): TemplateResult[] {
         }}
       >
         <span class="chat-search-who ${hit.entryType === "user" ? "user" : "agent"}" dir="auto"
-          >${(hit.entryType === "user" ? (hit.author ?? t("You")) : "QM").slice(0, 1).toUpperCase()}</span
+          >${(hit.entryType === "user" ? (hit.author ?? t("You")) : brandName()).slice(0, 1).toUpperCase()}</span
         >
         <span class="chat-search-text">
           <span class="chat-search-snippet" dir="auto">${highlight(hitSnippet(hit))}</span>
@@ -383,8 +384,12 @@ function askRow(): TemplateResult {
     >
       <span class="chat-search-who ask">+</span>
       <span class="chat-search-text">
-        <span class="chat-search-snippet">Ask QM to find it: <b dir="auto">“${searchState.query.trim()}”</b></span>
-        <span class="chat-search-meta">starts a new chat where QM finds the matching resource and links it</span>
+        <span class="chat-search-snippet"
+          >${brandText(t("Ask QM to find it:"))} <b dir="auto">“${searchState.query.trim()}”</b></span
+        >
+        <span class="chat-search-meta"
+          >${brandText(t("starts a new chat where QM finds the matching resource and links it"))}</span
+        >
       </span>
       <span class="chat-search-kbd">${isMac ? "⌘" : "Ctrl"}${icon(CornerDownLeft, 11)}</span>
     </button>
@@ -420,7 +425,12 @@ function paletteTpl(): TemplateResult {
         if (e.target === e.currentTarget) closeChatSearch();
       }}
     >
-      <div class="chat-search-palette" role="dialog" aria-label=${t("Search QM")} @keydown=${onPaletteKeydown}>
+      <div
+        class="chat-search-palette"
+        role="dialog"
+        aria-label=${brandText(t("Search QM"))}
+        @keydown=${onPaletteKeydown}
+      >
         <div class="chat-search-inputrow">
           ${icon(Search, 16)}
           <input
@@ -446,7 +456,10 @@ function paletteTpl(): TemplateResult {
         <div class="chat-search-foot">
           <span><span class="chat-search-kbd">↑↓</span> ${t("navigate")}</span>
           <span><span class="chat-search-kbd">↵</span> ${t("open")}</span>
-          <span><span class="chat-search-kbd">${isMac ? "⌘↵" : "Ctrl+↵"}</span> ${t("ask QM in a new chat")}</span>
+          <span
+            ><span class="chat-search-kbd">${isMac ? "⌘↵" : "Ctrl+↵"}</span>
+            ${brandText(t("ask QM in a new chat"))}</span
+          >
         </div>
       </div>
     </div>

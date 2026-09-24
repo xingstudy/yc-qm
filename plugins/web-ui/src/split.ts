@@ -1,6 +1,7 @@
 import { openSessionShare } from "./session-share";
 import { nothing, render, type TemplateResult } from "lit";
 import { html, t } from "./i18n.ts";
+import { randomUUID } from "./random";
 import { preserveTranscriptScroll } from "./transcript-viewport";
 import { ref } from "lit/directives/ref.js";
 import {
@@ -130,7 +131,7 @@ let remotePayload: { updatedAt: number } | null = null;
 let persistedUpdatedAt = 0;
 
 function uid(): string {
-  return crypto.randomUUID().slice(0, 8);
+  return randomUUID().slice(0, 8);
 }
 
 let suspended = false;

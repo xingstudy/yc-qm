@@ -461,7 +461,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   const serveShell = async (): Promise<void> => {
     if (process.env.QM_SLACK_SERVICE_URL) res.setHeader("referrer-policy", "strict-origin");
-    const shell = brandedShell(await brandCache.forRender());
+    const shell = brandedShell(await brandCache.forRender(true));
     const gz = gzipAccepted(req);
     const etag = gz ? shell.gzipEtag : shell.etag;
     if (req.headers["if-none-match"] === etag) {
