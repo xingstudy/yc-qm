@@ -1260,6 +1260,57 @@ test("the sign-in link never puts its token anywhere a server or proxy logs it",
   assert.match(page, /sessionStorage\.removeItem/, "submitting immediately removes the browser's temporary copy");
   assert.match(page, /once: true/, "a double click cannot submit the same confirmation twice");
   assert.match(page, /Continue as/, "the browser shows the signed link identity before it enables confirmation");
+  assert.match(page, /requestSubmit\(\)/, "a valid email link continues without a second click");
+  const script = page.match(/<script>([\s\S]+)<\/script>/)?.[1];
+  assert.ok(script);
+  let submitted = 0;
+  let submitListener: (() => void) | undefined;
+  const tokenField = { value: "" };
+  const confirmButton = { disabled: true };
+  const identity = { hidden: true, textContent: "" };
+  const stored = new Map<string, string>();
+  const formElement = {
+    addEventListener(_type: string, listener: () => void) {
+      submitListener = listener;
+    },
+    requestSubmit() {
+      submitListener?.();
+      submitted++;
+    },
+  };
+  runInNewContext(script, {
+    URLSearchParams,
+    location: { hash: `#token=${encodeURIComponent(token)}`, pathname: "/verify" },
+    history: { replaceState() {} },
+    sessionStorage: {
+      setItem(key: string, value: string) {
+        stored.set(key, value);
+      },
+      getItem(key: string) {
+        return stored.get(key) ?? null;
+      },
+      removeItem(key: string) {
+        stored.delete(key);
+      },
+    },
+    document: {
+      getElementById(id: string) {
+        if (id === "confirm") return confirmButton;
+        if (id === "identity") return identity;
+        if (id === "token") return tokenField;
+        return { hidden: true };
+      },
+      querySelector() {
+        return formElement;
+      },
+    },
+    fetch: async () => ({ ok: true, json: async () => ({ email: "admin@example.com" }) }),
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(tokenField.value, token);
+  assert.equal(identity.textContent, "Continue as admin@example.com");
+  assert.equal(submitted, 1);
+  assert.equal(stored.size, 0);
   assert.match(confirm.headers.get("content-security-policy") ?? "", /script-src 'sha256-/);
   assert.match(confirm.headers.get("content-security-policy") ?? "", /connect-src 'self'/);
   assert.equal(
@@ -1447,10 +1498,8 @@ test("trusted sign-in is available throughout the email flow only when configure
         assert.match(html, /Sign in with Company SSO/);
         assert.ok(html.indexOf('href="/auth/trusted/login"') < html.indexOf("<form"));
         assert.match(html, /class="btn alternative" type="submit"/);
-        assert.doesNotMatch(html, /autofocus/);
-      } else {
-        assert.match(html, /required autofocus/);
       }
+      assert.doesNotMatch(html, /autofocus/);
       const request = hiddenRequestToken(html);
       for (const email of ["invalid", "admin@example.com"]) {
         const response = await fetch(`${h.base}/authorize`, form({ request, email }));

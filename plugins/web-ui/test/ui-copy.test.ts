@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { JSDOM } from "jsdom";
-import { brandName, copyText } from "../src/ui.ts";
+import { brandName, brandText, copyText } from "../src/ui.ts";
 
 test("brand name defaults to QM", () => {
   const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
@@ -25,6 +25,21 @@ test("brand name follows the server-injected deployment label", () => {
   });
   try {
     assert.equal(brandName(), "qm");
+  } finally {
+    if (documentDescriptor) Object.defineProperty(globalThis, "document", documentDescriptor);
+    else delete (globalThis as { document?: Document }).document;
+  }
+});
+
+test("static product copy uses the deployment label without interpreting replacement tokens", () => {
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: new JSDOM('<meta name="brand-self-label" content="A$&B">').window.document,
+  });
+  try {
+    assert.equal(brandText("Ask QM what QM can do"), "Ask A$&B what A$&B can do");
+    assert.equal(brandText("QMU and Acme"), "QMU and Acme");
   } finally {
     if (documentDescriptor) Object.defineProperty(globalThis, "document", documentDescriptor);
     else delete (globalThis as { document?: Document }).document;

@@ -85,11 +85,14 @@ test("activity selection fills and persists an editable draft without sending or
     const host = document.querySelector<HTMLElement>("main")!;
     const agentState = { isStreaming: false, messages: [] };
     const agent = { state: agentState } as unknown as Agent;
-    const draw = () =>
+    let drawCount = 0;
+    const draw = () => {
+      drawCount++;
       render(
         html`${suggestedActivities(appState.me.suggestedActivities, (activity: SuggestedActivity) => composer!.fillSuggestedPrompt(activity.prompt, agent), Boolean(composer!.state.draft || composer!.state.attachments.length))}${composer!.composerForm(agent)}`,
         host,
       );
+    };
     const ctx = {
       pane: false,
       chat: {
@@ -138,8 +141,11 @@ test("activity selection fills and persists an editable draft without sending or
     assert.equal(region.getAttribute("aria-hidden"), "false");
     assert.equal(region.hasAttribute("inert"), false);
     input.value = "My own draft";
+    const drawsBeforeTyping = drawCount;
     input.dispatchEvent(new dom.window.InputEvent("input", { bubbles: true }));
+    assert.equal(drawCount, drawsBeforeTyping);
     assert.equal(host.querySelector(".suggested-activities"), region);
+    assert.equal(host.querySelector("textarea"), input);
     assert.equal(region.getAttribute("aria-hidden"), "true");
     assert.ok(region.hasAttribute("inert"));
     assert.equal(host.querySelectorAll(".suggested-activity:enabled").length, 0);

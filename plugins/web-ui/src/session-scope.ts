@@ -191,6 +191,15 @@ export function sessionTopbarTpl(o: SessionTopbarOpts): TemplateResult {
         >
           ${icon(Ellipsis, 20)}
         </button>
+        <button
+          class="session-tools-scrim"
+          type="button"
+          aria-label="Close session tools"
+          @click=${(event: Event) => {
+            event.stopPropagation();
+            closeFormMenus();
+          }}
+        ></button>
         <div class="menu-popover" role="menu" hidden>
           <div class="menu-title">This conversation's workspace</div>
           ${sheetTool("crons", Clock3, "Crons")} ${sheetTool("apps", Rocket, "Apps")}

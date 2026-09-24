@@ -1,3 +1,5 @@
+import { randomUUID } from "./random.ts";
+
 export interface PickerState {
   query: string;
   expanded: boolean;
@@ -35,7 +37,7 @@ export function startPreviewAttempt(
   picker: PickerState,
   scrollTop: number,
 ): void {
-  const state = crypto.randomUUID();
+  const state = randomUUID();
   const callback = new URL(location.href);
   callback.searchParams.set("connectionDemo", "1");
   for (const key of ["connectionConsent", "connectionReturn", "status", "error", "connectedAccountId"])
@@ -45,7 +47,7 @@ export function startPreviewAttempt(
     state,
     user,
     service,
-    accountId: `ca_demo_${crypto.randomUUID()}`,
+    accountId: `ca_demo_${randomUUID()}`,
     expiresAt: Date.now() + 20 * 60_000,
     callbackUrl: callback.href,
     picker,

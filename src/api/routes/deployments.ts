@@ -957,6 +957,7 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
       else sendJson(res, 404, { error: "not_found" });
       return true;
     }
+    const accent = (await resolveBranding(deps.config, orgScope(deps), deps.brandingDefault)).accent;
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
     res.end(
       appShellHtml({
@@ -964,6 +965,7 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
         name: deployment?.displayName ?? slug,
         portalUrl: loginUrl,
         path: safePathname + url.search,
+        ...(accent ? { accent } : {}),
       }),
     );
     return true;

@@ -1,4 +1,5 @@
 import type { View } from "./shell-state";
+import { brandName } from "./brand-name.ts";
 
 interface TitledSession {
   id: string;
@@ -32,7 +33,8 @@ const VIEW_TITLES: Record<View, string> = {
 export function documentTitle(view?: View, conversationTitle?: string | null, conversationOpen = false): string {
   const title =
     view === "chats" && conversationOpen ? conversationTitle?.trim() || "New chat" : view && VIEW_TITLES[view];
-  return title ? `${title} · ${PRODUCT_TITLE}` : PRODUCT_TITLE;
+  const productTitle = `${brandName()} · Web`;
+  return title ? `${title} · ${productTitle}` : productTitle;
 }
 
 export function updateDocumentTitle(view?: View, conversationTitle?: string | null, conversationOpen = false): void {

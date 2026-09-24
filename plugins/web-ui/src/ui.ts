@@ -2,10 +2,12 @@ import { nothing, type TemplateResult } from "lit";
 import { live } from "lit/directives/live.js";
 import { Check, ChevronDown, Download, createElement, type IconNode } from "lucide";
 import { currentLocale, html, t } from "./i18n.ts";
+import { brandName } from "./brand-name.ts";
 
-export function brandName(): string {
-  if (typeof document === "undefined") return "QM";
-  return document.querySelector<HTMLMetaElement>('meta[name="brand-self-label"]')?.content || "QM";
+export { brandName };
+
+export function brandText(text: string): string {
+  return text.replace(/\bQM\b/g, () => brandName());
 }
 
 export function brandMark(): TemplateResult {

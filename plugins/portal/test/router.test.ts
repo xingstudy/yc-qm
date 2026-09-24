@@ -323,6 +323,12 @@ test("favicon: served unauthenticated as an SVG of the pirate-flag emoji", async
   }
 });
 
+test("web app manifest is served before authentication", async () => {
+  const response = await fetch(`${base}/manifest.webmanifest`);
+  assert.equal(response.status, 200);
+  assert.equal(((await response.json()) as { url?: string }).url, "/manifest.webmanifest");
+});
+
 test("no session: JSON request is 401, HTML navigation is 302 to login", async () => {
   const j = await fetch(`${base}/api/sessions`, { redirect: "manual" });
   assert.equal(j.status, 401);

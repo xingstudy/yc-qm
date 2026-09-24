@@ -60,6 +60,8 @@ test("the shell's badge and product name are branding-driven, not hardcoded", ()
   assert.match(shell, /content:\s*var\(--brand-mark\)/, "badge glyph reads --brand-mark");
   assert.match(shell, /--brand-mark:\s*none;/, "and falls back to the shipped mark when the org sets none");
   assert.match(shell, /\[data-brand-product\]/, "every product name is script-addressable");
+  assert.match(shell, /\[data-brand-copy\]/, "static admin product copy is script-addressable");
+  assert.match(shell, /brandAdminText\(\s*r\.data\.configured/, "dynamic Slack status copy uses the label");
 });
 
 test("a branding save acks only after the shell reflects it — the post-save reload can't be stale", async () => {
@@ -81,6 +83,7 @@ test("a branding save acks only after the shell reflects it — the post-save re
     /--brand-mark-image:url\("https:\/\/cdn\.example\.com\/icon\.png"\)/,
     "the cache key follows the icon, so a re-brand is not served a stale shell",
   );
+  assert.match(html, /<link rel="icon" href="https:\/\/cdn\.example\.com\/icon\.png"\s*\/?>/);
   assert.match(html, /<meta name="brand-self-label" content="Zed"\s*\/?>/);
   assert.match(html, /<title>Zed Admin<\/title>/, "tab title follows the saved label");
 });

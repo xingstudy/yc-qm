@@ -36,6 +36,7 @@ const CONFIRM_SCRIPT = `(function () {
     identity.textContent = "Continue as " + result.email;
     identity.hidden = false;
     confirm.disabled = false;
+    document.querySelector("form").requestSubmit();
   }).catch(function () {
     try { sessionStorage.removeItem(key); } catch (e) { void e; }
     fail();
@@ -151,7 +152,7 @@ const STYLE = `<style>
   .reason strong{ display:block; color:var(--warn); font-size:11px; margin-bottom:3px; }
   form{ display:grid; gap:10px; text-align:left; }
   label{ font-size:12.5px; font-weight:600; color:var(--muted); }
-  input[type=email]{ width:100%; min-height:44px; padding:0 14px; font:inherit; color:var(--text);
+  input[type=email]{ width:100%; min-height:44px; padding:0 14px; font:inherit; font-size:16px; color:var(--text);
     background:var(--bg); border:1px solid var(--border); border-radius:var(--radius-md); }
   input[type=email]:focus-visible{ outline:2px solid color-mix(in srgb, var(--text) 35%, transparent); outline-offset:1px; }
   .btn{ display:flex; align-items:center; justify-content:center; min-height:44px; padding:0 18px; width:100%;
@@ -179,6 +180,11 @@ const STYLE = `<style>
     border:2px solid var(--border); border-top-color:var(--muted); animation:spin 1s linear infinite; }
   @keyframes spin{ to{ transform:rotate(360deg); } }
   @media (prefers-reduced-motion: reduce){ .waiting:before{ animation:none; } }
+  @media (max-width:860px){
+    input:not([type=checkbox]):not([type=radio]),textarea,select,[contenteditable]:not([contenteditable=false]){
+      font-size:16px!important;
+    }
+  }
   @media (max-width:420px){
     main{ padding-left:0; padding-right:0; }
     .wecom-card{ width:100vw; max-width:none; padding-left:max(0px, calc((100vw - 320px)/2));
@@ -207,7 +213,7 @@ function page(o: {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>${escapeHtml(o.title)} · ${escapeHtml(o.brandName)}</title>
 ${STYLE}
@@ -255,7 +261,7 @@ export function emailFormPage(o: {
       : `<form method="post" action="${escapeHtml(o.action)}">
         <input type="hidden" name="request" value="${escapeHtml(o.requestToken)}">
         <label for="email">Email address</label>
-        <input id="email" name="email" type="email" autocomplete="email" inputmode="email" required${o.trustedSignInLabel ? "" : " autofocus"}
+        <input id="email" name="email" type="email" autocomplete="email" inputmode="email" required
           spellcheck="false" maxlength="254" placeholder="you@example.com" value="${escapeHtml(o.email ?? "")}">
         <button class="btn${o.trustedSignInLabel ? " alternative" : ""}" type="submit">Email me a sign-in link</button>
       </form>`;
@@ -325,7 +331,7 @@ export function confirmSignInPage(o: { brandName: string; trustedSignInLabel?: s
     trustedSignInLabel: o.trustedSignInLabel,
     icon: LOCK_ICON,
     heading: `Finish signing in to ${o.brandName}`,
-    msg: "Confirm below to complete sign-in. Your link is spent the moment you confirm, so do it in the browser you want to be signed in to.",
+    msg: "Your email link is being verified. You'll continue automatically.",
     body: `<p class="reason" id="no-token" hidden><strong>Nothing to confirm</strong>This page did not receive a valid sign-in link. Open the link from your email directly, in a browser with JavaScript enabled, or ask for a fresh one.</p>
       <p class="who" id="identity" hidden></p>
       <noscript><p class="reason"><strong>JavaScript required</strong>The last step of sign-in reads your link out of the page address so it never reaches a server log. Enable JavaScript for this page, then reopen the link.</p></noscript>
@@ -334,7 +340,7 @@ export function confirmSignInPage(o: { brandName: string; trustedSignInLabel?: s
         <button class="btn" type="submit" id="confirm" disabled>Sign in</button>
       </form>
       <script>${CONFIRM_SCRIPT}</script>`,
-    help: "Didn't ask to sign in? Close this page. Nothing happens until you confirm.",
+    help: "Didn't ask to sign in? Close this page.",
   });
 }
 

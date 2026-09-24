@@ -112,6 +112,24 @@ test("concurrent enrollment shares one cron and one first run", async () => {
   assert.equal(f.calls.length, 1);
 });
 
+test("deleting the managed cron recreates it on the next request", async () => {
+  const f = fixture();
+  f.output("invalid");
+  await f.service.get("alice", []);
+  await f.settle();
+  const deletedId = (await f.store.get("alice"))!.cronId!;
+  await f.crons.delete(deletedId);
+  f.output(JSON.stringify(activities));
+
+  assert.equal((await f.service.get("alice", [])).pending, true);
+  await f.settle();
+
+  const recreatedId = (await f.store.get("alice"))!.cronId!;
+  assert.ok(await f.crons.get(recreatedId));
+  assert.equal((await f.crons.list()).length, 1);
+  assert.deepEqual((await f.service.get("alice", [])).activities, activities);
+});
+
 test("each principal has an independent cron and unavailable or invalid results use seeds", async () => {
   const f = fixture();
   await f.service.get("alice", []);

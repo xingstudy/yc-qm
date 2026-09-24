@@ -25,6 +25,7 @@ async function render(data: Record<string, unknown>) {
     },
     api: async () => ({ ok: true, data }),
     adminTr: (text: string) => text,
+    brandAdminText: (text: string) => text.replace(/\bQM\b/g, "Acme"),
     slackLinkStarted: false,
     URLSearchParams,
     location: { search: "" },
@@ -51,6 +52,7 @@ test("hosted connection offers re-add and keeps custom setup secondary", async (
   assert.equal(el("slack-installation-start-label").textContent, "Re-add to Slack");
   assert.equal(el("slack-installation-start").disabled, false);
   assert.equal(el("slack-installation-state").textContent, "Connected to Development YC");
+  assert.equal(el("slack-installation-description").textContent, "Acme app");
   assert.equal(el("slack-own-app-label").textContent, "Use your own Slack app");
   assert.equal(el("slack-own-app-guide"), undefined);
 });

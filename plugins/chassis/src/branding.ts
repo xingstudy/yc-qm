@@ -12,7 +12,7 @@ const FIRST_RENDER_WAIT_MS = 1_500;
 
 export interface BrandingCache {
   current(): OrgBranding;
-  forRender(): Promise<OrgBranding>;
+  forRender(fresh?: boolean): Promise<OrgBranding>;
   refreshNow(): Promise<void>;
 }
 
@@ -42,7 +42,14 @@ export function createBrandingCache(fetchBranding: () => Promise<OrgBranding>): 
 
   return {
     current: () => value,
-    async forRender(): Promise<OrgBranding> {
+    async forRender(fresh = false): Promise<OrgBranding> {
+      if (fresh) {
+        if (inflight) await inflight;
+        nextAt = 0;
+        kick();
+        if (inflight) await inflight;
+        return value;
+      }
       kick();
       if (!warmed && inflight) {
         await Promise.race([inflight, new Promise((r) => setTimeout(r, FIRST_RENDER_WAIT_MS))]);
@@ -80,6 +87,21 @@ export function injectBranding(html: string, branding: OrgBranding, opts?: { tit
     if (opts?.titleSuffix) {
       const title = escapeAttr(`${selfLabel} ${opts.titleSuffix}`);
       out = out.replace(/<title>[^<]*<\/title>/, () => `<title>${title}</title>`);
+    }
+  }
+  if (cssUrlSafe(markUrl)) {
+    const href = escapeAttr(markUrl);
+    const icon = `<link rel="icon" href="${href}" />`;
+    if (/<link rel="icon" href="[^"]*"\s*\/?>/.test(out)) {
+      out = out.replace(/<link rel="icon" href="[^"]*"\s*\/?>/, icon);
+    } else {
+      out = out.replace("</head>", `${icon}</head>`);
+    }
+    const touchIcon = `<link rel="apple-touch-icon" href="${href}" />`;
+    if (/<link rel="apple-touch-icon" href="[^"]*"\s*\/?>/.test(out)) {
+      out = out.replace(/<link rel="apple-touch-icon" href="[^"]*"\s*\/?>/, touchIcon);
+    } else {
+      out = out.replace("</head>", `${touchIcon}</head>`);
     }
   }
   const decls = [

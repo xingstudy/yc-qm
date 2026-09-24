@@ -61,6 +61,7 @@ test("the settings page offers the theme picker and a way into admin", () => {
   assert.match(settings, /href=\$\{ADMIN_HOME_URL\}/);
   assert.match(settings, /role="radiogroup"/);
   assert.match(css, /\.settings-choice-option\.selected \{/);
+  assert.doesNotMatch(settings, /aboutRow|QM_ABOUT_URL|Read the announcement/);
 });
 
 test("an imported palette is a fourth theme choice that only exists while a palette is stored", () => {

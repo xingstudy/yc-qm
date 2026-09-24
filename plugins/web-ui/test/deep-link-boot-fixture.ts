@@ -9,6 +9,7 @@ export interface Harness {
   releaseApprovals: () => void;
   sessionsReady: () => Promise<void>;
   boot: () => Promise<void>;
+  bootSafely: () => Promise<void>;
   appState: { currentView: string };
   sessionsState: { list: Array<{ id: string }>; loaded: boolean; openingKey: string | null };
   visibleConversation: () => { state: { sessionId: string | null; threadRef: string | null } };
@@ -199,6 +200,7 @@ export async function harness(opts: HarnessOptions): Promise<Harness> {
     releaseApprovals,
     sessionsReady: sessions.sessionsReady as () => Promise<void>,
     boot: shell.boot as () => Promise<void>,
+    bootSafely: shell.bootSafely as () => Promise<void>,
     appState: shell.appState as Harness["appState"],
     sessionsState: sessions.sessionsState as Harness["sessionsState"],
     visibleConversation: () =>

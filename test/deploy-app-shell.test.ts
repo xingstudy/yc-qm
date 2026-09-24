@@ -92,6 +92,7 @@ async function widgetFixture(upstreamHandler?: Parameters<typeof createHttpServe
     deployGateSecret: GATE_SECRET,
     deployAppsLoginUrl: PORTAL,
     deployAppsSessionSecret: "portal-session-secret",
+    brandingDefault: { accent: "#123456" },
   });
   server.listen(0);
   const port = (server.address() as AddressInfo).port;
@@ -140,6 +141,7 @@ test("app shell: a normal signed-in manager gets the shell without an edit link"
     });
     assert.equal(page.status, 200);
     assert.match(page.body, /__qmAppShell/, "the owner's top-level document load gets the shell");
+    assert.match(page.body, /--brand-accent: #123456/);
     assert.match(page.body, /<iframe id="app" src="\/"/, "the app renders inside a same-origin frame");
     const portalLine = page.body.match(/const portal = (".*?");/)?.[1];
     assert.equal(portalLine && JSON.parse(portalLine), PORTAL, "the chat column knows the portal origin");

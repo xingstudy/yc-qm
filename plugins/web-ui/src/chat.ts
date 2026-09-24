@@ -5,6 +5,7 @@ import { welcomeIdeasPrompt } from "./welcome-ideas";
 import { setupContent } from "./setup-widget";
 import { isWelcomeConversation } from "./welcome-session";
 import { ADMIN_BASE } from "./shell";
+import { randomUUID } from "./random.ts";
 import { connectorCard } from "./connector-widget";
 import {
   activityDescription,
@@ -137,7 +138,7 @@ import {
   harnessSupportsEffort,
   harnessSupportsFastMode,
 } from "./model-options";
-import { browserRenderableImage, chipBadge, copyText, formatBytes, icon, relTime, waveLoader } from "./ui";
+import { brandText, browserRenderableImage, chipBadge, copyText, formatBytes, icon, relTime, waveLoader } from "./ui";
 import { appState, renderSidebarTop, switchView, syncUrlFromState } from "./shell";
 import { contextsState, scopeTitle } from "./contexts";
 import { openProjectPage, scopeToolCount, sessionTopbarTpl, setScopedSession } from "./session-scope";
@@ -381,7 +382,7 @@ export function createChatSurface(
     appState.currentView = "chats";
     renderSidebarTop();
     const user = appState.me?.user ?? "anon";
-    const threadRef = `web:${user}:${crypto.randomUUID()}`;
+    const threadRef = `web:${user}:${randomUUID()}`;
     const carried = storedDraft(newChatDraftKey(user));
     if (carried) saveDraft(threadRef, carried);
     ctx.composer.resetComposer();
@@ -1160,13 +1161,13 @@ export function createChatSurface(
   async function showWelcomeIdeas(): Promise<void> {
     if (ideasUnavailable()) return;
     startingIdeas = true;
-    const threadRef = `web:${appState.me!.user}:ideas:${crypto.randomUUID()}`;
+    const threadRef = `web:${appState.me!.user}:ideas:${randomUUID()}`;
     mountContinuable(threadRef, null, null, []);
     const agent = chatState.agent;
     try {
       if (agent) {
         await ctx.composer.refreshRuntimeSelection(null, agent);
-        await ctx.composer.sendSuggestedPrompt(welcomeIdeasPrompt, agent);
+        await ctx.composer.sendSuggestedPrompt(brandText(welcomeIdeasPrompt), agent);
       }
     } finally {
       startingIdeas = false;
@@ -1394,6 +1395,32 @@ export function createChatSurface(
     const tier = ctx.density();
     const glanceTier = tier === "card" || tier === "strip" ? tier : null;
     const emptyChat = !messages.length && (showWelcome || !chatState.forkSession);
+    let suggestedActivityContent: TemplateResult | typeof nothing = nothing;
+    const showSuggestedActivities =
+      emptyChat &&
+      !editingApp &&
+      !(isNewUser && appState.me?.welcomeCohort) &&
+      !glanceTier &&
+      (!ctx.pane || tier === "full") &&
+      !chatState.sessionId &&
+      (chatState.scopeId === null || chatState.scopeId === `personal:${appState.me?.user}`) &&
+      !agent.state.isStreaming;
+    if (showSuggestedActivities) {
+      if (appState.me?.suggestedActivitiesGeneration && appState.me.suggestedActivities === undefined) {
+        suggestedActivityContent = html`<div
+          class="suggested-activities suggested-activities-loading"
+          aria-hidden="true"
+        ></div>`;
+      } else {
+        suggestedActivityContent = suggestedActivities(
+          appState.me?.suggestedActivities,
+          (activity) => ctx.composer.fillSuggestedPrompt(activity.prompt, agent),
+          Boolean(
+            ctx.composer.state.draft || ctx.composer.state.attachments.length || ctx.composer.state.processingFiles,
+          ),
+        );
+      }
+    }
     render(
       html`
         <div
@@ -1425,28 +1452,8 @@ export function createChatSurface(
             </div>
           </section>
           <div class="chat-bottom-dock">
-            ${
-              emptyChat &&
-              !editingApp &&
-              !(isNewUser && appState.me?.welcomeCohort) &&
-              !glanceTier &&
-              (!ctx.pane || tier === "full") &&
-              !chatState.sessionId &&
-              (chatState.scopeId === null || chatState.scopeId === `personal:${appState.me?.user}`) &&
-              !agent.state.isStreaming
-                ? suggestedActivities(
-                    appState.me?.suggestedActivities,
-                    (activity) => ctx.composer.fillSuggestedPrompt(activity.prompt, agent),
-                    Boolean(
-                      ctx.composer.state.draft ||
-                      ctx.composer.state.attachments.length ||
-                      ctx.composer.state.processingFiles,
-                    ),
-                  )
-                : nothing
-            }
-            ${goalStrip(agent)} ${ctx.composer.queuedStrip(agent)} ${backgroundActivityStrip()}
-            ${ctx.composer.composerForm(agent)}
+            ${suggestedActivityContent} ${goalStrip(agent)} ${ctx.composer.queuedStrip(agent)}
+            ${backgroundActivityStrip()} ${ctx.composer.composerForm(agent)}
           </div>
         </div>
       `,

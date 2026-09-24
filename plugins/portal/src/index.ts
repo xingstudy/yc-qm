@@ -109,11 +109,12 @@ const PLAYGROUND_MINTS_PER_IP = playgroundIntEnv("PORTAL_PLAYGROUND_MINTS_PER_IP
 const PLAYGROUND_MINT_WINDOW_S = playgroundIntEnv("PORTAL_PLAYGROUND_MINT_WINDOW_S", 3600);
 const NEUTRAL_ACCENT = "#4f46e5";
 let brandAccent = NEUTRAL_ACCENT;
+let brandIconUrl: string | undefined;
 let modelProviderConfigured: boolean | undefined;
 let surfaceConfigNextAt = 0;
 let surfaceConfigInflight: Promise<void> | null = null;
-function refreshSurfaceConfig(): Promise<void> {
-  if (Date.now() >= surfaceConfigNextAt) {
+function refreshSurfaceConfig(fresh = false): Promise<void> {
+  if (!surfaceConfigInflight && (fresh || Date.now() >= surfaceConfigNextAt)) {
     surfaceConfigNextAt = Date.now() + 5_000;
     surfaceConfigInflight = fetchSurfaceConfig().finally(() => {
       surfaceConfigInflight = null;
@@ -129,8 +130,15 @@ async function fetchSurfaceConfig(): Promise<void> {
       signal: AbortSignal.timeout(2_000),
     });
     if (r.ok) {
-      const body = (await r.json()) as { branding?: { accent?: unknown }; modelProviderConfigured?: unknown };
+      const body = (await r.json()) as {
+        branding?: { accent?: unknown; markUrl?: unknown };
+        modelProviderConfigured?: unknown;
+      };
       brandAccent = typeof body.branding?.accent === "string" ? body.branding.accent : NEUTRAL_ACCENT;
+      brandIconUrl =
+        typeof body.branding?.markUrl === "string" && body.branding.markUrl.startsWith("https://")
+          ? body.branding.markUrl
+          : undefined;
       modelProviderConfigured =
         typeof body.modelProviderConfigured === "boolean" ? body.modelProviderConfigured : undefined;
       surfaceConfigNextAt = Date.now() + (modelProviderConfigured === false ? 5_000 : 30_000);
@@ -597,6 +605,11 @@ const CARD_STYLE = `<style>
   .btn:focus-visible{ outline:2px solid color-mix(in srgb, var(--text) 35%, transparent); outline-offset:2px; }
   .help{ color:var(--muted); font-size:12.5px; margin:20px 0 0; }
   @media (prefers-reduced-motion:reduce){ *{ transition:none !important; } }
+  @media (max-width:860px){
+    input:not([type=checkbox]):not([type=radio]),textarea,select,[contenteditable]:not([contenteditable=false]){
+      font-size:16px!important;
+    }
+  }
 </style>`;
 
 const ALERT_ICON = `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5M12 16h.01"/></svg>`;
@@ -617,7 +630,7 @@ function cardPage(o: {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>${escapeHtml(o.title)} · Portal</title>
 ${CARD_STYLE}
 </head>
@@ -715,7 +728,7 @@ const connectStyle = (): string => `<style>
 
 function connectPage(o: { title: string; body: string; action?: string }): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(o.title)} · Portal</title>${connectStyle()}</head>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"><title>${escapeHtml(o.title)} · Portal</title>${connectStyle()}</head>
 <body><div class="card"><h1>${escapeHtml(o.title)}</h1><p>${escapeHtml(o.body)}</p>${o.action ?? ""}</div></body></html>`;
 }
 
@@ -1097,11 +1110,17 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return proxyToAppHost(req, res, CORE);
   }
 
-  void refreshSurfaceConfig();
+  if (method === "GET" && wantsHtml(req)) await refreshSurfaceConfig(true);
+  else void refreshSurfaceConfig();
 
   if (method === "GET" && pathname === "/healthz") return json(res, 200, { ok: true });
 
   if (method === "GET" && (pathname === "/favicon.ico" || pathname === "/favicon.svg")) {
+    await refreshSurfaceConfig(true);
+    if (brandIconUrl) {
+      res.writeHead(302, { location: brandIconUrl, "cache-control": "no-cache" });
+      return void res.end();
+    }
     return serveEmojiFavicon(res, process.env.PORTAL_FAVICON_EMOJI ?? "\u{1F3F4}\u{200D}\u2620\uFE0F", "max-age=86400");
   }
 
@@ -1330,7 +1349,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   if (
     method === "GET" &&
-    (/^\/share\/external\/[a-f0-9-]{36}(?:\/files\/[a-f0-9-]{36})?$/.test(pathname) ||
+    (pathname === "/manifest.webmanifest" ||
+      /^\/share\/external\/[a-f0-9-]{36}(?:\/files\/[a-f0-9-]{36})?$/.test(pathname) ||
       /^\/assets\/[a-zA-Z0-9_.-]+$/.test(pathname))
   ) {
     return proxyToUpstream(req, res, { baseUrl: UPSTREAMS["web-ui"]!, path: pathname, search: url.search }, ["accept"]);

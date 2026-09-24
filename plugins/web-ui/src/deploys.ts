@@ -17,6 +17,7 @@ import {
   type DeploymentNotices,
 } from "./deploy-notices";
 import { html, localeCode, t } from "./i18n.ts";
+import { focusTextInputOnDesktop } from "./viewport";
 import {
   deploymentAfterRestore,
   deploymentActionView,
@@ -501,8 +502,7 @@ function startEditDeploy(d: DeploymentView, field: "displayName" | "name"): void
   drawDeployDetail(d);
   requestAnimationFrame(() => {
     const input = document.querySelector<HTMLInputElement>(".deploy-edit-input");
-    input?.focus();
-    input?.select();
+    if (focusTextInputOnDesktop(input)) input?.select();
   });
 }
 

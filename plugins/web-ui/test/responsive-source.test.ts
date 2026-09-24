@@ -5,16 +5,75 @@ import test from "node:test";
 const css = readFileSync(new URL("../src/shell.css", import.meta.url), "utf8");
 const compactCss = css.replace(/\s+/g, " ");
 const shell = readFileSync(new URL("../src/shell.ts", import.meta.url), "utf8");
+const chat = readFileSync(new URL("../src/chat.ts", import.meta.url), "utf8");
 const sessions = readFileSync(new URL("../src/sessions.ts", import.meta.url), "utf8");
 const contexts = readFileSync(new URL("../src/contexts.ts", import.meta.url), "utf8");
+const composer = readFileSync(new URL("../src/composer.ts", import.meta.url), "utf8");
+const viewport = readFileSync(new URL("../src/viewport.ts", import.meta.url), "utf8");
+const authPages = readFileSync(new URL("../../auth/src/pages.ts", import.meta.url), "utf8");
 const page = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 
 test("mobile shell follows the visual viewport and device safe areas", () => {
   assert.match(page, /viewport-fit=cover/);
+  assert.match(page, /interactive-widget=resizes-content/);
+  assert.match(page, /maximum-scale=1\.0/);
   assert.match(compactCss, /height: 100dvh/);
   for (const inset of ["top", "right", "bottom", "left"]) {
     assert.match(compactCss, new RegExp(`safe-area-inset-${inset}`));
   }
+});
+
+test("mobile text inputs outside chat neither auto-focus nor trigger browser zoom", () => {
+  assert.match(viewport, /if \(isPhone\(\) \|\| !element\) return false;/);
+  assert.match(sessions, /focusTextInputOnDesktop\(input\)/);
+  assert.match(shell, /\?autofocus=\$\{!isPhone\(\)\}/);
+  assert.doesNotMatch(authPages, /autofocus/);
+  assert.match(
+    compactCss,
+    /@media \(max-width: 860px\)[\s\S]*input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\),\s*textarea,\s*select,\s*\[contenteditable\]:not\(\[contenteditable="false"\]\) \{\s*font-size: 16px !important;/,
+  );
+});
+
+test("mobile chat leaves iOS keyboard placement to the browser without programmatic focus", () => {
+  assert.match(compactCss, /height: var\(--vvh, 100dvh\)/);
+  assert.match(compactCss, /@supports \(-webkit-touch-callout: none\) \{ \.layout \{ height: 100dvh;/);
+  assert.doesNotMatch(compactCss, /transform: translateY\(var\(--vv-top, 0px\)\)/);
+  assert.match(viewport, /export function trackVisualViewport\(\): void/);
+  assert.doesNotMatch(viewport, /window\.scrollTo|vv\.offsetTop|addEventListener\("scroll"/);
+  assert.match(shell, /trackVisualViewport\(\);/);
+  assert.doesNotMatch(shell, /function warmDeferredChunks\(\): void \{\s*if \(isPhone\(\)\) return;/);
+  assert.doesNotMatch(chat, /const mobile = isPhone\(\);/);
+  assert.match(chat, /<\/section>\s*<div class="chat-bottom-dock">/);
+  assert.doesNotMatch(compactCss, /\.chat-scroll > \.chat-bottom-dock/);
+  assert.match(composer, /function focusComposerEnd\(\): void \{\s*if \(isPhone\(\)\) return;/);
+});
+
+test("loading suggested activities reserves their space without moving the chat CTA", () => {
+  assert.match(chat, /suggested-activities suggested-activities-loading/);
+  assert.match(compactCss, /\.suggested-activities-loading \{ height: 114px; visibility: hidden;/);
+  assert.match(compactCss, /@media \(pointer: coarse\)[\s\S]*\.suggested-activities-loading \{ height: 132px;/);
+  assert.doesNotMatch(compactCss, /\.empty-chat:has\(\.suggested-activities\) \.chat-cta/);
+});
+
+test("typing collapses suggested activities without redrawing the chat", () => {
+  assert.match(composer, /region\?\.classList\.toggle\("is-collapsed", collapsed\)/);
+  assert.doesNotMatch(
+    composer,
+    /Boolean\(appState\.me\?\.suggestedActivities\?\.length\) && wasEmpty !== !composerState\.draft\)\s*\{\s*ctx\.chat\.drawActiveChat/,
+  );
+});
+
+test("the empty and active chat composers use the same width", () => {
+  assert.doesNotMatch(css, /\.custom-chat-shell\.empty-chat \.composer-wrap\s*,/);
+  assert.match(css, /\.custom-chat-shell\.empty-chat \.suggested-activities \{/);
+  assert.match(
+    compactCss,
+    /\.custom-chat-shell:not\(\.app-edit-chat\) > \.chat-bottom-dock > \.composer-wrap \{ box-sizing: border-box; width: min\(var\(--content-w\), calc\(100% - 20px\)\); margin-inline: auto;/,
+  );
+  assert.match(
+    compactCss,
+    /@media \(max-width: 860px\) \{ \.custom-chat-shell:not\(\.app-edit-chat\) > \.chat-bottom-dock > \.composer-wrap \{ width: auto; margin-inline: max\(10px, env\(safe-area-inset-left\)\) max\(10px, env\(safe-area-inset-right\)\);/,
+  );
 });
 
 test("mobile sidebar is modal, dismissible, and sized for touch", () => {
@@ -55,6 +114,21 @@ test("mobile sidebar is modal, dismissible, and sized for touch", () => {
     /@media \(max-width: 860px\) and \(hover: none\)[\s\S]*\.sidebar \.session-menu-btn\s*\{\s*opacity:\s*1;\s*\}/,
   );
   assert.match(compactCss, /\.recent-project-head \.recent-project-count \{ opacity: 0; \}/);
+});
+
+test("mobile session tools use a dismissible right drawer", () => {
+  const scope = readFileSync(new URL("../src/session-scope.ts", import.meta.url), "utf8");
+  assert.match(scope, /class="session-tools-scrim"[^>]+aria-label="Close session tools"/);
+  assert.match(compactCss, /\.session-tools-more\.open \.session-tools-scrim \{[^}]*position: fixed;[^}]*inset: 0;/);
+  assert.match(compactCss, /\.chat-topbar:has\(\.session-tools-more\.open\) \{ z-index: 70;/);
+  assert.match(
+    compactCss,
+    /\.session-tools-more \.menu-popover \{[^}]*right: 0 !important;[^}]*left: auto !important;[^}]*width: min\(276px, 84vw\) !important;/,
+  );
+  assert.match(
+    compactCss,
+    /\.session-tools-more \.menu-option \{[^}]*align-items: center;[^}]*justify-content: flex-start;[^}]*gap: 12px;/,
+  );
 });
 
 test("the sidebar's quick actions share the navrow treatment", () => {

@@ -2,6 +2,32 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { harness, SESSION, type Harness } from "./deep-link-boot-fixture.ts";
 
+test("concurrent safe boots share one page initialization", async () => {
+  const h = await harness({ path: "/files" });
+  try {
+    const boots = [h.bootSafely(), h.bootSafely()];
+    h.releaseSessions();
+    await Promise.all(boots);
+    assert.equal(h.requests.filter((path) => path === "/api/ui-state?key=split-canvas").length, 1);
+    assert.equal(h.requests.filter((path) => path === "/me").length, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a later safe boot can reinitialize after the first one settles", async () => {
+  const h = await harness({ path: "/files" });
+  try {
+    const first = h.bootSafely();
+    h.releaseSessions();
+    await first;
+    await h.bootSafely();
+    assert.equal(h.requests.filter((path) => path === "/me").length, 2);
+  } finally {
+    await h.close();
+  }
+});
+
 test("a share link paints its conversation from the transcript, without waiting for the session list", async () => {
   const h = await harness({ path: "/s/sess-deep" });
   try {

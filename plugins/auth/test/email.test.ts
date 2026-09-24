@@ -40,6 +40,8 @@ test("the sign-in email carries the link once in both alternatives and never a b
   assert.match(message.text, /works once and expires in 15 minutes/);
   assert.match(message.text, /browser where you want to sign in/);
   assert.match(message.html, /browser where you want to sign in/);
+  assert.match(message.text, /do not open the link/);
+  assert.match(message.html, /do not open the link/);
   assert.doesNotMatch(`${message.text}${message.html}`, /browser you started from/);
 });
 

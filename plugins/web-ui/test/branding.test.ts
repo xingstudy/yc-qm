@@ -7,10 +7,16 @@ import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { JSDOM } from "jsdom";
 
+let coreBranding = {
+  accent: "#f0652f",
+  mark: "Y",
+  markUrl: "https://cdn.example.com/icon.png",
+  selfLabel: "QM",
+};
 const core = createServer((req: IncomingMessage, res) => {
   if ((req.url ?? "").startsWith("/v1/surface-config")) {
     res.writeHead(200, { "content-type": "application/json" });
-    return void res.end(JSON.stringify({ branding: { accent: "#f0652f", mark: "Y", selfLabel: "QM" } }));
+    return void res.end(JSON.stringify({ branding: coreBranding }));
   }
   res.writeHead(200, { "content-type": "application/json" });
   res.end("{}");
@@ -47,11 +53,21 @@ test("cold start: the FIRST shell render already carries accent, mark, and self-
   const html = await r.text();
   assert.match(html, /--brand-accent:#f0652f/, "accent injected on the first render");
   assert.match(html, /--brand-mark:"Y"/, "mark injected on the first render");
+  assert.match(html, /--brand-mark-image:url\("https:\/\/cdn\.example\.com\/icon\.png"\)/);
+  assert.match(html, /<link rel="icon" href="https:\/\/cdn\.example\.com\/icon\.png"\s*\/?>/);
+  assert.match(html, /<link rel="apple-touch-icon" href="https:\/\/cdn\.example\.com\/icon\.png"\s*\/?>/);
   assert.match(
     html,
     /<meta name="brand-self-label" content="QM"\s*\/?>/,
     "self-label meta injected regardless of template formatting",
   );
+});
+
+test("a reload fetches branding again instead of serving the previous cached shell", async () => {
+  coreBranding = { ...coreBranding, accent: "#0055ff", selfLabel: "Zed" };
+  const html = await (await fetch(`${base}/`, { headers: { cookie: "webuiuser=alice" } })).text();
+  assert.match(html, /--brand-accent:#0055ff/);
+  assert.match(html, /<meta name="brand-self-label" content="Zed"\s*\/?>/);
 });
 
 test("the vite template carries the self-label anchor the server injects into", () => {
@@ -116,11 +132,13 @@ test("the installable-app metadata follows the brand: manifest link, touch icon,
   assert.match(template, /<link rel="manifest" href="%BASE_URL%manifest\.webmanifest"\s*\/?>/);
   assert.match(template, /<link rel="apple-touch-icon" href="%BASE_URL%brand-mark\.svg"\s*\/?>/);
   assert.match(template, /<meta name="apple-mobile-web-app-title" content="QM"\s*\/?>/);
-  assert.match(template, /viewport-fit=cover, interactive-widget=resizes-content/);
+  assert.match(template, /maximum-scale=1\.0, viewport-fit=cover, interactive-widget=resizes-content/);
   const { injectBranding } = await import("../../chassis/src/branding.ts");
   const shell =
     '<html><head><meta name="brand-self-label" content="QM" /><meta name="apple-mobile-web-app-title" content="QM" /></head></html>';
   const branded = injectBranding(shell, { selfLabel: 'Ship "Q"' });
   assert.match(branded, /<meta name="apple-mobile-web-app-title" content="Ship &quot;Q&quot;" \/>/);
   assert.match(injectBranding(shell, {}), /<meta name="apple-mobile-web-app-title" content="QM" \/>/);
+  const manifest = (await (await fetch(`${base}/manifest.webmanifest`)).json()) as { icons: { src: string }[] };
+  assert.equal(manifest.icons[0]?.src, "https://cdn.example.com/icon.png");
 });
