@@ -68,7 +68,7 @@ import { clearDraft, newChatDraftKey, saveDraft } from "./drafts";
 import { html, t } from "./i18n.ts";
 import { tip } from "./tooltip";
 import { isPhone } from "./viewport";
-import { randomUUID } from "./random";
+import { randomUUID } from "./random.ts";
 import {
   LOADOUT_CAP,
   parseLoadout,

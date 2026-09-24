@@ -13,7 +13,7 @@ import { mountConnectionPicker, type ConnectionService } from "./connection-pick
 import type { Me } from "./shell-state";
 import "./onboarding-welcome.css";
 import "./onboarding-slack";
-import { randomUUID } from "./random";
+import { randomUUID } from "./random.ts";
 import {
   connectionPreviewEnabled,
   previewParameters,

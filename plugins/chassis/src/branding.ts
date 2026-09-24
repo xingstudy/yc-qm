@@ -97,10 +97,12 @@ export function injectBranding(html: string, branding: OrgBranding, opts?: { tit
     } else {
       out = out.replace("</head>", `${icon}</head>`);
     }
-    out = out.replace(
-      /(<link rel="apple-touch-icon" href=")[^"]*("\s*\/?>)/,
-      (_match, before: string, after: string) => `${before}${href}${after}`,
-    );
+    const touchIcon = `<link rel="apple-touch-icon" href="${href}" />`;
+    if (/<link rel="apple-touch-icon" href="[^"]*"\s*\/?>/.test(out)) {
+      out = out.replace(/<link rel="apple-touch-icon" href="[^"]*"\s*\/?>/, touchIcon);
+    } else {
+      out = out.replace("</head>", `${touchIcon}</head>`);
+    }
   }
   const decls = [
     ...(cssSafe(accent) ? [`--brand-accent:${accent}`] : []),

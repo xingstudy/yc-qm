@@ -5,7 +5,7 @@ import { welcomeIdeasPrompt } from "./welcome-ideas";
 import { setupContent } from "./setup-widget";
 import { isWelcomeConversation } from "./welcome-session";
 import { ADMIN_BASE } from "./shell";
-import { randomUUID } from "./random";
+import { randomUUID } from "./random.ts";
 import { connectorCard } from "./connector-widget";
 import {
   activityDescription,

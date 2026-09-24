@@ -1,4 +1,4 @@
-import { randomUUID } from "./random";
+import { randomUUID } from "./random.ts";
 
 export interface PickerState {
   query: string;

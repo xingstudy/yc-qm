@@ -64,9 +64,10 @@ test("sharing proxy binds identity and shared page loads only the filtered endpo
   const before = calls.length;
   const response = await fetch(`${base}/share/internal/11111111-1111-4111-8111-111111111111`, { headers });
   assert.equal(response.status, 200);
-  assert.equal(calls.length, before + 1);
-  assert.ok(calls.at(-1)!.path.startsWith("/v1/shared-sessions/11111111-1111-4111-8111-111111111111?viewer=alice"));
-  assert.equal(calls.at(-1)!.actor, token);
+  const projection = calls.slice(before).filter((call) => !call.path.startsWith("/v1/surface-config"));
+  assert.equal(projection.length, 1);
+  assert.ok(projection[0]!.path.startsWith("/v1/shared-sessions/11111111-1111-4111-8111-111111111111?viewer=alice"));
+  assert.equal(projection[0]!.actor, token);
   const html = await response.text();
   assert.ok(html.includes("\\u003cscript>"));
   assert.equal(html.includes('<script>alert("secret")</script>'), false);
@@ -98,9 +99,10 @@ test("external share is readable without identity using only the public projecti
   const before = calls.length;
   const response = await fetch(`${base}/share/external/11111111-1111-4111-8111-111111111111`);
   assert.equal(response.status, 200);
-  assert.equal(calls.length, before + 1);
-  assert.ok(calls.at(-1)!.path.startsWith("/v1/public-shares/11111111-1111-4111-8111-111111111111?"));
-  assert.equal(calls.at(-1)!.actor, undefined);
+  const projection = calls.slice(before).filter((call) => !call.path.startsWith("/v1/surface-config"));
+  assert.equal(projection.length, 1);
+  assert.ok(projection[0]!.path.startsWith("/v1/public-shares/11111111-1111-4111-8111-111111111111?"));
+  assert.equal(projection[0]!.actor, undefined);
   const html = await response.text();
   assert.match(html, /shared-transcript/);
   assert.equal(response.headers.get("cache-control"), "no-store");

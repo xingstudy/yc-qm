@@ -1,7 +1,7 @@
 import { openSessionShare } from "./session-share";
 import { nothing, render, type TemplateResult } from "lit";
 import { html, t } from "./i18n.ts";
-import { randomUUID } from "./random";
+import { randomUUID } from "./random.ts";
 import { preserveTranscriptScroll } from "./transcript-viewport";
 import { ref } from "lit/directives/ref.js";
 import {
