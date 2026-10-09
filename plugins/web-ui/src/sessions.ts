@@ -34,11 +34,13 @@ import {
   api,
   attachPendingApprovals,
   fetchSessionApprovals,
+  fetchUiState,
   fetchTranscript,
   currentEarlierCount,
   detachSession,
   inheritedTranscript,
   isContinuable,
+  putUiState,
   entriesToMessages,
   regenerateTitle,
   sharedContextLabel,
@@ -63,6 +65,7 @@ import {
   reconcileSessions,
   rowIndicators,
   splitPinned,
+  splitPinnedProjects,
   withPendingSession,
   withoutUnsentPending,
   type RecentItem,
@@ -119,6 +122,7 @@ export const sessionsState = {
   openingKey: null as string | null,
   webOnly: true,
   collapsedProjectScopes: new Set<string>(),
+  pinnedProjectScopes: new Set<string>(),
 };
 
 function lastChatKey(): string {
@@ -153,6 +157,57 @@ const sessionPatchTails = new Map<string, Promise<void>>();
 const sessionPatchVersions = new Map<string, number>();
 let sessionPatchGeneration = 0;
 let sessionPatchEpoch = 0;
+const PINNED_PROJECTS_KEY = "pinned-projects";
+let pinnedProjectsUser: string | null = null;
+let pinnedProjectsRequest: Promise<void> | null = null;
+let pinnedProjectsVersion = 0;
+let pinnedProjectsUpdatedAt = 0;
+
+function loadPinnedProjects(): void {
+  const user = appState.me?.user;
+  if (!user || pinnedProjectsUser === user || pinnedProjectsRequest) return;
+  const generation = sessionPatchGeneration;
+  const version = pinnedProjectsVersion;
+  const request = fetchUiState(PINNED_PROJECTS_KEY)
+    .then((record) => {
+      if (sessionPatchGeneration !== generation || pinnedProjectsVersion !== version || appState.me?.user !== user)
+        return;
+      sessionsState.pinnedProjectScopes = new Set(
+        Array.isArray(record.value) ? record.value.filter((scope): scope is string => typeof scope === "string") : [],
+      );
+      pinnedProjectsUpdatedAt = record.updatedAt;
+      pinnedProjectsUser = user;
+      renderList();
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      if (pinnedProjectsRequest === request) pinnedProjectsRequest = null;
+    });
+  pinnedProjectsRequest = request;
+}
+
+async function setProjectPinned(scopeId: string, pinned: boolean): Promise<void> {
+  sessionsState.openMenuId = null;
+  const next = new Set(sessionsState.pinnedProjectScopes);
+  if (pinned) next.add(scopeId);
+  else next.delete(scopeId);
+  sessionsState.pinnedProjectScopes = next;
+  const version = ++pinnedProjectsVersion;
+  const generation = sessionPatchGeneration;
+  const updatedAt = (pinnedProjectsUpdatedAt = Math.max(Date.now(), pinnedProjectsUpdatedAt + 1));
+  renderList();
+  try {
+    const result = (await putUiState(PINNED_PROJECTS_KEY, [...next], updatedAt)) as { ok: boolean };
+    if (!result.ok) throw new Error("Project pin was not saved");
+    if (sessionPatchGeneration === generation) pinnedProjectsUser = appState.me?.user ?? null;
+  } catch {
+    if (sessionPatchGeneration !== generation || pinnedProjectsVersion !== version) return;
+    pinnedProjectsUser = null;
+    await pinnedProjectsRequest;
+    loadPinnedProjects();
+    canvasToast(t("Could not save project pin."));
+  }
+}
 
 export function clearSessionSelection(): boolean {
   if (!selection.ids.size && !selection.anchor) return false;
@@ -220,6 +275,11 @@ export function resetSessionsState(): void {
   sessionsState.renamingId = null;
   sessionsState.openingKey = null;
   sessionsState.collapsedProjectScopes.clear();
+  sessionsState.pinnedProjectScopes.clear();
+  pinnedProjectsUser = null;
+  pinnedProjectsRequest = null;
+  pinnedProjectsVersion = 0;
+  pinnedProjectsUpdatedAt = 0;
   renameDraft = "";
   refreshingTitleIds.clear();
   showArchived = false;
@@ -357,6 +417,10 @@ export function renderList(): void {
   const archived = visible.filter((s) => s.archived);
   const { pinned, rest } = splitPinned(active);
   const activeItems = recentItemsFor(rest);
+  const { pinned: pinnedProjects, rest: otherItems } = splitPinnedProjects(
+    activeItems,
+    sessionsState.pinnedProjectScopes,
+  );
   const archivedItems: RecentItem[] = archived.map((session) => ({
     kind: "session",
     session,
@@ -366,22 +430,27 @@ export function renderList(): void {
     html`
       ${detachDropZone()}
       ${
-        pinned.length
+        pinned.length || pinnedProjects.length
           ? html`
               <div class="recents-group pinned-head">
                 <span class="pinned-head-glyph">${icon(Pin, 11)}</span><span>Pinned</span>
               </div>
-              <div class="pinned-children">
-                ${repeat(
-                  pinned,
-                  (session) => session.threadRef,
-                  (session) => sessionRow(session),
-                )}
-              </div>
+              ${
+                pinned.length
+                  ? html`<div class="pinned-children">
+                      ${repeat(
+                        pinned,
+                        (session) => session.threadRef,
+                        (session) => sessionRow(session),
+                      )}
+                    </div>`
+                  : nothing
+              }
+              ${repeat(pinnedProjects, (item) => `project:${item.kind === "project" ? item.scopeId : ""}`, recentItem)}
             `
           : nothing
       }
-      ${groupedRows(activeItems)}
+      ${groupedRows(otherItems)}
       ${
         archived.length
           ? html`
@@ -395,9 +464,9 @@ export function renderList(): void {
           : nothing
       }
       ${sessionsNotice ? html`<div class="empty" style="padding:16px">${sessionsNotice}</div>` : ""}
-      ${sessionsLoading && visible.length === 0 ? html`<div class="empty" style="padding:16px">${t("Loading conversations...")}</div>` : ""}
+      ${sessionsLoading && activeItems.length === 0 && pinned.length === 0 && archived.length === 0 ? html`<div class="empty" style="padding:16px">${t("Loading conversations...")}</div>` : ""}
       ${
-        !sessionsLoading && !sessionsNotice && visible.length === 0
+        !sessionsLoading && !sessionsNotice && activeItems.length === 0 && pinned.length === 0 && archived.length === 0
           ? html`<div class="empty" style="padding:16px">
               ${t(sessionsState.list.length ? "Slack conversations hidden." : "No conversations yet.")}
             </div>`
@@ -458,6 +527,7 @@ function recentItem(item: RecentItem): TemplateResult {
                   <span class="chev">${icon(collapsed ? ChevronRight : ChevronDown, 13)}</span>
                 </span>
                 <span class="recent-project-name" dir="auto">${name.replace(/^#/, "")}</span>
+                ${item.groupKind === "project" && sessionsState.pinnedProjectScopes.has(item.scopeId) ? html`<span class="recent-project-pin" aria-label=${t("Pinned project")}>${icon(Pin, 11)}</span>` : nothing}
               </button>
               <div class="session-menu recent-project-menu ${menuOpen ? "menu-open" : ""}">
                 <span class="recent-project-count">${item.sessions.length}</span>
@@ -531,8 +601,21 @@ function startProjectChat(event: Event, scopeId: string, name: string | null): v
 
 function projectMenuPopover(item: Extract<RecentItem, { kind: "project" }>): TemplateResult {
   const owned = projectOf(item.scopeId)?.ownerId === appState.me?.user;
+  const pinned = sessionsState.pinnedProjectScopes.has(item.scopeId);
   return html`
     <div class="session-menu-popover" role="menu" ${ref(placeSessionMenu)} @click=${(e: Event) => e.stopPropagation()}>
+      ${
+        item.groupKind === "project"
+          ? html`<button
+              class="session-menu-option"
+              type="button"
+              role="menuitem"
+              @click=${() => void setProjectPinned(item.scopeId, !pinned)}
+            >
+              ${icon(pinned ? PinOff : Pin, 15)}<span>${t(pinned ? "Unpin project" : "Pin project")}</span>
+            </button>`
+          : nothing
+      }
       <button
         class="session-menu-option"
         type="button"
@@ -1600,6 +1683,7 @@ async function runSessionsRefresh(
   opts: { showLoading?: boolean; silent?: boolean; refreshContexts?: boolean; patchEpoch?: number },
   newerRun: () => Promise<boolean> | null,
 ): Promise<boolean> {
+  loadPinnedProjects();
   loadRecentContexts(opts.refreshContexts === true);
   const seq = ++sessionRefreshSeq;
   const patchEpoch = opts.patchEpoch ?? sessionPatchEpoch;

@@ -405,6 +405,10 @@ a.chat-row-open {
   white-space: nowrap;
   font-size: 12.5px;
 }
+.recent-project-pin {
+  display: inline-flex;
+  color: var(--muted-foreground);
+}
 .recent-project-count,
 .archived-toggle .archived-count {
   flex: 0 0 auto;

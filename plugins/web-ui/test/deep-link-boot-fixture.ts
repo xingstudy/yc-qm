@@ -3,11 +3,14 @@ import { createServer } from "vite";
 
 export interface Harness {
   requests: string[];
+  uiStateWrites: Array<{ key: string; value: unknown; updatedAt: number }>;
   setConnections: (items: unknown[], status?: number) => void;
   releaseSessions: () => void;
   releaseTranscript: () => void;
   releaseApprovals: () => void;
   sessionsReady: () => Promise<void>;
+  reloadSessions: () => Promise<boolean>;
+  resetSessions: () => void;
   boot: () => Promise<void>;
   bootSafely: () => Promise<void>;
   appState: { currentView: string };
@@ -28,6 +31,8 @@ interface HarnessOptions {
   holdTranscript?: boolean;
   holdApprovals?: boolean;
   listSessions?: unknown[];
+  contexts?: unknown[];
+  pinnedProjects?: string[];
   lastChatId?: string;
   savedCanvas?: boolean;
   welcome?: boolean;
@@ -84,6 +89,8 @@ export async function harness(opts: HarnessOptions): Promise<Harness> {
   const realSetTimeout = globalThis.setTimeout;
   const realSetInterval = globalThis.setInterval;
   const requests: string[] = [];
+  const uiStateWrites: Harness["uiStateWrites"] = [];
+  let pinnedProjects = opts.pinnedProjects ?? [];
   const inFlight = new Set<Promise<Response>>();
   let releaseSessions = (): void => {};
   let releaseTranscript = (): void => {};
@@ -92,7 +99,7 @@ export async function harness(opts: HarnessOptions): Promise<Harness> {
   const sessionsHeld = new Promise<void>((resolve) => (releaseSessions = resolve));
   const transcriptHeld = new Promise<void>((resolve) => (releaseTranscript = resolve));
   let failuresLeft = opts.transcriptFailures ?? (opts.transcriptStatus ? Number.POSITIVE_INFINITY : 0);
-  const respond = async (input: RequestInfo | URL): Promise<Response> => {
+  const respond = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const path = String(input);
     requests.push(path);
     if (path === "/me")
@@ -107,8 +114,9 @@ export async function harness(opts: HarnessOptions): Promise<Harness> {
     if (path.startsWith("/api/composio/toolkits"))
       return Response.json({ items: [{ id: "gmail", name: "Gmail", description: "Email" }], nextCursor: null });
     if (path.startsWith("/api/runtime-config")) {
+      const scopeId = new URL(path, "http://localhost").searchParams.get("scopeId") ?? "personal:tester";
       return Response.json({
-        scopeId: "personal:tester",
+        scopeId,
         approvedHarnesses: [],
         modelsByHarness: {},
         modelCatalog: {},
@@ -118,8 +126,16 @@ export async function harness(opts: HarnessOptions): Promise<Harness> {
         upgradeAvailable: false,
       });
     }
+    if (path === "/api/ui-state?key=pinned-projects")
+      return Response.json({ value: pinnedProjects, updatedAt: uiStateWrites.at(-1)?.updatedAt ?? 0 });
+    if (path === "/api/ui-state" && init?.method === "PUT") {
+      const body = JSON.parse(String(init.body)) as { key: string; value: unknown; updatedAt: number };
+      uiStateWrites.push(body);
+      if (body.key === "pinned-projects") pinnedProjects = body.value as string[];
+      return Response.json({ ok: true, updatedAt: body.updatedAt });
+    }
     if (path.startsWith("/api/ui-state")) return Response.json({ value: null, updatedAt: 0 });
-    if (path === "/api/contexts") return Response.json({ contexts: [] });
+    if (path === "/api/contexts") return Response.json({ contexts: opts.contexts ?? [] });
     if (path === "/api/notifications")
       return Response.json({ notifications: opts.notifications ?? [], unread: opts.notifications?.length ?? 0 });
     if (path === "/api/crons") return Response.json({ crons: opts.crons ?? [], visible: [] });
@@ -144,8 +160,8 @@ export async function harness(opts: HarnessOptions): Promise<Harness> {
   };
 
   const globals = {
-    fetch: (input: RequestInfo | URL): Promise<Response> => {
-      const answer = respond(input);
+    fetch: (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const answer = respond(input, init);
       inFlight.add(answer);
       void answer.finally(() => inFlight.delete(answer)).catch(() => {});
       return answer;
@@ -205,6 +221,7 @@ export async function harness(opts: HarnessOptions): Promise<Harness> {
   const split = await vite.ssrLoadModule("/src/split.ts");
   return {
     requests,
+    uiStateWrites,
     setConnections: (items, status = 200) => {
       connectedItems = items;
       connectedStatus = status;
@@ -213,6 +230,8 @@ export async function harness(opts: HarnessOptions): Promise<Harness> {
     releaseTranscript,
     releaseApprovals,
     sessionsReady: sessions.sessionsReady as () => Promise<void>,
+    reloadSessions: () => sessions.refreshSessions({ silent: true, refreshContexts: true }),
+    resetSessions: sessions.resetSessionsState,
     boot: shell.boot as () => Promise<void>,
     bootSafely: shell.bootSafely as () => Promise<void>,
     appState: shell.appState as Harness["appState"],

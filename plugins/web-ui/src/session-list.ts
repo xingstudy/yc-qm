@@ -33,6 +33,19 @@ export function splitPinned<T extends Pick<CoreSession, "pinned">>(sessions: rea
   return { pinned, rest };
 }
 
+export function splitPinnedProjects(
+  items: readonly RecentItem[],
+  pinnedScopes: ReadonlySet<string>,
+): { pinned: RecentItem[]; rest: RecentItem[] } {
+  const pinned: RecentItem[] = [];
+  const rest: RecentItem[] = [];
+  for (const item of items)
+    (item.kind === "project" && item.groupKind === "project" && pinnedScopes.has(item.scopeId) ? pinned : rest).push(
+      item,
+    );
+  return { pinned, rest };
+}
+
 export function chatBrowseStatusMatches(
   session: Pick<CoreSession, "archived" | "awaitingInput">,
   status: ChatBrowseStatus,
