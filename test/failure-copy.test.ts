@@ -9,7 +9,7 @@ import {
 } from "../src/core/failure-copy.ts";
 import { SECURITY_QUARANTINE_REFUSAL_TEXT } from "../plugins/chassis/src/security-quarantine.ts";
 import { GENERIC_FAILURE_TEXT } from "../plugins/chassis/src/failure-copy.ts";
-import { turnFailureMessage } from "../src/core/turn-error.ts";
+import { NonRetryableTurnError, turnFailureMessage } from "../src/core/turn-error.ts";
 
 test("the shared failure policy renders quarantine canned, refused reasons verbatim, everything else generic", () => {
   const quarantine = {
@@ -54,7 +54,6 @@ test("known infrastructure failures explain the cause without exposing raw diagn
     [new Error("fetch failed", { cause: new Error("ECONNRESET private-host") }), "could not be reached"],
     [new Error("provider HTTP 503 private-host"), "temporarily unavailable"],
     [new Error("invalid api key private-token"), "could not authenticate"],
-    [new Error("Codex turn exceeded 300s wall clock"), "timed out"],
     [new Error("maximum context length is 200000 private-token"), "context limit"],
   ] as const) {
     const reason = turnFailureMessage(error);
@@ -64,6 +63,14 @@ test("known infrastructure failures explain the cause without exposing raw diagn
     assert.doesNotMatch(visible, /private/);
   }
   assert.equal(userFacingFailureText({ status: "failed", reason: "provider 429 private" }), GENERIC_FAILURE_TEXT);
+  assert.equal(turnFailureMessage(new NonRetryableTurnError("swarm service unavailable")), "swarm service unavailable");
+  const wallClock = turnFailureMessage(new NonRetryableTurnError("Codex turn exceeded 300s wall clock"));
+  assert.equal(wallClock, "Codex turn exceeded 300s wall clock");
+  assert.match(userFacingFailureText({ status: "failed", reason: wallClock }), /timed out; try again/);
+  assert.equal(
+    userFacingFailureClause({ status: "failed", reason: wallClock }),
+    "the AI service or a tool timed out; try again",
+  );
   assert.equal(
     userFacingFailureText({ status: "failed", reason: "private" }, "r-1"),
     `${GENERIC_FAILURE_TEXT} (run r-1)`,

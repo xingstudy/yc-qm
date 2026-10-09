@@ -15,8 +15,9 @@ export const FAILURE_REASONS = {
   context: "the model's context limit was reached; try a shorter request",
 } as const;
 
-export function isSafeFailureReason(reason: string | undefined): boolean {
-  return Object.values(FAILURE_REASONS).some((safe) => safe === reason);
+export function safeFailureReason(reason: string | undefined): string | undefined {
+  if (/^Codex turn exceeded \d{1,4}s wall clock$/.test(reason ?? "")) return FAILURE_REASONS.timeout;
+  return Object.values(FAILURE_REASONS).find((safe) => safe === reason);
 }
 
 export interface FailureLike {
@@ -29,9 +30,9 @@ export function userFacingFailureText(result: FailureLike, runId?: string): stri
   if (result.refusalKind === "security_quarantine") return SECURITY_QUARANTINE_REFUSAL_TEXT;
   if (result.status === "refused" && result.reason) return result.reason;
   const reference = runId && /^[a-zA-Z0-9-]{1,80}$/.test(runId) ? ` (run ${runId})` : "";
-  if (result.status === "failed")
-    return isSafeFailureReason(result.reason)
-      ? `I couldn't finish that turn: ${result.reason}.${reference}`
-      : `${GENERIC_FAILURE_TEXT}${reference}`;
+  if (result.status === "failed") {
+    const reason = safeFailureReason(result.reason);
+    return reason ? `I couldn't finish that turn: ${reason}.${reference}` : `${GENERIC_FAILURE_TEXT}${reference}`;
+  }
   return GENERIC_FAILURE_TEXT;
 }
