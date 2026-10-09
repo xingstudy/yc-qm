@@ -93,6 +93,9 @@ version checks before commit/push:
   versions and known vulnerabilities, plus added apt/apk packages. Runtime
   package refreshes remain mandatory in CD; local version checks cannot predict
   repository updates or new advisories after push.
+- Scan pinned distroless runtime images by digest, including OS packages such as
+  OpenSSL. They cannot run apt/apk upgrades; refresh the digest to a scanned,
+  patched image. A current `latest` tag does not update an older pinned digest.
 - Check the compiler used for copied Go binaries such as GitHub CLI and
   wireproxy. A new CLI version or `go get` does not patch its compiled standard
   library. Pin a patched Go builder and its matching digest; check toolchain
