@@ -153,8 +153,8 @@ async function markSessionMessagesRead(ctx: ApiCtx): Promise<void> {
 }
 
 export const notificationRoutes: ReadonlyArray<Route<ApiCtx>> = [
-  { method: "GET", path: "/v1/notifications", auth: "either", handle: listNotifications },
-  { method: "POST", path: "/v1/notifications/read-all", auth: "either", handle: markAllRead },
-  { method: "POST", path: "/v1/notifications/sessions/:id/read", auth: "either", handle: markSessionMessagesRead },
-  { method: "POST", path: "/v1/notifications/:id/read", auth: "either", handle: markRead },
+  { method: "GET", path: "/v1/notifications", auth: "source", handle: listNotifications },
+  { method: "POST", path: "/v1/notifications/read-all", auth: "source", handle: markAllRead },
+  { method: "POST", path: "/v1/notifications/sessions/:id/read", auth: "source", handle: markSessionMessagesRead },
+  { method: "POST", path: "/v1/notifications/:id/read", auth: "source", handle: markRead },
 ];

@@ -28,12 +28,13 @@ test("gateway only (no surface-provided context) still names the gateway", () =>
   assert.doesNotMatch(out, /Identifiers for this conversation/);
 });
 
-test("web gateway warns scheduled notifications need an external destination", () => {
+test("web gateway explains scheduled results and notifications", () => {
   const out = renderGatewayContext("web");
   assert.match(out, /over web\./);
-  assert.match(out, /web UI cannot receive future external notifications/);
-  assert.match(out, /use `recipient` for a Slack DM/);
-  assert.match(out, /Do not put "deliver to Slack" only inside `action`/);
+  assert.match(out, /results are saved in each cron run history/);
+  assert.match(out, /This web conversation can receive future results/);
+  assert.match(out, /completion and failure notices appear in Notifications/);
+  assert.match(out, /ask the user to choose one before creating the cron/);
 });
 
 test("surface-supplied instructions are appended verbatim (and alone are enough to render)", () => {
@@ -91,7 +92,7 @@ test("no gateway context: prompt names the surface but adds no identifier lines"
   assert.doesNotMatch(res.reply ?? "", /Identifiers for this conversation/);
 });
 
-test("web prompt tells cron creators to use a real notification destination", async () => {
+test("web prompt tells cron creators where results and notifications go", async () => {
   const { app } = freshApp();
   const res = await app.turn({
     surface: "web",
@@ -100,9 +101,9 @@ test("web prompt tells cron creators to use a real notification destination", as
     text: "!sysprompt",
   });
   assert.equal(res.status, "ok");
-  assert.match(res.reply ?? "", /web UI cannot receive future external notifications/);
-  assert.match(res.reply ?? "", /recipient.*Slack DM/s);
-  assert.match(res.reply ?? "", /Do not put "deliver to Slack" only inside `action`/);
+  assert.match(res.reply ?? "", /results are saved in each cron run history/);
+  assert.match(res.reply ?? "", /This web conversation can receive future results/);
+  assert.match(res.reply ?? "", /completion and failure notices appear in Notifications/);
 });
 
 test("triggered destination turns tell the agent to return the deliverable, not self-send it", async () => {
