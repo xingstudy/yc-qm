@@ -1482,6 +1482,13 @@ export function createChatSurface(
 
   ctx.onDensityChange(() => drawActiveChat());
 
+  function hasPostedReply(): boolean {
+    return Boolean(
+      chatState.liveWork &&
+      buildTimeline(chatState.liveWork).some((item) => item.kind === "tool" && postSpeechText(item.row)),
+    );
+  }
+
   function drawActiveChat(agent = chatState.agent, opts: { forceScroll?: boolean } = {}): void {
     if (!agent || agent !== chatState.agent || !chatState.host || appState.currentView !== "chats") return;
     transcriptViewport.beforeRender();
@@ -1490,7 +1497,25 @@ export function createChatSurface(
     const peers = streamedPeerMessages.filter((message) => !known.has((message as { entrySeq?: number }).entrySeq));
     const streaming = agent.state.streamingMessage;
     const insertAt = streaming && visible.at(-1) === streaming ? visible.length - 1 : visible.length;
-    const currentMessages = [...visible.slice(0, insertAt), ...peers, ...visible.slice(insertAt)];
+    const queued = ctx.composer.queuedRunsFor(chatState.threadRef);
+    const recordedRunIds = new Set([...visible, ...peers].map((message) => (message as { runId?: string }).runId));
+    const nextMessages =
+      agent.state.isStreaming && hasPostedReply() && queued.every((run) => run.authorId)
+        ? queued
+            .filter((run) => !recordedRunIds.has(run.runId))
+            .map(
+              (run) =>
+                ({
+                  role: "user",
+                  content: run.text || (run.hasAttachments ? "(files)" : ""),
+                  timestamp: run.createdAt ?? Date.now(),
+                  runId: run.runId,
+                  speaker: run.authorId,
+                  queued: true,
+                }) as AgentMessage,
+            )
+        : [];
+    const currentMessages = [...visible.slice(0, insertAt), ...peers, ...visible.slice(insertAt), ...nextMessages];
     if (preserveConnectionScroll) {
       connectionReturnMessageCount ??= currentMessages.length;
       if (connectionReturnMessageCount !== currentMessages.length) preserveConnectionScroll = false;
@@ -1781,6 +1806,11 @@ export function createChatSurface(
           class="message-row user-row ${steered ? "steered-row" : ""}"
           data-index=${index}
           data-entry-seq=${(message as { entrySeq?: number }).entrySeq ?? nothing}
+          data-queued-run-id=${
+            (message as { queued?: boolean; runId?: string }).queued
+              ? ((message as { runId?: string }).runId ?? nothing)
+              : nothing
+          }
         >
           ${steered ? html`<div class="steer-label">↪ steered the running task</div>` : nothing}
           ${speaker ? html`<div class="speaker-label">${speaker}</div>` : nothing}
@@ -3050,6 +3080,7 @@ export function createChatSurface(
   return {
     state: chatState,
     hasLiveRun: () => hasLiveRun(runSlot),
+    hasPostedReply,
     signalLiveRun: (kind, text, queuedRunId) =>
       signalLiveRun(
         runSlot,

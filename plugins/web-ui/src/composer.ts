@@ -517,7 +517,8 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
       : t("Ask anything");
     if (modelUnavailable && !runtimePending) placeholder = t("No available models");
     else if (inputBlocked) placeholder = runtimePending ? t("Loading runtime…") : t("Approve or deny to continue");
-    else if (agent.state.isStreaming) placeholder = t("Queue a message for after this turn…");
+    else if (agent.state.isStreaming && !ctx.chat.hasPostedReply())
+      placeholder = t("Queue a message for after this turn…");
     let composerNotice: TemplateResult | typeof nothing = nothing;
     if (modelUnavailable && !runtimePending) {
       composerNotice = html`<div class="composer-note">
@@ -753,6 +754,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
         ${icon(ArrowUp, 16)}
       </button>`;
     }
+    const sendLabel = t(ctx.chat.hasPostedReply() ? "Send" : "Queue for after this turn");
     return html`
       <button
         class="stop-btn"
@@ -764,13 +766,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
       >
         ${icon(Square, 16)}
       </button>
-      <button
-        class="send-btn"
-        type="submit"
-        ${tip(t("Queue for after this turn"))}
-        aria-label="Queue for after this turn"
-        ?disabled=${!composerCanSend()}
-      >
+      <button class="send-btn" type="submit" ${tip(sendLabel)} aria-label=${sendLabel} ?disabled=${!composerCanSend()}>
         ${icon(ArrowUp, 16)}
       </button>
     `;
@@ -778,6 +774,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
 
   function queuedStrip(agent: Agent): TemplateResult | typeof nothing {
     const queued = [...queuedRunsFor(ctx.chat.state.threadRef)];
+    if (!queuedEdit && ctx.chat.hasPostedReply() && queued.every((run) => run.authorId)) return nothing;
     if (queuedEdit?.threadRef === ctx.chat.state.threadRef && !queued.some((q) => q.runId === queuedEdit?.runId))
       queued.push({ runId: queuedEdit.runId, text: queuedEdit.original });
     if (!queued.length) return nothing;
@@ -1970,7 +1967,10 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     try {
       const queued = await queueTurn(threadRef, text, agent, ctx.chat.currentTurnOptions, idempotencyKey, attachments);
       failedQueueSend = null;
-      setQueuedRuns(threadRef, [...queuedRunsFor(threadRef).filter((r) => r.runId !== queued.runId), queued]);
+      setQueuedRuns(threadRef, [
+        ...queuedRunsFor(threadRef).filter((r) => r.runId !== queued.runId),
+        { ...queued, authorId: appState.me?.user, createdAt: Date.now() },
+      ]);
       bumpSessionActivity(threadRef);
       return true;
     } catch (err) {

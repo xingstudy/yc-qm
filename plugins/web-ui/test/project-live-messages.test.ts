@@ -91,8 +91,9 @@ test("an open project conversation receives peer messages during a run and recon
   };
   let entries = [initial];
   let reads = 0;
+  let sentText: string | null = null;
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input) => {
+  globalThis.fetch = async (input, init) => {
     const path = String(input);
     if (path.includes("runtime-config"))
       return Response.json({
@@ -105,6 +106,10 @@ test("an open project conversation receives peer messages during a run and recon
         scopeOverride: null,
       });
     if (path.includes("/api/runs/active")) return Response.json({ runId: null, queued: [] });
+    if (path === "/api/turn") {
+      sentText = JSON.parse(String(init?.body ?? "{}"))?.text ?? null;
+      return Response.json({ status: "queued", runId: "next-run" });
+    }
     if (path.endsWith("/approvals")) return Response.json({ approvals: [] });
     if (path.startsWith(`/api/sessions/${row.id}`)) return Response.json({ session: row, entries, earlierEntries: 0 });
     if (path === `/api/notifications/sessions/${row.id}/read`) {
@@ -155,6 +160,39 @@ test("an open project conversation receives peer messages during a run and recon
       configurable: true,
       value: { role: "assistant", content: [{ type: "text", text: "Live response" }] },
     });
+    (conv.state as typeof conv.state & { liveWork: unknown }).liveWork = {
+      status: "working",
+      activity: [
+        {
+          seq: 1,
+          parentSeq: null,
+          type: "tool_call",
+          payload: { tool: "web", action: "post", text: "Reply", callId: "post-1" },
+          createdAt: Date.now(),
+        },
+        {
+          seq: 2,
+          parentSeq: null,
+          type: "tool_result",
+          payload: { tool: "web", action: "post", ok: true, callId: "post-1" },
+          createdAt: Date.now(),
+        },
+      ],
+    };
+    conv.drawActiveChat();
+    conv.composer.state.draft = "Next question";
+    conv.drawActiveChat();
+    host.querySelector<HTMLButtonElement>(".send-btn")!.click();
+    await until(() => sentText === "Next question");
+    await until(() => host.querySelector('.user-row[data-queued-run-id="next-run"]') !== null);
+    assert.equal(host.querySelector('.user-row[data-queued-run-id="next-run"] .speaker-label')?.textContent, "owner");
+    assert.equal(host.querySelector(".queued-strip"), null);
+    assert.equal(host.querySelector(".send-btn")?.getAttribute("aria-label"), "Send");
+    conv.state.agent!.state.messages.push({ role: "user", content: "Next question", runId: "next-run" } as never);
+    conv.drawActiveChat();
+    assert.equal(host.querySelectorAll('.user-row[data-queued-run-id="next-run"]').length, 0);
+    conv.state.agent!.state.messages.pop();
+    conv.composer.setQueuedRuns(row.threadRef, []);
     entries = [initial, peer];
     delivery.emit("delivery", { threadRef: row.threadRef });
     await until(() => host.querySelectorAll('.user-row[data-entry-seq="1"]').length === 1);

@@ -325,7 +325,7 @@ test("conditional interface labels pass through the translator", () => {
   assert.match(source("sessions.ts"), /role="menuitem" @click=\$\{\(\) => void copySessionLink\(s\)\}/);
   assert.match(source("deploys.ts"), /aria-label=\$\{t\(`Manage \$\{deploymentTitle\(d\)\}`\)\}/);
   assert.match(source("ambient-policy.ts"), /ariaLabel: t\(`Handling for \$\{b\.name\}`\)/);
-  assert.match(source("composer.ts"), /t\("Queue for after this turn"\)/);
+  assert.match(source("composer.ts"), /t\(ctx\.chat\.hasPostedReply\(\) \? "Send" : "Queue for after this turn"\)/);
   assert.match(source("crons.ts"), /error\.textContent = t\(taskControl \? "Title and task are required\."/);
   assert.match(source("session-list.ts"), /parts\.push\(t\(`\$\{jobs\} background job/);
   assert.match(source("sessions.ts"), /working \? t\("agent is working"\) : null/);

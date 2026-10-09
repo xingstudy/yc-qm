@@ -493,6 +493,8 @@ export interface ActiveRun {
 export interface QueuedRun {
   runId: string;
   text: string;
+  authorId?: string;
+  createdAt?: number;
   hasAttachments?: boolean;
 }
 

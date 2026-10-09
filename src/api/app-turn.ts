@@ -730,6 +730,8 @@ export function createTurnMethods(
         .map((run) => ({
           runId: run.id,
           text: run.request.displayText ?? run.request.text ?? "",
+          authorId: run.request.actor.id,
+          createdAt: run.createdAt,
           ...(run.request.attachments?.length ? { hasAttachments: true } : {}),
         }));
       return { runId: live.id, ...(queued.length ? { queued } : {}) };

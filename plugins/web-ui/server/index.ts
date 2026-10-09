@@ -7057,7 +7057,13 @@ const apiRoutes: readonly WebRoute[] = [
       const threadRef = url.searchParams.get("threadRef") ?? "";
       if (!threadRef.startsWith("web:") && !threadRef.startsWith(SUBAGENT_THREAD_PREFIX))
         return json(res, 404, { error: "not_found" });
-      let queued: Array<{ runId: string; text: string; hasAttachments?: boolean }> = [];
+      let queued: Array<{
+        runId: string;
+        text: string;
+        authorId?: string;
+        createdAt?: number;
+        hasAttachments?: boolean;
+      }> = [];
       let durableRunId: string | null = null;
       const durable = await coreFetch("GET", `/v1/runs?threadRef=${encodeURIComponent(threadRef)}`);
       if (durable.status >= 200 && durable.status < 300) {

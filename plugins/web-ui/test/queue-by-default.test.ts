@@ -13,7 +13,7 @@ test("a mid-turn Enter queues the message — it no longer steers the running tu
   assert.match(composer, /if \(agent\.state\.isStreaming\) return queueDraft\(agent\);/);
   assert.doesNotMatch(composer, /isStreaming\) return sendSteer\(/);
   assert.match(composer, /placeholder = t\("Queue a message for after this turn…"\)/);
-  assert.match(composer, /\$\{tip\(t\("Queue for after this turn"\)\)\}/);
+  assert.match(composer, /ctx\.chat\.hasPostedReply\(\) \? "Send" : "Queue for after this turn"/);
 });
 
 test("the queue lives in core, not in the browser", () => {
