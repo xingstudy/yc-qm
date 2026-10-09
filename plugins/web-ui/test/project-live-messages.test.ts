@@ -147,9 +147,16 @@ test("an open project conversation receives peer messages during a run and recon
     }) as Conversation;
     conv.mountContinuable(row.threadRef, row.id, row.scopeId, entriesToMessages(entries, transcriptModel()), null, row);
     Object.defineProperty(conv.state.agent!.state, "isStreaming", { configurable: true, value: true });
+    Object.defineProperty(conv.state.agent!.state, "streamingMessage", {
+      configurable: true,
+      value: { role: "assistant", content: [{ type: "text", text: "Live response" }] },
+    });
     entries = [initial, peer];
     delivery.emit("delivery", { threadRef: row.threadRef });
     await until(() => host.querySelectorAll('.user-row[data-entry-seq="1"]').length === 1);
+    const peerRow = host.querySelector<HTMLElement>('.user-row[data-entry-seq="1"]')!;
+    const liveReply = host.querySelector<HTMLElement>(".assistant-row.streaming")!;
+    assert.ok(peerRow.compareDocumentPosition(liveReply) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING);
     await until(() => reads === 1);
     conv.state.agent!.state.messages.push(...entriesToMessages([peer], transcriptModel()));
     conv.drawActiveChat();

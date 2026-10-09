@@ -1477,10 +1477,10 @@ export function createChatSurface(
     transcriptViewport.beforeRender();
     const visible = visibleMessages(agent);
     const known = new Set(visible.map((message) => (message as { entrySeq?: number }).entrySeq));
-    const currentMessages = [
-      ...visible,
-      ...streamedPeerMessages.filter((message) => !known.has((message as { entrySeq?: number }).entrySeq)),
-    ];
+    const peers = streamedPeerMessages.filter((message) => !known.has((message as { entrySeq?: number }).entrySeq));
+    const streaming = agent.state.streamingMessage;
+    const insertAt = streaming && visible.at(-1) === streaming ? visible.length - 1 : visible.length;
+    const currentMessages = [...visible.slice(0, insertAt), ...peers, ...visible.slice(insertAt)];
     if (preserveConnectionScroll) {
       connectionReturnMessageCount ??= currentMessages.length;
       if (connectionReturnMessageCount !== currentMessages.length) preserveConnectionScroll = false;
