@@ -151,6 +151,9 @@ test("an open project conversation receives peer messages during a run and recon
     delivery.emit("delivery", { threadRef: row.threadRef });
     await until(() => host.querySelectorAll('.user-row[data-entry-seq="1"]').length === 1);
     await until(() => reads === 1);
+    conv.state.agent!.state.messages.push(...entriesToMessages([peer], transcriptModel()));
+    conv.drawActiveChat();
+    assert.equal(host.querySelectorAll('.user-row[data-entry-seq="1"]').length, 1);
     delivery.emit("delivery", { threadRef: row.threadRef });
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(host.querySelectorAll('.user-row[data-entry-seq="1"]').length, 1);

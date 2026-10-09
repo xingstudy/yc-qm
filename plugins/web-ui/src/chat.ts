@@ -985,7 +985,11 @@ export function createChatSurface(
     if (agent !== chatState.agent || agent.state.isStreaming) return false;
     if (!initialRun) initialRun = await api<RunPoll>(`/api/runs/${encodeURIComponent(runId)}`);
     if (agent !== chatState.agent || agent.state.isStreaming) return false;
-    const { messages: msgs, popped } = continuableMessages(agent.state.messages, initialRun.input);
+    const { messages: msgs, popped } = continuableMessages(
+      agent.state.messages,
+      initialRun.input,
+      chatState.scopeId?.startsWith("group:") === true,
+    );
     agent.state.messages = msgs;
     const seedText = popped
       .map((m) => messageText(m).trim())
@@ -1471,7 +1475,12 @@ export function createChatSurface(
   function drawActiveChat(agent = chatState.agent, opts: { forceScroll?: boolean } = {}): void {
     if (!agent || agent !== chatState.agent || !chatState.host || appState.currentView !== "chats") return;
     transcriptViewport.beforeRender();
-    const currentMessages = [...visibleMessages(agent), ...streamedPeerMessages];
+    const visible = visibleMessages(agent);
+    const known = new Set(visible.map((message) => (message as { entrySeq?: number }).entrySeq));
+    const currentMessages = [
+      ...visible,
+      ...streamedPeerMessages.filter((message) => !known.has((message as { entrySeq?: number }).entrySeq)),
+    ];
     if (preserveConnectionScroll) {
       connectionReturnMessageCount ??= currentMessages.length;
       if (connectionReturnMessageCount !== currentMessages.length) preserveConnectionScroll = false;

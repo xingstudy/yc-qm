@@ -46,6 +46,14 @@ test("a pending run restores its input without consuming the previous reply", ()
   });
 });
 
+test("a shared Project run without a user input keeps the previous reply in history", () => {
+  const history = [user("first message"), assistant("Previous reply")];
+  const resumed = continuableMessages(history, undefined, true);
+  assert.deepEqual(resumed.messages.slice(0, history.length), history);
+  assert.deepEqual(resumed.messages.at(-1), resumeAnchor());
+  assert.deepEqual(resumed.popped, []);
+});
+
 test("a recorded input wins over an older pending snapshot without text-based deduplication", () => {
   const messages = entriesToMessages([
     { type: "user", seq: 0, createdAt: 20, payload: { text: "original", runId: "run" } },
@@ -99,7 +107,7 @@ test("neither attach path refuses a live run over the shape of the loaded transc
   assert.doesNotMatch(body, /if \(!agent\.state\.messages\.length\) return false;/, "nor on an empty one");
   assert.match(
     body,
-    /const \{ messages: msgs, popped \} = continuableMessages\(agent\.state\.messages, initialRun\.input\);/,
+    /continuableMessages\(\s*agent\.state\.messages,\s*initialRun\.input,\s*chatState\.scopeId\?\.startsWith\("group:"\) === true,\s*\)/,
   );
 
   const follow = chat.slice(chat.indexOf("async function followNextQueuedRun"));

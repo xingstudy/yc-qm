@@ -507,9 +507,11 @@ export function resumeAnchor(): AgentMessage {
 export function continuableMessages(
   messages: AgentMessage[],
   input?: RunPoll["input"],
+  preserveHistory = false,
 ): { messages: AgentMessage[]; popped: AgentMessage[] } {
   const kept = messages.slice();
   const popped: AgentMessage[] = [];
+  if (!input && preserveHistory) return { messages: [...kept, resumeAnchor()], popped };
   if (
     input &&
     !kept.some((message) => {
