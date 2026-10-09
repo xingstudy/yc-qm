@@ -4,8 +4,9 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 
-const piCodingAgentTarball = "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.1.tgz";
+const piCodingAgentTarball = "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.0.1.tgz";
 const piLicensePath = "licenses/earendil-works-pi-coding-agent.LICENSE";
 
 function installedVersion(path: string): string {
@@ -49,14 +50,21 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
   const minimatchManifest = createRequire(piManifest).resolve("minimatch/package.json");
 
   assert.equal(pi?.resolved, piCodingAgentTarball);
-  assert.equal(pi?.hasShrinkwrap, true);
+  assert.notEqual(pi?.hasShrinkwrap, true);
   assert.equal(pi?.license, "MIT");
 
-  assert.deepEqual(lockedVersions(packages, "brace-expansion"), ["5.0.9"]);
-  assert.deepEqual(lockedVersions(packages, "fast-uri").sort(), ["3.1.7", "4.1.4"]);
+  assert.deepEqual(lockedVersions(packages, "brace-expansion"), ["5.0.12"]);
+  assert.deepEqual(lockedVersions(packages, "fast-uri").sort(), ["3.1.8", "4.1.5"]);
   assert.deepEqual(lockedVersions(packages, "hono"), ["4.13.8"]);
   assert.deepEqual(lockedVersions(packages, "protobufjs"), ["7.6.5"]);
-  assert.deepEqual(lockedVersions(packages, "undici"), ["8.9.0"]);
+  assert.deepEqual(lockedVersions(packages, "undici"), ["8.10.2"]);
+  assert.deepEqual(lockedVersions(packages, "undici8"), ["8.10.2"]);
+  assert.deepEqual(lockedVersions(packages, "@grpc/grpc-js"), ["1.14.5"]);
+  assert.deepEqual(lockedVersions(packages, "@modelcontextprotocol/sdk"), ["1.31.0"]);
+  assert.deepEqual(lockedVersions(packages, "axios"), ["1.20.0"]);
+  assert.deepEqual(lockedVersions(packages, "ip-address"), ["10.7.1"]);
+  assert.deepEqual(lockedVersions(packages, "proxy-addr"), ["2.0.8"]);
+  assert.deepEqual(lockedVersions(packages, "smol-toml"), ["1.9.0"]);
   assert.match(
     readFileSync(new URL(`../${piLicensePath}`, import.meta.url), "utf8"),
     /Copyright \(c\) 2025 Mario Zechner/,
@@ -67,15 +75,15 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
       new RegExp(`COPY ${piLicensePath}`),
     );
   }
-  assert.deepEqual(lockedVersions(packages, "brace-expansion"), ["5.0.9"]);
-  assert.deepEqual(lockedVersions(packages, "fast-uri").sort(), ["3.1.7", "4.1.4"]);
-  assert.deepEqual(lockedVersions(packages, "fastify"), ["5.12.1"]);
+  assert.deepEqual(lockedVersions(packages, "brace-expansion"), ["5.0.12"]);
+  assert.deepEqual(lockedVersions(packages, "fast-uri").sort(), ["3.1.8", "4.1.5"]);
+  assert.deepEqual(lockedVersions(packages, "fastify"), ["5.12.5"]);
   assert.deepEqual(lockedVersions(packages, "protobufjs"), ["7.6.5"]);
   assert.deepEqual(lockedVersions(packages, "qs"), ["6.16.0"]);
   assert.deepEqual(lockedVersions(webUiLock.packages ?? {}, "qs"), ["6.16.0"]);
   assert.deepEqual(lockedVersions(packages, "@hono/node-server"), ["2.0.10"]);
-  assert.equal(dependencyVersion(minimatchManifest, "brace-expansion"), "5.0.9");
-  assert.equal(dependencyVersion(piManifest, "undici"), "8.9.0");
+  assert.equal(dependencyVersion(minimatchManifest, "brace-expansion"), "5.0.12");
+  assert.equal(dependencyVersion(piManifest, "undici"), "8.10.2");
   assert.equal(dependencyVersion(piManifest, "protobufjs"), "7.6.5");
   assert.equal(installedVersion("@hono/node-server"), "2.0.10");
   assert.equal(installedVersion("hono"), "4.13.8");
@@ -108,6 +116,47 @@ test("MCP Streamable HTTP works through the patched Hono major", async (t) => {
   const body = (await response.json()) as { error?: { code?: number } };
   assert.equal(response.status, 400);
   assert.equal(body.error?.code, -32700);
+});
+
+test("Fastify rejects malformed URLs before invoking a protected not-found handler", async (t) => {
+  const app = Fastify();
+  t.after(async () => app.close());
+  app.register(
+    async (api) => {
+      api.setNotFoundHandler(async () => ({ error: "not_found" }));
+    },
+    { prefix: "/public" },
+  );
+  app.register(
+    async (api) => {
+      api.setNotFoundHandler(
+        {
+          preHandler: async (_request: FastifyRequest, reply: FastifyReply) => {
+            reply.code(401).send({ error: "unauthorized" });
+          },
+        },
+        async () => ({ secret: "private" }),
+      );
+    },
+    { prefix: "/private" },
+  );
+
+  const unauthorized = await app.inject({ method: "GET", url: "/private/missing" });
+  assert.equal(unauthorized.statusCode, 401);
+  const malformed = await app.inject({ method: "GET", url: "/public/%zz" });
+  assert.equal(malformed.statusCode, 400);
+  assert.equal(malformed.body.includes("private"), false);
+});
+
+test("proxy trust cannot admit public IPv4 addresses through an IPv6 subnet", () => {
+  const proxyAddress = createRequire(import.meta.url)("proxy-addr") as {
+    compile(subnets: string[]): (address: string) => boolean;
+  };
+  const malformed = proxyAddress.compile(["::ffff:10.0.0.0/8"]);
+  assert.equal(malformed("203.0.113.1"), false);
+  const trusted = proxyAddress.compile(["::ffff:10.0.0.0/104"]);
+  assert.equal(trusted("10.0.0.1"), true);
+  assert.equal(trusted("203.0.113.1"), false);
 });
 
 test("package lockfiles use portable public tarball URLs without private registry credentials", () => {

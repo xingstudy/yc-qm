@@ -19,8 +19,8 @@ RUN npm install -g --allow-scripts=@anthropic-ai/claude-code \
       @openai/codex@0.147.0 \
       npm@12.0.2 \
   && npm install --prefix /tmp/npm-fixes --ignore-scripts --omit=dev \
-      brace-expansion@5.0.9 \
-      ip-address@10.3.1 \
+      brace-expansion@5.0.12 \
+      ip-address@10.7.1 \
       tar@7.5.22 \
   && rm -rf \
       /usr/local/lib/node_modules/npm/node_modules/brace-expansion \

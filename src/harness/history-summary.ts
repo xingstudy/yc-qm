@@ -1,10 +1,11 @@
 import { generateSummary } from "@earendil-works/pi-coding-agent";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import { getSystemMessageText, type Api, type Context, type Model } from "@earendil-works/pi-ai";
 import { contextSummaryPayload } from "../sessions/session-store.ts";
 import type { SessionEntry } from "../types.ts";
 import { compactTranscript, validateCompactSummary } from "./context-compaction.ts";
 
-type StreamFn = NonNullable<Parameters<typeof generateSummary>[9]>;
+type PiStreamFn = NonNullable<Parameters<typeof generateSummary>[9]>;
+type StreamFn = (model: Model<Api>, context: Context, options: Parameters<PiStreamFn>[2]) => ReturnType<PiStreamFn>;
 
 const SUMMARY_INSTRUCTIONS = [
   "The enclosed transcript uses type#seq labels to identify each historical entry and its role.",
@@ -39,7 +40,17 @@ export async function summarizeHistory(
     previousSummary?.text,
     "low",
     async (summaryModel, context, options) => {
-      const stream = await streamFn(summaryModel, context, options);
+      const stream = await streamFn(
+        summaryModel,
+        {
+          systemPrompt: context.messages
+            .filter((message) => message.role === "system")
+            .map(getSystemMessageText)
+            .join("\n\n"),
+          messages: context.messages.filter((message) => message.role !== "system"),
+        },
+        options,
+      );
       const result = await stream.result();
       if (result.stopReason !== "stop") {
         throw new Error(

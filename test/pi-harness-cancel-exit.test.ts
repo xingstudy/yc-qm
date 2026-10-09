@@ -54,9 +54,9 @@ test(
           return;
         }
         signal?.addEventListener("abort", () => reject(abortShapedError()), { once: true });
+        setTimeout(() => controller.abort(), 0);
       })) as typeof globalThis.fetch;
     try {
-      setTimeout(() => controller.abort(), 100);
       const result = await harness.turns.runTurn(cancelTurn("cancel-exit-stop", controller.signal, sink));
 
       assert.equal(result.stopped, true, "the cancelled turn reports itself stopped");
@@ -185,6 +185,7 @@ test("a second '(stopped)' in one session is still re-taped for replay", async (
         return;
       }
       signal?.addEventListener("abort", () => reject(abortShapedError()), { once: true });
+      setTimeout(() => controller.abort(), 0);
     })) as typeof globalThis.fetch;
   try {
     const turn = cancelTurn("cancel-second-stopped", controller.signal, sink);
@@ -208,7 +209,6 @@ test("a second '(stopped)' in one session is still re-taped for replay", async (
         createdAt: 2,
       },
     ];
-    setTimeout(() => controller.abort(), 100);
     const result = await harness.turns.runTurn(turn);
     assert.equal(result.stopped, true);
     assert.equal(result.stoppedTapeComplete, true);

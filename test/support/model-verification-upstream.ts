@@ -18,8 +18,9 @@ export async function verificationUpstream() {
     });
     req.on("end", () => {
       const body = raw ? JSON.parse(raw) : {};
+      const path = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
       requests.push({
-        path: req.url!,
+        path,
         body,
         authorization: req.headers.authorization,
         key: req.headers["x-api-key"] as string,
@@ -36,7 +37,7 @@ export async function verificationUpstream() {
           }),
         );
       }
-      if (req.method === "GET" && req.url?.endsWith("/models")) {
+      if (req.method === "GET" && path.endsWith("/models")) {
         res.writeHead(200, { "content-type": "application/json" });
         return res.end(JSON.stringify({ data: [] }));
       }
@@ -44,7 +45,7 @@ export async function verificationUpstream() {
       const text = behavior.empty ? "" : "VERIFIED MODEL REPLY";
       const send = (type: string, data: object) =>
         res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
-      if (req.url?.endsWith("/messages")) {
+      if (path.endsWith("/messages")) {
         send("message_start", {
           message: {
             id: "msg_probe",

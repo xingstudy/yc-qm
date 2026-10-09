@@ -316,16 +316,16 @@ test("QA: anthropic-protocol custom provider serves a real turn (correct wire sh
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       const record = {
-        path: req.url ?? "",
+        path: new URL(req.url ?? "/", "http://127.0.0.1").pathname,
         apiKeyHeader: req.headers["x-api-key"] as string | undefined,
         version: req.headers["anthropic-version"] as string | undefined,
       } as (typeof seen)[0];
-      if (req.url?.endsWith("/v1/models")) {
+      if (record.path.endsWith("/v1/models")) {
         seen.push(record);
         res.writeHead(record.apiKeyHeader === "sk-ant-qa" ? 200 : 401, { "content-type": "application/json" });
         return res.end(JSON.stringify({ data: [] }));
       }
-      if (req.url?.endsWith("/v1/messages")) {
+      if (record.path.endsWith("/v1/messages")) {
         record.model = (JSON.parse(body) as { model?: string }).model;
         seen.push(record);
         res.writeHead(200, { "content-type": "text/event-stream" });
@@ -414,7 +414,12 @@ test("QA: anthropic-protocol custom provider serves a real turn (correct wire sh
         recordModelCall: () => {},
       });
       assert.equal(result.reply, "ANTHROPIC QA REPLY");
-      assert.ok(destinations.some((url) => url === "https://api.anthropic.com/v1/messages"));
+      assert.ok(
+        destinations.some((value) => {
+          const url = new URL(value);
+          return url.origin === "https://api.anthropic.com" && url.pathname === "/v1/messages";
+        }),
+      );
       assert.equal(seen.at(-1)?.apiKeyHeader, "sk-official-qa");
     } finally {
       globalThis.fetch = realFetch;
