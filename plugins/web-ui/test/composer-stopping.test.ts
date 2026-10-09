@@ -98,6 +98,7 @@ test("stopping blocks send and queue through render, input, keyboard, and form w
         },
         activePendingApprovals: () => [],
         hasUnresolvedApproval: () => false,
+        hasPostedReply: () => false,
         isStopping: () => stopping,
         drawActiveChat: draw,
         stopLiveRun: async () => {
