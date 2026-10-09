@@ -29,6 +29,7 @@ function fixture() {
   const calls: TurnRequest[] = [];
   const settled: Promise<void>[] = [];
   const scheduler = createScheduler({
+    now: () => time,
     crons,
     deliveries,
     identity: createIdentityService(),
@@ -134,6 +135,9 @@ test("an older single-language result stays visible during bilingual refresh", a
   f.output(JSON.stringify(activities));
   assert.deepEqual(await f.service.get("alice", [], "UTC", "zh-CN"), { activities: previous, pending: true });
   await f.settle();
+  const cron = (await f.crons.list())[0]!;
+  const { runs } = await f.crons.listFires(cron.id);
+  assert.equal(runs[1]!.firedAt - runs[0]!.firedAt, 5 * 60_000);
   assert.deepEqual(await f.service.get("alice", [], "UTC", "zh-CN"), { activities, pending: false });
 });
 
