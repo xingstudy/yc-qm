@@ -528,14 +528,20 @@ test("a durable turn_failure entry renders like the live inline error (survives 
 test("user entries carry the stored speaker name and slack ts onto the rebuilt message", () => {
   const entries: SessionEntry[] = [
     { type: "user", payload: { text: "hi", name: "Alice Example", ts: "100.1" }, createdAt: 100 },
-    { type: "user", payload: { text: "anonymous web message" }, createdAt: 110 },
+    { type: "user", payload: { text: "project message", authorId: "qa-member" }, createdAt: 110 },
+    {
+      type: "user",
+      payload: { text: "named project message", authorId: "qa-member", name: "QA Member" },
+      createdAt: 120,
+    },
   ];
   const msgs = entriesToMessages(entries, MODEL);
-  const [slack, web] = msgs as Array<{ speaker?: string; ts?: string }>;
+  const [slack, web, named] = msgs as Array<{ speaker?: string; ts?: string }>;
   assert.equal(slack?.speaker, "Alice Example");
   assert.equal(slack?.ts, "100.1");
-  assert.equal(web?.speaker, undefined);
+  assert.equal(web?.speaker, "qa-member");
   assert.equal(web?.ts, undefined);
+  assert.equal(named?.speaker, "QA Member");
 });
 
 test("a message_revision marker renders as a system note and badges the original bubble", () => {

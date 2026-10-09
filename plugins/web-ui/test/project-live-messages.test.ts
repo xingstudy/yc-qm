@@ -157,6 +157,7 @@ test("an open project conversation receives peer messages during a run and recon
     const peerRow = host.querySelector<HTMLElement>('.user-row[data-entry-seq="1"]')!;
     const liveReply = host.querySelector<HTMLElement>(".assistant-row.streaming")!;
     assert.ok(peerRow.compareDocumentPosition(liveReply) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING);
+    assert.equal(peerRow.querySelector(".speaker-label")?.textContent, "peer");
     await until(() => reads === 1);
     conv.state.agent!.state.messages.push(...entriesToMessages([peer], transcriptModel()));
     conv.drawActiveChat();

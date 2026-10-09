@@ -7,7 +7,10 @@ const server = readFileSync(new URL("../server/index.ts", import.meta.url), "utf
 
 test("user bubbles are labeled when several people spoke or when a speaker is not the viewer", () => {
   const rule = chat.match(/function updateSpeakerLabels[\s\S]*?\n {2}\}/)?.[0] ?? "";
-  assert.match(rule, /const viewer = appState\.me\?\.displayName\?\.trim\(\)\.toLowerCase\(\);/);
+  assert.match(
+    rule,
+    /const viewer = \(appState\.me\?\.displayName \|\| appState\.me\?\.user\)\?\.trim\(\)\.toLowerCase\(\);/,
+  );
   assert.match(
     rule,
     /labelSpeakers =\s*names\.size > 1 \|\| \(Boolean\(viewer\) && \[\.\.\.names\]\.some\(\(n\) => n\.toLowerCase\(\) !== viewer\)\)/,

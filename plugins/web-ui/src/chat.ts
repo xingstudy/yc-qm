@@ -280,7 +280,7 @@ export function createChatSurface(
       if ((m as { role?: string }).role === "user" && typeof speaker === "string" && speaker.trim())
         names.add(speaker.trim());
     }
-    const viewer = appState.me?.displayName?.trim().toLowerCase();
+    const viewer = (appState.me?.displayName || appState.me?.user)?.trim().toLowerCase();
     chatState.labelSpeakers = names.size > 1 || (Boolean(viewer) && [...names].some((n) => n.toLowerCase() !== viewer));
   }
 

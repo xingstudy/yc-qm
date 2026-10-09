@@ -1896,6 +1896,7 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
       workFinishedAt?: number;
       stopped?: boolean;
       runId?: string;
+      authorId?: string;
     } | null;
     const text = payload?.text ?? "";
     if (e.type === "approval_resolved") {
@@ -1958,6 +1959,7 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
       const userText = userEntryText(e.payload) ?? text;
       if (text || atts.length) {
         const mail = subagentMailOf(e.payload);
+        const speaker = payload?.name?.trim() || payload?.authorId?.trim();
         const msg: HistoryUserMessage = {
           role: "user",
           ...(typeof payload?.runId === "string" ? { runId: payload.runId } : {}),
@@ -1966,7 +1968,7 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
           timestamp: e.createdAt,
           ...(mail ? { subagentMail: mail } : {}),
           ...(payload?.steered ? { steered: true } : {}),
-          ...(typeof payload?.name === "string" && payload.name.trim() ? { speaker: payload.name.trim() } : {}),
+          ...(speaker ? { speaker } : {}),
           ...(typeof payload?.ts === "string" && payload.ts ? { ts: payload.ts } : {}),
         };
         if (msg.ts) userByTs.set(msg.ts, msg);
