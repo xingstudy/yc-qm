@@ -11,7 +11,7 @@ test("the canonical and packaged MicroVM Dockerfiles stay snapshot-safe and exec
     readFileSync(new URL("../../aws/microvm-agent/agent.mjs", import.meta.url), "utf8"),
   );
   assert.match(canonical, /^FROM public\.ecr\.aws\/lambda\/microvms:al2023-minimal@sha256:[a-f0-9]{64}$/m);
-  assert.match(canonical, /^FROM golang:1\.26\.6-alpine@sha256:[a-f0-9]{64} AS gh-builder$/m);
+  assert.match(canonical, /^FROM golang:1\.26\.9-alpine@sha256:[a-f0-9]{64} AS gh-builder$/m);
   assert.match(canonical, /ARG GH_VERSION=2\.99\.0/);
   assert.match(canonical, /ARG X_MOD_VERSION=0\.40\.0/);
   assert.match(canonical, /go get "golang\.org\/x\/mod@v\$\{X_MOD_VERSION\}"/);
