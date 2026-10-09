@@ -60,6 +60,58 @@ npm --prefix plugins/web-ui run typecheck
 Use project typechecks, not `tsc <individual-files>`, which bypasses tsconfig.
 Confirm filtered tests actually ran. Postgres tests require a dedicated test DB.
 
+## Dependency and system version checks before commit/push
+
+Before committing or pushing, finish the applicable checks above and inspect the
+final diff against the CI/CD workflows: [CI](.github/workflows/cicd.yml),
+[Postgres pooling](.github/workflows/pgbouncer.yml),
+[production images](.github/workflows/release-production-images.yml), and
+[package images](.github/workflows/release-package.yml). Keep those workflows as
+the source of truth for commands, flags, platforms, and security thresholds.
+Do not compile images locally by default; GitHub performs full builds and image
+scans. Build locally only when explicitly requested.
+
+For dependency, lockfile, Dockerfile, or release-workflow changes, complete these
+version checks before commit/push:
+
+- Verify the active Node/npm satisfy `.node-version` and the owning package's
+  `engines`, including the runtime used by Git hooks. Use `npm ci` with each
+  affected package's lockfile; do not silently regenerate unrelated lockfiles.
+- Check the resolved production dependency tree, not just direct manifest
+  versions. Include npm aliases, nested/overridden dependencies, global CLI
+  dependencies, npm's bundled packages, Python environments, and pip's vendored
+  packages/SBOM. Updating an application dependency does not patch a copy
+  bundled inside npm, pip, or another tool.
+- Run `npm audit --omit=dev --audit-level=moderate` for affected production npm
+  packages, matching the production build gate. Check other affected ecosystems
+  and system packages against current official security advisories or a fresh
+  vulnerability database. Existing lockfiles, SBOMs, package inventories, and
+  binaries may be scanned without rebuilding. Confirm the expected packages
+  actually appear in the report; an empty report is not a successful scan.
+- Verify pinned base-image tags and SHA256 digests resolve to the intended
+  platform (`linux/amd64` for production). Check the base image's OS/package
+  versions and known vulnerabilities, plus added apt/apk packages. Runtime
+  package refreshes remain mandatory in CD; local version checks cannot predict
+  repository updates or new advisories after push.
+- Check the compiler used for copied Go binaries such as GitHub CLI and
+  wireproxy. A new CLI version or `go get` does not patch its compiled standard
+  library. Pin a patched Go builder and its matching digest; check toolchain
+  auto-downloads cannot select a vulnerable compiler.
+- Trace affected image consumers and synchronize canonical Dockerfiles and
+  packaged CLI templates. Verify browser-use/browser-harness dependency pins,
+  npm/pip replacement paths, and vendored inventories agree with patched code.
+  Run the relevant image/workflow/template regression tests.
+- Reject known HIGH/CRITICAL vulnerabilities, including unfixed findings, as
+  production CD does. Never weaken audit levels, set `ignore-unfixed: true`,
+  add vulnerability ignores, hide stale metadata, or bypass signature/release
+  gates to obtain a passing result.
+
+Record checked versions, advisory/database dates, commands, and results in the
+PR. If a required version check fails or is unavailable, fix it or report the
+specific blocker before commit/push; do not claim it passed. Repeat checks only
+when an edit invalidates them. Version checks do not guarantee future GitHub
+CI/CD success; full builds and scans remain GitHub's final gate.
+
 ## QA and merging
 
 Verify visible changes in the affected page/preview. For non-trivial cross-service
