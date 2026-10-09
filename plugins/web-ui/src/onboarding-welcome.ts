@@ -6,7 +6,8 @@ import {
   clearConnectionAttempt,
   type ConnectionAttempt,
 } from "./connection-return";
-import { LitElement, html, nothing } from "lit";
+import { LitElement, nothing } from "lit";
+import { html, t } from "./i18n.ts";
 import { Check } from "lucide";
 import { brandName, icon } from "./ui";
 import { mountConnectionPicker, type ConnectionService } from "./connection-picker";
@@ -387,7 +388,7 @@ export class OnboardingWelcome extends LitElement {
       ${
         this.setupOnly
           ? nothing
-          : html`<h1 class="welcome-beat" style="--welcome-delay:0ms">${name ? `Hi, ${name}.` : "Hi there."}</h1>
+          : html`<h1 class="welcome-beat" style="--welcome-delay:0ms">${t(name ? `Hi, ${name}.` : "Hi there.")}</h1>
               ${
                 cohort
                   ? html`<div class="welcome-cohort welcome-beat" style="--welcome-delay:700ms">
@@ -413,7 +414,7 @@ export class OnboardingWelcome extends LitElement {
                       </p>
                       <p class="welcome-beat" style="--welcome-delay:2600ms">
                         Use it to research customers and investors, fundraise, and automate the everyday work of running
-                        ${this.me?.companyName?.trim() || "your company"}.
+                        ${this.me?.companyName?.trim() || t("your company")}.
                         ${this.onMoreIdeas ? html`<button type="button" class="welcome-more-ideas" ?disabled=${this.ideasDisabled} @click=${this.onMoreIdeas}>More ideas</button>` : nothing}
                       </p>
                       <p class="welcome-beat" style="--welcome-delay:2800ms">
@@ -422,7 +423,7 @@ export class OnboardingWelcome extends LitElement {
                       </p>`
                   : html`<p class="welcome-beat" style="--welcome-delay:400ms">
                         Welcome to ${brandName()}, your agent harness. Use it to research customers, build tools, and
-                        automate the everyday work of running ${this.me?.companyName?.trim() || "your company"}.
+                        automate the everyday work of running ${this.me?.companyName?.trim() || t("your company")}.
                       </p>
                       <p class="welcome-beat" style="--welcome-delay:700ms">The easiest way to get up and running:</p>`
               }`
@@ -457,8 +458,8 @@ export class OnboardingWelcome extends LitElement {
                       role="status"
                       aria-live="polite"
                     >
-                      <strong>${outcome.title}</strong>
-                      ${outcome.detail ? html`<p>${outcome.detail}</p>` : nothing}
+                      <strong>${t(outcome.title)}</strong>
+                      ${outcome.detail ? html`<p>${t(outcome.detail)}</p>` : nothing}
                       ${["cancelled", "failed"].includes(this.connectionOutcome) && this.retryService ? html`<button class="btn" @click=${() => this.authorize({ ...this.retryService!, description: "", popularity: 0 })}>Try again</button>` : nothing}
                     </div>`
                   : nothing
@@ -469,11 +470,11 @@ export class OnboardingWelcome extends LitElement {
               ${
                 connectedServices.length
                   ? html`<div class="connection-connected" role="status" aria-live="polite">
-                      ${connectedServices.map((service) => html`<span>${icon(Check, 10)}${service.name} connected</span>`)}
+                      ${connectedServices.map((service) => html`<span>${icon(Check, 10)}${t(`${service.name} connected`)}</span>`)}
                     </div>`
                   : nothing
               }
-              ${this.authorizing ? html`<p class="welcome-connection-status" role="status">Opening ${this.authorizing}…</p>` : nothing}
+              ${this.authorizing ? html`<p class="welcome-connection-status" role="status">${t(`Opening ${this.authorizing}…`)}</p>` : nothing}
               ${this.authorizationError ? html`<p class="welcome-connection-status" role="alert">${this.authorizationError}</p>` : nothing}
             </div>`
       }

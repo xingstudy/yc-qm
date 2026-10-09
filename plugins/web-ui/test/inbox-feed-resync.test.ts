@@ -17,6 +17,17 @@ test("the BFF's inbox feed announces reconnects, mirroring the session-state fee
   );
 });
 
+test("project transcript notices reach each member as delivery nudges", () => {
+  const forward = server.match(/function forwardSessionState\([\s\S]*?\n\}/)?.[0] ?? "";
+  assert.match(forward, /for \(const user of targets\)/);
+  assert.match(forward, /frame\.state === "transcript"\) sseEvent\(res, "delivery", \{ threadRef \}\)/);
+  assert.match(
+    conversations,
+    /for \(const conv of live\) if \(conv\.state\.threadRef\) conv\.onDelivery\(conv\.state\.threadRef\);/,
+  );
+  assert.match(conversations, /visibilitychange[\s\S]*?conv\.onDelivery\(conv\.state\.threadRef\)/);
+});
+
 test("the BFF treats a core-side resync frame like a dropped feed", () => {
   const consume = server.match(/async function consumeCoreFeed\([\s\S]*?\n\}/)?.[0] ?? "";
   assert.match(consume, /event: \$\{eventName\}_resync`\)\) \{\s*onReconnect\?\.\(\);\s*continue;/);

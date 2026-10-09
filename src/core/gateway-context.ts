@@ -19,7 +19,7 @@ export function renderGatewayContext(surface: string | undefined, ctx?: GatewayC
   }
   if (gateway.toLowerCase() === "web") {
     lines.push(
-      'This web UI cannot receive future external notifications. For scheduled notifications, reminders, digests, or reports, create the cron with a real platform destination: use `recipient` for a Slack DM to the requesting user when you can resolve them as a teammate, `channel` for a named Slack channel, or ask the user where it should post. Do not put "deliver to Slack" only inside `action`.',
+      "Scheduled task results are saved in each cron run history. This web conversation can receive future results when the cron uses its default destination. Tell the user that completion and failure notices appear in Notifications, and confirm where the result will be delivered. If no supported destination is available, ask the user to choose one before creating the cron.",
     );
   }
   if (instructions) lines.push(instructions);

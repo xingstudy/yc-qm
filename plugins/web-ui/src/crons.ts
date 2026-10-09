@@ -1,13 +1,15 @@
 import { nothing, render, type TemplateResult } from "lit";
 import { Archive, Pause, Pencil, Play, Plus, RotateCcw, Trash2 } from "lucide";
-import { api, userSendMessage } from "./core-bridge";
+import { api, isContinuable, userSendMessage, type CoreSession } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
-import { icon } from "./ui";
+import { fieldSelect, icon } from "./ui";
 import { listBackLink, listPageTpl } from "./list-page";
 import { contextsState, ensureContexts, scopeChip } from "./contexts";
 import { scopedSession, scopedViewTopbar } from "./session-scope";
 import { appState } from "./shell";
-import { startNewChat } from "./sessions";
+import { defaultSessionTitle, openSession, sessionsState, startNewChat, surfaceOf } from "./sessions";
+import { allConversations, mainConversation } from "./conversations";
+import { activityOf } from "./session-list";
 import { deepLinkPath, isPlainLeftClick, UI_BASE } from "./deep-link";
 import { html, localeCode, t } from "./i18n.ts";
 import {
@@ -49,16 +51,25 @@ interface CronRunView {
   note?: string;
   reply?: string;
   sessionId?: string;
+  resultSessionId?: string;
+  resultEntrySeq?: number;
+  deliveryStatus?: "pending" | "delivered" | "failed" | null;
 }
 
 function cronRunTiming(run: CronRunView): string {
-  const fired = new Date(run.firedAt).toLocaleString();
+  const fired = new Date(run.firedAt).toLocaleString(localeCode(), { timeZoneName: "short" });
   if (run.status === "running") {
     const min = Math.max(0, Math.round((Date.now() - run.firedAt) / 60_000));
-    return `${fired} — in flight for ${min}m`;
+    return t(`${fired} — in flight for ${min}m`);
   }
   if (run.endedAt === undefined) return fired;
-  return `${fired} — took ${Math.max(0, Math.round((run.endedAt - run.firedAt) / 1000))}s`;
+  return t(`${fired} — took ${Math.max(0, Math.round((run.endedAt - run.firedAt) / 1000))}s`);
+}
+
+function deliveryStatusLabel(status: NonNullable<CronRunView["deliveryStatus"]>): string {
+  if (status === "failed") return "Delivery failed";
+  if (status === "pending") return "Delivery pending";
+  return "Delivered";
 }
 
 type CronTab = "yours" | "shared" | "archived";
@@ -85,6 +96,8 @@ const cronRunsLoading = new Set<string>();
 let cronDialog: { kind: "rename" | "delete"; cron: CronView } | null = null;
 let activeCronId: string | null = null;
 let pendingCronId: string | null = null;
+let pendingRunKey: string | null = new URLSearchParams(location.search).get("run");
+let linkedRun: { cronId: string; fireKey: string } | null = null;
 
 export function resetActiveCron(): void {
   cronsScope = null;
@@ -92,11 +105,14 @@ export function resetActiveCron(): void {
 
 export function openCronById(id: string): void {
   pendingCronId = id;
+  if (pendingRunKey) linkedRun = { cronId: id, fireKey: pendingRunKey };
 }
 
 function syncCronUrl(cronId: string | null, push = false): void {
   if (appState.currentView !== "crons") return;
-  const next = deepLinkPath(UI_BASE, "crons", null, null, cronId);
+  const path = deepLinkPath(UI_BASE, "crons", null, null, cronId);
+  const next = cronId && linkedRun?.cronId === cronId ? `${path}?run=${encodeURIComponent(linkedRun.fireKey)}` : path;
+  if (!cronId) linkedRun = null;
   if (`${location.pathname}${location.search}` === next) return;
   if (push) history.pushState(null, "", next);
   else history.replaceState(null, "", next);
@@ -126,7 +142,7 @@ async function refreshCrons(opts: { showLoading?: boolean } = {}): Promise<boole
     return true;
   } catch (e) {
     if (seq !== cronRefreshSeq) return false;
-    cronsNotice = errMessage(e, "Failed to load crons.");
+    cronsNotice = t(errMessage(e, "Failed to load crons."));
     return false;
   } finally {
     if (seq === cronRefreshSeq) cronsLoading = false;
@@ -166,7 +182,10 @@ function suggestedCronTitle(text: string): string {
 }
 
 function cronTitle(c: CronView): string {
-  return c.title?.trim() || suggestedCronTitle(cronText(c));
+  const title = c.title?.trim();
+  if (title) return title === "Refresh my suggested activities" ? t(title) : title;
+  const suggested = suggestedCronTitle(cronText(c));
+  return suggested === "(untitled cron)" ? t(suggested) : suggested;
 }
 
 function cronScopeLabel(c: CronView): string {
@@ -220,7 +239,7 @@ export async function renderCronsPage(): Promise<void> {
 function drawCronsPage(): void {
   if (appState.currentView !== "crons" || !appState.mainEl) return;
   activeCronId = null;
-  syncCronUrl(null);
+  if (!pendingCronId) syncCronUrl(null);
   if (!cronsPageHost || cronsPageHost.parentElement !== appState.mainEl) {
     cronsPageHost = document.createElement("div");
     cronsPageHost.className = "pane crons-page";
@@ -277,6 +296,7 @@ function drawCronsPage(): void {
     html`${scopedViewTopbar("crons", drawCronsPage)}
     ${listPageTpl({
       title: "Crons",
+      action: { label: "New cron", onClick: showNewCron },
       search: {
         value: cronsSearch,
         placeholder: "Search crons",
@@ -448,6 +468,7 @@ function openCron(c: CronView, opts: { push?: boolean; refreshRuns?: boolean } =
   const notice = cronActionNotice;
   cronActionNotice = "";
   const next = cronNextFire(c);
+  const linkedChat = linkedCronChat(c);
   let stateActions = html`
     <button class="btn" @click=${() => void setCronEnabled(c.id, true)}>${icon(Play, 15)}<span>Enable</span></button>
     <button class="btn" @click=${() => void archiveCron(c.id, true)}>${icon(Archive, 15)}<span>Archive</span></button>
@@ -466,88 +487,106 @@ function openCron(c: CronView, opts: { push?: boolean; refreshRuns?: boolean } =
     `;
   }
   const host = document.createElement("div");
-  host.className = "resource-pane cron-pane";
+  host.className = "pane cron-detail-page";
   render(
     html`
-      <div class="resource-detail">
+      <div class="cron-detail">
         ${listBackLink("Crons", drawCronsPage)}
-        <div class="resource-heading">
-          <h2 dir="auto">${cronTitle(c)}</h2>
-          <button class="btn" @click=${showNewCron}>${icon(Plus, 15)}<span>New cron</span></button>
+        <div class="cron-detail-heading">
+          <div>
+            <div class="cron-detail-eyebrow">Scheduled task</div>
+            <h1 dir="auto">${cronTitle(c)}</h1>
+            <span class="cron-detail-status ${cronStatusLabel(c)}">${cronStatusText(c)}</span>
+          </div>
+          <button class="btn primary" @click=${showNewCron}>${icon(Plus, 15)}<span>New cron</span></button>
         </div>
         ${notice ? html`<div class="hint">${notice}</div>` : ""}
-        <div class="field">
-          <label>Context</label>
-          <div class="value">${scopeChip(c.ownerScopeId, c.scopeName ?? null)}</div>
-        </div>
-        ${
-          c.title
-            ? html`<div class="field">
-                <label>Title</label>
-                <div class="value" dir="auto">${c.title}</div>
-              </div>`
-            : nothing
-        }
-        <div class="field">
-          <label>${t(c.message !== undefined ? "Message" : "Task")}</label>
-          <div class="value pre">${cronText(c)}</div>
-        </div>
-        <div class="field">
-          <label>Schedule</label>
-          <div class="value">${cronScheduleDetail(c)}</div>
-        </div>
-        ${
-          mine
-            ? ""
-            : html`<div class="field">
-                <label>Owner</label>
-                <div class="value">${c.owner}</div>
-              </div>`
-        }
-        ${
-          mine
-            ? ""
-            : html`<div class="field">
-                <label>Scope</label>
-                <div class="value">${cronScopeLabel(c)}</div>
-              </div>`
-        }
-        <div class="field">
-          <label>Status</label>
-          <div class="value">${cronStatusText(c)}</div>
-        </div>
-        ${
-          c.destination
-            ? html`<div class="field">
-                <label>Destination</label>
-                <div class="value">${c.destination.type} → ${c.destination.target}</div>
-              </div>`
-            : ""
-        }
-        <div class="field">
-          <label>Next run</label>
-          <div class="value">${next != null ? new Date(next).toLocaleString(localeCode()) : t("Never")}</div>
-        </div>
-        <div class="field">
-          <label>Last fired</label>
-          <div class="value">${c.lastFiredAt ? new Date(c.lastFiredAt).toLocaleString(localeCode()) : t("Never")}</div>
-        </div>
+        <section class="cron-detail-card cron-detail-task">
+          <h2>${t(c.message !== undefined ? "Message" : "Task")}</h2>
+          <div class="cron-detail-task-text" dir="auto">${cronText(c)}</div>
+        </section>
+        <section class="cron-detail-card">
+          <h2>Schedule and delivery</h2>
+          <div class="cron-detail-fields">
+            <div class="field">
+              <label>Schedule</label>
+              <div class="value">${cronScheduleDetail(c)}</div>
+            </div>
+            <div class="field">
+              <label>Next run</label>
+              <div class="value">
+                ${next != null ? new Date(next).toLocaleString(localeCode(), { timeZoneName: "short" }) : t("Never")}
+              </div>
+            </div>
+            <div class="field">
+              <label>Last fired</label>
+              <div class="value">
+                ${c.lastFiredAt ? new Date(c.lastFiredAt).toLocaleString(localeCode(), { timeZoneName: "short" }) : t("Never")}
+              </div>
+            </div>
+            <div class="field">
+              <label>Context</label>
+              <div class="value">${scopeChip(c.ownerScopeId, c.scopeName ?? null)}</div>
+            </div>
+            ${
+              c.destination
+                ? html`<div class="field">
+                    <label>Destination</label>
+                    <div class="value" dir="auto">${c.destination.type} → ${c.destination.target}</div>
+                  </div>`
+                : nothing
+            }
+            <div class="field">
+              <label>${t("Result conversation")}</label>
+              <div class="value">
+                ${
+                  linkedChat
+                    ? html`<a href=${deepLinkPath(UI_BASE, "chats", linkedChat.id)}
+                        >${t("Open original conversation")}:
+                        ${linkedChat.title?.trim() || defaultSessionTitle(linkedChat)}</a
+                      >`
+                    : t(
+                        c.destination?.type === "web"
+                          ? "Original conversation is unavailable. Results are available in run history."
+                          : "No linked conversation. Results are available in run history.",
+                      )
+                }
+              </div>
+            </div>
+            ${
+              mine
+                ? nothing
+                : html`<div class="field">
+                    <label>Owner</label>
+                    <div class="value" dir="auto">${c.owner}</div>
+                  </div>`
+            }
+            ${
+              mine
+                ? nothing
+                : html`<div class="field">
+                    <label>Scope</label>
+                    <div class="value">${cronScopeLabel(c)}</div>
+                  </div>`
+            }
+          </div>
+        </section>
         ${
           c.lastFireNote
-            ? html`<div class="field">
-                <label>
-                  ${c.lastFireNote.by ? `Note left by ${c.lastFireNote.by}` : "Note from last fire"}
-                  (${new Date(c.lastFireNote.at).toLocaleString()})
-                </label>
-                <div class="value" dir="auto">${c.lastFireNote.text}</div>
-              </div>`
+            ? html`<section class="cron-detail-card">
+                <h2>${t(c.lastFireNote.by ? `Note left by ${c.lastFireNote.by}` : "Note from last fire")}</h2>
+                <div class="cron-detail-note-time">
+                  ${new Date(c.lastFireNote.at).toLocaleString(localeCode(), { timeZoneName: "short" })}
+                </div>
+                <div class="cron-detail-task-text" dir="auto">${c.lastFireNote.text}</div>
+              </section>`
             : nothing
         }
-        ${manageable ? cronRunHistory(c) : nothing}
+        ${manageable ? html`<section class="cron-detail-card cron-detail-runs">${cronRunHistory(c)}</section>` : nothing}
         ${
           manageable
             ? html`
-                <div class="actions">
+                <div class="actions cron-detail-actions">
                   <button class="btn" @click=${() => showCronDialog("rename", c)}>
                     ${icon(Pencil, 15)}<span>Edit</span>
                   </button>
@@ -565,13 +604,23 @@ function openCron(c: CronView, opts: { push?: boolean; refreshRuns?: boolean } =
     host,
   );
   appState.mainEl.replaceChildren(host);
+  if (pendingRunKey) {
+    const row = [...host.querySelectorAll<HTMLElement>("[data-fire-key]")].find(
+      (node) => node.dataset.fireKey === pendingRunKey,
+    );
+    if (row) {
+      row.scrollIntoView({ block: "center" });
+      row.classList.add("notification-target");
+      pendingRunKey = null;
+    }
+  }
   if (manageable && (shouldRefreshRuns || !cronRuns.has(c.id)) && !cronRunsLoading.has(c.id)) void loadCronRuns(c.id);
 }
 
 function cronRunHistory(c: CronView): TemplateResult {
   const runs = cronRuns.get(c.id);
   const heading = html`<div class="cron-run-heading">
-    <label>Recent runs</label>
+    <h2>Recent runs</h2>
   </div>`;
   if (!runs)
     return html`<div class="field">
@@ -588,15 +637,35 @@ function cronRunHistory(c: CronView): TemplateResult {
     <div class="cron-run-list">
       ${[...runs].reverse().map((run) => {
         const detail = run.note ?? (run.reply ? clipWords(run.reply, 120) : "");
-        return html` <div class="cron-run-row">
-          <span class="badge">${run.status ?? "completed"}</span>
+        return html` <div class="cron-run-row" data-fire-key=${run.fireKey}>
+          <span class="badge">${t(run.status ?? "completed")}</span>
+          ${run.deliveryStatus ? html`<span class="badge">${t(deliveryStatusLabel(run.deliveryStatus))}</span>` : nothing}
           <span class="cron-run-time">${cronRunTiming(run)}</span>
           <span class=${run.note ? "cron-run-detail cron-run-error" : "cron-run-detail"} ${tip(detail)}>
             ${detail}
           </span>
           ${
-            run.sessionId
-              ? html`<a class="cron-run-link" href=${deepLinkPath(UI_BASE, "chats", run.sessionId)}>Worklog</a>`
+            run.resultSessionId || run.sessionId
+              ? html`<span class="cron-run-links">
+                  ${
+                    run.resultSessionId
+                      ? html`<a
+                          class="cron-run-link"
+                          href=${`${deepLinkPath(UI_BASE, "chats", run.resultSessionId)}${run.resultEntrySeq === undefined ? "" : `?entry=${run.resultEntrySeq}`}`}
+                          >${t("View result in conversation")}</a
+                        >`
+                      : nothing
+                  }
+                  ${
+                    run.sessionId
+                      ? html`<a
+                          class="cron-run-link cron-run-worklog"
+                          href=${deepLinkPath(UI_BASE, "chats", run.sessionId)}
+                          >${t("Execution log")}</a
+                        >`
+                      : nothing
+                  }
+                </span>`
               : nothing
           }
         </div>`;
@@ -611,7 +680,7 @@ async function loadCronRuns(id: string): Promise<void> {
     const result = await api<{ runs: CronRunView[] }>(`/api/crons/${encodeURIComponent(id)}/runs`);
     cronRuns.set(id, result.runs ?? []);
   } catch (error) {
-    cronActionNotice = errMessage(error, "Couldn't load run history.");
+    cronActionNotice = t(errMessage(error, "Couldn't load run history."));
     cronRuns.set(id, []);
   } finally {
     cronRunsLoading.delete(id);
@@ -645,7 +714,7 @@ function runCronNow(id: string): Promise<void> {
       await api(`/api/crons/${encodeURIComponent(id)}/run`, { method: "POST" });
       cronActionNotice = t("Run started. Refresh recent runs after it completes.");
     } catch (e) {
-      cronActionNotice = errMessage(e, "run failed");
+      cronActionNotice = t(errMessage(e, "run failed"));
     }
     await reopenCron(id);
   }, undefined);
@@ -661,7 +730,7 @@ function patchCron(
       await api(`/api/crons/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) });
       return true;
     } catch (e) {
-      cronActionNotice = errMessage(e, errorLabel);
+      cronActionNotice = t(errMessage(e, errorLabel));
       await reopenCron(id);
       return false;
     }
@@ -681,6 +750,8 @@ function closeCronDialog(c: CronView): void {
 
 function cronDialogTpl(dialog: { kind: "rename" | "delete"; cron: CronView }): TemplateResult {
   const c = dialog.cron;
+  const editableChat =
+    c.destination?.type === "web" && cronChatChoices().some((session) => session.threadRef === c.destination?.target);
   if (dialog.kind === "delete") {
     return html` <div
       class="project-dialog-backdrop"
@@ -729,15 +800,21 @@ function cronDialogTpl(dialog: { kind: "rename" | "delete"; cron: CronView }): T
             </div>`
       }
       <p class="hint">
-        ${t(
-          c.message === undefined
-            ? "To change the schedule, timezone, destination, or run mode, use the agent so it can validate the resulting behavior and permissions."
-            : "To change the message, schedule, timezone, destination, or run mode, use the agent so it can validate the resulting behavior and permissions.",
-        )}
+        ${
+          editableChat
+            ? t(
+                c.message === undefined
+                  ? "To change the schedule, timezone, destination, or run mode, use the agent so it can validate the resulting behavior and permissions."
+                  : "To change the message, schedule, timezone, destination, or run mode, use the agent so it can validate the resulting behavior and permissions.",
+              )
+            : t(
+                "No linked conversation is available. Edit this task here, or ask the agent from an existing conversation to change its schedule or destination.",
+              )
+        }
       </p>
       <div class="form-error"></div>
       <div class="project-dialog-actions">
-        <button class="btn" type="button" @click=${() => editCronWithAgent(c)}>Edit behavior with agent</button>
+        ${editableChat ? html`<button class="btn" type="button" @click=${() => editCronWithAgent(c)}>Edit behavior with agent</button>` : nothing}
         <button class="btn" type="button" @click=${() => closeCronDialog(c)}>Cancel</button>
         <button class="btn primary" type="submit">Save</button>
       </div>
@@ -763,9 +840,15 @@ async function saveCronEdit(event: SubmitEvent, c: CronView): Promise<void> {
   await reopenCron(c.id);
 }
 
-function editCronWithAgent(c: CronView): void {
+async function editCronWithAgent(c: CronView): Promise<void> {
+  const destinationChat =
+    c.destination?.type === "web"
+      ? cronChatChoices().find((session) => session.threadRef === c.destination?.target)
+      : undefined;
+  if (!destinationChat) return;
   cronDialog = null;
-  const conv = startNewChat();
+  await openSession(destinationChat);
+  const conv = allConversations().find((candidate) => candidate.state.sessionId === destinationChat.id);
   void conv?.state.agent?.prompt(
     userSendMessage(
       `Help me edit cron ${c.id} ("${cronTitle(c)}"). Its current schedule is ${cronScheduleSummary(c)}. Ask what I want changed, then update its task, schedule, timezone, destination, or run mode as requested.`,
@@ -794,7 +877,7 @@ function setCronEnabled(id: string, enabled: boolean): Promise<void> {
       cronTab = "yours";
       if (!enabled) showDisabledCrons = true;
     } catch (e) {
-      cronActionNotice = errMessage(e, enabled ? "enable failed" : "disable failed");
+      cronActionNotice = t(errMessage(e, enabled ? "enable failed" : "disable failed"));
     }
     await reopenCron(id);
   }, undefined);
@@ -806,13 +889,36 @@ async function confirmDeleteCron(id: string): Promise<void> {
     try {
       await api(`/api/crons/${encodeURIComponent(id)}`, { method: "DELETE" });
     } catch (e) {
-      cronActionNotice = errMessage(e, "delete failed");
+      cronActionNotice = t(errMessage(e, "delete failed"));
     }
     await reopenCron(id);
   }, undefined);
 }
 
+const NEW_CRON_CHAT = "__new__";
+
+function linkedCronChat(c: CronView): CoreSession | undefined {
+  if (c.destination?.type !== "web") return undefined;
+  return sessionsState.list.find(
+    (session) => session.threadRef === c.destination?.target && surfaceOf(session) === "web",
+  );
+}
+
+function cronChatChoices(): CoreSession[] {
+  const user = appState.me?.user ?? "";
+  return sessionsState.list
+    .filter(
+      (session) =>
+        !session.archived && !session.parentSessionId && surfaceOf(session) === "web" && isContinuable(session, user),
+    )
+    .sort((a, b) => activityOf(b) - activityOf(a));
+}
+
 function cronForm() {
+  const chats = cronChatChoices();
+  const remembered = mainConversation().state.rememberedSessionId;
+  let selected = chats.length ? "" : NEW_CRON_CHAT;
+  if (chats.some((session) => session.id === remembered)) selected = remembered ?? "";
   return html`
     <form class="resource-form cron-form" @submit=${onCreateCron}>
       ${listBackLink("Crons", drawCronsPage)}
@@ -823,6 +929,28 @@ function cronForm() {
         )}
         <code>${t("Gmail unread digest")}</code> ${t("or")} <code>${t("GitLab CI watch")}</code>${t(".")}
       </p>
+      <p class="hint">
+        ${t("Results stay in each run history. By default, they return to the setup chat, and you receive notifications. The agent confirms the destination, timezone and next run before finishing.")}
+      </p>
+      <label>
+        <span>${t("Result conversation")}</span>
+        ${fieldSelect({
+          name: "sessionId",
+          required: true,
+          value: selected,
+          onChange: (value) => {
+            selected = value;
+          },
+          options: [
+            ...(chats.length ? [html`<option value="" disabled>${t("Choose an existing conversation")}</option>`] : []),
+            ...chats.map(
+              (session) =>
+                html`<option value=${session.id}>${session.title?.trim() || defaultSessionTitle(session)}</option>`,
+            ),
+            html`<option value=${NEW_CRON_CHAT}>${t("Start a new conversation")}</option>`,
+          ],
+        })}
+      </label>
       <label>
         <textarea
           name="text"
@@ -846,7 +974,7 @@ function showNewCron(): void {
   appState.mainEl.replaceChildren(host);
 }
 
-function onCreateCron(e: Event): void {
+async function onCreateCron(e: Event): Promise<void> {
   e.preventDefault();
   const form = e.currentTarget as HTMLFormElement;
   const errSlot = form.querySelector(".form-error") as HTMLElement | null;
@@ -855,10 +983,37 @@ function onCreateCron(e: Event): void {
     if (errSlot) errSlot.textContent = t("Describe the cron you want.");
     return;
   }
-  const conv = startNewChat();
-  void conv?.state.agent?.prompt(
-    userSendMessage(
-      `Set up a cron for me: ${text}\n\n(Sent from the web UI's New-cron pane: create it now with your scheduling API, use a calendar schedule with timezone for daily/weekly/monthly timing, give it a 2-5 word title naming what the cron is for and distinctive in a list, like "Gmail unread digest" or "GitLab CI watch", not the command and not a generic word, and confirm what you created.)`,
-    ),
-  );
+  const chatId = (form.elements.namedItem("sessionId") as HTMLSelectElement | null)?.value ?? "";
+  const selected = chatId === NEW_CRON_CHAT ? null : cronChatChoices().find((session) => session.id === chatId);
+  if (!chatId || (chatId !== NEW_CRON_CHAT && !selected)) {
+    if (errSlot) errSlot.textContent = t("Choose a result conversation.");
+    return;
+  }
+  if (form.dataset.submitting) return;
+  form.dataset.submitting = "true";
+  if (selected) await openSession(selected);
+  const conv = selected
+    ? allConversations().find((candidate) => candidate.state.sessionId === selected.id)
+    : startNewChat();
+  const agent = conv?.state.agent;
+  if (!agent) {
+    if (errSlot) errSlot.textContent = t("Could not open the selected conversation.");
+    delete form.dataset.submitting;
+    return;
+  }
+  if (agent.state.isStreaming) {
+    conv.composer.state.error = t("Wait for the current reply before creating the scheduled task.");
+    conv.redraw();
+    return;
+  }
+  void agent
+    .prompt(
+      userSendMessage(
+        `Set up a cron for me: ${text}\n\n(Sent from the web UI's New-cron pane: create it now with your scheduling API, use a calendar schedule with timezone for daily/weekly/monthly timing, give it a 2-5 word title naming what the cron is for and distinctive in a list, like "Gmail unread digest" or "GitLab CI watch", not the command and not a generic word. Use this setup chat as the default result destination unless I specified a different supported destination. Confirm where results are saved, who is notified, the destination, timezone, and next run.)`,
+      ),
+    )
+    .catch((error: unknown) => {
+      conv.composer.state.error = errMessage(error, "Could not create the scheduled task.");
+      conv.redraw();
+    });
 }

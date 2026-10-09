@@ -1,9 +1,9 @@
-import { html, nothing, type TemplateResult } from "lit";
+import { nothing, type TemplateResult } from "lit";
 import { ArrowUpLeft, Box, Brain, Clock3, Ellipsis, Files, GitFork, KeyRound, Rocket } from "lucide";
 import { api } from "./core-bridge";
 import { closeFormMenus, icon, toggleFormMenu } from "./ui";
 import { tip } from "./tooltip";
-import { t } from "./i18n";
+import { html, t } from "./i18n";
 
 export interface ScopedSessionInfo {
   scopeId: string;
@@ -159,7 +159,7 @@ export function sessionTopbarTpl(o: SessionTopbarOpts): TemplateResult {
           ? html`<button
                 class="session-parent-link"
                 type="button"
-                aria-label=${`Back to parent: ${o.parent.title}`}
+                aria-label=${t(`Back to parent: ${o.parent.title}`)}
                 ${tip(`Back to ${o.parent.title}`)}
                 @click=${o.parent.onClick}
               >
@@ -178,7 +178,7 @@ export function sessionTopbarTpl(o: SessionTopbarOpts): TemplateResult {
       <div class="topbar-actions session-tools">
         ${tool("crons", Clock3, "Crons")} ${tool("apps", Rocket, "Apps")} ${tool("files", Files, "Files")}
         ${tool("skills", Box, "Skills")} ${tool("memory", Brain, "Memory")}
-        ${tool("keychain", KeyRound, "Your keychain")}
+        ${tool("keychain", KeyRound, t("Your keychain"))}
       </div>
       <div class="topbar-actions form-menu-control session-tools-more" data-align="right" data-drop="down">
         <button
@@ -204,7 +204,7 @@ export function sessionTopbarTpl(o: SessionTopbarOpts): TemplateResult {
           <div class="menu-title">This conversation's workspace</div>
           ${sheetTool("crons", Clock3, "Crons")} ${sheetTool("apps", Rocket, "Apps")}
           ${sheetTool("files", Files, "Files")} ${sheetTool("skills", Box, "Skills")}
-          ${sheetTool("memory", Brain, "Memory")} ${sheetTool("keychain", KeyRound, "Your keychain")}
+          ${sheetTool("memory", Brain, "Memory")} ${sheetTool("keychain", KeyRound, t("Your keychain"))}
         </div>
       </div>
     </header>

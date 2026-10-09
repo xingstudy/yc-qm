@@ -37,6 +37,38 @@ const get = (base: string, path: string, headers: Record<string, string> = ALICE
 const getJson = async (base: string, path: string, headers: Record<string, string> = ALICE): Promise<any> =>
   (await get(base, path, headers)).json();
 
+test("admin transcript does not attribute a former member's message to the remaining member", async () => {
+  const s = start();
+  try {
+    const scope = scopeId("group", "G1");
+    const session = await s.built.sessions.getOrCreateByThread(
+      "web:owner:former-member",
+      "group",
+      scope,
+      undefined,
+      "web",
+    );
+    await s.built.sessions.addParticipant(session.id, "owner");
+    await s.built.sessions.addParticipant(session.id, "former");
+    const { lease } = await s.built.sessions.acquireLease(session.id);
+    assert.ok(lease);
+    await s.built.sessions.append(lease, {
+      type: "user",
+      payload: { text: "Former member's message" },
+      scopeLabel: scope,
+    });
+    await s.built.sessions.releaseLease(lease);
+    await s.built.sessions.removeParticipant(session.id, "former");
+
+    const response = await get(s.base, `/v1/admin/sessions/${session.id}?scope=org:default-org`);
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { entries: Array<{ type: string; payload: { name?: string } }> };
+    assert.equal(body.entries.find((entry) => entry.type === "user")?.payload.name, undefined);
+  } finally {
+    await s.close();
+  }
+});
+
 test("an org admin sees conversations, transcripts, files, and runs top-down", async () => {
   const s = start();
   try {

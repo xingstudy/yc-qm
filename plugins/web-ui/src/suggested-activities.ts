@@ -1,4 +1,5 @@
-import { html, nothing, type TemplateResult } from "lit";
+import { nothing, type TemplateResult } from "lit";
+import { currentLocale, html, type AppLocale } from "./i18n.ts";
 import type { SuggestedActivity } from "../../chassis/src/suggested-activities.ts";
 
 const icons: Record<string, string> = {
@@ -9,6 +10,12 @@ const icons: Record<string, string> = {
   calendar: "📅",
   book: "📚",
 };
+
+export function localizedActivity(activity: SuggestedActivity, locale: AppLocale = currentLocale()): SuggestedActivity {
+  return locale === "zh-CN" && activity.titleZh && activity.promptZh
+    ? { ...activity, title: activity.titleZh, prompt: activity.promptZh }
+    : activity;
+}
 
 export function suggestedActivities(
   activities: SuggestedActivity[] | undefined,
@@ -23,20 +30,20 @@ export function suggestedActivities(
     ?inert=${collapsed}
   >
     <div class="suggested-activities-list">
-      ${activities.slice(0, 3).map(
-        (activity) =>
-          html`<button
-            type="button"
-            class="suggested-activity"
-            ?disabled=${collapsed}
-            @click=${() => onSelect(activity)}
+      ${activities.slice(0, 3).map((source) => {
+        const activity = localizedActivity(source);
+        return html`<button
+          type="button"
+          class="suggested-activity"
+          ?disabled=${collapsed}
+          @click=${() => onSelect(activity)}
+        >
+          <span class="suggested-activity-icon" data-icon=${activity.icon} aria-hidden="true"
+            >${activity.icon === "yc" ? html`<span class="suggested-activity-yc">Y</span>` : (icons[activity.icon] ?? activity.icon)}</span
           >
-            <span class="suggested-activity-icon" data-icon=${activity.icon} aria-hidden="true"
-              >${activity.icon === "yc" ? html`<span class="suggested-activity-yc">Y</span>` : (icons[activity.icon] ?? activity.icon)}</span
-            >
-            <span class="suggested-activity-title">${activity.title}</span>
-          </button>`,
-      )}
+          <span class="suggested-activity-title">${activity.title}</span>
+        </button>`;
+      })}
     </div>
   </section>`;
 }

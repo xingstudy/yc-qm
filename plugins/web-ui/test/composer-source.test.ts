@@ -79,7 +79,7 @@ test("attaching files is allowed while a turn is streaming", () => {
 test("a mid-turn submit queues — attachments cannot ride a queued message and stay for the next", () => {
   // Mid-turn Enter queues through core (queueDraft), so the steer-button attachment note is gone;
   // the queue button gates only on draft text, never on the run slot.
-  assert.match(composer, /\$\{tip\(t\("Queue for after this turn"\)\)\}/);
+  assert.match(composer, /ctx\.chat\.hasPostedReply\(\) \? "Send" : "Queue for after this turn"/);
   assert.doesNotMatch(composer, /attachments stay for your next message/);
 });
 

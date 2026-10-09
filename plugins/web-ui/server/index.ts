@@ -753,7 +753,7 @@ function imLocatorUnavailableReason(
   if (binding.provider === "wechat" && !readWeixinSecret(resource)?.contextToken)
     return "请先在微信里给 Bot 发送一条消息，之后才能从这里定位。";
   if (binding.provider === "feishu") return "请先在飞书里给 Bot 发送一条消息，之后才能从这里定位。";
-  if (binding.provider === "work-wechat") return "请先在企业微信里打开该 Bot；打开后会自动发送欢迎消息并记录会话。";
+  if (binding.provider === "work-wechat") return "请先在企业微信里打开该 Bot，之后才能从这里定位。";
   if (binding.provider === "qq") return "请先在 QQ 里给 Bot 发送一条消息，之后才能从这里定位。";
   if (binding.provider === "dingtalk") return "请先在钉钉里给 Bot 发送一条消息，之后才能从这里定位。";
   return `${label}没有可发送的会话上下文，请先在 IM 中打开机器人并发送一条消息。`;
@@ -2722,7 +2722,6 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
     const steeredRunIds = new LRUCache<string, true>({ max: 10_000, ttl: 10 * 60_000 });
     const completedMessageIds = new LRUCache<string, true>({ max: 10_000, ttl: 10 * 60_000 });
     const inFlightMessageIds = new Set<string>();
-    const inFlightWelcomeIds = new Set<string>();
     const retryMessageFrames = new Map<string, WsFrame<WeComBaseMessage>>();
     const sentDeliveryKeys = new LRUCache<string, true>({ max: 100_000 });
     const pendingRunMappings = new Set<Promise<void>>();
@@ -2824,21 +2823,8 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
     const handleWeComEnter = (frame: WsFrame<WeComEventMessage>): void => {
       if (!ownsImBridge(user, resource.provider, resource.resourceId)) return;
       const body = frame.body;
-      if (
-        !body ||
-        body.chattype === "group" ||
-        completedMessageIds.has(body.msgid) ||
-        inFlightWelcomeIds.has(body.msgid)
-      )
-        return;
-      inFlightWelcomeIds.add(body.msgid);
+      if (!body || body.chattype === "group" || completedMessageIds.has(body.msgid)) return;
       const tenant = weComTenantInfo(body.from as unknown as Record<string, unknown>);
-      const welcome = client.replyWelcome(frame, {
-        msgtype: "text",
-        text: {
-          content: imLocatorMessage("work-wechat", resource.botName),
-        },
-      });
       void persistImConversation(user, "work-wechat", {
         externalUserId: body.from.userid,
         externalChatId: body.from.userid,
@@ -2846,10 +2832,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         ...tenant,
         direct: true,
       }).catch((error: unknown) => console.error("[web-ui] WeCom target persistence failed:", String(error)));
-      void welcome
-        .then(() => completedMessageIds.set(body.msgid, true))
-        .catch((error: unknown) => console.error("[web-ui] WeCom welcome failed:", String(error)))
-        .finally(() => inFlightWelcomeIds.delete(body.msgid));
+      completedMessageIds.set(body.msgid, true);
     };
     client.on("message.text", handleWeComMessage);
     client.on("message.image", handleWeComMessage);
@@ -2874,7 +2857,6 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         steeredRunIds.clear();
         completedMessageIds.clear();
         inFlightMessageIds.clear();
-        inFlightWelcomeIds.clear();
         retryMessageFrames.clear();
         sentDeliveryKeys.clear();
         client.disconnect();
@@ -4172,7 +4154,11 @@ function forwardSessionState(frame: SessionStateFrame): void {
   }
   const { participants: _participants, ...visible } = frame;
   for (const user of targets) {
-    for (const res of deliveryClients.get(user) ?? []) sseEvent(res, "session_state", visible);
+    for (const res of deliveryClients.get(user) ?? []) {
+      if (frame.state === "notification") sseEvent(res, "notification", {});
+      else if (frame.state === "transcript") sseEvent(res, "delivery", { threadRef });
+      else sseEvent(res, "session_state", visible);
+    }
   }
 }
 
@@ -4192,6 +4178,7 @@ async function consumeCoreFeed(
       if (r.status === 200 && r.body) {
         if (dropped) {
           dropped = false;
+          console.info(`[feed] reconnected ${path}`);
           onReconnect?.();
         }
         const reader = r.body.getReader();
@@ -4220,8 +4207,11 @@ async function consumeCoreFeed(
           }
         }
       }
+      if (!dropped)
+        console.warn(`[feed] disconnected ${path}: ${r.status === 200 ? "stream closed" : `HTTP ${r.status}`}`);
       dropped = true;
-    } catch {
+    } catch (error) {
+      if (!dropped) console.warn(`[feed] disconnected ${path}: ${error instanceof Error ? error.message : error}`);
       dropped = true;
     }
     await new Promise((resolve) => setTimeout(resolve, STATE_FEED_RECONNECT_MS));
@@ -5952,11 +5942,16 @@ const apiRoutes: readonly WebRoute[] = [
     method: "POST",
     path: "/api/suggested-activities",
     handle: async (c) => {
-      const input = JSON.parse((await readBody(c.req)) || "{}") as { timezone?: unknown };
+      const input = JSON.parse((await readBody(c.req)) || "{}") as { timezone?: unknown; locale?: unknown };
       const response = await coreFetch(
         "POST",
         "/v1/suggested-activities",
-        JSON.stringify({ principalId: c.user, seeds: suggestedActivities, timezone: input.timezone }),
+        JSON.stringify({
+          principalId: c.user,
+          seeds: suggestedActivities,
+          timezone: input.timezone,
+          locale: input.locale,
+        }),
         60_000,
       );
       return json(c.res, response.status, JSON.parse(response.text));
@@ -7062,7 +7057,13 @@ const apiRoutes: readonly WebRoute[] = [
       const threadRef = url.searchParams.get("threadRef") ?? "";
       if (!threadRef.startsWith("web:") && !threadRef.startsWith(SUBAGENT_THREAD_PREFIX))
         return json(res, 404, { error: "not_found" });
-      let queued: Array<{ runId: string; text: string; hasAttachments?: boolean }> = [];
+      let queued: Array<{
+        runId: string;
+        text: string;
+        authorId?: string;
+        createdAt?: number;
+        hasAttachments?: boolean;
+      }> = [];
       let durableRunId: string | null = null;
       const durable = await coreFetch("GET", `/v1/runs?threadRef=${encodeURIComponent(threadRef)}`);
       if (durable.status >= 200 && durable.status < 300) {
@@ -7477,6 +7478,36 @@ const apiRoutes: readonly WebRoute[] = [
     method: "POST",
     path: "/api/webhooks/:id/enable",
     handle: (c) => setWebhookEnabledViaCore(c.res, c.user, c.params.id!, "enable"),
+  },
+  {
+    method: "GET",
+    path: "/api/notifications",
+    handle: (c) => relayCore(c.res, "GET", `/v1/notifications?principalId=${encodeURIComponent(c.user)}`),
+  },
+  {
+    method: "POST",
+    path: "/api/notifications/read-all",
+    handle: (c) => relayCore(c.res, "POST", `/v1/notifications/read-all?principalId=${encodeURIComponent(c.user)}`),
+  },
+  {
+    method: "POST",
+    path: "/api/notifications/sessions/:id/read",
+    handle: (c) =>
+      relayCore(
+        c.res,
+        "POST",
+        `/v1/notifications/sessions/${encodeURIComponent(c.params.id!)}/read?principalId=${encodeURIComponent(c.user)}`,
+      ),
+  },
+  {
+    method: "POST",
+    path: "/api/notifications/:id/read",
+    handle: (c) =>
+      relayCore(
+        c.res,
+        "POST",
+        `/v1/notifications/${encodeURIComponent(c.params.id!)}/read?principalId=${encodeURIComponent(c.user)}`,
+      ),
   },
   {
     method: "GET",

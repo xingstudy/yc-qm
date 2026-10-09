@@ -5,6 +5,8 @@ export interface SuggestedActivity {
   title: string;
   prompt: string;
   icon: string;
+  titleZh?: string;
+  promptZh?: string;
 }
 
 function validIcon(value: string): boolean {
@@ -33,7 +35,7 @@ export function parseSuggestedActivities(value: string | undefined): SuggestedAc
   const ids = new Set<string>();
   return parsed.map((item: unknown) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) throw invalid();
-    const { id, title, prompt, icon } = item as Record<string, unknown>;
+    const { id, title, prompt, icon, titleZh, promptZh } = item as Record<string, unknown>;
     if (
       typeof id !== "string" ||
       !/^[a-z0-9][a-z0-9-]{0,63}$/.test(id) ||
@@ -45,10 +47,21 @@ export function parseSuggestedActivities(value: string | undefined): SuggestedAc
       !prompt.trim() ||
       prompt.length > 1200 ||
       typeof icon !== "string" ||
-      !validIcon(icon)
+      !validIcon(icon) ||
+      (titleZh !== undefined && (typeof titleZh !== "string" || !titleZh.trim() || titleZh.length > 65)) ||
+      (promptZh !== undefined && (typeof promptZh !== "string" || !promptZh.trim() || promptZh.length > 1200)) ||
+      (titleZh === undefined) !== (promptZh === undefined)
     )
       throw invalid();
     ids.add(id);
-    return { id, title: title.trim(), prompt: prompt.trim(), icon };
+    return {
+      id,
+      title: title.trim(),
+      prompt: prompt.trim(),
+      icon,
+      ...(typeof titleZh === "string" && typeof promptZh === "string"
+        ? { titleZh: titleZh.trim(), promptZh: promptZh.trim() }
+        : {}),
+    };
   });
 }

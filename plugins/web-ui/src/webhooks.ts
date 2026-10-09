@@ -1,4 +1,5 @@
-import { html, nothing, render, type TemplateResult } from "lit";
+import { nothing, render, type TemplateResult } from "lit";
+import { html, localeCode, t } from "./i18n.ts";
 import { Check, ChevronDown, Plus } from "lucide";
 import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
@@ -240,7 +241,7 @@ function openWebhook(w: WebhookView, opts: { push?: boolean } = {}): void {
         </div>
         <div class="field">
           <label>Status</label>
-          <div class="value">${w.enabled ? "Enabled" : "Disabled"}</div>
+          <div class="value">${t(w.enabled ? "Enabled" : "Disabled")}</div>
         </div>
         <div class="field">
           <label>Inbound URL</label>
@@ -265,7 +266,7 @@ function openWebhook(w: WebhookView, opts: { push?: boolean } = {}): void {
         }
         <div class="field">
           <label>Last fired</label>
-          <div class="value">${w.lastFiredAt ? new Date(w.lastFiredAt).toLocaleString() : "Never"}</div>
+          <div class="value">${w.lastFiredAt ? new Date(w.lastFiredAt).toLocaleString(localeCode()) : t("Never")}</div>
         </div>
         ${
           w.lastDeliveryId
@@ -328,7 +329,7 @@ async function loadWebhookEvents(id: string, host: HTMLElement): Promise<void> {
                   <details class="code-card">
                     <summary class="tool-payload-label">
                       <time datetime=${new Date(event.receivedAt).toISOString()}
-                        >${new Date(event.receivedAt).toLocaleString()}</time
+                        >${new Date(event.receivedAt).toLocaleString(localeCode())}</time
                       >
                     </summary>
                     <pre class="tool-payload-body">${event.payload}</pre>
@@ -409,14 +410,14 @@ function webhookForm() {
                   aria-checked=${scheme.value === "hmac-sha256" ? "true" : "false"}
                   @click=${(e: Event) => selectWebhookScheme(e, scheme.value)}
                 >
-                  <span>${scheme.label}</span>
+                  <span>${t(scheme.label)}</span>
                   ${scheme.value === "hmac-sha256" ? icon(Check, 15) : nothing}
                 </button>
               `,
             )}
           </div>
         </div>
-        <span class="hint webhook-scheme-guidance">${WEBHOOK_SCHEMES[0]!.guidance}</span>
+        <span class="hint webhook-scheme-guidance">${t(WEBHOOK_SCHEMES[0]!.guidance)}</span>
       </label>
       <label
         >Signing secret <span class="hint">(leave blank to auto-generate)</span>
@@ -451,14 +452,15 @@ function selectWebhookScheme(e: Event, scheme: WebhookScheme): void {
   e.stopPropagation();
   const control = (e.currentTarget as HTMLElement).closest(".scheme-control") as HTMLElement | null;
   const form = control?.closest("form");
-  setFormMenuValue(control, scheme, WEBHOOK_SCHEMES.find((s) => s.value === scheme)?.label ?? scheme);
+  setFormMenuValue(control, scheme, t(WEBHOOK_SCHEMES.find((s) => s.value === scheme)?.label ?? scheme));
   applyWebhookScheme(form, scheme);
   closeFormMenus();
 }
 
 function applyWebhookScheme(form: Element | null | undefined, scheme: string): void {
   const guidance = form?.querySelector(".webhook-scheme-guidance");
-  if (guidance) guidance.textContent = WEBHOOK_SCHEMES.find((candidate) => candidate.value === scheme)?.guidance ?? "";
+  if (guidance)
+    guidance.textContent = t(WEBHOOK_SCHEMES.find((candidate) => candidate.value === scheme)?.guidance ?? "");
 }
 
 function fillGeneratedSecret(e: Event): void {
@@ -498,13 +500,13 @@ async function onCreateWebhook(e: Event): Promise<void> {
   let filters: Array<{ path: string; in: string[] }>;
   if (errSlot) errSlot.textContent = "";
   if (!action) {
-    if (errSlot) errSlot.textContent = "An action is required.";
+    if (errSlot) errSlot.textContent = t("An action is required.");
     return;
   }
   try {
     filters = parseWebhookFilters(field("filters"));
   } catch (err) {
-    if (errSlot) errSlot.textContent = errMessage(err, "Invalid filters.");
+    if (errSlot) errSlot.textContent = t(errMessage(err, "Invalid filters."));
     return;
   }
   const payload: Record<string, unknown> = {
@@ -520,7 +522,7 @@ async function onCreateWebhook(e: Event): Promise<void> {
     await refreshWebhooks();
     showWebhookCreated(r.webhook, r.url);
   } catch (err) {
-    if (errSlot) errSlot.textContent = errMessage(err, "create failed");
+    if (errSlot) errSlot.textContent = t(errMessage(err, "create failed"));
   }
 }
 

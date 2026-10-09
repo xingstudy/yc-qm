@@ -493,6 +493,8 @@ export interface ActiveRun {
 export interface QueuedRun {
   runId: string;
   text: string;
+  authorId?: string;
+  createdAt?: number;
   hasAttachments?: boolean;
 }
 
@@ -507,9 +509,11 @@ export function resumeAnchor(): AgentMessage {
 export function continuableMessages(
   messages: AgentMessage[],
   input?: RunPoll["input"],
+  preserveHistory = false,
 ): { messages: AgentMessage[]; popped: AgentMessage[] } {
   const kept = messages.slice();
   const popped: AgentMessage[] = [];
+  if (!input && preserveHistory) return { messages: [...kept, resumeAnchor()], popped };
   if (
     input &&
     !kept.some((message) => {
@@ -1212,7 +1216,7 @@ async function resumeDrive(
     // never blanks text the person has already read. The server's own partial
     // (when longer) simply replaces it via the normal delta path.
     if (seedText?.trim()) pushDelta(stream, partial, st, seedText);
-    if (initialRun && applyRun(stream, partial, st, initialRun, notify) === "terminal") return;
+    if (initialRun && applyRun(stream, partial, st, initialRun, notify, runId) === "terminal") return;
     await followRun(stream, partial, runId, signal, notify, st, slot, gen);
   } catch (e) {
     work.status = "failed";
@@ -1319,6 +1323,7 @@ function applyRun(
   st: Acc,
   run: RunPoll,
   notify?: () => void,
+  runId?: string,
 ): "open" | "terminal" {
   const work = (partial as AssistantWork).work;
   const beforeActivity = work?.activity.length ?? 0;
@@ -1366,7 +1371,7 @@ function applyRun(
     return "terminal";
   }
   if (!paused && !quiet && (run.status === "failed" || (res && res.status !== "ok"))) {
-    fail(stream, partial, userFacingFailureText(res ?? { status: "failed" }));
+    fail(stream, partial, userFacingFailureText(res ?? { status: "failed" }, runId));
     return "terminal";
   }
   finish(stream, partial, st, st.acc);
@@ -1400,7 +1405,7 @@ export async function pollRun(
       await sleep(Math.min(POLL_MS * 2 ** Math.min(consecutiveFailures, 4), POLL_RETRY_MAX_MS));
       continue;
     }
-    if (applyRun(stream, partial, st, run, notify) === "terminal") return;
+    if (applyRun(stream, partial, st, run, notify, runId) === "terminal") return;
     if (run.stale === true) st.staleSince ??= now();
     else st.staleSince = undefined;
     if (run.alive === true || (st.staleSince !== undefined && now() - st.staleSince < STALE_GRACE_MS))
@@ -1430,6 +1435,7 @@ export function subscribeDeliveries(
   onResync?: () => void,
   onInboxItem?: (event: InboxItemEvent) => void,
   onInboxResync?: () => void,
+  onNotification?: () => void,
 ): () => void {
   if (typeof EventSource === "undefined") return () => {};
   const es = new EventSource(withBase("/api/deliveries/events"));
@@ -1438,11 +1444,13 @@ export function subscribeDeliveries(
     if (everOpened) {
       onResync?.();
       onInboxResync?.();
+      onNotification?.();
     }
     everOpened = true;
   };
   es.addEventListener("session_state_resync", () => onResync?.());
   es.addEventListener("inbox_resync", () => onInboxResync?.());
+  es.addEventListener("notification", () => onNotification?.());
   es.addEventListener("session_state", (e: MessageEvent) => {
     try {
       const ev = JSON.parse(e.data) as SessionStateEvent;
@@ -1523,7 +1531,8 @@ async function streamRunViaSse(
           append(run.partial.slice(st.acc.length));
         // Completion must carry the final result, including files and approvals.
         const terminal = run.status === "done" || run.status === "failed" || run.result != null;
-        if (applyRun(stream, partial, st, { ...run, replyComplete: terminal }, notify) === "terminal") return "done";
+        if (applyRun(stream, partial, st, { ...run, replyComplete: terminal }, notify, runId) === "terminal")
+          return "done";
         if (run.alive) st.lastProgressAt = now();
       }
     }
@@ -1889,6 +1898,7 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
       workFinishedAt?: number;
       stopped?: boolean;
       runId?: string;
+      authorId?: string;
     } | null;
     const text = payload?.text ?? "";
     if (e.type === "approval_resolved") {
@@ -1951,6 +1961,7 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
       const userText = userEntryText(e.payload) ?? text;
       if (text || atts.length) {
         const mail = subagentMailOf(e.payload);
+        const speaker = payload?.name?.trim() || payload?.authorId?.trim();
         const msg: HistoryUserMessage = {
           role: "user",
           ...(typeof payload?.runId === "string" ? { runId: payload.runId } : {}),
@@ -1959,7 +1970,7 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
           timestamp: e.createdAt,
           ...(mail ? { subagentMail: mail } : {}),
           ...(payload?.steered ? { steered: true } : {}),
-          ...(typeof payload?.name === "string" && payload.name.trim() ? { speaker: payload.name.trim() } : {}),
+          ...(speaker ? { speaker } : {}),
           ...(typeof payload?.ts === "string" && payload.ts ? { ts: payload.ts } : {}),
         };
         if (msg.ts) userByTs.set(msg.ts, msg);
@@ -2012,7 +2023,7 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
         out.push({ ...revision, timestamp: e.createdAt } as unknown as AgentMessage);
         continue;
       }
-      const failure = e.payload as { kind?: string; message?: string } | null;
+      const failure = e.payload as { kind?: string; message?: string; runId?: string } | null;
       if (failure?.kind === "turn_failure" && typeof failure.message === "string" && failure.message) {
         spillHeldPosts();
         flushWork("", e.createdAt);
@@ -2024,7 +2035,7 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
           model: model?.id ?? "unknown",
           usage: zeroUsage(),
           stopReason: "error",
-          errorMessage: failure.message,
+          errorMessage: `${failure.message}${failure.runId ? ` (run ${failure.runId})` : ""}`,
           timestamp: e.createdAt,
         };
         out.push(msg as AgentMessage);

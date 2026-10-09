@@ -39,7 +39,9 @@ async function displayNameForPrincipal(app: App, deps: ServerDeps, principalId: 
 }
 
 async function inferSingleParticipantName(app: App, deps: ServerDeps, sessionId: string): Promise<string | null> {
-  const participantIds = new Set((await deps.sessions?.participantsOf(sessionId)) ?? []);
+  const participantIds = new Set(
+    (await deps.sessions?.participantWindowsOf(sessionId))?.map((window) => window.principalId) ?? [],
+  );
   if (participantIds.size !== 1) return null;
   return displayNameForPrincipal(app, deps, [...participantIds][0]!);
 }

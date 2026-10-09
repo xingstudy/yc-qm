@@ -1,4 +1,5 @@
-import { html, type TemplateResult } from "lit";
+import { type TemplateResult } from "lit";
+import { html } from "./i18n.ts";
 import { Plug } from "lucide";
 import { icon } from "./ui";
 

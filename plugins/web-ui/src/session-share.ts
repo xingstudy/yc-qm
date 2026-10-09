@@ -1,4 +1,5 @@
-import { html, render } from "lit";
+import { render } from "lit";
+import { html, t } from "./i18n.ts";
 import { X, Link, Copy, Check, Users, Globe, ChevronDown } from "lucide";
 import { icon, toggleFormMenu, closeFormMenus } from "./ui";
 import { api, withBase } from "./core-bridge";
@@ -95,7 +96,7 @@ export async function openSessionShare(id: string): Promise<void> {
                 options[event.key === "ArrowUp" ? options.length - 1 : 0]?.focus();
               }}
             >
-              <span>${audience === "external" ? "Anyone with the link" : "Anyone in your organization"}</span
+              <span>${t(audience === "external" ? "Anyone with the link" : "Anyone in your organization")}</span
               >${icon(ChevronDown, 14)}
             </button>
             <div
@@ -135,7 +136,7 @@ export async function openSessionShare(id: string): Promise<void> {
                     }}
                   >
                     ${icon(value === "external" ? Globe : Users, 16)}<span class="menu-option-label"
-                      >${value === "external" ? "Anyone with the link" : "Anyone in your organization"}</span
+                      >${t(value === "external" ? "Anyone with the link" : "Anyone in your organization")}</span
                     >${audience === value ? icon(Check, 15) : ""}
                   </button>`,
               )}
@@ -168,7 +169,7 @@ export async function openSessionShare(id: string): Promise<void> {
                       draw();
                     }}
                   >
-                    ${icon(copied ? Check : Copy, 14)}${copied ? "Copied" : "Copy link"}
+                    ${icon(copied ? Check : Copy, 14)}${t(copied ? "Copied" : "Copy link")}
                   </button>
                 </div>
               `
@@ -186,7 +187,7 @@ export async function openSessionShare(id: string): Promise<void> {
             ?disabled=${busy}
             @click=${() => void change()}
           >
-            ${!state.share ? icon(Link, 14) : ""}${busy ? "Loading…" : saveLabel}
+            ${!state.share ? icon(Link, 14) : ""}${t(busy ? "Loading…" : saveLabel)}
           </button>
         </div>
       `,

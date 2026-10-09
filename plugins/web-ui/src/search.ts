@@ -2,7 +2,7 @@ import { nothing, render, type TemplateResult } from "lit";
 import { CornerDownLeft, Search } from "lucide";
 import { api, userSendMessage, type CoreSession } from "./core-bridge";
 import { startNewChat } from "./sessions";
-import { html, t } from "./i18n";
+import { html, localeCode, t } from "./i18n";
 import { recencyGroup } from "./session-list";
 import { searchGroup } from "./search-group";
 import { slackWireToPlain, stripSlackDirectives } from "./slack-text";
@@ -329,7 +329,7 @@ function resultRows(): TemplateResult[] {
           <span class="chat-search-snippet" dir="auto">${highlight(hitSnippet(hit))}</span>
           <span class="chat-search-meta"
             ><bdi>${hit.entryType === "user" ? (hit.author ?? t("you")) : t("agent")}</bdi> ·
-            ${new Date(hit.createdAt).toLocaleDateString()}</span
+            ${new Date(hit.createdAt).toLocaleDateString(localeCode())}</span
           >
         </span>
       </button>
@@ -341,7 +341,7 @@ function resultRows(): TemplateResult[] {
 function resourceRows(): TemplateResult[] {
   let group = "";
   return resourceHits().flatMap((hit, i) => {
-    const heading = group !== hit.group ? [searchGroup(hit.group, false, "")] : [];
+    const heading = group !== hit.group ? [searchGroup(t(hit.group), false, "")] : [];
     group = hit.group;
     return [
       ...heading,
@@ -414,7 +414,7 @@ function paletteTpl(): TemplateResult {
   } else if (resourceHits().length || searchState.resourcesLoading) {
     body = html`${resultRows()}`;
   } else if (!searchState.hits.length) {
-    body = html`<div class="chat-search-empty">${t("No results match")} “${q}”.</div>`;
+    body = html`<div class="chat-search-empty">${t(`No results match “${q}”.`)}</div>`;
   } else {
     body = html`${resultRows()}`;
   }
@@ -448,7 +448,7 @@ function paletteTpl(): TemplateResult {
         <div class="chat-search-results">
           ${resourceRows()}
           ${searchState.resourcesLoading ? html`<div class="chat-search-empty">Loading resources…</div>` : nothing}
-          ${searchState.resourceFailures.length ? html`<div class="chat-search-empty chat-search-failed">Could not search: ${searchState.resourceFailures.join(", ")}. Try searching again.</div>` : nothing}
+          ${searchState.resourceFailures.length ? html`<div class="chat-search-empty chat-search-failed">Could not search: ${searchState.resourceFailures.map(t).join(", ")}. Try searching again.</div>` : nothing}
           ${searchState.resourcesLimited ? html`<div class="chat-search-empty">Refine your search to see more resource matches.</div>` : nothing}
           ${body}
         </div>

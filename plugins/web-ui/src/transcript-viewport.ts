@@ -1,3 +1,5 @@
+import { t } from "./i18n.ts";
+
 export function preserveTranscriptScroll(root: HTMLElement): () => void {
   const snapshots = [...root.querySelectorAll<HTMLElement>(".chat-scroll")]
     .filter((element) => element.clientHeight > 0)
@@ -78,7 +80,7 @@ export function createTranscriptViewport() {
     if (toggle) {
       toggle.hidden = !clipped && !expanded;
       const label = expanded ? "Show less" : "Show more";
-      if (toggle.textContent !== label) toggle.textContent = label;
+      if (toggle.textContent !== t(label)) toggle.textContent = t(label);
       toggle.setAttribute("aria-expanded", String(expanded));
     }
   }

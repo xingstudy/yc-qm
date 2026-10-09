@@ -20,6 +20,7 @@ import { skillPackRoutes } from "./skill-packs.ts";
 import { fileUploadRoutes } from "./file-uploads.ts";
 import { surfaceRoutes } from "./surface.ts";
 import { cronRoutes } from "./crons.ts";
+import { notificationRoutes } from "./notifications.ts";
 import { loopRoutes } from "./loops.ts";
 import { reachRoutes } from "./reach.ts";
 import { directoryRoutes } from "./directory.ts";
@@ -77,6 +78,7 @@ export const apiRoutes: ReadonlyArray<Route<ApiCtx>> = [
   ...projectRoutes,
   ...contextPolicyRoutes,
   ...cronRoutes,
+  ...notificationRoutes,
   ...loopRoutes,
   ...reachRoutes,
   ...webhookRoutes,

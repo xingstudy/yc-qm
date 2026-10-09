@@ -1,6 +1,7 @@
 import { openModelConnectManager, type StatusResponse } from "./model-connect";
 import { api } from "./core-bridge";
-import { html, nothing, render, type TemplateResult } from "lit";
+import { nothing, render, type TemplateResult } from "lit";
+import { html, t } from "./i18n.ts";
 import { ExternalLink, LogOut, Monitor, Moon, ShieldUser, Sun, type IconNode } from "lucide";
 import { icon } from "./ui";
 import { ADMIN_HOME_URL, appState, can, signOut } from "./shell";
@@ -105,7 +106,7 @@ async function onThemeFileChosen(e: Event): Promise<void> {
   try {
     installCustomTheme(importTheme(file.name, await file.text()));
   } catch (err) {
-    themeImportError = errMessage(err, "Couldn't read that theme file.");
+    themeImportError = t(errMessage(err, "Couldn't read that theme file."));
     drawSettings();
   }
 }
@@ -150,7 +151,9 @@ function themeRow(): TemplateResult {
   const custom = storedCustomTheme();
   const note = themeImportError
     ? html`<span class="settings-row-error">${themeImportError}</span>`
-    : "System follows your device's light or dark setting. Import an iTerm2 .itermcolors or a VS Code color theme .json to paint the app with its palette.";
+    : t(
+        "System follows your device's light or dark setting. Import an iTerm2 .itermcolors or a VS Code color theme .json to paint the app with its palette.",
+      );
   return html`
     <div class="settings-row">
       <div class="settings-row-copy">
@@ -159,7 +162,7 @@ function themeRow(): TemplateResult {
       </div>
       <div class="settings-theme-controls">
         <div class="settings-choice" role="radiogroup" aria-label="Theme">
-          ${THEME_OPTIONS.map((option) => themeOption(option.value, current, option.label, icon(option.glyph, 15)))}
+          ${THEME_OPTIONS.map((option) => themeOption(option.value, current, t(option.label), icon(option.glyph, 15)))}
           ${custom ? themeOption("custom", current, custom.name, themeSwatches(custom)) : nothing}
         </div>
         <div class="settings-theme-import">
@@ -178,7 +181,7 @@ function themeRow(): TemplateResult {
                 ?.querySelector<HTMLInputElement>(".theme-file-input")
                 ?.click()}
           >
-            ${custom ? "Replace theme file" : "Import theme file"}
+            ${t(custom ? "Replace theme file" : "Import theme file")}
           </button>
           ${
             custom
@@ -225,7 +228,7 @@ function sidebarSurfaceRow(): TemplateResult {
                 drawSettings();
               }}
             >
-              <span>${option.label}</span>
+              <span>${t(option.label)}</span>
             </button>
           `,
         )}
@@ -333,7 +336,7 @@ function aiAccountsRow(): TemplateResult {
                 ?disabled=${aiBusy || aiSaving || !aiStatus || (value === "company" && aiStatus.required)}
                 @click=${() => void chooseAiAccount(value)}
               >
-                ${label}
+                ${t(label)}
               </button>
             `,
           )}
@@ -365,7 +368,7 @@ function accountRow(): TemplateResult {
       <div class="settings-row-copy">
         <div class="settings-row-title">Account</div>
         <div class="settings-row-note">
-          ${me?.displayName?.trim() || me?.user || "Not signed in"}${me?.org ? ` · ${me.org}` : ""}
+          ${me?.displayName?.trim() || me?.user || t("Not signed in")}${me?.org ? ` · ${me.org}` : ""}
         </div>
       </div>
       <button class="btn settings-row-action" type="button" @click=${() => void signOut()}>

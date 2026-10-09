@@ -1091,7 +1091,7 @@ function sessionActions(sessionId: string, inTab: boolean, panelId: string): Tem
         ? html`<button
             type="button"
             class="icon-btn subtle ${cls}"
-            aria-label=${`Back to parent: ${sessionTitle(parent)}`}
+            aria-label=${t(`Back to parent: ${sessionTitle(parent)}`)}
             ${tip(`Back to ${sessionTitle(parent)}`)}
             @pointerdown=${(e: Event) => {
               if (inTab) e.stopPropagation();
@@ -1172,7 +1172,7 @@ class PaneTab implements ITabRenderer {
         html`
           <span class="pane-kind-glyph">${icon(entry.kind.glyph, 12)}</span>
           <span class="split-pane-title-text">${title}</span>
-          ${count > 0 ? html`<span class="pane-kind-count" title=${`${count} waiting on you`}>${count}</span>` : nothing}
+          ${count > 0 ? html`<span class="pane-kind-count" title=${t(`${count} waiting on you`)}>${count}</span>` : nothing}
           ${
             this.inStrip
               ? html`<span class="split-tab-actions"
@@ -1209,7 +1209,7 @@ class PaneTab implements ITabRenderer {
         ${awaiting ? html`<span class="awaiting-dot" aria-label="Waiting for your reply"></span>` : nothing}
         ${
           background
-            ? html`<span class="bg-chip" aria-label=${background.label} ${tip(background.label)}
+            ? html`<span class="bg-chip" aria-label=${t(background.label)} ${tip(background.label)}
                 >${background.jobs > 0 ? icon(Cog, 11) : nothing}${
                   background.watches > 0 ? icon(Binoculars, 11) : nothing
                 }${background.crons > 0 ? icon(Clock3, 11) : nothing}</span

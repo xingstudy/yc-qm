@@ -1,6 +1,7 @@
 import "./shell.css";
 import "@mariozechner/mini-lit/dist/ThemeToggle.js";
-import { html, render } from "lit";
+import { render } from "lit";
+import { html, localeCode, t } from "./i18n.ts";
 import { Lock, ArrowUpRight, Check, Copy, File, FileImage } from "lucide";
 import { createTranscriptViewport } from "./transcript-viewport";
 import { decorateTextCodeBlocks } from "./text-code";
@@ -25,7 +26,7 @@ render(
   html`
     <div class="shared-conversation">
       <header class="chat-topbar session-topbar">
-        <a class="shared-brand" href=${base} aria-label=${`Open ${brandName()}`}
+        <a class="shared-brand" href=${base} aria-label=${t(`Open ${brandName()}`)}
           >${brandMark()}<span>${brandName()}</span></a
         >
         <div class="session-heading">
@@ -89,7 +90,7 @@ render(
         </div>
       </main>
       <footer class="shared-conversation-footer">
-        ${icon(Lock, 12)}${transcript ? `Shared snapshot · ${new Date(transcript.createdAt).toLocaleDateString()} · ${transcript.audience === "external" ? "Anyone with the link" : "Organization only"}` : "Shared conversation"}
+        ${icon(Lock, 12)}${transcript ? `${t("Shared snapshot")} · ${new Date(transcript.createdAt).toLocaleDateString(localeCode())} · ${t(transcript.audience === "external" ? "Anyone with the link" : "Organization only")}` : t("Shared conversation")}
       </footer>
     </div>
   `,

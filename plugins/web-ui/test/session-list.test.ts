@@ -18,6 +18,7 @@ import {
   recentProjectSeeds,
   reconcileSessions,
   splitPinned,
+  splitPinnedProjects,
   watchActivityLabel,
   withPendingSession,
   withoutUnsentPending,
@@ -84,6 +85,31 @@ test("splitPinned lifts pinned rows out in order and leaves the rest untouched",
     splitPinned([a]).rest.map((s) => s.id),
     ["a"],
   );
+});
+
+test("project pins lift only real projects without changing pinned conversations", () => {
+  const pinnedSession = { ...saved("pinned", "web:u:pinned"), pinned: true };
+  const project = {
+    kind: "project" as const,
+    scopeId: "project:one",
+    name: "One",
+    groupKind: "project" as const,
+    sessions: [saved("child", "web:u:child")],
+  };
+  const personal = {
+    kind: "project" as const,
+    scopeId: "personal:u",
+    name: "Personal",
+    groupKind: "personal" as const,
+    sessions: [],
+  };
+  const { pinned, rest } = splitPinnedProjects(
+    [personal, project, { kind: "session", session: pinnedSession }],
+    new Set([project.scopeId, personal.scopeId]),
+  );
+  assert.deepEqual(pinned, [project]);
+  assert.deepEqual(rest, [personal, { kind: "session", session: pinnedSession }]);
+  assert.deepEqual(splitPinned([pinnedSession]).pinned, [pinnedSession]);
 });
 
 test("a second New chat keeps the first pending row (both show in Recents)", () => {
@@ -524,5 +550,6 @@ test("sidebar excludes attached subagents including pinned and orphaned children
   const pinned = { ...child, id: "pinned", pinned: true };
   const orphan = { ...child, id: "orphan", parentSessionId: "missing" };
   const detached = saved("detached", "agent:main:subagent:detached");
-  assert.deepEqual(sidebarSessions([parent, child, pinned, orphan, detached]), [parent, detached]);
+  const run = saved("run", "cron:task:fire:one");
+  assert.deepEqual(sidebarSessions([parent, child, pinned, orphan, detached, run]), [parent, detached]);
 });

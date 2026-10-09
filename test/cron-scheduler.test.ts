@@ -12,6 +12,7 @@ import { scopeId, type TurnRequest, type TurnResult } from "../src/types.ts";
 import { isPollSurface, isSilentPollReply } from "../src/triggers/run-trigger.ts";
 import { createDirectoryStore, type DirectoryStore } from "../src/directory/directory-store.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { createNotificationStore } from "../src/notifications/notification-store.ts";
 import type { Cron } from "../src/types.ts";
 
 function fakeLease(isLeader: () => boolean): LeaderLease {
@@ -30,6 +31,7 @@ function harness(
   const crons = createCronStore();
   const deliveries = createDeliveryStore();
   const identity = createIdentityService();
+  const notifications = createNotificationStore(createMemoryMap());
   const calls: TurnRequest[] = [];
   const run = async (req: TurnRequest): Promise<TurnResult> => {
     calls.push(req);
@@ -44,12 +46,57 @@ function harness(
     deliveries,
     idempotency: createIdempotencyStore(),
     identity,
+    notifications,
     run,
     ...(directory ? { directory } : {}),
     ...(maxFiresPerTick !== undefined ? { maxFiresPerTick } : {}),
   });
-  return { crons, deliveries, calls, scheduler, identity };
+  return { crons, deliveries, calls, scheduler, identity, notifications };
 }
+
+test("cron runs persist results and notify success or failure separately from delivery", async () => {
+  const success = harness("Done");
+  const cron = await success.crons.create({
+    schedule: { everyMs: 1000 },
+    action: "report",
+    owner: "U1",
+    createdBy: "U1",
+    ownerScopeId: scopeId("personal", "U1"),
+    destination: { type: "web", target: "web:U1:setup" },
+  });
+  await runNowSettled(success.scheduler, cron.id);
+  assert.equal((await success.crons.listFires(cron.id)).runs[0]?.reply, "Done");
+  assert.equal((await success.notifications.list("U1"))[0]?.kind, "cron_success");
+  assert.equal((await success.deliveries.pending("web")).length, 1);
+
+  const failure = harness(async () => ({ status: "failed", reason: "model unavailable" }));
+  const failedCron = await failure.crons.create({
+    schedule: { everyMs: 1000 },
+    action: "report",
+    owner: "U2",
+    createdBy: "U2",
+    ownerScopeId: scopeId("personal", "U2"),
+  });
+  await runNowSettled(failure.scheduler, failedCron.id);
+  assert.equal((await failure.notifications.list("U2"))[0]?.kind, "cron_failure");
+});
+
+test("notification write failure does not change a completed cron run", async () => {
+  const { crons, scheduler, notifications } = harness("Done");
+  const cron = await crons.create({
+    schedule: { everyMs: 1000 },
+    action: "report",
+    owner: "U1",
+    createdBy: "U1",
+    ownerScopeId: scopeId("personal", "U1"),
+  });
+  notifications.add = async () => {
+    throw new Error("notification store unavailable");
+  };
+  await runNowSettled(scheduler, cron.id);
+  assert.equal((await crons.listFires(cron.id)).runs[0]?.status, "ok");
+  assert.equal((await crons.listFires(cron.id)).runs[0]?.reply, "Done");
+});
 
 const member = (id: string) => ({ id, type: "internal" as const });
 

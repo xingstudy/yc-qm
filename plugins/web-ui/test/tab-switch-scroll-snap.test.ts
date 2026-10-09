@@ -26,10 +26,10 @@ test("showing a pane that is already its tile's active tab does not re-open it",
 });
 
 test("responsive pane summaries do not replace the transcript scroller", () => {
-  assert.match(chat, /glanceTier\s*\?\s*paneGlance\([^)]+\)\s*:\s*nothing[\s\S]*?<section class="chat-scroll"/);
+  assert.match(chat, /glanceTier\s*\?\s*paneGlance\([^)]+\)\s*:\s*nothing[\s\S]*?<section\s+class="chat-scroll"/);
   assert.doesNotMatch(
     chat,
-    /glanceTier\s*\?\s*paneGlance\([^)]+\)\s*:\s*html`<section class="chat-scroll"/,
+    /glanceTier\s*\?\s*paneGlance\([^)]+\)\s*:\s*html`<section\s+class="chat-scroll"/,
     "presentation changes must not destroy the element that owns scrollTop",
   );
 });

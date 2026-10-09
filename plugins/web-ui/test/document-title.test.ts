@@ -22,6 +22,9 @@ test("runtime page titles use the configured brand name", () => {
     assert.equal(documentTitle(), "Zed · Web");
     dom.window.document.querySelector("meta")!.content = "Acme";
     assert.equal(documentTitle("chats", null, true), "New chat · Acme · Web");
+    dom.window.document.documentElement.lang = "zh-CN";
+    assert.equal(documentTitle("chats", null, true), "新建对话 · Acme · 网页");
+    assert.equal(documentTitle("settings"), "设置 · Acme · 网页");
   } finally {
     dom.window.close();
     if (previous) Object.defineProperty(globalThis, "document", previous);

@@ -49,3 +49,9 @@ test("every tile is a real link, so middle-click and open-in-new-tab still work"
   assert.match(browse, /<a\s+class="browse-tile[\s\S]{0,400}href=\$\{d\.href\}/);
   assert.match(browse, /if \(!isPlainLeftClick\(e\)\) return;/);
 });
+
+test("the mobile browse drawer has a visible close action", () => {
+  assert.match(browse, /class="chat-search-cancel"[^>]*@click=\$\{closeBrowse\}/);
+  const css = readFileSync(new URL("../src/shell.css", import.meta.url), "utf8");
+  assert.match(css, /@media \(max-width: 860px\)[\s\S]*\.chat-search-cancel \{[^}]*display: inline-flex;/);
+});

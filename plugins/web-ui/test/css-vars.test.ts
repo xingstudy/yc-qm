@@ -90,7 +90,9 @@ test("chat shadows stay limited to elevated surfaces and subtle activity hover g
         "text",
         "0 0 12px color-mix(in srgb, var(--foreground) 12%, transparent)",
       ],
+      [".chat-new-messages", "box", "0 6px 20px color-mix(in srgb, var(--foreground) 12%, transparent)"],
       [".composer-wrap", "box", "0 2px 5px rgb(0 0 0 / 0.05), 0 8px 24px rgb(0 0 0 / 0.06)"],
+      [".cron-run-row.notification-target", "box", "inset 3px 0 var(--brand-accent)"],
     ],
     "pinned surfaces and the composer retain their shadows; activity glow appears only on hover",
   );

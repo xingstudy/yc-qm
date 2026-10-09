@@ -14,6 +14,8 @@ const activities = ["app", "brief", "deck"].map((id) => ({
   id,
   title: `Build my ${id}`,
   prompt: "Help me with this project. ".repeat(40).trim(),
+  titleZh: `规划我的${id}项目`,
+  promptZh: "帮我推进这个项目。",
   icon: "🛠️",
 }));
 
@@ -110,6 +112,29 @@ test("concurrent enrollment shares one cron and one first run", async () => {
   await f.settle();
   assert.equal((await f.crons.list()).length, 1);
   assert.equal(f.calls.length, 1);
+});
+
+test("both languages share one generated run and locale switches keep the latest activities", async () => {
+  const f = fixture();
+  await f.service.get("alice", []);
+  await f.settle();
+  const switched = await f.service.get("alice", [], "UTC", "zh-CN");
+  assert.deepEqual(switched, { activities, pending: false });
+  assert.equal(f.calls.length, 1);
+  assert.match((await f.crons.list())[0]!.action!, /Simplified Chinese/);
+});
+
+test("an older single-language result stays visible during bilingual refresh", async () => {
+  const f = fixture();
+  const previous = activities.map(({ titleZh: _titleZh, promptZh: _promptZh, ...activity }) => activity);
+  f.output(JSON.stringify(previous));
+  await f.service.get("alice", []);
+  await f.settle();
+  f.advance(5 * 60_000);
+  f.output(JSON.stringify(activities));
+  assert.deepEqual(await f.service.get("alice", [], "UTC", "zh-CN"), { activities: previous, pending: true });
+  await f.settle();
+  assert.deepEqual(await f.service.get("alice", [], "UTC", "zh-CN"), { activities, pending: false });
 });
 
 test("deleting the managed cron recreates it on the next request", async () => {

@@ -90,6 +90,29 @@ test("memory organization store: user search is filtered, bounded, assignable, a
   );
 });
 
+test("memory directory search matches account profile fields within visibility", async () => {
+  const s = createMemoryOrganizationStore();
+  await s.putUser(
+    user({
+      principalId: "person-842",
+      email: "member@example.com",
+      displayName: "Nora Chen",
+      jobTitle: "Research Lead",
+      mobile: "13800138000",
+      employeeNumber: "EMP-842",
+    }),
+  );
+  for (const query of ["person-842", "member@example.com", "Nora", "Research", "13800138000", "EMP-842"]) {
+    const page = await s.searchDirectoryUsers("default-org", { query, unitIds: null, after: null, limit: 20 });
+    assert.deepEqual(
+      page.users.map((candidate) => candidate.principalId),
+      ["person-842"],
+    );
+    const hidden = await s.searchDirectoryUsers("default-org", { query, unitIds: [], after: null, limit: 20 });
+    assert.deepEqual(hidden.users, []);
+  }
+});
+
 test("memory organization store: identities are keyed by issuer+subject", async () => {
   const s = createMemoryOrganizationStore();
   assert.equal(await s.getIdentity("default-org", "https://idp", "sub-1"), null);

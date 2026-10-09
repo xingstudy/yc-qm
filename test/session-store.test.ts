@@ -9,6 +9,19 @@ import { scopeId } from "../src/types.ts";
 import { assertParticipantSessionParity } from "./support/participant-session-parity.ts";
 import { byScopeId, rollupsFromSummaries } from "./support/scope-rollup-oracle.ts";
 
+test("participantsOf includes only current members across departure and rejoin", async () => {
+  const store = createMemorySessionStore();
+  const session = await store.getOrCreateByThread("web:owner:members", "group", scopeId("group", "web-project-p1"));
+  await store.addParticipant(session.id, "owner");
+  await store.addParticipant(session.id, "member");
+  assert.deepEqual(await store.participantsOf(session.id), ["owner", "member"]);
+  await store.removeParticipant(session.id, "member");
+  assert.deepEqual(await store.participantsOf(session.id), ["owner"]);
+  assert.equal((await store.participantWindowsOf(session.id)).length, 2);
+  await store.addParticipant(session.id, "member");
+  assert.deepEqual(await store.participantsOf(session.id), ["owner", "member"]);
+});
+
 test("sessionOrigin classifies trigger threads by prefix", () => {
   assert.equal(sessionOrigin("agent:main:cron:abc"), "cron");
   assert.equal(sessionOrigin("agent:main:webhook:abc"), "webhook");

@@ -178,6 +178,32 @@ test("a bare entry still mints a new chat once the list lands", async () => {
   }
 });
 
+test("a bare entry resumes the last conversation instead of creating another", async () => {
+  const newer = { ...SESSION, id: "sess-newer", threadRef: "web:tester:newer", lastActivityAt: 2 };
+  const h = await harness({ path: "/", listSessions: [newer, SESSION], lastChatId: SESSION.id });
+  try {
+    const booted = h.boot();
+    h.releaseSessions();
+    await booted;
+    assert.equal(h.visibleConversation().state.sessionId, SESSION.id);
+    assert.equal(location.pathname, `/s/${SESSION.id}`);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a bare entry opens the newest web conversation when no last conversation was saved", async () => {
+  const h = await harness({ path: "/", listSessions: [SESSION] });
+  try {
+    const booted = h.boot();
+    h.releaseSessions();
+    await booted;
+    assert.equal(h.visibleConversation().state.sessionId, SESSION.id);
+  } finally {
+    await h.close();
+  }
+});
+
 test("a view deep link still waits for the list and never fetches a transcript", async () => {
   const h = await harness({ path: "/crons" });
   try {
@@ -187,6 +213,233 @@ test("a view deep link still waits for the list and never fetches a transcript",
     assert.equal(h.appState.currentView, "crons");
     assert.equal(h.sessionsState.loaded, true);
     assert.equal(h.requests.filter((p) => p.startsWith(`/api/sessions/${SESSION.id}`)).length, 0);
+    for (let i = 0; i < 20 && !document.querySelector(".crons-page .list-page-action"); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    const create = document.querySelector<HTMLButtonElement>(".crons-page .list-page-action");
+    assert.ok(create);
+    assert.equal(create.textContent?.trim(), "New cron");
+    create.click();
+    assert.match(h.mainText(), /Ask the agent to set it up/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("new cron setup continues in the selected existing conversation", async () => {
+  const h = await harness({
+    path: "/crons",
+    listSessions: [{ ...SESSION, type: "dm", createdAt: Date.now() }],
+  });
+  try {
+    const booted = h.boot();
+    h.releaseSessions();
+    await booted;
+    const create = document.querySelector<HTMLButtonElement>(".crons-page .list-page-action");
+    assert.ok(create);
+    create.click();
+    const form = document.querySelector<HTMLFormElement>(".cron-form");
+    const target = form?.querySelector<HTMLSelectElement>('select[name="sessionId"]');
+    const description = form?.querySelector<HTMLTextAreaElement>('textarea[name="text"]');
+    assert.ok(form && target && description);
+    assert.ok([...target.options].some((option) => option.value === SESSION.id));
+    target.value = SESSION.id;
+    description.value = "Every morning, summarize my inbox";
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    for (let i = 0; i < 20 && h.visibleConversation().state.sessionId !== SESSION.id; i++)
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(h.visibleConversation().state.sessionId, SESSION.id);
+  } finally {
+    await h.close();
+  }
+});
+
+test("notifications deep link renders localized unread items without clearing them", async () => {
+  const h = await harness({
+    path: "/notifications",
+    locale: "zh-CN",
+    notifications: [
+      {
+        id: "mention:1",
+        kind: "mention",
+        createdAt: Date.now(),
+        readAt: null,
+        source: "Shared project",
+        summary: "Hello @tester",
+        sessionId: SESSION.id,
+        entrySeq: 3,
+      },
+    ],
+  });
+  try {
+    const booted = h.boot();
+    h.releaseSessions();
+    await booted;
+    for (let i = 0; i < 20 && !h.mainText().includes("Shared project"); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.equal(h.appState.currentView, "notifications");
+    assert.match(h.mainText(), /提及我/);
+    assert.match(h.mainText(), /Shared project/);
+    assert.doesNotMatch(h.mainText(), /选择一个对话/);
+    assert.equal(document.querySelectorAll(".notification-row.unread").length, 1);
+    assert.equal(document.querySelectorAll(".notification-filter-chip").length, 5);
+    const card = document.querySelector<HTMLAnchorElement>(".notification-row .notification-content");
+    assert.ok(card?.href.includes(SESSION.id));
+    assert.ok(card?.textContent?.includes("Shared project"));
+    const completed = [...document.querySelectorAll<HTMLButtonElement>(".notification-filter-chip")].find((button) =>
+      button.textContent?.includes("任务完成"),
+    );
+    completed?.click();
+    assert.match(h.mainText(), /暂无此类通知/);
+    assert.equal(document.querySelectorAll(".notification-row").length, 0);
+    assert.equal(h.requests.filter((path) => path.includes("/read")).length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a scheduled result notification offers its conversation and run detail", async () => {
+  const fireKey = "cron:cron-test:run-1";
+  const h = await harness({
+    path: "/notifications",
+    locale: "zh-CN",
+    notifications: [
+      {
+        id: "cron-result:1",
+        kind: "cron_success",
+        createdAt: Date.now(),
+        readAt: null,
+        source: "Morning report",
+        summary: "Done",
+        sessionId: SESSION.id,
+        entrySeq: 7,
+        cronId: "cron-test",
+        fireKey,
+      },
+      {
+        id: "cron-failure:1",
+        kind: "cron_failure",
+        createdAt: Date.now() - 1,
+        readAt: null,
+        source: "Morning report",
+        cronId: "cron-test",
+        fireKey: "cron:cron-test:run-2",
+      },
+    ],
+  });
+  try {
+    const booted = h.boot();
+    h.releaseSessions();
+    await booted;
+    const result = document.querySelector<HTMLElement>(".notification-row.cron_success");
+    const chat = result?.querySelector<HTMLAnchorElement>(".notification-content");
+    const detail = result?.querySelector<HTMLAnchorElement>(".notification-detail-link");
+    assert.ok(chat?.href.includes(`${SESSION.id}?entry=7`));
+    assert.ok(detail?.href.includes(`/crons/cron-test?run=${encodeURIComponent(fireKey)}`));
+    assert.match(result?.textContent ?? "", /查看对话/);
+    assert.match(result?.textContent ?? "", /任务详情/);
+    const failure = document.querySelector<HTMLElement>(".notification-row.cron_failure");
+    assert.ok(
+      failure?.querySelector<HTMLAnchorElement>(".notification-content")?.href.includes("/crons/cron-test?run="),
+    );
+    assert.equal(failure?.querySelector(".notification-detail-link"), null);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a notification run link opens the styled cron detail and keeps its run target", async () => {
+  const fireKey = "cron:cron-test:123";
+  const h = await harness({
+    path: `/crons/cron-test?run=${encodeURIComponent(fireKey)}`,
+    locale: "zh-CN",
+    crons: [
+      {
+        id: "cron-test",
+        ownerScopeId: "personal:tester",
+        owner: "tester",
+        title: "Morning report",
+        action: "Summarize the day",
+        destination: { type: "web", target: SESSION.threadRef },
+        schedule: { everyMs: 86400000, firstFireAt: 123 },
+        enabled: true,
+        createdAt: 123,
+      },
+    ],
+    listSessions: [SESSION],
+    cronRuns: [
+      {
+        fireKey,
+        threadRef: "test:run",
+        firedAt: 123,
+        status: "completed",
+        reply: "Done",
+        sessionId: "run-worklog",
+        resultSessionId: SESSION.id,
+        resultEntrySeq: 7,
+      },
+    ],
+  });
+  try {
+    const booted = h.boot();
+    h.releaseSessions();
+    await booted;
+    for (let i = 0; i < 20 && !document.querySelector(".cron-run-row.notification-target"); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.equal(h.appState.currentView, "crons");
+    assert.ok(document.querySelector(".cron-detail-page .cron-detail-card"));
+    assert.match(h.mainText(), /计划与投递/);
+    const original = document.querySelector<HTMLAnchorElement>(".cron-detail-fields a[href*='/s/']");
+    assert.ok(original?.href.includes(SESSION.id));
+    assert.match(original?.textContent ?? "", /打开原对话/);
+    assert.equal(document.querySelector(".cron-run-row.notification-target")?.getAttribute("data-fire-key"), fireKey);
+    const resultLink = document.querySelector<HTMLAnchorElement>(".cron-run-row.notification-target .cron-run-link");
+    assert.ok(resultLink?.href.includes(`${SESSION.id}?entry=7`));
+    assert.match(resultLink?.textContent ?? "", /在原对话查看结果/);
+    const worklog = document.querySelector<HTMLAnchorElement>(".cron-run-row.notification-target .cron-run-worklog");
+    assert.ok(worklog?.href.includes("run-worklog"));
+    assert.equal(location.search, `?run=${encodeURIComponent(fireKey)}`);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a task without a conversation explains where results remain and does not create a chat for editing", async () => {
+  const h = await harness({
+    path: "/crons/cron-alone",
+    locale: "zh-CN",
+    crons: [
+      {
+        id: "cron-alone",
+        ownerScopeId: "personal:tester",
+        owner: "tester",
+        title: "Independent task",
+        action: "Summarize the day",
+        schedule: { everyMs: 86400000 },
+        enabled: true,
+        createdAt: 123,
+      },
+    ],
+  });
+  try {
+    const booted = h.boot();
+    h.releaseSessions();
+    await booted;
+    for (let i = 0; i < 20 && !document.querySelector(".cron-detail-fields"); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.match(h.mainText(), /未关联对话，结果可在运行记录中查看/);
+    document.querySelector<HTMLButtonElement>(".cron-detail-actions button")?.click();
+    assert.ok(document.querySelector(".cron-edit-dialog"));
+    assert.equal(
+      [...document.querySelectorAll(".cron-edit-dialog button")].some((button) =>
+        button.textContent?.includes("与智能体一起编辑行为"),
+      ),
+      false,
+    );
+    assert.equal(h.visibleConversation().state.sessionId, null);
   } finally {
     await h.close();
   }

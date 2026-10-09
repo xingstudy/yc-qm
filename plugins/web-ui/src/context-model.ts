@@ -223,7 +223,7 @@ export function contextModelSection(scopeId: string): TemplateResult | typeof no
                 compact: true,
                 onChange: (value) => void choose(scopeId, selected, value),
                 options: effortOptions.map(
-                  (o) => html`<option value=${o.value} ?selected=${o.value === effort}>${o.label}</option>`,
+                  (o) => html`<option value=${o.value} ?selected=${o.value === effort}>${t(o.label)}</option>`,
                 ),
               })}
             </label>`

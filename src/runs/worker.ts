@@ -88,13 +88,13 @@ export async function processRun(deps: ProcessDeps, run: Run, opts?: { backgroun
     return result;
   } catch (err) {
     stopBeat();
-    console.error(`[worker] run ${run.id} turn failed: ${errMessage(err)}`);
+    console.error(`[worker] run ${run.id} attempt ${run.attempts} thread ${run.sessionId} failed: ${errMessage(err)}`);
     if (!errorAlreadyRecorded(err))
       deps.errors?.record(
         {
           category: "turn",
           code: "error",
-          message: `run ${run.id}: ${errMessage(err)}`,
+          message: `run ${run.id} attempt ${run.attempts} thread ${run.sessionId}: ${errMessage(err)}`,
           scopeLabel: conversationScope(run.request.conversation, run.request.actor.id),
         },
         err,

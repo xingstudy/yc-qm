@@ -1,4 +1,5 @@
-import { html, nothing, render } from "lit";
+import { nothing, render } from "lit";
+import { html, t } from "./i18n.ts";
 import { Search, ArrowUpRight, Check } from "lucide";
 import { connectorLogo } from "./connector-logo";
 import { icon } from "./ui";
@@ -50,7 +51,7 @@ export function mountConnectionPicker(
           />
         </label>
         <div class="connection-picker-caption" role="status" aria-live="polite">
-          ${words.length ? `${matches.length} ${matches.length === 1 ? "app" : "apps"} found` : "Popular apps"}
+          ${t(words.length ? `${matches.length} ${matches.length === 1 ? "app" : "apps"} found` : "Popular apps")}
         </div>
         <div class="connection-picker-grid">
           ${shown.map(
@@ -59,7 +60,7 @@ export function mountConnectionPicker(
                 type="button"
                 class="connection-picker-app"
                 ?disabled=${service.connected}
-                aria-label=${service.connected ? `${service.name} connected` : `Connect ${service.name}`}
+                aria-label=${t(service.connected ? `${service.name} connected` : `Connect ${service.name}`)}
                 @click=${() => onSelect(service)}
               >
                 ${connectorLogo(service.id, service.logoUrl)}
@@ -68,7 +69,7 @@ export function mountConnectionPicker(
               </button>`,
           )}
         </div>
-        ${matches.length === 0 ? html`<p class="connection-picker-empty">No apps match “${query}”. Try another name.</p>` : nothing}
+        ${matches.length === 0 ? html`<p class="connection-picker-empty">${t(`No apps match “${query}”. Try another name.`)}</p>` : nothing}
         ${
           !words.length && matches.length > 6
             ? html`<button
@@ -80,7 +81,7 @@ export function mountConnectionPicker(
                   draw();
                 }}
               >
-                ${expanded ? "Show fewer apps" : `Browse all ${services.length} apps`}
+                ${t(expanded ? "Show fewer apps" : `Browse all ${services.length} apps`)}
               </button>`
             : nothing
         }

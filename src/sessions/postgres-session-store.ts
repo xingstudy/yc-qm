@@ -1615,7 +1615,9 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
     },
 
     async participantsOf(sessionId): Promise<string[]> {
-      const rows = await q("SELECT principal_id FROM participants WHERE session_id = $1", [sessionId]);
+      const rows = await q("SELECT principal_id FROM participants WHERE session_id = $1 AND valid_to IS NULL", [
+        sessionId,
+      ]);
       return rows.map((r) => r.principal_id as string);
     },
   };

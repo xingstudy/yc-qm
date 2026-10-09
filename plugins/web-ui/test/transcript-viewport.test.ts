@@ -419,10 +419,10 @@ test("a prompt stays in flow when pins leave too little room, and can stick agai
 
 test("prompt expansion control belongs inside the bubble in both renderers", () => {
   for (const [source, start] of [
-    [chat, '<article class="message-row user-row'],
-    [readFileSync(new URL("../src/shared-session.ts", import.meta.url), "utf8"), "<article class=${"],
-  ]) {
-    const rowStart = source!.indexOf(start!);
+    [chat, /<article\s+class="message-row user-row/],
+    [readFileSync(new URL("../src/shared-session.ts", import.meta.url), "utf8"), /<article class=\$\{/],
+  ] as Array<[string, RegExp]>) {
+    const rowStart = source!.search(start!);
     assert.ok(rowStart >= 0);
     const row = source!.slice(rowStart, source!.indexOf("</article>", rowStart) + "</article>".length);
     const dom = new JSDOM(row);

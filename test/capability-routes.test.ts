@@ -350,7 +350,7 @@ describe("capability-token control plane (crons + webhooks + SOUL)", () => {
     assert.equal(((await patchRes.json()) as any).error, "bad_request");
   });
 
-  it("creates a destination-less cron when the token carries no destination (nullable)", async () => {
+  it("requires a supported destination when the token carries none", async () => {
     const noDest = await mintCapabilityToken(
       { actorId: "U9", scopeId: "personal:U9", exp: Date.now() + CAPABILITY_TTL_MS },
       SECRET,
@@ -360,10 +360,11 @@ describe("capability-token control plane (crons + webhooks + SOUL)", () => {
       { schedule: { everyMs: 60_000 }, action: "nightly workspace cleanup" },
       { "x-agent-capability": noDest },
     );
-    assert.equal(res.status, 200);
-    const { cron } = (await res.json()) as any;
-    assert.equal(cron.owner, "U9");
-    assert.equal(cron.destination, undefined);
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), {
+      error: "bad_request",
+      message: "choose a supported delivery destination before creating a scheduled task",
+    });
   });
 
   it("lists only the caller's own crons under a capability", async () => {

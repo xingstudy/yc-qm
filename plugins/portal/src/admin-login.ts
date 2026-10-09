@@ -41,7 +41,9 @@ export const ADMIN_LOGIN_SCRIPT = `(function () {
     document.getElementById("admin-token").value = token;
     document.getElementById("admin-confirm").disabled = false;
   } catch (e) {
-    document.getElementById("admin-email").textContent = "This link is missing or invalid. Generate a new link with qm admin-login.";
+    document.getElementById("admin-email").textContent = document.documentElement.lang.startsWith("zh")
+      ? "此链接缺失或无效。请通过 qm admin-login 重新生成。"
+      : "This link is missing or invalid. Generate a new link with qm admin-login.";
   }
 })();`;
 

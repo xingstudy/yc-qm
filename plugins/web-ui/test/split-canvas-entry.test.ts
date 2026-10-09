@@ -128,7 +128,7 @@ test("boot mounts a restored canvas before it awaits the session list", () => {
 
   assert.match(
     boot.slice(listAwait),
-    /\} else if \(!mountRestoredCanvas\(\) && !mainConversation\(\)\.state\.threadRef\) \{/,
+    /else if \(!mountRestoredCanvas\(\) && !mainConversation\(\)\.state\.threadRef\) mainConversation\(\)\.newChat\(\);/,
   );
   const mount = fn(split, "mountRestoredCanvas");
   assert.match(mount, /if \(isPhone\(\) \|\| \(restoreOnly && !splitState\.active\)\) return false;/);
@@ -139,7 +139,10 @@ test("boot's fallback never replaces a chat the user mounted during the wait", (
   const boot = shell.match(/export async function boot\(\): Promise<void> \{[\s\S]*?\n\}/)?.[0] ?? "";
   const listAwait = boot.lastIndexOf("await sessions;");
   const tail = boot.slice(listAwait);
-  assert.match(tail, /\} else if \(!mountRestoredCanvas\(\) && !mainConversation\(\)\.state\.threadRef\) \{/);
+  assert.match(
+    tail,
+    /else if \(!mountRestoredCanvas\(\) && !mainConversation\(\)\.state\.threadRef\) mainConversation\(\)\.newChat\(\);/,
+  );
   const guard = tail.indexOf("!mainConversation().state.threadRef");
   const mint = tail.indexOf("newChat();", guard);
   assert.ok(guard > 0 && mint > guard, "the guard must gate the mint, not follow it");

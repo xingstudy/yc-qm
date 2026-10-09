@@ -33,6 +33,7 @@ import { appState, replacePanePreservingFocus, switchView, syncUrlFromState } fr
 import { startNewChat } from "./sessions";
 import { groupDmTitle, openSession, refreshSessions, sessionsState, slackLogo, surfaceOf } from "./sessions";
 import { activityOf } from "./session-list";
+import { scopeUnread, unreadBadgeValue } from "./notifications";
 import type { WebhookView } from "./webhooks";
 import type { CronView } from "./crons";
 import { cronRunSummary, cronRunSummaryTitle, cronScheduleSummary } from "./cron-format";
@@ -409,10 +410,14 @@ function contextRow(c: CoreContext): TemplateResult {
   const meta = [c.project ? sub : "", t(count), c.lastActivityAt ? `${t("active")} ${relTime(c.lastActivityAt)}` : ""]
     .filter(Boolean)
     .join(" · ");
+  const unread = scopeUnread(
+    sessionsState.list.filter((session) => session.scopeId === c.scopeId).map((session) => session.id),
+  );
   return html`
     <button class="context-row" type="button" ${tip(sub)} @click=${() => selectContext(c.scopeId)}>
       <span class="context-glyph">${icon(glyph, 15)}</span>
       <span class="context-row-title" dir="auto">${title}</span>
+      ${unread.messages ? html`<span class="nav-badge" aria-label=${t(unread.mentions ? "Mentioned me" : "New message")}>${unreadBadgeValue(unread)}</span>` : nothing}
       ${c.isPrivate ? html`<span class="context-lock" ${tip("Private channel")}>${icon(Lock, 12)}</span>` : nothing}
       <span class="context-row-meta">${meta}</span>
     </button>
@@ -774,7 +779,7 @@ function memberPicker(context: CoreContext): TemplateResult {
           type="search"
           autocomplete="off"
           maxlength="80"
-          placeholder="Search by name or handle"
+          placeholder="Search account, email, name, or profile details"
           .value=${contextsState.memberQuery}
           ?disabled=${contextsState.memberBusy}
           @input=${(event: InputEvent) => {
@@ -855,7 +860,7 @@ const resourceBusy = new Set<string>();
 async function manageCron(id: string, action: "enable" | "disable" | "delete"): Promise<void> {
   const key = `cron:${id}`;
   if (resourceBusy.has(key)) return;
-  if (action === "delete" && !confirm("Delete this cron? This can't be undone.")) return;
+  if (action === "delete" && !confirm(t("Delete this cron? This can't be undone."))) return;
   resourceBusy.add(key);
   drawContexts();
   try {
@@ -874,7 +879,7 @@ async function manageCron(id: string, action: "enable" | "disable" | "delete"): 
 async function deleteScopeSkill(id: string): Promise<void> {
   const key = `skill:${id}`;
   if (resourceBusy.has(key)) return;
-  if (!confirm("Delete this skill? This can't be undone.")) return;
+  if (!confirm(t("Delete this skill? This can't be undone."))) return;
   resourceBusy.add(key);
   drawContexts();
   try {

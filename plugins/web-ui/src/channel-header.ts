@@ -1,7 +1,7 @@
-import { html, nothing, type TemplateResult } from "lit";
+import { nothing, type TemplateResult } from "lit";
 import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
-import { t } from "./i18n";
+import { html, t } from "./i18n";
 import { fieldSelect } from "./ui";
 
 interface HeaderPinWire {

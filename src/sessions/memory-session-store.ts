@@ -899,7 +899,9 @@ export function createMemorySessionStore(opts: StoreOptions = {}): SessionStore 
     },
 
     async participantsOf(sessionId) {
-      return [...(windows.get(sessionId)?.keys() ?? [])];
+      return [...(windows.get(sessionId) ?? [])]
+        .filter(([, window]) => window.validTo === null)
+        .map(([principalId]) => principalId);
     },
   };
 }

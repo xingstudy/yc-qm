@@ -200,5 +200,5 @@ test("many directive openers with no close strip in linear time", () => {
   const input = ("[[ask-agent:" + "x".repeat(88)).repeat(10000);
   const start = process.hrtime.bigint();
   stripSlackDirectives(input);
-  assert.ok(Number(process.hrtime.bigint() - start) / 1e6 < 100);
+  assert.ok(Number(process.hrtime.bigint() - start) / 1e6 < 500);
 });

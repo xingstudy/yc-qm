@@ -154,8 +154,10 @@ test("Stop pressed before the run id arrives still stops core's run", () => {
 });
 
 test("confirmed aborted output is preserved during transcript refresh", () => {
-  assert.match(chat, /if \(last\?\.stopReason === "error"\) return drawActiveChat\(agent\);/);
-  assert.match(chat, /if \(last\?\.stopReason === "aborted"\) return drawActiveChat\(agent\);/);
+  assert.match(
+    chat,
+    /if \(\(last\?\.stopReason === "error" \|\| last\?\.stopReason === "aborted"\) && !chatState\.scopeId\?\.startsWith\("group:"\)\)\s*return drawActiveChat\(agent\);/,
+  );
 });
 
 test("an empty attachment is reported and left out rather than silently dropped", async () => {

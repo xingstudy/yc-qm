@@ -124,7 +124,7 @@ test("Project trigger access follows current membership while Slack-group owner 
       await fetch(`${base}/v1/crons`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-agent-capability": projectToken },
-        body: JSON.stringify({ schedule: { everyMs: 60_000 }, action: "project token task" }),
+        body: JSON.stringify({ schedule: { everyMs: 60_000 }, action: "project token task", recipient: "member" }),
       })
     ).status,
     200,
@@ -145,7 +145,11 @@ test("Project trigger access follows current membership while Slack-group owner 
       await fetch(`${base}/v1/crons`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-agent-capability": projectToken },
-        body: JSON.stringify({ schedule: { everyMs: 60_000 }, action: "revoked project token task" }),
+        body: JSON.stringify({
+          schedule: { everyMs: 60_000 },
+          action: "revoked project token task",
+          recipient: "member",
+        }),
       })
     ).status,
     403,

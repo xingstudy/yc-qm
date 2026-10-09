@@ -35,6 +35,42 @@ test("Skill Access dynamic labels are translated in Chinese", () => {
   assert.match(html, /selected subjects\?/);
 });
 
+test("admin settings and onboarding copy have Chinese translations", () => {
+  const dictionary = adminDictionary();
+  assert.equal(dictionary["Model ID"], "模型 ID");
+  assert.equal(dictionary["Verify and enable"], "验证并启用");
+  assert.equal(dictionary["Slack ack emoji"], "Slack 确认表情");
+  assert.equal(dictionary["Create your preconfigured Slack app ↗"], "创建预配置的 Slack 应用 ↗");
+  assert.equal(dictionary["Add custom provider"], "添加自定义提供方");
+  assert.equal(dictionary["Conversations by person or channel"], "按人员或频道查看对话");
+  assert.equal(dictionary["Sort sessions"], "排序会话");
+  assert.match(html, /sortLabel\.textContent = adminTr\("Sort:"\)/);
+  assert.match(html, /root\.appendChild\(dataCard\(adminTr\("Conversations by person or channel"\)/);
+});
+
+test("runtime dialogs and labels use Chinese without changing authored values", () => {
+  const dictionary = adminDictionary();
+  for (const key of [
+    "Add credential",
+    "Edit credential",
+    "Close credential dialog",
+    "Choose a compatible template",
+    "Invite external user",
+    "No built-in connectors are available.",
+  ])
+    assert.notEqual(dictionary[key], undefined, key);
+  assert.match(
+    html,
+    /\$\("sc-dialog-title"\)\.textContent = adminTr\(scEditing \? "Edit credential" : "Add credential"\)/,
+  );
+  assert.match(
+    html,
+    /\$\("sc-dialog-actions"\)\.append\([^\n]+\);\n {6}if \(adminLocale === "zh-CN"\) translateAdminNode\(document\.body\);/,
+  );
+  assert.match(html, /roleSelect\.append\(new Option\(adminTr\("Member"\)/);
+  assert.match(html, /inviteBtn\.textContent = adminTr\(inviteEmail\.configured/);
+});
+
 test("design system localizes its dynamic library and feedback in Chinese", () => {
   const dictionary = designSystemDictionary();
   assert.equal(dictionary["Design system"], "设计系统");

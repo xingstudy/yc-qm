@@ -23,13 +23,26 @@ export function activityOf(s: CoreSession): number {
 export type ChatBrowseStatus = "active" | "waiting" | "archived";
 
 export function sidebarSessions(sessions: readonly CoreSession[]): CoreSession[] {
-  return sessions.filter((session) => !session.parentSessionId);
+  return sessions.filter((session) => !session.parentSessionId && !session.threadRef.startsWith("cron:"));
 }
 
 export function splitPinned<T extends Pick<CoreSession, "pinned">>(sessions: readonly T[]): { pinned: T[]; rest: T[] } {
   const pinned: T[] = [];
   const rest: T[] = [];
   for (const s of sessions) (s.pinned ? pinned : rest).push(s);
+  return { pinned, rest };
+}
+
+export function splitPinnedProjects(
+  items: readonly RecentItem[],
+  pinnedScopes: ReadonlySet<string>,
+): { pinned: RecentItem[]; rest: RecentItem[] } {
+  const pinned: RecentItem[] = [];
+  const rest: RecentItem[] = [];
+  for (const item of items)
+    (item.kind === "project" && item.groupKind === "project" && pinnedScopes.has(item.scopeId) ? pinned : rest).push(
+      item,
+    );
   return { pinned, rest };
 }
 

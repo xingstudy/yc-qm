@@ -30,7 +30,7 @@ export function waveLoader(
     viewBox=${o.viewBox ?? SWELL_VIEWBOX}
     fill="none"
     role="img"
-    aria-label=${o.label ?? "Loading"}
+    aria-label=${t(o.label ?? "Loading")}
     xmlns="http://www.w3.org/2000/svg"
   >
     <g class="wl-row">
@@ -216,6 +216,8 @@ export function fieldSelect(props: {
   onChange: (value: string, event: Event) => void;
   value?: string;
   id?: string;
+  name?: string;
+  required?: boolean;
   ariaLabel?: string;
   describedBy?: string;
   focusKey?: string;
@@ -228,6 +230,8 @@ export function fieldSelect(props: {
   >
     <select
       id=${props.id ?? nothing}
+      name=${props.name ?? nothing}
+      ?required=${props.required ?? false}
       aria-label=${props.ariaLabel ? t(props.ariaLabel) : nothing}
       aria-describedby=${props.describedBy ?? nothing}
       data-focus-key=${props.focusKey ?? nothing}
@@ -272,7 +276,7 @@ export function menuSelect(props: {
         }}
       >
         <span class="menu-option-label menu-select-option"
-          >${o.glyph ? icon(o.glyph, 14) : nothing}<span>${o.label}</span></span
+          >${o.glyph ? icon(o.glyph, 14) : nothing}<span>${t(o.label)}</span></span
         >
         ${active ? icon(Check, 15) : nothing}
       </button>
@@ -288,10 +292,10 @@ export function menuSelect(props: {
         type="button"
         aria-haspopup="menu"
         aria-expanded="false"
-        aria-label=${props.ariaLabel}
+        aria-label=${t(props.ariaLabel)}
         @click=${toggleFormMenu}
       >
-        <span class="menu-label">${props.prefix ?? ""}${selected?.label ?? ""}</span>${icon(ChevronDown, 14)}
+        <span class="menu-label">${t(props.prefix ?? "")}${t(selected?.label ?? "")}</span>${icon(ChevronDown, 14)}
       </button>
       <div class="menu-popover" role="menu" hidden>${props.options.map(option)}</div>
     </div>

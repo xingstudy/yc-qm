@@ -17,6 +17,7 @@ export const PRODUCT_TITLE = "QM · Web";
 const VIEW_TITLES: Record<View, string> = {
   chats: "Chats",
   inbox: "Inbox",
+  notifications: "Notifications",
   calendar: "Calendar",
   contexts: "Projects",
   crons: "Crons",
@@ -30,10 +31,30 @@ const VIEW_TITLES: Record<View, string> = {
   settings: "Settings",
 };
 
+const VIEW_TITLES_ZH: Record<View, string> = {
+  chats: "对话",
+  inbox: "收件箱",
+  notifications: "通知",
+  calendar: "日历",
+  contexts: "项目",
+  crons: "定时任务",
+  loops: "持续任务",
+  webhooks: "Webhook",
+  files: "文件",
+  keychain: "密钥链",
+  deploys: "应用",
+  memory: "记忆",
+  skills: "技能",
+  settings: "设置",
+};
+
 export function documentTitle(view?: View, conversationTitle?: string | null, conversationOpen = false): string {
+  const zh = typeof document !== "undefined" && document.documentElement.lang.startsWith("zh");
   const title =
-    view === "chats" && conversationOpen ? conversationTitle?.trim() || "New chat" : view && VIEW_TITLES[view];
-  const productTitle = `${brandName()} · Web`;
+    view === "chats" && conversationOpen
+      ? conversationTitle?.trim() || (zh ? "新建对话" : "New chat")
+      : view && (zh ? VIEW_TITLES_ZH[view] : VIEW_TITLES[view]);
+  const productTitle = `${brandName()} · ${zh ? "网页" : "Web"}`;
   return title ? `${title} · ${productTitle}` : productTitle;
 }
 

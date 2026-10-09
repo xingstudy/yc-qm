@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { PORTAL_I18N_SCRIPT_HASH } from "../src/portal-i18n.ts";
 
 const core = createServer((req, res) => {
   if (req.url?.startsWith("/v1/surface-config")) {
@@ -45,6 +46,7 @@ test("the first portal page waits for and renders the configured accent", async 
   });
   assert.equal(response.status, 200);
   assert.match(await response.text(), /--brand:#123456/);
+  assert.ok((response.headers.get("content-security-policy") ?? "").includes(PORTAL_I18N_SCRIPT_HASH));
 });
 
 test("the portal favicon follows the configured brand icon", async () => {

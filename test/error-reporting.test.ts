@@ -168,7 +168,7 @@ test("operator error records retain local details and send one classified event 
     await flushErrorReporting();
   `);
   assert.equal(code, 0);
-  assert.equal(output.trim(), "private-job-failure");
+  assert.match(output, /private-job-failure\nError: private-job-failure/);
   assert.equal(events.length, 1);
   assert.equal(events[0]!.tags.error_code, "turn:failed");
   assert.doesNotMatch(JSON.stringify(events), /private-/);

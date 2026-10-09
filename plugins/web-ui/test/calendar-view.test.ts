@@ -9,7 +9,7 @@ const shell = readFileSync(new URL("../src/shell.ts", import.meta.url), "utf8");
 const shellState = readFileSync(new URL("../src/shell-state.ts", import.meta.url), "utf8");
 
 test("calendar is a first-class empty view directly below Inbox", () => {
-  assert.match(shellState, /"chats",\s*"inbox",\s*"calendar",\s*"contexts"/);
+  assert.match(shellState, /"chats",\s*"inbox",\s*"notifications",\s*"calendar",\s*"contexts"/);
   assert.match(shell, /inboxNavRow\(\).*navRow\("calendar", ICON\.calendar, "Calendar"\)/s);
   assert.match(shell, /case "calendar":\s*renderCalendar\(\);/);
   assert.match(calendar, /host\.className = "pane content-wide-page"/);

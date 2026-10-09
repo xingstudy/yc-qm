@@ -12,6 +12,7 @@ import type { TurnRequest } from "../src/types.ts";
 import type { OrchestratorInput } from "../src/core/orchestrator.ts";
 import { testConfig } from "./support/test-config.ts";
 import type { SessionStateEvent } from "../src/runs/session-state-bus.ts";
+import { projectGroupRef } from "../src/projects/project-store.ts";
 
 function freshApp() {
   const dataDir = mkdtempSync(join(tmpdir(), "ap-state-"));
@@ -48,6 +49,58 @@ test("a plain turn emits working then idle", async () => {
   const got = record(built.sessionStateBus);
   await built.app.turn(dm("hello", "web:U1:plain"));
   assert.deepEqual(statesFor(got, "web:U1:plain"), ["working", "idle"]);
+});
+
+test("web project messages notify current members after they are recorded", async () => {
+  const built = freshApp();
+  await built.app.upsertDirectory([
+    { principalId: "owner", displayName: "Owner", type: "internal" },
+    { principalId: "member", displayName: "Member", type: "internal" },
+    { principalId: "third", displayName: "Third", type: "internal" },
+  ]);
+  const project = await built.app.createProject("owner", "Shared chat");
+  assert.ok(project);
+  assert.equal((await built.app.addProjectMember(project.id, "owner", "member")).status, "ok");
+  assert.equal((await built.app.addProjectMember(project.id, "owner", "third")).status, "ok");
+  const threadRef = "web:owner:shared-chat";
+  const conversation = { kind: "group" as const, channelRef: projectGroupRef(project.id), threadRef, audience: [] };
+  const got = record(built.sessionStateBus);
+  const notices = () => got.filter((event) => event.threadRef === threadRef && event.state === "transcript");
+  const visibleEntryCount = async (sessionId: string) =>
+    (await built.sessions.getEntries(sessionId)).filter(
+      (entry) =>
+        entry.type === "user" ||
+        entry.type === "assistant" ||
+        (entry.type === "tool_call" && (entry.payload as { action?: unknown } | null)?.action === "post"),
+    ).length;
+  const first = await built.app.turn({
+    surface: "web",
+    actor: { externalId: "owner" },
+    conversation,
+    text: "First message",
+  });
+  assert.equal(first.status, "ok");
+  const firstCount = await visibleEntryCount(first.sessionId!);
+  assert.ok(await waitFor(() => notices().length >= firstCount));
+  const firstNotice = notices()[0]!;
+  assert.equal(firstNotice.sessionId, first.sessionId);
+  assert.deepEqual(new Set(firstNotice.participants), new Set(["owner", "member", "third"]));
+  assert.ok((await built.app.getSessionForViewer(first.sessionId!, "member"))?.entries.length);
+  assert.ok((await built.app.getSessionForViewer(first.sessionId!, "third"))?.entries.length);
+
+  assert.equal((await built.app.removeProjectMember(project.id, "owner", "member")).status, "ok");
+  const second = await built.app.turn({
+    surface: "web",
+    actor: { externalId: "owner" },
+    conversation,
+    text: "Second message",
+  });
+  assert.equal(second.status, "ok");
+  const secondCount = await visibleEntryCount(second.sessionId!);
+  assert.ok(await waitFor(() => notices().length >= secondCount));
+  for (const event of notices().slice(firstCount)) {
+    assert.deepEqual(new Set(event.participants), new Set(["owner", "third"]));
+  }
 });
 
 test("a turn parking a blocking command emits working then awaiting_approval", async () => {

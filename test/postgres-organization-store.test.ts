@@ -130,6 +130,16 @@ test("pg organization store: user search is filtered, bounded, assignable, and o
   await store.putUser(user({ principalId: "U-alina", email: "alina@example.com", displayName: "Alina" }));
   await store.putUser(
     user({
+      principalId: "U-profile",
+      email: "profile@example.com",
+      displayName: "Nora Chen",
+      jobTitle: "Research Lead",
+      mobile: "13800138000",
+      employeeNumber: "EMP-842",
+    }),
+  );
+  await store.putUser(
+    user({
       principalId: "U-deleted",
       email: "alice.deleted@example.com",
       status: "deprovisioned",
@@ -145,8 +155,17 @@ test("pg organization store: user search is filtered, bounded, assignable, and o
   );
   assert.deepEqual(
     (await store.searchUsers("org1", "example.com", 20)).map((candidate) => candidate.principalId),
-    ["U-alice", "U-alina"],
+    ["U-alice", "U-alina", "U-profile"],
   );
+  for (const query of ["U-profile", "profile@example.com", "Nora", "Research", "13800138000", "EMP-842"]) {
+    const page = await store.searchDirectoryUsers("org1", { query, unitIds: null, after: null, limit: 20 });
+    assert.deepEqual(
+      page.users.map((candidate) => candidate.principalId),
+      ["U-profile"],
+    );
+    const hidden = await store.searchDirectoryUsers("org1", { query, unitIds: [], after: null, limit: 20 });
+    assert.deepEqual(hidden.users, []);
+  }
   assert.deepEqual(
     (
       await store.searchDirectoryUsers("org1", {

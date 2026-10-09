@@ -1557,7 +1557,7 @@ test("raw core failures never leak through Slack", async () => {
     await f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "hello", ts: "106.1" });
     assert.equal(f.core.turns.length, 1);
     assert.equal(f.client.posts.length, 1);
-    assert.match(f.client.posts[0].text, /Something went wrong on my end/);
+    assert.match(f.client.posts[0].text, /An unexpected internal error interrupted the turn/);
     assert.doesNotMatch(f.client.posts[0].text, /super-secret|postgres|run\/abc/);
   } finally {
     await f.stop();

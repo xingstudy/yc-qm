@@ -603,14 +603,26 @@ test("web's queue is durable and readable: core names the live run, then what wa
   await built.runs.claimById(first.runId!, "w1", 30_000);
   const second = await built.app.turn(web("then the timeline", threadRef));
   const third = await built.app.turn(web("and who was paged", threadRef));
+  const secondRun = (await built.runs.get(second.runId!))!;
+  const thirdRun = (await built.runs.get(third.runId!))!;
 
   const active = await built.app.activeRunForThread(threadRef);
   assert.equal(active?.runId, first.runId, "the live run is the head, not the newest message");
   assert.deepEqual(
     active?.queued,
     [
-      { runId: second.runId!, text: "then the timeline" },
-      { runId: third.runId!, text: "and who was paged" },
+      {
+        runId: second.runId!,
+        text: "then the timeline",
+        authorId: (secondRun.request.actor as { id: string }).id,
+        createdAt: secondRun.createdAt,
+      },
+      {
+        runId: third.runId!,
+        text: "and who was paged",
+        authorId: (thirdRun.request.actor as { id: string }).id,
+        createdAt: thirdRun.createdAt,
+      },
     ],
     "the queue comes back in send order, with the text — enough for any surface to render it",
   );
@@ -618,7 +630,14 @@ test("web's queue is durable and readable: core names the live run, then what wa
   assert.deepEqual(await built.app.withdrawRun(second.runId!), { withdrawn: true });
   assert.deepEqual(
     (await built.app.activeRunForThread(threadRef))?.queued,
-    [{ runId: third.runId!, text: "and who was paged" }],
+    [
+      {
+        runId: third.runId!,
+        text: "and who was paged",
+        authorId: (thirdRun.request.actor as { id: string }).id,
+        createdAt: thirdRun.createdAt,
+      },
+    ],
     "the withdrawn turn is off the queue and will never run",
   );
   assert.deepEqual(
@@ -643,11 +662,19 @@ test("an automation wake queued behind a live turn stays out of the composer que
     async: true,
   });
   const typed = await built.app.turn(web("and who was paged", threadRef));
+  const typedRun = (await built.runs.get(typed.runId!))!;
 
   assert.notEqual(wake.runId, first.runId, "the wake is its own run, waiting behind the live turn");
   assert.deepEqual(
     (await built.app.activeRunForThread(threadRef))?.queued,
-    [{ runId: typed.runId!, text: "and who was paged" }],
+    [
+      {
+        runId: typed.runId!,
+        text: "and who was paged",
+        authorId: (typedRun.request.actor as { id: string }).id,
+        createdAt: typedRun.createdAt,
+      },
+    ],
     "only what a person typed is offered back to them as a steerable, withdrawable queued message",
   );
 });
@@ -828,8 +855,9 @@ test("queued web edits require the author and preserve queue identity", async ()
     reason: "empty_text",
   });
   assert.deepEqual(await built.app.editQueuedRun(second.runId!, "edited", "second", owner), { edited: true });
+  const queued = (await built.runs.get(second.runId!))!;
   assert.deepEqual((await built.app.activeRunForThread(threadRef, owner))?.queued, [
-    { runId: second.runId, text: "edited" },
+    { runId: second.runId, text: "edited", authorId: owner, createdAt: queued.createdAt },
   ]);
   assert.deepEqual(await built.app.editQueuedRun(second.runId!, "stale", "second", owner), {
     edited: false,

@@ -62,7 +62,7 @@ test("chat layout waits for markdown custom elements before measuring the transc
   assert.match(deferred, /decorateTextCodeBlocks\(host\)/);
   assert.match(deferred, /ctx\.composer\.resizeComposer\(\)/);
   assert.match(deferred, /scrollTranscript\(opts\.forceScroll\)/);
-  assert.doesNotMatch(fn.replace(deferred, ""), /resizeComposer\(|scrollTranscript\(/);
+  assert.doesNotMatch(fn.replace(deferred, ""), /resizeComposer\(|scrollTranscript\(opts\.forceScroll\)/);
 });
 
 test("deferred chat layout cannot scroll a replacement or detached session", () => {

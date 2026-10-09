@@ -461,7 +461,7 @@ function drawConnectors(): void {
             ${meta.hosts ? html`<div class="kc-resource-meta">${t(meta.hosts)}</div>` : ""}
           </div>
           <div class="kc-resource-actions">
-            ${available ? html`<button class="btn" type="button" @click=${() => void startConnector(id)}>${connected || needsReconnect ? "Reconnect" : "Connect account"}</button>` : ""}
+            ${available ? html`<button class="btn" type="button" @click=${() => void startConnector(id)}>${t(connected || needsReconnect ? "Reconnect" : "Connect account")}</button>` : ""}
             ${connected || needsReconnect ? html`<button class="kc-text-action danger" type="button" data-confirm-key=${`disconnect:${id}`} ?disabled=${keychainOperations.mutationInFlight} @click=${() => void revokeConnector(id)}>Disconnect</button>` : ""}
           </div>
         </div>
@@ -536,7 +536,7 @@ function drawConnectors(): void {
     html`<section class="kc-section" aria-labelledby=${id}>
       <div class="kc-section-head">
         <div class="kc-section-title">
-          <h2 id=${id}>${heading}</h2>
+          <h2 id=${id}>${t(heading)}</h2>
           <span>${sectionLoading ? "…" : count}</span>
         </div>
       </div>
@@ -546,7 +546,7 @@ function drawConnectors(): void {
   const rows: TemplateResult[] = [];
   const notice = [connectorNotice, loadNotice].filter(Boolean).join(" ");
   if (notice || loading)
-    rows.push(html`<div class="status" role="status">${loading ? "Loading your keychain…" : notice}</div>`);
+    rows.push(html`<div class="status" role="status">${t(loading ? "Loading your keychain…" : notice)}</div>`);
   if (addingCredential) rows.push(addCredentialCard());
   rows.push(
     section("kc-accounts-title", "Linked accounts", entries.length, accountsContent, accountsLoading),

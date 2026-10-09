@@ -81,7 +81,12 @@ export function runResultDelivery(
     const clause = userFacingFailureClause(run.result ?? { status: "failed" });
     const adminUrl = run.result?.sessionId ? adminUrlFor?.(run.result.sessionId) : undefined;
     const detail = adminUrl ? ` — full error: ${adminUrl}` : "";
-    return { destination, text: `⚠️ I couldn't finish that turn: ${clause}${detail}`, provenance, idempotencyKey };
+    return {
+      destination,
+      text: `⚠️ I couldn't finish that turn: ${clause} (run ${run.id})${detail}`,
+      provenance,
+      idempotencyKey,
+    };
   }
   if (run.result?.status === "ok" && (run.result.reply || run.result.attachments?.length)) {
     return {

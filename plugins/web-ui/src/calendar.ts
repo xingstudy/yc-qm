@@ -1,4 +1,5 @@
-import { html, render } from "lit";
+import { render } from "lit";
+import { html } from "./i18n.ts";
 import { appState, replacePanePreservingFocus } from "./shell";
 
 export function renderCalendar(): void {

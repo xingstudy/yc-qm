@@ -1,9 +1,28 @@
 import { randomUUID } from "node:crypto";
-import type { Delivery, DeliveryProvenance, Destination, OutgoingAttachment, ScopeId } from "../types.ts";
+import type {
+  CronFireLogEntry,
+  Delivery,
+  DeliveryProvenance,
+  Destination,
+  OutgoingAttachment,
+  ScopeId,
+} from "../types.ts";
 import type { TurnOrigin } from "../core/turn-origin.ts";
 import { cronIdOf } from "../sessions/session-store.ts";
 
 export const DELIVERY_MAX_AGE_MS = 6 * 3_600_000;
+
+export async function deliveryStatusForRun(
+  store: Pick<DeliveryStore, "listBySourceSession"> | undefined,
+  run: CronFireLogEntry,
+): Promise<"pending" | "delivered" | "failed" | null> {
+  if (!store) return null;
+  const rows = await store.listBySourceSession(run.sessionId ?? "", run.threadRef, { limit: 100 });
+  const related = rows.filter((delivery) => !delivery.shadow && delivery.provenance?.fireKey === run.fireKey);
+  if (related.some((delivery) => delivery.expiredAt !== undefined)) return "failed";
+  if (related.some((delivery) => delivery.deliveredAt === null)) return "pending";
+  return related.length ? "delivered" : null;
+}
 
 export function logDeliveryExpiry(d: Delivery, now: number, reason = "overaged"): void {
   console.error(

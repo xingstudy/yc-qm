@@ -34,11 +34,13 @@ import {
   api,
   attachPendingApprovals,
   fetchSessionApprovals,
+  fetchUiState,
   fetchTranscript,
   currentEarlierCount,
   detachSession,
   inheritedTranscript,
   isContinuable,
+  putUiState,
   entriesToMessages,
   regenerateTitle,
   sharedContextLabel,
@@ -51,6 +53,7 @@ import {
   type CoreSession,
 } from "./core-bridge";
 import { deepLinkPath, isPlainLeftClick, sessionLink, UI_BASE } from "./deep-link";
+import { markSessionNotificationsRead, sessionUnread, unreadBadgeValue } from "./notifications";
 import {
   activityOf,
   chatBrowseStatusMatches,
@@ -62,6 +65,7 @@ import {
   reconcileSessions,
   rowIndicators,
   splitPinned,
+  splitPinnedProjects,
   withPendingSession,
   withoutUnsentPending,
   type RecentItem,
@@ -118,7 +122,34 @@ export const sessionsState = {
   openingKey: null as string | null,
   webOnly: true,
   collapsedProjectScopes: new Set<string>(),
+  pinnedProjectScopes: new Set<string>(),
 };
+
+function lastChatKey(): string {
+  return `web-ui:last-chat:${appState.me?.org ?? ""}:${appState.me?.user ?? ""}`;
+}
+
+export function rememberChatSession(id: string): void {
+  if (!appState.me?.user) return;
+  try {
+    localStorage.setItem(lastChatKey(), id);
+  } catch {
+    return;
+  }
+}
+
+export function preferredChatSession(): CoreSession | null {
+  const chats = sessionsState.list.filter((session) => session.id && !session.archived && surfaceOf(session) === "web");
+  let remembered: string | null = null;
+  try {
+    if (appState.me?.user) remembered = localStorage.getItem(lastChatKey());
+  } catch {
+    remembered = null;
+  }
+  return (
+    chats.find((session) => session.id === remembered) ?? chats.sort((a, b) => activityOf(b) - activityOf(a))[0] ?? null
+  );
+}
 
 let selection: SessionSelection = emptySelection();
 type SessionPatch = { title?: string | null; archived?: boolean; pinned?: boolean; color?: string | null };
@@ -126,6 +157,57 @@ const sessionPatchTails = new Map<string, Promise<void>>();
 const sessionPatchVersions = new Map<string, number>();
 let sessionPatchGeneration = 0;
 let sessionPatchEpoch = 0;
+const PINNED_PROJECTS_KEY = "pinned-projects";
+let pinnedProjectsUser: string | null = null;
+let pinnedProjectsRequest: Promise<void> | null = null;
+let pinnedProjectsVersion = 0;
+let pinnedProjectsUpdatedAt = 0;
+
+function loadPinnedProjects(): void {
+  const user = appState.me?.user;
+  if (!user || pinnedProjectsUser === user || pinnedProjectsRequest) return;
+  const generation = sessionPatchGeneration;
+  const version = pinnedProjectsVersion;
+  const request = fetchUiState(PINNED_PROJECTS_KEY)
+    .then((record) => {
+      if (sessionPatchGeneration !== generation || pinnedProjectsVersion !== version || appState.me?.user !== user)
+        return;
+      sessionsState.pinnedProjectScopes = new Set(
+        Array.isArray(record.value) ? record.value.filter((scope): scope is string => typeof scope === "string") : [],
+      );
+      pinnedProjectsUpdatedAt = record.updatedAt;
+      pinnedProjectsUser = user;
+      renderList();
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      if (pinnedProjectsRequest === request) pinnedProjectsRequest = null;
+    });
+  pinnedProjectsRequest = request;
+}
+
+async function setProjectPinned(scopeId: string, pinned: boolean): Promise<void> {
+  sessionsState.openMenuId = null;
+  const next = new Set(sessionsState.pinnedProjectScopes);
+  if (pinned) next.add(scopeId);
+  else next.delete(scopeId);
+  sessionsState.pinnedProjectScopes = next;
+  const version = ++pinnedProjectsVersion;
+  const generation = sessionPatchGeneration;
+  const updatedAt = (pinnedProjectsUpdatedAt = Math.max(Date.now(), pinnedProjectsUpdatedAt + 1));
+  renderList();
+  try {
+    const result = (await putUiState(PINNED_PROJECTS_KEY, [...next], updatedAt)) as { ok: boolean };
+    if (!result.ok) throw new Error("Project pin was not saved");
+    if (sessionPatchGeneration === generation) pinnedProjectsUser = appState.me?.user ?? null;
+  } catch {
+    if (sessionPatchGeneration !== generation || pinnedProjectsVersion !== version) return;
+    pinnedProjectsUser = null;
+    await pinnedProjectsRequest;
+    loadPinnedProjects();
+    canvasToast(t("Could not save project pin."));
+  }
+}
 
 export function clearSessionSelection(): boolean {
   if (!selection.ids.size && !selection.anchor) return false;
@@ -193,6 +275,11 @@ export function resetSessionsState(): void {
   sessionsState.renamingId = null;
   sessionsState.openingKey = null;
   sessionsState.collapsedProjectScopes.clear();
+  sessionsState.pinnedProjectScopes.clear();
+  pinnedProjectsUser = null;
+  pinnedProjectsRequest = null;
+  pinnedProjectsVersion = 0;
+  pinnedProjectsUpdatedAt = 0;
   renameDraft = "";
   refreshingTitleIds.clear();
   showArchived = false;
@@ -330,6 +417,10 @@ export function renderList(): void {
   const archived = visible.filter((s) => s.archived);
   const { pinned, rest } = splitPinned(active);
   const activeItems = recentItemsFor(rest);
+  const { pinned: pinnedProjects, rest: otherItems } = splitPinnedProjects(
+    activeItems,
+    sessionsState.pinnedProjectScopes,
+  );
   const archivedItems: RecentItem[] = archived.map((session) => ({
     kind: "session",
     session,
@@ -339,22 +430,27 @@ export function renderList(): void {
     html`
       ${detachDropZone()}
       ${
-        pinned.length
+        pinned.length || pinnedProjects.length
           ? html`
               <div class="recents-group pinned-head">
                 <span class="pinned-head-glyph">${icon(Pin, 11)}</span><span>Pinned</span>
               </div>
-              <div class="pinned-children">
-                ${repeat(
-                  pinned,
-                  (session) => session.threadRef,
-                  (session) => sessionRow(session),
-                )}
-              </div>
+              ${
+                pinned.length
+                  ? html`<div class="pinned-children">
+                      ${repeat(
+                        pinned,
+                        (session) => session.threadRef,
+                        (session) => sessionRow(session),
+                      )}
+                    </div>`
+                  : nothing
+              }
+              ${repeat(pinnedProjects, (item) => `project:${item.kind === "project" ? item.scopeId : ""}`, recentItem)}
             `
           : nothing
       }
-      ${groupedRows(activeItems)}
+      ${groupedRows(otherItems)}
       ${
         archived.length
           ? html`
@@ -368,9 +464,9 @@ export function renderList(): void {
           : nothing
       }
       ${sessionsNotice ? html`<div class="empty" style="padding:16px">${sessionsNotice}</div>` : ""}
-      ${sessionsLoading && visible.length === 0 ? html`<div class="empty" style="padding:16px">${t("Loading conversations...")}</div>` : ""}
+      ${sessionsLoading && activeItems.length === 0 && pinned.length === 0 && archived.length === 0 ? html`<div class="empty" style="padding:16px">${t("Loading conversations...")}</div>` : ""}
       ${
-        !sessionsLoading && !sessionsNotice && visible.length === 0
+        !sessionsLoading && !sessionsNotice && activeItems.length === 0 && pinned.length === 0 && archived.length === 0
           ? html`<div class="empty" style="padding:16px">
               ${t(sessionsState.list.length ? "Slack conversations hidden." : "No conversations yet.")}
             </div>`
@@ -393,7 +489,7 @@ const PROJECT_OPTIONS_TOOLTIP = "Project options";
 const CHAT_OPTIONS_TOOLTIP = "Chat options";
 
 function newChatHint(name: string): string {
-  return `Start a new chat in ${name}`;
+  return t(`Start a new chat in ${name}`);
 }
 
 function recentItem(item: RecentItem): TemplateResult {
@@ -431,6 +527,7 @@ function recentItem(item: RecentItem): TemplateResult {
                   <span class="chev">${icon(collapsed ? ChevronRight : ChevronDown, 13)}</span>
                 </span>
                 <span class="recent-project-name" dir="auto">${name.replace(/^#/, "")}</span>
+                ${item.groupKind === "project" && sessionsState.pinnedProjectScopes.has(item.scopeId) ? html`<span class="recent-project-pin" aria-label=${t("Pinned project")}>${icon(Pin, 11)}</span>` : nothing}
               </button>
               <div class="session-menu recent-project-menu ${menuOpen ? "menu-open" : ""}">
                 <span class="recent-project-count">${item.sessions.length}</span>
@@ -438,7 +535,6 @@ function recentItem(item: RecentItem): TemplateResult {
                   class="session-menu-btn"
                   data-menu-id=${menuKey}
                   type="button"
-                  ${tip(t("Project options"))}
                   aria-label=${t(`Options for ${name}`)}
                   aria-haspopup="menu"
                   aria-expanded=${menuOpen ? "true" : "false"}
@@ -505,8 +601,21 @@ function startProjectChat(event: Event, scopeId: string, name: string | null): v
 
 function projectMenuPopover(item: Extract<RecentItem, { kind: "project" }>): TemplateResult {
   const owned = projectOf(item.scopeId)?.ownerId === appState.me?.user;
+  const pinned = sessionsState.pinnedProjectScopes.has(item.scopeId);
   return html`
     <div class="session-menu-popover" role="menu" ${ref(placeSessionMenu)} @click=${(e: Event) => e.stopPropagation()}>
+      ${
+        item.groupKind === "project"
+          ? html`<button
+              class="session-menu-option"
+              type="button"
+              role="menuitem"
+              @click=${() => void setProjectPinned(item.scopeId, !pinned)}
+            >
+              ${icon(pinned ? PinOff : Pin, 15)}<span>${t(pinned ? "Unpin project" : "Pin project")}</span>
+            </button>`
+          : nothing
+      }
       <button
         class="session-menu-option"
         type="button"
@@ -753,7 +862,7 @@ function chatPageRow(s: CoreSession): TemplateResult {
                 class="icon-btn"
                 type="button"
                 ${tip(s.pinned ? "Unpin" : "Pin")}
-                aria-label=${`${s.pinned ? "Unpin" : "Pin"} ${sessionTitle(s)}`}
+                aria-label=${`${t(s.pinned ? "Unpin" : "Pin")} ${sessionTitle(s)}`}
                 @click=${() => {
                   setPinned(s, !s.pinned);
                   drawChatsPage();
@@ -765,7 +874,7 @@ function chatPageRow(s: CoreSession): TemplateResult {
                 class="icon-btn"
                 type="button"
                 ${tip("Share conversation")}
-                aria-label=${`Share ${sessionTitle(s)}`}
+                aria-label=${t(`Share ${sessionTitle(s)}`)}
                 @click=${() => void openSessionShare(s.id)}
               >
                 ${icon(Link, 13.5)}
@@ -880,6 +989,7 @@ function sessionRow(s: CoreSession, projectChild = false): TemplateResult {
   const context = projectChild ? null : rowContext(s);
   const working = sessionWorking(s);
   const color = displaySessionColor(s.color);
+  const unread = saved ? sessionUnread(s.id) : { messages: 0, mentions: 0 };
   let titleContent: string | TemplateResult = groupDmTitle(s);
   if (refreshingTitle) {
     titleContent = html`<span class="sheen-label title-sheen thinking-sheen" data-sheen=${title}>${title}</span>`;
@@ -956,6 +1066,7 @@ function sessionRow(s: CoreSession, projectChild = false): TemplateResult {
             dir="auto"
             >${titleContent}</span
           >${context ? html`<span class="row-context" ${tip(context)}>${context}</span>` : nothing}
+          ${unread.messages ? html`<span class="nav-badge session-unread" aria-label=${t(unread.mentions ? "Mentioned me" : "New message")}>${unreadBadgeValue(unread)}</span>` : nothing}
         </div>
       </a>
       ${
@@ -965,7 +1076,7 @@ function sessionRow(s: CoreSession, projectChild = false): TemplateResult {
                 class="session-menu-btn session-share-btn"
                 type="button"
                 ${tip("Share conversation")}
-                aria-label=${`Share ${sessionTitle(s)}`}
+                aria-label=${t(`Share ${sessionTitle(s)}`)}
                 @click=${(e: Event) => {
                   e.stopPropagation();
                   void openSessionShare(s.id);
@@ -990,7 +1101,7 @@ function sessionRow(s: CoreSession, projectChild = false): TemplateResult {
                 data-menu-id=${s.id}
                 type="button"
                 ${tip(CHAT_OPTIONS_TOOLTIP)}
-                aria-label=${`Options for ${sessionTitle(s)}`}
+                aria-label=${t(`Options for ${sessionTitle(s)}`)}
                 aria-haspopup="menu"
                 aria-expanded=${menuOpen ? "true" : "false"}
                 @click=${(e: Event) => toggleSessionMenu(e, s.id)}
@@ -1307,7 +1418,7 @@ export function sessionSelectionBar(): TemplateResult | null {
     <div
       class="section-label recents-label multi-select-bar"
       role="toolbar"
-      aria-label=${`${n} conversations selected`}
+      aria-label=${t(`${n} conversations selected`)}
     >
       <span class="multi-select-summary">
         <button
@@ -1326,7 +1437,7 @@ export function sessionSelectionBar(): TemplateResult | null {
           class="icon-btn"
           type="button"
           ${tip(allPinned ? "Unpin selected" : "Pin selected")}
-          aria-label=${allPinned ? "Unpin selected conversations" : "Pin selected conversations"}
+          aria-label=${t(allPinned ? "Unpin selected conversations" : "Pin selected conversations")}
           @click=${() => void bulkPatch({ pinned: !allPinned })}
         >
           ${allPinned ? icon(PinOff, 14) : icon(Pin, 14)}
@@ -1352,7 +1463,7 @@ export function sessionSelectionBar(): TemplateResult | null {
           class="icon-btn"
           type="button"
           ${tip(allArchived ? "Unarchive selected" : "Archive selected")}
-          aria-label=${allArchived ? "Unarchive selected conversations" : "Archive selected conversations"}
+          aria-label=${t(allArchived ? "Unarchive selected conversations" : "Archive selected conversations")}
           @click=${() => void bulkPatch({ archived: !allArchived })}
         >
           ${allArchived ? icon(ArchiveRestore, 14) : icon(Archive, 14)}
@@ -1385,7 +1496,7 @@ function colorPopover(): TemplateResult {
               type="button"
               style=${`--swatch:${c}`}
               ${tip(`Color selected ${c}`)}
-              aria-label=${`Color selected conversations ${c}`}
+              aria-label=${t(`Color selected conversations ${c}`)}
               @click=${() => void bulkPatch({ color: c })}
             ></button>
           `,
@@ -1572,6 +1683,7 @@ async function runSessionsRefresh(
   opts: { showLoading?: boolean; silent?: boolean; refreshContexts?: boolean; patchEpoch?: number },
   newerRun: () => Promise<boolean> | null,
 ): Promise<boolean> {
+  loadPinnedProjects();
   loadRecentContexts(opts.refreshContexts === true);
   const seq = ++sessionRefreshSeq;
   const patchEpoch = opts.patchEpoch ?? sessionPatchEpoch;
@@ -1626,7 +1738,8 @@ export async function openSession(
   const pane = splitInterceptsOpen(s);
   closeSidebarOnNarrowView();
   if (projectName(s.scopeId) && sessionsState.collapsedProjectScopes.delete(s.scopeId)) renderList();
-  return openSessionInto(pane ?? mainConversation(), s, entriesPrefetch, approvalsPrefetch, true);
+  await openSessionInto(pane ?? mainConversation(), s, entriesPrefetch, approvalsPrefetch, true);
+  if (s.id) void markSessionNotificationsRead(s.id);
 }
 
 export async function openSessionInto(
@@ -1686,6 +1799,7 @@ export async function openSessionInto(
   } else {
     conv.mountReadOnly(s, messages, earlier, anchorSeq, inheritedMessages);
   }
+  if (tracked) rememberChatSession(s.id);
   conv.setPins(entriesRes.pins ?? []);
   renderList();
 }

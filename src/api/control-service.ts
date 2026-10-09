@@ -472,6 +472,14 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
         destination = resolved.destination;
       }
 
+      if (!destination) {
+        return {
+          ok: false,
+          code: "bad_request",
+          message: "choose a supported delivery destination before creating a scheduled task",
+        };
+      }
+
       const haveMembers = !!(capability.members && capability.members.length > 0);
       const eligibleForShared =
         !ownerScopeId.startsWith("personal:") && scopeIsMembershipControlled(ownerScopeId, capability);

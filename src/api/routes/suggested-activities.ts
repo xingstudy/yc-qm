@@ -28,12 +28,14 @@ export const suggestedActivityRoutes: Route[] = [
       }
       const timezone = body.timezone ?? "UTC";
       if (typeof timezone !== "string" || timezone.length > 100) return sendJson(res, 400, { error: "bad_request" });
+      const locale = body.locale ?? "en";
+      if (locale !== "en" && locale !== "zh-CN") return sendJson(res, 400, { error: "bad_request" });
       try {
         new Intl.DateTimeFormat("en-US", { timeZone: timezone });
       } catch {
         return sendJson(res, 400, { error: "bad_request" });
       }
-      return sendJson(res, 200, await deps.suggestedActivities.get(body.principalId, seeds, timezone));
+      return sendJson(res, 200, await deps.suggestedActivities.get(body.principalId, seeds, timezone, locale));
     },
   },
 ];

@@ -316,7 +316,10 @@ export interface App {
   activeRunForThread(
     threadRef: string,
     viewer?: string,
-  ): Promise<{ runId: string; queued?: Array<{ runId: string; text: string; hasAttachments?: boolean }> } | null>;
+  ): Promise<{
+    runId: string;
+    queued?: Array<{ runId: string; text: string; authorId: string; createdAt: number; hasAttachments?: boolean }>;
+  } | null>;
   editQueuedRun(
     runId: string,
     text: string,
