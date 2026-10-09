@@ -1,0 +1,190 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { JSDOM } from "jsdom";
+import { createServer } from "vite";
+import { metadata } from "./model-metadata.ts";
+import type { Conversation } from "../src/conv-types.ts";
+import type { SessionEntry } from "../src/core-bridge.ts";
+
+class FakeEventSource {
+  static instances: FakeEventSource[] = [];
+  listeners = new Map<string, Array<(event: { data: string }) => void>>();
+  url: string;
+
+  constructor(url: string) {
+    this.url = url;
+    FakeEventSource.instances.push(this);
+  }
+
+  addEventListener(name: string, listener: (event: { data: string }) => void): void {
+    this.listeners.set(name, [...(this.listeners.get(name) ?? []), listener]);
+  }
+
+  emit(name: string, data: unknown): void {
+    for (const listener of this.listeners.get(name) ?? []) listener({ data: JSON.stringify(data) });
+  }
+
+  close(): void {
+    this.listeners.clear();
+  }
+}
+
+async function until(check: () => boolean): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail("condition did not settle");
+}
+
+test("an open project conversation receives peer messages during a run and reconciles once", async () => {
+  const dom = new JSDOM('<!doctype html><div id="app"></div><main id="main"></main>', {
+    url: "http://localhost/",
+  });
+  Object.defineProperty(dom.window, "matchMedia", {
+    value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+  });
+  Object.defineProperty(dom.window.document, "visibilityState", { configurable: true, value: "visible" });
+  const globals = {
+    window: dom.window,
+    document: dom.window.document,
+    location: dom.window.location,
+    history: dom.window.history,
+    localStorage: dom.window.localStorage,
+    navigator: dom.window.navigator,
+    HTMLElement: dom.window.HTMLElement,
+    customElements: dom.window.customElements,
+    Node: dom.window.Node,
+    Event: dom.window.Event,
+    CustomEvent: dom.window.CustomEvent,
+    InputEvent: dom.window.InputEvent,
+    KeyboardEvent: dom.window.KeyboardEvent,
+    requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0),
+    cancelAnimationFrame: clearTimeout,
+    getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
+    EventSource: FakeEventSource,
+  };
+  const previous = new Map<string, unknown>();
+  for (const [key, value] of Object.entries(globals)) {
+    previous.set(key, (globalThis as Record<string, unknown>)[key]);
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  }
+  const row = {
+    id: "project-session",
+    threadRef: "web:owner:project",
+    scopeId: "group:project",
+    title: "Project chat",
+    type: "dm" as const,
+    createdAt: Date.now(),
+  };
+  const initial: SessionEntry = {
+    seq: 0,
+    type: "user",
+    createdAt: Date.now(),
+    payload: { text: "Start", authorId: "owner" },
+  };
+  const peer: SessionEntry = {
+    seq: 1,
+    type: "user",
+    createdAt: Date.now() + 1,
+    payload: { text: "Message from B", authorId: "peer" },
+  };
+  let entries = [initial];
+  let reads = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const path = String(input);
+    if (path.includes("runtime-config"))
+      return Response.json({
+        scopeId: row.scopeId,
+        approvedHarnesses: ["pi"],
+        modelsByHarness: { pi: ["test-model"] },
+        modelCatalog: { "test-model": metadata("test-model", "Test model") },
+        orgDefault: { harnessId: "pi", modelId: "test-model", revision: 0 },
+        effective: { harnessId: "pi", modelId: "test-model" },
+        scopeOverride: null,
+      });
+    if (path.includes("/api/runs/active")) return Response.json({ runId: null, queued: [] });
+    if (path.endsWith("/approvals")) return Response.json({ approvals: [] });
+    if (path.startsWith(`/api/sessions/${row.id}`)) return Response.json({ session: row, entries, earlierEntries: 0 });
+    if (path === `/api/notifications/sessions/${row.id}/read`) {
+      reads++;
+      return Response.json({ marked: 1 });
+    }
+    if (path === "/api/notifications") return Response.json({ notifications: [], unread: 0 });
+    if (path === "/api/sessions") return Response.json({ sessions: [row] });
+    if (path === "/api/contexts") return Response.json({ contexts: [] });
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const vite = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom" });
+  let conv: Conversation | undefined;
+  try {
+    await vite.ssrLoadModule("/src/shell.ts");
+    const { appState } = await vite.ssrLoadModule("/src/shell-state.ts");
+    const { sessionsState } = await vite.ssrLoadModule("/src/sessions.ts");
+    const { createConversation, ensureDeliveryStream } = await vite.ssrLoadModule("/src/conversations.ts");
+    const { entriesToMessages } = await vite.ssrLoadModule("/src/core-bridge.ts");
+    const { transcriptModel } = await vite.ssrLoadModule("/src/model-options.ts");
+    const { seedRuntimeConfig } = await vite.ssrLoadModule("/src/runtime-config-store.ts");
+    seedRuntimeConfig(row.scopeId, await (await globalThis.fetch("/api/runtime-config")).json());
+    appState.me = { user: "owner", org: "test" };
+    appState.currentView = "chats";
+    sessionsState.list = [row];
+    sessionsState.loaded = true;
+    const host = document.querySelector<HTMLElement>("#main")!;
+    appState.mainEl = host;
+    ensureDeliveryStream();
+    const delivery = FakeEventSource.instances.find((es) => es.url === "/api/deliveries/events")!;
+    conv = createConversation({
+      pane: true,
+      ownsUrl: false,
+      container: () => host,
+      claimContainer: () => host,
+      visible: () => true,
+      density: () => "full",
+      onDensityChange() {},
+      ensureDeliveryStream,
+    }) as Conversation;
+    conv.mountContinuable(row.threadRef, row.id, row.scopeId, entriesToMessages(entries, transcriptModel()), null, row);
+    Object.defineProperty(conv.state.agent!.state, "isStreaming", { configurable: true, value: true });
+    entries = [initial, peer];
+    delivery.emit("delivery", { threadRef: row.threadRef });
+    await until(() => host.querySelectorAll('.user-row[data-entry-seq="1"]').length === 1);
+    await until(() => reads === 1);
+    delivery.emit("delivery", { threadRef: row.threadRef });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(host.querySelectorAll('.user-row[data-entry-seq="1"]').length, 1);
+    const scroller = host.querySelector<HTMLElement>(".chat-scroll")!;
+    Object.defineProperties(scroller, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 100 },
+    });
+    scroller.scrollTop = 100;
+    scroller.dispatchEvent(new Event("scroll"));
+    const anotherPeer = { ...peer, seq: 2, payload: { text: "Another message from B", authorId: "peer" } };
+    entries = [initial, peer, anotherPeer];
+    delivery.emit("delivery", { threadRef: row.threadRef });
+    await until(() => host.querySelectorAll('.user-row[data-entry-seq="2"]').length === 1);
+    assert.ok(host.querySelector(".chat-new-messages"));
+    assert.equal(scroller.scrollTop, 100);
+    assert.equal(reads, 1);
+    host.querySelector<HTMLButtonElement>(".chat-new-messages")!.click();
+    await until(() => reads === 2);
+    assert.equal(host.querySelector(".chat-new-messages"), null);
+    Object.defineProperty(conv.state.agent!.state, "isStreaming", { configurable: true, value: false });
+    delivery.emit("delivery", { threadRef: row.threadRef });
+    await until(() =>
+      conv!.state.agent!.state.messages.some((message) => JSON.stringify(message).includes("Another message from B")),
+    );
+    assert.equal(host.querySelectorAll('.user-row[data-entry-seq="1"]').length, 1);
+    assert.equal(host.querySelectorAll('.user-row[data-entry-seq="2"]').length, 1);
+  } finally {
+    conv?.dispose();
+    for (const es of FakeEventSource.instances) es.close();
+    await vite.close();
+    globalThis.fetch = originalFetch;
+    for (const [key, value] of previous)
+      Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+    dom.window.close();
+  }
+});

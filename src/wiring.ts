@@ -328,7 +328,7 @@ import { customProvidersVersion, setCustomProviders } from "./model/custom-provi
 import { createCustomProviderStore, type CustomProviderStore } from "./model/custom-provider-store.ts";
 import { createMemorySessionStore } from "./sessions/memory-session-store.ts";
 import { createPostgresSessionStore } from "./sessions/postgres-session-store.ts";
-import type { SessionStore } from "./sessions/session-store.ts";
+import { entryWithinTenure, type SessionStore } from "./sessions/session-store.ts";
 import { createMockHarness } from "./harness/mock-harness.ts";
 import { createOpenCodeHarness, openCodeHarnessConfigOptions } from "./harness/opencode-harness.ts";
 import { createCodexHarness, codexHarnessConfigOptions } from "./harness/codex-harness.ts";
@@ -382,6 +382,11 @@ import { supportsProcessSessions } from "./sandbox/sandbox.ts";
 import { createTurnStream } from "./runs/turn-stream.ts";
 import { createMemorySessionStateBus, type SessionStateBus } from "./runs/session-state-bus.ts";
 import { createPostgresSessionStateBus } from "./runs/postgres-session-state-bus.ts";
+import {
+  createNotificationStore,
+  type NotificationRecord,
+  type NotificationStore,
+} from "./notifications/notification-store.ts";
 import { createMemoryRunActivityStore, type RunActivityStore } from "./runs/run-activity-store.ts";
 import { createPostgresRunActivityStore } from "./runs/postgres-run-activity-store.ts";
 import { createApp, type App } from "./api/app.ts";
@@ -517,6 +522,7 @@ export interface BuiltApp {
   signals: RunSignalStore;
   tasks: TaskStore;
   sessionStateBus: SessionStateBus;
+  notifications: NotificationStore;
   ledgerEventBus: LedgerEventBus;
   surfaceCache: SurfaceCache;
   runtime: Runtime;
@@ -1451,10 +1457,104 @@ export function buildApp(
     if (!config.databaseUrl) throw new Error(`${kind}=postgres requires DATABASE_URL`);
     return config.databaseUrl;
   };
-  const sessions =
+  const sessionStateBus: SessionStateBus = config.databaseUrl
+    ? createPostgresSessionStateBus(config.databaseUrl)
+    : createMemorySessionStateBus();
+  const notifications = createNotificationStore(artifactMap<NotificationRecord>("notifications"), (record) =>
+    sessionStateBus.emit({
+      threadRef: `notification:${record.recipient}`,
+      state: "notification",
+      at: record.createdAt,
+      participants: [record.recipient],
+    }),
+  );
+  const sessionStore =
     config.sessionStore === "postgres"
       ? createPostgresSessionStore(requireDbUrl("SESSION_STORE"))
       : createMemorySessionStore();
+  const sessions: SessionStore = {
+    ...sessionStore,
+    async append(lease, entry) {
+      const appended = await sessionStore.append(lease, entry);
+      const visible =
+        entry.type === "user" ||
+        entry.type === "assistant" ||
+        (entry.type === "tool_call" && (entry.payload as { action?: unknown } | null)?.action === "post");
+      const groupEntry = entry.scopeLabel.startsWith("group:");
+      const cronResult = entry.type === "assistant" && (entry.payload as { via?: unknown } | null)?.via === "cron";
+      if (visible && (groupEntry || cronResult)) {
+        void (async () => {
+          const session = await sessionStore.get(lease.sessionId);
+          if (session?.surface !== "web") return;
+          const participants = (await sessionStore.participantWindowsOf(session.id))
+            .filter((window) => window.validTo === null && entryWithinTenure(appended, window))
+            .map((window) => window.principalId);
+          if (!participants.length) return;
+          if (entry.type === "user" && groupEntry) {
+            const payload = entry.payload as { authorId?: unknown; text?: unknown; hidden?: unknown } | null;
+            if (payload?.hidden !== true && typeof payload?.authorId === "string") {
+              const text = typeof payload.text === "string" ? payload.text : "";
+              await Promise.all(
+                participants
+                  .filter((recipient) => recipient !== payload.authorId)
+                  .map(async (recipient) => {
+                    const member = await directory.get(recipient).catch(() => null);
+                    const name = member?.displayName?.trim();
+                    const explicit = text.includes(`<@${recipient}>`);
+                    const named = name
+                      ? new RegExp(
+                          `(?:^|\\s)@${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[\\s,.!?;:])`,
+                          "iu",
+                        ).test(text)
+                      : false;
+                    await notifications.add({
+                      id: `session:${session.id}:${appended.seq}:${recipient}`,
+                      recipient,
+                      kind: explicit || named ? "mention" : "message",
+                      createdAt: appended.createdAt,
+                      sessionId: session.id,
+                      entrySeq: appended.seq,
+                    });
+                  }),
+              ).catch(swallowAs("notifications: project message", undefined));
+            }
+          }
+          if (entry.type === "assistant") {
+            const payload = entry.payload as { via?: unknown; deliveryKey?: unknown } | null;
+            const fireKey =
+              payload?.via === "cron" && typeof payload.deliveryKey === "string" ? payload.deliveryKey : "";
+            const cronId = /^cron:([^:]+):/.exec(fireKey)?.[1];
+            if (cronId) {
+              await Promise.all(
+                participants.map(async (recipient) => {
+                  const id = `cron:${cronId}:${fireKey}:${recipient}`;
+                  await notifications.add({
+                    id,
+                    recipient,
+                    kind: "cron_success",
+                    createdAt: appended.createdAt,
+                    cronId,
+                    fireKey,
+                    sessionId: session.id,
+                    entrySeq: appended.seq,
+                  });
+                  await notifications.linkSession(recipient, id, session.id, appended.seq);
+                }),
+              ).catch(swallowAs("notifications: cron chat result", undefined));
+            }
+          }
+          sessionStateBus.emit({
+            threadRef: session.threadRef,
+            sessionId: session.id,
+            state: "transcript",
+            at: appended.createdAt,
+            participants,
+          });
+        })().catch(swallowAs("session-state: transcript emit", undefined));
+      }
+      return appended;
+    },
+  };
   memorySessions.store = sessions;
   const runStoreKind = config.runStore;
   const runSignals: RunSignalStore =
@@ -1754,9 +1854,6 @@ export function buildApp(
     if (text) emitRunText(runStreamEvents, event.runId, text.slice(event.offset), event.offset);
   });
   runs.onTerminal((run) => refreshRunStream(run.id));
-  const sessionStateBus: SessionStateBus = config.databaseUrl
-    ? createPostgresSessionStateBus(config.databaseUrl)
-    : createMemorySessionStateBus();
   const ledgerEventBus: LedgerEventBus = config.databaseUrl
     ? createPostgresLedgerEventBus(config.databaseUrl)
     : createMemoryLedgerEventBus();
@@ -2393,6 +2490,24 @@ export function buildApp(
       const awaiting = rows.some(
         ([, r]) => r.sessionId === uuid && r.blocksInput !== false && actorAssertionActive(identity, r.request?.actor),
       );
+      if (uuid && awaiting) {
+        await Promise.all(
+          rows
+            .filter(([, record]) => record.sessionId === uuid && record.blocksInput !== false)
+            .map(async ([requestId, record]) => {
+              const recipient = record.request?.actor.externalId;
+              if (!recipient || !actorAssertionActive(identity, record.request?.actor)) return;
+              await notifications.add({
+                id: `approval:${requestId}:${recipient}`,
+                recipient,
+                kind: "action",
+                createdAt: record.createdAt ?? Date.now(),
+                sessionId: uuid,
+                approvalId: requestId,
+              });
+            }),
+        ).catch(swallowAs("notifications: action", undefined));
+      }
       const participants = uuid ? await sessions.participantsOf(uuid) : [];
       if (await runs.activeForThread(run.sessionId)) return;
       sessionStateBus.emit({
@@ -2537,6 +2652,7 @@ export function buildApp(
     keychain && askResolution ? createAskExpirySweep({ keychain, fire: askResolution, auditLog }) : undefined;
   const scheduler = createScheduler({
     admittedWork,
+    notifications,
     requireQueueStart: Boolean(config.backgroundDeploymentId),
     crons,
     deliveries,
@@ -2878,6 +2994,7 @@ export function buildApp(
     signals: runSignals,
     tasks,
     sessionStateBus,
+    notifications,
     ledgerEventBus,
     surfaceCache,
     runtime,
@@ -3060,6 +3177,7 @@ export function serverDeps(
     ...(config.deployAppsLoginUrl ? { deployAppsLoginUrl: config.deployAppsLoginUrl } : {}),
     ...(config.deployAppsLoginPath ? { deployAppsLoginPath: config.deployAppsLoginPath } : {}),
     scheduler: built.scheduler,
+    notifications: built.notifications,
     webhookReceiver: built.webhookReceiver,
     identity: built.identity,
     organization: built.organization,

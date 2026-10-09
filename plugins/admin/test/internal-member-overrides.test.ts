@@ -118,6 +118,7 @@ test("editor is visible only for org payloads that support overrides", () => {
     vm.runInNewContext(slice("        const showInternalOverrides =", "        const showOrgAmbient ="), {
       scope,
       r: { data },
+      adminTr: (text: string) => text,
       $: (id: string) => {
         if (id === "internal-member-overrides") return input;
         if (id.endsWith("-count")) return label;

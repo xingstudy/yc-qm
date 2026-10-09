@@ -25,6 +25,7 @@ export interface Me {
 const VIEWS = [
   "chats",
   "inbox",
+  "notifications",
   "calendar",
   "contexts",
   "webhooks",

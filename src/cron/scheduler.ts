@@ -11,6 +11,7 @@ import {
 import type { IdentityService } from "../identity/identity-service.ts";
 import { isDeferred, type CronStore } from "./cron-store.ts";
 import type { DeliveryStore } from "../delivery/delivery-store.ts";
+import type { NotificationStore } from "../notifications/notification-store.ts";
 import type { IdempotencyStore } from "../idempotency/idempotency-store.ts";
 import { runTrigger, type TriggerDeps } from "../triggers/run-trigger.ts";
 import type { CurrentScopeMembers } from "../resolution/scope-membership.ts";
@@ -86,6 +87,7 @@ export interface SchedulerDeps {
   jobQueue?: CronJobQueue;
   requireQueueStart?: boolean;
   sessions?: TriggerDeps["sessions"];
+  notifications?: NotificationStore;
   fireLoop?: (loopId: string, fireKey: string) => Promise<{ status?: TurnResult["status"]; note?: string }>;
 }
 
@@ -195,6 +197,23 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   const maxFiresPerTick = deps.maxFiresPerTick ?? 100;
   const leaderLease = deps.leaderLease ?? createNoopLeaderLease();
 
+  async function recordFire(cron: Cron, entry: CronFireLogEntry): Promise<void> {
+    await deps.crons.recordFire(cron.id, entry);
+    if (!deps.notifications || entry.status === "running" || entry.status === "deferred" || entry.status === "silent")
+      return;
+    const kind = entry.status === "ok" ? "cron_success" : "cron_failure";
+    await deps.notifications
+      .add({
+        id: `cron:${cron.id}:${entry.fireKey}:${cron.owner}`,
+        recipient: cron.owner,
+        kind,
+        createdAt: entry.endedAt ?? entry.firedAt,
+        cronId: cron.id,
+        fireKey: entry.fireKey,
+      })
+      .catch((error: unknown) => console.error(`[notifications] cron ${cron.id}: ${errMessage(error)}`));
+  }
+
   async function fire(cron: Cron, t: number, fireKey: string, scheduledAt?: number): Promise<FireResult> {
     const threadRef = cronFireThreadRef(cron.id, fireKey);
     const runningEntry: CronFireLogEntry = {
@@ -215,7 +234,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         } catch (e) {
           result = { status: "failed", note: errMessage(e) };
         }
-      await deps.crons.recordFire(cron.id, {
+      await recordFire(cron, {
         fireKey,
         threadRef,
         firedAt: t,
@@ -263,7 +282,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         },
       );
     } catch (e) {
-      await deps.crons.recordFire(cron.id, {
+      await recordFire(cron, {
         fireKey,
         threadRef,
         firedAt: t,
@@ -276,7 +295,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     }
     if (outcome.deferred) {
       const deferUntil = now() + BUSY_DEFER_MS;
-      await deps.crons.recordFire(cron.id, {
+      await recordFire(cron, {
         fireKey,
         threadRef,
         firedAt: t,
@@ -289,7 +308,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       return { authzFailed: false, deferred: true };
     }
     if (outcome.ran || outcome.authzFailed) {
-      await deps.crons.recordFire(cron.id, {
+      await recordFire(cron, {
         fireKey,
         threadRef,
         firedAt: t,

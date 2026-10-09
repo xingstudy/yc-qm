@@ -4172,7 +4172,11 @@ function forwardSessionState(frame: SessionStateFrame): void {
   }
   const { participants: _participants, ...visible } = frame;
   for (const user of targets) {
-    for (const res of deliveryClients.get(user) ?? []) sseEvent(res, "session_state", visible);
+    for (const res of deliveryClients.get(user) ?? []) {
+      if (frame.state === "notification") sseEvent(res, "notification", {});
+      else if (frame.state === "transcript") sseEvent(res, "delivery", { threadRef });
+      else sseEvent(res, "session_state", visible);
+    }
   }
 }
 
@@ -4192,6 +4196,7 @@ async function consumeCoreFeed(
       if (r.status === 200 && r.body) {
         if (dropped) {
           dropped = false;
+          console.info(`[feed] reconnected ${path}`);
           onReconnect?.();
         }
         const reader = r.body.getReader();
@@ -4220,8 +4225,11 @@ async function consumeCoreFeed(
           }
         }
       }
+      if (!dropped)
+        console.warn(`[feed] disconnected ${path}: ${r.status === 200 ? "stream closed" : `HTTP ${r.status}`}`);
       dropped = true;
-    } catch {
+    } catch (error) {
+      if (!dropped) console.warn(`[feed] disconnected ${path}: ${error instanceof Error ? error.message : error}`);
       dropped = true;
     }
     await new Promise((resolve) => setTimeout(resolve, STATE_FEED_RECONNECT_MS));
@@ -7482,6 +7490,36 @@ const apiRoutes: readonly WebRoute[] = [
     method: "POST",
     path: "/api/webhooks/:id/enable",
     handle: (c) => setWebhookEnabledViaCore(c.res, c.user, c.params.id!, "enable"),
+  },
+  {
+    method: "GET",
+    path: "/api/notifications",
+    handle: (c) => relayCore(c.res, "GET", `/v1/notifications?principalId=${encodeURIComponent(c.user)}`),
+  },
+  {
+    method: "POST",
+    path: "/api/notifications/read-all",
+    handle: (c) => relayCore(c.res, "POST", `/v1/notifications/read-all?principalId=${encodeURIComponent(c.user)}`),
+  },
+  {
+    method: "POST",
+    path: "/api/notifications/sessions/:id/read",
+    handle: (c) =>
+      relayCore(
+        c.res,
+        "POST",
+        `/v1/notifications/sessions/${encodeURIComponent(c.params.id!)}/read?principalId=${encodeURIComponent(c.user)}`,
+      ),
+  },
+  {
+    method: "POST",
+    path: "/api/notifications/:id/read",
+    handle: (c) =>
+      relayCore(
+        c.res,
+        "POST",
+        `/v1/notifications/${encodeURIComponent(c.params.id!)}/read?principalId=${encodeURIComponent(c.user)}`,
+      ),
   },
   {
     method: "GET",

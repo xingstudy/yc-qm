@@ -4,6 +4,7 @@ import { densityTierFor, type DensityTier } from "./density";
 import { subscribeDeliveries } from "./core-bridge";
 import { applySessionState } from "./session-list";
 import { refreshSessions, renderList, sessionsState } from "./sessions";
+import { refreshNotifications } from "./notifications";
 import { appState } from "./shell-state";
 import type { Conversation, ConvCtx, ConvHost } from "./conv-types";
 
@@ -100,12 +101,21 @@ export function ensureDeliveryStream(): void {
       if (event.state === "working") for (const conv of live) conv.resumeIfIdle();
       else for (const conv of live) conv.onDelivery(event.threadRef);
     },
-    () => void refreshSessions({ silent: true }),
+    () => {
+      void refreshSessions({ silent: true });
+      for (const conv of live) if (conv.state.threadRef) conv.onDelivery(conv.state.threadRef);
+    },
     (event) => inboxItemHandler?.(event),
     () => inboxResyncHandler?.(),
+    () => void refreshNotifications(),
   );
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") return;
-    for (const conv of live) conv.resumeIfIdle();
+    void refreshSessions({ silent: true });
+    void refreshNotifications();
+    for (const conv of live) {
+      if (conv.state.threadRef) conv.onDelivery(conv.state.threadRef);
+      conv.resumeIfIdle();
+    }
   });
 }

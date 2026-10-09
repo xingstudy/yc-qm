@@ -1,4 +1,5 @@
 import type { Cron } from "../../types.ts";
+import { deliveryStatusForRun } from "../../delivery/delivery-store.ts";
 import type { CreateCronInput, CronPatch } from "../../cron/cron-store.ts";
 import { describeRunNowRefusal } from "../../cron/scheduler.ts";
 import { DEFAULT_CRON_TIMEZONE, userScheduleFromBody } from "../../cron/schedule.ts";
@@ -326,10 +327,28 @@ async function cronRuns(ctx: ApiCtx): Promise<void> {
   const id = ctx.params.id!;
   const rawLimit = url.searchParams.get("limit");
   const limit = rawLimit === null ? undefined : Number(rawLimit);
+  const viewer = capability?.actorId ?? ctx.actor?.p ?? url.searchParams.get("principalId");
+  const notices = viewer ? ((await ctx.deps.notifications?.list(viewer)) ?? []) : [];
+  const decorate = async (run: Awaited<ReturnType<typeof app.listCronFires>>["runs"][number]) => {
+    const notice = notices.find(
+      (record) =>
+        record.cronId === id && record.fireKey === run.fireKey && record.sessionId && record.entrySeq !== undefined,
+    );
+    const result =
+      notice?.sessionId && notice.entrySeq !== undefined && viewer
+        ? await app.getSessionEntryForViewer(notice.sessionId, viewer, notice.entrySeq)
+        : null;
+    return {
+      ...run,
+      deliveryStatus: await deliveryStatusForRun(ctx.deps.deliveries, run),
+      ...(result && notice ? { resultSessionId: notice.sessionId, resultEntrySeq: notice.entrySeq } : {}),
+    };
+  };
   if (capability) {
     const r = await ctx.deps.control.getCronRuns(id, limit !== undefined ? { limit } : {}, capability);
     if (!r.ok) return sendJson(res, CRON_ERROR_STATUS[r.code] ?? 400, { error: r.code, message: r.message });
-    return sendJson(res, 200, { cron: withoutFireLog(r.cron), runs: r.runs, total: r.total });
+    const runs = await Promise.all(r.runs.map(decorate));
+    return sendJson(res, 200, { cron: withoutFireLog(r.cron), runs, total: r.total });
   }
   const cron = await gateSourceCron(ctx, id);
   if (!cron) return;
@@ -337,7 +356,8 @@ async function cronRuns(ctx: ApiCtx): Promise<void> {
     return sendJson(res, 400, { error: "bad_request", message: "limit must be a positive integer" });
   }
   const { runs, total } = await app.listCronFires(id, limit !== undefined ? { limit } : {});
-  return sendJson(res, 200, { cron: withoutFireLog(cron), runs, total });
+  const decorated = await Promise.all(runs.map(decorate));
+  return sendJson(res, 200, { cron: withoutFireLog(cron), runs: decorated, total });
 }
 
 const CRON_PATCH_BAD_REQUEST =

@@ -5,8 +5,11 @@ import test from "node:test";
 const source = readFileSync(new URL("../src/crons.ts", import.meta.url), "utf8");
 const shell = readFileSync(new URL("../src/shell.ts", import.meta.url), "utf8");
 
-test("a run's worklog link addresses the chats view, not the page it was rendered on", () => {
-  assert.match(source, /class="cron-run-link" href=\$\{deepLinkPath\(UI_BASE, "chats", run\.sessionId\)\}/);
+test("a run's execution log link addresses the chats view, not the page it was rendered on", () => {
+  assert.match(
+    source,
+    /class="cron-run-link cron-run-worklog"\s+href=\$\{deepLinkPath\(UI_BASE, "chats", run\.sessionId\)\}/,
+  );
   assert.doesNotMatch(source, /location\.pathname\}\?session=/);
 });
 
@@ -26,9 +29,10 @@ test("cron index rows keep details and raw schedules out of the summary", () => 
   assert.match(row, /cronRunSummary\(c\)/);
 });
 
-test("cron index keeps only search in its header controls", () => {
+test("cron index offers creation alongside search on every tab", () => {
   const page = source.slice(source.indexOf("function drawCronsPage"), source.indexOf("function setCronTab"));
-  assert.doesNotMatch(page, /onScope|onRefresh|label: "New cron"/);
+  assert.doesNotMatch(page, /onScope|onRefresh/);
+  assert.match(page, /action: \{ label: "New cron", onClick: showNewCron \}/);
   assert.match(page, /placeholder: "Search crons"/);
 });
 

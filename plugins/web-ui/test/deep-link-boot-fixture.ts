@@ -19,11 +19,16 @@ export interface Harness {
 
 interface HarnessOptions {
   path: string;
+  notifications?: unknown[];
+  crons?: unknown[];
+  cronRuns?: unknown[];
+  locale?: "zh-CN";
   transcriptStatus?: number;
   transcriptFailures?: number;
   holdTranscript?: boolean;
   holdApprovals?: boolean;
   listSessions?: unknown[];
+  lastChatId?: string;
   savedCanvas?: boolean;
   welcome?: boolean;
   connectionReturn?: boolean;
@@ -42,6 +47,9 @@ export async function harness(opts: HarnessOptions): Promise<Harness> {
     url: `http://localhost${opts.path}`,
     pretendToBeVisual: true,
   });
+  dom.window.HTMLElement.prototype.scrollIntoView = () => {};
+  if (opts.locale) dom.window.localStorage.setItem("qm:locale", opts.locale);
+  if (opts.lastChatId) dom.window.localStorage.setItem("web-ui:last-chat:test:tester", opts.lastChatId);
   if (opts.savedCanvas)
     dom.window.localStorage.setItem(
       "web-ui:split-canvas:v1",
@@ -111,6 +119,11 @@ export async function harness(opts: HarnessOptions): Promise<Harness> {
       });
     }
     if (path.startsWith("/api/ui-state")) return Response.json({ value: null, updatedAt: 0 });
+    if (path === "/api/contexts") return Response.json({ contexts: [] });
+    if (path === "/api/notifications")
+      return Response.json({ notifications: opts.notifications ?? [], unread: opts.notifications?.length ?? 0 });
+    if (path === "/api/crons") return Response.json({ crons: opts.crons ?? [], visible: [] });
+    if (/^\/api\/crons\/[^/]+\/runs$/.test(path)) return Response.json({ runs: opts.cronRuns ?? [] });
     if (path.startsWith("/api/sessions/") && path.includes("/approvals")) {
       if (opts.holdApprovals) await approvalsHeld;
       return Response.json({ approvals: [] });
@@ -148,6 +161,7 @@ export async function harness(opts: HarnessOptions): Promise<Harness> {
     Element: dom.window.Element,
     Node: dom.window.Node,
     Event: dom.window.Event,
+    CustomEvent: dom.window.CustomEvent,
     PointerEvent: dom.window.PointerEvent,
     MouseEvent: dom.window.MouseEvent,
     customElements: dom.window.customElements,

@@ -51,6 +51,7 @@ import {
   type CoreSession,
 } from "./core-bridge";
 import { deepLinkPath, isPlainLeftClick, sessionLink, UI_BASE } from "./deep-link";
+import { markSessionNotificationsRead, sessionUnread, unreadBadgeValue } from "./notifications";
 import {
   activityOf,
   chatBrowseStatusMatches,
@@ -119,6 +120,32 @@ export const sessionsState = {
   webOnly: true,
   collapsedProjectScopes: new Set<string>(),
 };
+
+function lastChatKey(): string {
+  return `web-ui:last-chat:${appState.me?.org ?? ""}:${appState.me?.user ?? ""}`;
+}
+
+export function rememberChatSession(id: string): void {
+  if (!appState.me?.user) return;
+  try {
+    localStorage.setItem(lastChatKey(), id);
+  } catch {
+    return;
+  }
+}
+
+export function preferredChatSession(): CoreSession | null {
+  const chats = sessionsState.list.filter((session) => session.id && !session.archived && surfaceOf(session) === "web");
+  let remembered: string | null = null;
+  try {
+    if (appState.me?.user) remembered = localStorage.getItem(lastChatKey());
+  } catch {
+    remembered = null;
+  }
+  return (
+    chats.find((session) => session.id === remembered) ?? chats.sort((a, b) => activityOf(b) - activityOf(a))[0] ?? null
+  );
+}
 
 let selection: SessionSelection = emptySelection();
 type SessionPatch = { title?: string | null; archived?: boolean; pinned?: boolean; color?: string | null };
@@ -879,6 +906,7 @@ function sessionRow(s: CoreSession, projectChild = false): TemplateResult {
   const context = projectChild ? null : rowContext(s);
   const working = sessionWorking(s);
   const color = displaySessionColor(s.color);
+  const unread = saved ? sessionUnread(s.id) : { messages: 0, mentions: 0 };
   let titleContent: string | TemplateResult = groupDmTitle(s);
   if (refreshingTitle) {
     titleContent = html`<span class="sheen-label title-sheen thinking-sheen" data-sheen=${title}>${title}</span>`;
@@ -955,6 +983,7 @@ function sessionRow(s: CoreSession, projectChild = false): TemplateResult {
             dir="auto"
             >${titleContent}</span
           >${context ? html`<span class="row-context" ${tip(context)}>${context}</span>` : nothing}
+          ${unread.messages ? html`<span class="nav-badge session-unread" aria-label=${t(unread.mentions ? "Mentioned me" : "New message")}>${unreadBadgeValue(unread)}</span>` : nothing}
         </div>
       </a>
       ${
@@ -1625,7 +1654,8 @@ export async function openSession(
   const pane = splitInterceptsOpen(s);
   closeSidebarOnNarrowView();
   if (projectName(s.scopeId) && sessionsState.collapsedProjectScopes.delete(s.scopeId)) renderList();
-  return openSessionInto(pane ?? mainConversation(), s, entriesPrefetch, approvalsPrefetch, true);
+  await openSessionInto(pane ?? mainConversation(), s, entriesPrefetch, approvalsPrefetch, true);
+  if (s.id) void markSessionNotificationsRead(s.id);
 }
 
 export async function openSessionInto(
@@ -1685,6 +1715,7 @@ export async function openSessionInto(
   } else {
     conv.mountReadOnly(s, messages, earlier, anchorSeq, inheritedMessages);
   }
+  if (tracked) rememberChatSession(s.id);
   conv.setPins(entriesRes.pins ?? []);
   renderList();
 }

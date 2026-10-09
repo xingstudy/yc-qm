@@ -1,6 +1,6 @@
 import { createMemoryEventBus, type EventBus } from "../util/event-bus.ts";
 
-type SessionState = "working" | "awaiting_approval" | "idle";
+type SessionState = "working" | "awaiting_approval" | "idle" | "transcript" | "notification";
 
 export interface SessionStateEvent {
   threadRef: string;

@@ -216,6 +216,8 @@ export function fieldSelect(props: {
   onChange: (value: string, event: Event) => void;
   value?: string;
   id?: string;
+  name?: string;
+  required?: boolean;
   ariaLabel?: string;
   describedBy?: string;
   focusKey?: string;
@@ -228,6 +230,8 @@ export function fieldSelect(props: {
   >
     <select
       id=${props.id ?? nothing}
+      name=${props.name ?? nothing}
+      ?required=${props.required ?? false}
       aria-label=${props.ariaLabel ? t(props.ariaLabel) : nothing}
       aria-describedby=${props.describedBy ?? nothing}
       data-focus-key=${props.focusKey ?? nothing}

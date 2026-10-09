@@ -58,6 +58,7 @@ import type { SecretDropStore } from "../credentials/secret-drop.ts";
 import type { DropResolution } from "../triggers/keychain-ask.ts";
 import type { BlobTransferStore } from "../persistence/blob-transfer.ts";
 import type { DeliveryStore } from "../delivery/delivery-store.ts";
+import type { NotificationStore } from "../notifications/notification-store.ts";
 import type { ControlService } from "./control-service.ts";
 import type { LoopServiceDeps } from "./routes/loops.ts";
 import type { CronStore } from "../cron/cron-store.ts";
@@ -82,6 +83,7 @@ import type { DirectoryEmailResolutionService } from "../directory-sources/email
 import type { ManagedDirectoryService } from "../directory-sources/managed-directory-service.ts";
 
 export interface ServerDeps {
+  notifications?: NotificationStore;
   composioFetch?: typeof fetch;
   suggestedActivities?: ReturnType<typeof createSuggestedActivityService>;
   production?: boolean;

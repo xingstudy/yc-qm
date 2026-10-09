@@ -61,7 +61,11 @@ test("the shell's badge and product name are branding-driven, not hardcoded", ()
   assert.match(shell, /--brand-mark:\s*none;/, "and falls back to the shipped mark when the org sets none");
   assert.match(shell, /\[data-brand-product\]/, "every product name is script-addressable");
   assert.match(shell, /\[data-brand-copy\]/, "static admin product copy is script-addressable");
-  assert.match(shell, /brandAdminText\(\s*r\.data\.configured/, "dynamic Slack status copy uses the label");
+  assert.match(
+    shell,
+    /\$\("slack-installation-description"\)\.textContent = brandAdminText\(/,
+    "dynamic Slack status copy uses the label",
+  );
 });
 
 test("a branding save acks only after the shell reflects it — the post-save reload can't be stale", async () => {

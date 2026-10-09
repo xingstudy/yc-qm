@@ -524,5 +524,6 @@ test("sidebar excludes attached subagents including pinned and orphaned children
   const pinned = { ...child, id: "pinned", pinned: true };
   const orphan = { ...child, id: "orphan", parentSessionId: "missing" };
   const detached = saved("detached", "agent:main:subagent:detached");
-  assert.deepEqual(sidebarSessions([parent, child, pinned, orphan, detached]), [parent, detached]);
+  const run = saved("run", "cron:task:fire:one");
+  assert.deepEqual(sidebarSessions([parent, child, pinned, orphan, detached, run]), [parent, detached]);
 });

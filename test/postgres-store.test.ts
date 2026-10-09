@@ -23,6 +23,23 @@ import { byScopeId, rollupsFromSummaries } from "./support/scope-rollup-oracle.t
 const URL = await isolatedPgTestDatabase(process.env.DATABASE_URL);
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the Postgres store tests";
 
+test("pg participantsOf excludes departed members and includes rejoined members", { skip }, async () => {
+  const store = createPostgresSessionStore(URL!);
+  const session = await store.getOrCreateByThread(
+    `web:owner:${randomUUID()}`,
+    "group",
+    scopeId("group", "web-project-pg"),
+  );
+  await store.addParticipant(session.id, "owner");
+  await store.addParticipant(session.id, "member");
+  assert.deepEqual(new Set(await store.participantsOf(session.id)), new Set(["owner", "member"]));
+  await store.removeParticipant(session.id, "member");
+  assert.deepEqual(await store.participantsOf(session.id), ["owner"]);
+  assert.equal((await store.participantWindowsOf(session.id)).length, 2);
+  await store.addParticipant(session.id, "member");
+  assert.deepEqual(new Set(await store.participantsOf(session.id)), new Set(["owner", "member"]));
+});
+
 before(async () => {
   if (!URL) return;
   const pg = (await import("pg")).default;

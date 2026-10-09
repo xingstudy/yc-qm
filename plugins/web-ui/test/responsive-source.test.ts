@@ -156,9 +156,9 @@ test("the quick nav is home, search, browse; create sits under the divider", () 
   assert.doesNotMatch(css, /\.nav-section-toggle|\.nav-group/);
 });
 
-test("Home opens a fresh conversation", () => {
+test("Home returns to the previous conversation", () => {
   const click = shell.match(/function onNavClick\([^]*?\n\}/)?.[0] ?? "";
-  assert.match(click, /if \(view === "chats"\) startNewChatInLastScope\(\)/);
+  assert.match(click, /if \(view === "chats"\) \{[\s\S]*preferredChatSession\(\)/);
 });
 
 test("impersonation mode keeps its critical exit control below the top safe area", () => {

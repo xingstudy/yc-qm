@@ -1430,6 +1430,7 @@ export function subscribeDeliveries(
   onResync?: () => void,
   onInboxItem?: (event: InboxItemEvent) => void,
   onInboxResync?: () => void,
+  onNotification?: () => void,
 ): () => void {
   if (typeof EventSource === "undefined") return () => {};
   const es = new EventSource(withBase("/api/deliveries/events"));
@@ -1438,11 +1439,13 @@ export function subscribeDeliveries(
     if (everOpened) {
       onResync?.();
       onInboxResync?.();
+      onNotification?.();
     }
     everOpened = true;
   };
   es.addEventListener("session_state_resync", () => onResync?.());
   es.addEventListener("inbox_resync", () => onInboxResync?.());
+  es.addEventListener("notification", () => onNotification?.());
   es.addEventListener("session_state", (e: MessageEvent) => {
     try {
       const ev = JSON.parse(e.data) as SessionStateEvent;

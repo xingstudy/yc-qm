@@ -29,6 +29,7 @@ import { repeat } from "lit/directives/repeat.js";
 import { ref } from "lit/directives/ref.js";
 import {
   Activity,
+  ArrowDown,
   BookOpen,
   Search,
   Brain,
@@ -66,6 +67,7 @@ import {
   type SessionPin,
   activeRunForThread,
   api,
+  ApiError,
   approvalBlocksComposer,
   createRunSlot,
   hasLiveRun,
@@ -109,6 +111,7 @@ import {
   type WorkBlock,
   fileContentUrl,
 } from "./core-bridge";
+import { markSessionNotificationsRead } from "./notifications";
 import {
   buildTimeline,
   messageWorkTimeline,
@@ -154,6 +157,7 @@ import {
   sessionSlackUrl,
   surfaceOf,
   openSession,
+  rememberChatSession,
 } from "./sessions";
 import {
   backgroundLabel,
@@ -286,6 +290,11 @@ export function createChatSurface(
     return typeof speaker === "string" && speaker.trim() ? speaker.trim() : undefined;
   }
   let transcriptRefreshGeneration = 0;
+  let peerFetchGeneration = 0;
+  let streamedPeerMessages: AgentMessage[] = [];
+  let newMessagesPending = false;
+  let transcriptRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let transcriptRetryDelay = 1_000;
   const forkOriginController = createForkOriginController({
     state: chatState,
     load: async () => {
@@ -347,6 +356,12 @@ export function createChatSurface(
   function teardownActiveChat(): void {
     transcriptViewport.dispose();
     transcriptRefreshGeneration++;
+    peerFetchGeneration++;
+    streamedPeerMessages = [];
+    newMessagesPending = false;
+    if (transcriptRetryTimer) clearTimeout(transcriptRetryTimer);
+    transcriptRetryTimer = null;
+    transcriptRetryDelay = 1_000;
     readOnlyView = null;
     readonlyApprove = null;
     preserveOutgoingWorkingDot(null);
@@ -441,6 +456,12 @@ export function createChatSurface(
     preserveOutgoingWorkingDot(threadRef);
     dropAbandonedNewChat(threadRef);
     detachActiveAgent();
+    peerFetchGeneration++;
+    streamedPeerMessages = [];
+    newMessagesPending = false;
+    if (transcriptRetryTimer) clearTimeout(transcriptRetryTimer);
+    transcriptRetryTimer = null;
+    transcriptRetryDelay = 1_000;
     ctx.composer.resetComposer();
     forkOriginController.reset();
     chatState.threadRef = threadRef;
@@ -648,8 +669,67 @@ export function createChatSurface(
       return;
     }
     const agent = chatState.agent;
-    if (!agent || threadRef !== chatState.threadRef || agent.state.isStreaming) return;
+    if (!agent || threadRef !== chatState.threadRef) return;
+    if (agent.state.isStreaming) return void refreshPeerMessagesDuringStream(agent);
     void refreshTranscriptFromEntries(agent);
+  }
+
+  function transcriptAtBottom(): boolean {
+    const scroller = chatState.host?.querySelector<HTMLElement>(".chat-scroll");
+    return !scroller || scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 2;
+  }
+
+  function noteIncomingMessages(agent: Agent, sessionId: string): void {
+    if (agent !== chatState.agent || sessionId !== chatState.sessionId) return;
+    if (!ctx.visible() || document.visibilityState !== "visible" || !transcriptAtBottom()) {
+      newMessagesPending = true;
+      return;
+    }
+    newMessagesPending = false;
+    void markSessionNotificationsRead(sessionId);
+  }
+
+  function retryTranscriptSync(agent: Agent, error: unknown): void {
+    if (agent !== chatState.agent || (error instanceof ApiError && (error.status === 403 || error.status === 404)))
+      return;
+    swallow("web-ui: project transcript sync", error);
+    if (transcriptRetryTimer) return;
+    transcriptRetryTimer = setTimeout(() => {
+      transcriptRetryTimer = null;
+      if (agent === chatState.agent && chatState.threadRef) onDelivery(chatState.threadRef);
+    }, transcriptRetryDelay);
+    transcriptRetryDelay = Math.min(transcriptRetryDelay * 2, 15_000);
+  }
+
+  async function refreshPeerMessagesDuringStream(agent: Agent): Promise<void> {
+    const sessionId = chatState.sessionId;
+    if (!sessionId) return;
+    const generation = ++peerFetchGeneration;
+    try {
+      const anchor = chatState.transcriptAnchorSeq;
+      const page = await transcriptFetcher(sessionId, anchor !== null ? { sinceSeq: anchor } : undefined);
+      if (generation !== peerFetchGeneration || agent !== chatState.agent || !agent.state.isStreaming) return;
+      const known = new Set(
+        agent.state.messages.map((message) => (message as { entrySeq?: number }).entrySeq).filter(Number.isSafeInteger),
+      );
+      const previous = new Set(streamedPeerMessages.map((message) => (message as { entrySeq?: number }).entrySeq));
+      const peers = (page.entries ?? []).filter((entry) => {
+        const payload = entry.payload as { authorId?: unknown } | null;
+        return (
+          entry.type === "user" &&
+          typeof payload?.authorId === "string" &&
+          payload.authorId !== appState.me?.user &&
+          !known.has(entry.seq)
+        );
+      });
+      streamedPeerMessages = entriesToMessages(peers, transcriptModel());
+      if (streamedPeerMessages.some((message) => !previous.has((message as { entrySeq?: number }).entrySeq)))
+        noteIncomingMessages(agent, sessionId);
+      transcriptRetryDelay = 1_000;
+      drawActiveChat(agent);
+    } catch (error) {
+      if (generation === peerFetchGeneration) retryTranscriptSync(agent, error);
+    }
   }
 
   async function stopLiveRun(): Promise<void> {
@@ -776,8 +856,8 @@ export function createChatSurface(
     if (!sessionId || agent !== chatState.agent || agent.state.isStreaming) return drawActiveChat(agent);
     const generation = ++transcriptRefreshGeneration;
     const last = agent.state.messages[agent.state.messages.length - 1] as { stopReason?: string } | undefined;
-    if (last?.stopReason === "error") return drawActiveChat(agent);
-    if (last?.stopReason === "aborted") return drawActiveChat(agent);
+    if ((last?.stopReason === "error" || last?.stopReason === "aborted") && !chatState.scopeId?.startsWith("group:"))
+      return drawActiveChat(agent);
     try {
       const anchor = chatState.transcriptAnchorSeq;
       const page = await transcriptFetcher(sessionId, anchor !== null ? { sinceSeq: anchor } : undefined);
@@ -791,6 +871,20 @@ export function createChatSurface(
       chatState.pins = page.pins ?? [];
       const split = inheritedTranscript(chatState.forkSession ?? {}, page.entries ?? []);
       const messages = entriesToMessages(split.current, transcriptModel());
+      const knownUserSeqs = new Set(
+        agent.state.messages
+          .filter((message) => message.role === "user")
+          .map((message) => (message as { entrySeq?: number }).entrySeq),
+      );
+      const hasIncomingMessage = split.current.some((entry) => {
+        const payload = entry.payload as { authorId?: unknown } | null;
+        return (
+          entry.type === "user" &&
+          typeof payload?.authorId === "string" &&
+          payload.authorId !== appState.me?.user &&
+          !knownUserSeqs.has(entry.seq)
+        );
+      });
       const refreshedInherited = inheritedRefreshEntries(
         chatState.forkSession ?? {},
         page.entries ?? [],
@@ -806,11 +900,14 @@ export function createChatSurface(
         return;
       if (refreshedInherited) chatState.inheritedMessages = entriesToMessages(refreshedInherited, transcriptModel());
       agent.state.messages = messages;
+      streamedPeerMessages = [];
+      transcriptRetryDelay = 1_000;
+      if (hasIncomingMessage || newMessagesPending) noteIncomingMessages(agent, sessionId);
       const rawEarlier = page.earlierEntries ?? 0;
       chatState.earlierCount = currentEarlierCount(chatState.forkSession ?? {}, rawEarlier);
       chatState.transcriptAnchorSeq = rawEarlier > 0 ? (page.entries?.[0]?.seq ?? null) : null;
-    } catch {
-      void 0;
+    } catch (error) {
+      if (generation === transcriptRefreshGeneration) retryTranscriptSync(agent, error);
     }
     drawActiveChat(agent);
   }
@@ -919,6 +1016,7 @@ export function createChatSurface(
     chatState.scopeId = match.scopeId;
     if (match.channelName) chatState.contextName = match.channelName;
     chatState.rememberedSessionId = match.id;
+    if (!ctx.pane) rememberChatSession(match.id);
     chatState.rememberedScopeId = match.scopeId;
     chatState.rememberedContextName = chatState.contextName;
     syncLocation();
@@ -1373,7 +1471,7 @@ export function createChatSurface(
   function drawActiveChat(agent = chatState.agent, opts: { forceScroll?: boolean } = {}): void {
     if (!agent || agent !== chatState.agent || !chatState.host || appState.currentView !== "chats") return;
     transcriptViewport.beforeRender();
-    const currentMessages = visibleMessages(agent);
+    const currentMessages = [...visibleMessages(agent), ...streamedPeerMessages];
     if (preserveConnectionScroll) {
       connectionReturnMessageCount ??= currentMessages.length;
       if (connectionReturnMessageCount !== currentMessages.length) preserveConnectionScroll = false;
@@ -1445,7 +1543,17 @@ export function createChatSurface(
           }
           ${glanceTier || ctx.pane || editingApp ? nothing : sessionTopbar()}
           ${glanceTier ? paneGlance(agent, messages, glanceTier) : nothing}
-          <section class="chat-scroll" tabindex="0" aria-label="Conversation">
+          <section
+            class="chat-scroll"
+            tabindex="0"
+            aria-label="Conversation"
+            @scroll=${() => {
+              if (!newMessagesPending || !transcriptAtBottom() || !chatState.sessionId) return;
+              newMessagesPending = false;
+              void markSessionNotificationsRead(chatState.sessionId);
+              drawActiveChat(agent);
+            }}
+          >
             ${pinnedStrip()}
             <div class="message-stack ${emptyChat ? "empty-stack" : ""}">
               ${showWelcome ? welcomeGreeting(!messages.length) : nothing} ${inheritedHeader()}
@@ -1456,6 +1564,22 @@ export function createChatSurface(
             </div>
           </section>
           <div class="chat-bottom-dock">
+            ${
+              newMessagesPending && !glanceTier
+                ? html`<button
+                    class="chat-new-messages"
+                    type="button"
+                    @click=${() => {
+                      newMessagesPending = false;
+                      drawActiveChat(agent);
+                      scrollTranscript(true);
+                      if (chatState.sessionId) void markSessionNotificationsRead(chatState.sessionId);
+                    }}
+                  >
+                    ${icon(ArrowDown, 15)}<span>New messages · Jump to latest</span>
+                  </button>`
+                : nothing
+            }
             ${suggestedActivityContent} ${goalStrip(agent)} ${ctx.composer.queuedStrip(agent)}
             ${backgroundActivityStrip()} ${ctx.composer.composerForm(agent)}
           </div>
@@ -1634,7 +1758,11 @@ export function createChatSurface(
       const deleted = Boolean((message as { deleted?: boolean }).deleted);
       const edited = !deleted && Boolean((message as { edited?: boolean }).edited);
       return html`
-        <article class="message-row user-row ${steered ? "steered-row" : ""}" data-index=${index}>
+        <article
+          class="message-row user-row ${steered ? "steered-row" : ""}"
+          data-index=${index}
+          data-entry-seq=${(message as { entrySeq?: number }).entrySeq ?? nothing}
+        >
           ${steered ? html`<div class="steer-label">↪ steered the running task</div>` : nothing}
           ${speaker ? html`<div class="speaker-label">${speaker}</div>` : nothing}
           <div class="message-bubble user-bubble ${deleted ? "deleted-bubble" : ""}">

@@ -3025,6 +3025,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           !syntheticPrompt && input.text.trim()
             ? {
                 text: input.text,
+                ...(input.surface === "web" ? { authorId: actor.id } : {}),
                 ...((messageTs ?? entryTs) ? { ts: messageTs ?? entryTs } : {}),
                 ...(actor.displayName?.trim() ? { name: actor.displayName.trim() } : {}),
                 ...(input.displayText?.trim() ? { display: input.displayText } : {}),
@@ -3222,6 +3223,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 if (input.runId) payload.runId = input.runId;
                 if (actor.displayName?.trim() && typeof payload.name !== "string")
                   payload.name = actor.displayName.trim();
+                if (input.surface === "web" && !automatedTurn) payload.authorId = actor.id;
                 if (input.displayText?.trim() && payload.text === input.text && typeof payload.display !== "string")
                   payload.display = input.displayText;
                 if (syntheticPrompt || continuation) payload.hidden = true;

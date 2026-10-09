@@ -5,6 +5,7 @@ import { initializeAnalytics, capturePageview, stopAnalytics } from "./product-a
 import { captureConnectionReturn } from "./connection-return";
 import {
   Box,
+  Bell,
   Brain,
   CalendarDays,
   Clock,
@@ -70,6 +71,7 @@ import { activityOf } from "./session-list";
 import { replaceChildrenPreservingFocus } from "./pane-focus";
 import {
   openSession,
+  preferredChatSession,
   closeOpenSessionMenu,
   refreshSessions,
   renderChatsPage,
@@ -94,6 +96,12 @@ import { clearConnectorNotice, noteConnectorResult, renderConnectors, resetKeych
 import { openDeployById, renderDeploys } from "./deploys";
 import { renderMemory, resetMemoryState } from "./memory";
 import { renderCalendar } from "./calendar";
+import {
+  notificationUnreadCount,
+  refreshNotifications,
+  renderNotifications,
+  resetNotifications,
+} from "./notifications";
 import {
   inboxOpenCount,
   refreshInbox,
@@ -147,6 +155,11 @@ setSigninRequiredHandler((detail) => {
 });
 
 onExitCanvas(() => exitSplitIfActive());
+document.addEventListener("qm:notifications-updated", () => {
+  renderSidebarTop();
+  if (appState.currentView === "chats") renderList();
+  if (appState.currentView === "contexts") void renderContexts();
+});
 
 export const ADMIN_BASE = (() => {
   const base = ((import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? "/").replace(/\/$/, "");
@@ -1218,6 +1231,7 @@ export async function signOut(): Promise<void> {
   appState.me = null;
   closeBrowse();
   resetInboxState();
+  resetNotifications();
   clearAllDrafts();
   exitSplitIfActive();
   mainConversation().resetChatState();
@@ -1627,6 +1641,14 @@ export function renderSidebarTop(): void {
     html`
       <nav class="nav quick-nav" @click=${onNavClick}>
         ${navRow("chats", ICON.home, "Home")}
+        <a
+          class="navrow ${appState.currentView === "notifications" ? "active" : ""}"
+          href=${deepLinkPath(UI_BASE, "notifications", null)}
+          data-view="notifications"
+          aria-label=${t("Notifications")}
+        >
+          ${icon(Bell, 17)}<span>${t("Notifications")}</span>${notificationUnreadCount() > 0 ? html`<span class="nav-badge" aria-label=${`${t("Unread notifications")}: ${notificationUnreadCount()}`}>${notificationUnreadCount() > 99 ? "99+" : notificationUnreadCount()}</span>` : nothing}
+        </a>
         ${can("inbox") ? html`${inboxNavRow()} ${navRow("calendar", ICON.calendar, "Calendar")}` : nothing}
         ${actionRow(Search, "Search", () => {
           hideTooltip();
@@ -1677,8 +1699,11 @@ function onNavClick(e: Event): void {
   if (e instanceof MouseEvent && !isPlainLeftClick(e)) return;
   e.preventDefault();
   setScopedSession(null);
-  if (view === "chats") startNewChatInLastScope();
-  else switchView(view);
+  if (view === "chats") {
+    const previous = preferredChatSession();
+    if (previous) void openSession(previous);
+    else startNewChatInLastScope();
+  } else switchView(view);
   closeSidebarOnNarrowView();
 }
 
@@ -1709,6 +1734,9 @@ export function switchView(v: View): void {
       break;
     case "inbox":
       void renderInbox();
+      break;
+    case "notifications":
+      renderNotifications();
       break;
     case "calendar":
       renderCalendar();
@@ -1776,6 +1804,9 @@ function refreshActiveView(v: View): void {
       break;
     case "inbox":
       void renderInbox();
+      break;
+    case "notifications":
+      renderNotifications();
       break;
     case "calendar":
       renderCalendar();
@@ -1971,6 +2002,7 @@ window.addEventListener("popstate", () => {
 
 window.addEventListener("focus", () => {
   if (!appState.me) return;
+  void refreshNotifications();
   if (appState.currentView === "contexts") void renderContexts();
   else if (appState.currentView === "chats") void refreshSessions({ silent: true, refreshContexts: true });
 });
@@ -2025,6 +2057,8 @@ export async function bootSafely(): Promise<void> {
 export async function boot(): Promise<void> {
   captureConnectionReturn(location.href);
   const params = new URLSearchParams(location.search);
+  const linkedEntry = Number(params.get("entry"));
+  const targetEntry = Number.isSafeInteger(linkedEntry) && linkedEntry > 0 ? linkedEntry : null;
   const {
     view: wanted,
     session: wantedSession,
@@ -2035,7 +2069,10 @@ export async function boot(): Promise<void> {
   const linkedId = wantedSession && chatsLink ? wantedSession : null;
   let transcriptUnavailable = false;
   const loadLinkedTranscript = (id: string) =>
-    fetchTranscript(id, { tailTurns: TAIL_TURNS }).catch((error: unknown) => {
+    fetchTranscript(
+      id,
+      targetEntry ? { beforeSeq: targetEntry + 1, tailTurns: TAIL_TURNS } : { tailTurns: TAIL_TURNS },
+    ).catch((error: unknown) => {
       transcriptUnavailable = !(error instanceof ApiError && (error.status === 404 || error.status === 403));
       return null;
     });
@@ -2083,6 +2120,7 @@ export async function boot(): Promise<void> {
   mountShell();
   shellMounted = true;
   ensureDeliveryStream();
+  void refreshNotifications();
   warmDeferredChunks();
   void refreshInbox({ silent: true });
   loadPersistedSplit();
@@ -2105,6 +2143,7 @@ export async function boot(): Promise<void> {
       if (!sessionsState.list.some((s) => s.id === linked.id)) sessionsState.list = [linked, ...sessionsState.list];
       revealSessionSurface(linked);
       await openSession(linked, transcript, approvalsPrefetch ?? undefined);
+      if (targetEntry) focusNotificationEntry(targetEntry);
       return;
     }
     await sessions;
@@ -2113,6 +2152,7 @@ export async function boot(): Promise<void> {
       exitSplitIfActive();
       revealSessionSurface(match);
       await openSession(match);
+      if (targetEntry) focusNotificationEntry(targetEntry);
     } else {
       showConversationError(transcriptUnavailable);
     }
@@ -2152,7 +2192,18 @@ export async function boot(): Promise<void> {
     const recent = [...sessionsState.list].sort((a, b) => activityOf(b) - activityOf(a))[0]!;
     exitSplitIfActive();
     await openSession(recent);
-  } else if (!mountRestoredCanvas() && !mainConversation().state.threadRef) {
-    mainConversation().newChat();
+  } else {
+    const previous =
+      bareEntry && !splitState.active && !restoredCanvasNeedsSessionList() ? preferredChatSession() : null;
+    if (previous) await openSession(previous);
+    else if (!mountRestoredCanvas() && !mainConversation().state.threadRef) mainConversation().newChat();
   }
+}
+
+function focusNotificationEntry(seq: number): void {
+  requestAnimationFrame(() => {
+    const row = appState.mainEl?.querySelector<HTMLElement>(`[data-entry-seq="${seq}"]`);
+    row?.scrollIntoView({ block: "center" });
+    row?.classList.add("notification-target");
+  });
 }
