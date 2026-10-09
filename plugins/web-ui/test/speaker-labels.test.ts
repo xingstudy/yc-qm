@@ -11,10 +11,7 @@ test("user bubbles are labeled when several people spoke or when a speaker is no
     rule,
     /const viewer = \(appState\.me\?\.displayName \|\| appState\.me\?\.user\)\?\.trim\(\)\.toLowerCase\(\);/,
   );
-  assert.match(
-    rule,
-    /labelSpeakers =\s*names\.size > 1 \|\| \(Boolean\(viewer\) && \[\.\.\.names\]\.some\(\(n\) => n\.toLowerCase\(\) !== viewer\)\)/,
-  );
+  assert.match(rule, /chatState\.scopeId\?\.startsWith\("group:"\) === true/);
 });
 
 test("the BFF hands the browser the viewer's display name from the portal identity", () => {

@@ -146,6 +146,10 @@ test("an open project conversation receives peer messages during a run and recon
       ensureDeliveryStream,
     }) as Conversation;
     conv.mountContinuable(row.threadRef, row.id, row.scopeId, entriesToMessages(entries, transcriptModel()), null, row);
+    conv.state.agent!.state.messages.push({ role: "user", content: "Just sent" } as never);
+    conv.drawActiveChat();
+    assert.equal(host.querySelector(".user-row:not([data-entry-seq]) .speaker-label")?.textContent, "owner");
+    conv.state.agent!.state.messages.pop();
     Object.defineProperty(conv.state.agent!.state, "isStreaming", { configurable: true, value: true });
     Object.defineProperty(conv.state.agent!.state, "streamingMessage", {
       configurable: true,

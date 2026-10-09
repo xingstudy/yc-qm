@@ -281,12 +281,22 @@ export function createChatSurface(
         names.add(speaker.trim());
     }
     const viewer = (appState.me?.displayName || appState.me?.user)?.trim().toLowerCase();
-    chatState.labelSpeakers = names.size > 1 || (Boolean(viewer) && [...names].some((n) => n.toLowerCase() !== viewer));
+    chatState.labelSpeakers =
+      chatState.scopeId?.startsWith("group:") === true ||
+      names.size > 1 ||
+      (Boolean(viewer) && [...names].some((n) => n.toLowerCase() !== viewer));
   }
 
   function speakerLabelFor(message: AgentMessage): string | undefined {
     if (!chatState.labelSpeakers) return undefined;
-    const speaker = (message as { speaker?: string }).speaker;
+    const user = message as { role?: string; speaker?: string; entrySeq?: number };
+    const speaker =
+      user.speaker ||
+      (chatState.scopeId?.startsWith("group:") &&
+      (user.role === "user" || user.role === "user-with-attachments") &&
+      user.entrySeq === undefined
+        ? appState.me?.displayName || appState.me?.user
+        : undefined);
     return typeof speaker === "string" && speaker.trim() ? speaker.trim() : undefined;
   }
   let transcriptRefreshGeneration = 0;
