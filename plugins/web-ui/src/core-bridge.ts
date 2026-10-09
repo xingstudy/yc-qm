@@ -1212,7 +1212,7 @@ async function resumeDrive(
     // never blanks text the person has already read. The server's own partial
     // (when longer) simply replaces it via the normal delta path.
     if (seedText?.trim()) pushDelta(stream, partial, st, seedText);
-    if (initialRun && applyRun(stream, partial, st, initialRun, notify) === "terminal") return;
+    if (initialRun && applyRun(stream, partial, st, initialRun, notify, runId) === "terminal") return;
     await followRun(stream, partial, runId, signal, notify, st, slot, gen);
   } catch (e) {
     work.status = "failed";
@@ -1319,6 +1319,7 @@ function applyRun(
   st: Acc,
   run: RunPoll,
   notify?: () => void,
+  runId?: string,
 ): "open" | "terminal" {
   const work = (partial as AssistantWork).work;
   const beforeActivity = work?.activity.length ?? 0;
@@ -1366,7 +1367,7 @@ function applyRun(
     return "terminal";
   }
   if (!paused && !quiet && (run.status === "failed" || (res && res.status !== "ok"))) {
-    fail(stream, partial, userFacingFailureText(res ?? { status: "failed" }));
+    fail(stream, partial, userFacingFailureText(res ?? { status: "failed" }, runId));
     return "terminal";
   }
   finish(stream, partial, st, st.acc);
@@ -1400,7 +1401,7 @@ export async function pollRun(
       await sleep(Math.min(POLL_MS * 2 ** Math.min(consecutiveFailures, 4), POLL_RETRY_MAX_MS));
       continue;
     }
-    if (applyRun(stream, partial, st, run, notify) === "terminal") return;
+    if (applyRun(stream, partial, st, run, notify, runId) === "terminal") return;
     if (run.stale === true) st.staleSince ??= now();
     else st.staleSince = undefined;
     if (run.alive === true || (st.staleSince !== undefined && now() - st.staleSince < STALE_GRACE_MS))
@@ -1526,7 +1527,8 @@ async function streamRunViaSse(
           append(run.partial.slice(st.acc.length));
         // Completion must carry the final result, including files and approvals.
         const terminal = run.status === "done" || run.status === "failed" || run.result != null;
-        if (applyRun(stream, partial, st, { ...run, replyComplete: terminal }, notify) === "terminal") return "done";
+        if (applyRun(stream, partial, st, { ...run, replyComplete: terminal }, notify, runId) === "terminal")
+          return "done";
         if (run.alive) st.lastProgressAt = now();
       }
     }
@@ -2015,7 +2017,7 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
         out.push({ ...revision, timestamp: e.createdAt } as unknown as AgentMessage);
         continue;
       }
-      const failure = e.payload as { kind?: string; message?: string } | null;
+      const failure = e.payload as { kind?: string; message?: string; runId?: string } | null;
       if (failure?.kind === "turn_failure" && typeof failure.message === "string" && failure.message) {
         spillHeldPosts();
         flushWork("", e.createdAt);
@@ -2027,7 +2029,7 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
           model: model?.id ?? "unknown",
           usage: zeroUsage(),
           stopReason: "error",
-          errorMessage: failure.message,
+          errorMessage: `${failure.message}${failure.runId ? ` (run ${failure.runId})` : ""}`,
           timestamp: e.createdAt,
         };
         out.push(msg as AgentMessage);

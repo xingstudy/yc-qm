@@ -412,10 +412,10 @@ test("a crashed turn's raw exception text never reaches the stored reason", asyn
   assert.equal(parked?.status, "failed");
   const reason = parked?.result?.reason ?? "";
   assert.ok(!reason.includes("db-internal"), `raw error leaked into the surfaced reason: ${reason}`);
-  assert.match(reason, /operator error log/, "surfaces point operators at the log instead");
+  assert.match(reason, /required service could not be reached/, "surfaces receive a safe, useful reason");
 });
 
-test("a NonRetryableTurnError keeps its human-readable reason on the stored result", async () => {
+test("a NonRetryableTurnError with a timeout keeps a safe actionable reason", async () => {
   const { runs } = createMemoryRunStore();
   const orchestrator = fakeOrchestrator(async () => {
     throw new NonRetryableTurnError("Codex turn exceeded 300s wall clock");
@@ -424,5 +424,5 @@ test("a NonRetryableTurnError keeps its human-readable reason on the stored resu
   await runs.enqueue({ sessionId: "s1", request: turn, maxAttempts: 1 });
   const run = await runs.claim("w1", 5_000);
   await assert.rejects(processRun({ runs, orchestrator, leaseTtlMs: 5_000 }, run!));
-  assert.equal((await runs.get(run!.id))?.result?.reason, "Codex turn exceeded 300s wall clock");
+  assert.match((await runs.get(run!.id))?.result?.reason ?? "", /timed out; try again/);
 });

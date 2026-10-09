@@ -4102,7 +4102,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           {
             category: "turn",
             code: "error",
-            message: errMessage(err),
+            message: `run ${input.runId ?? "direct"} attempt ${input.attempt ?? 1}: ${errMessage(err)}`,
             scopeLabel: scopeId,
             sessionId: session.id,
           },

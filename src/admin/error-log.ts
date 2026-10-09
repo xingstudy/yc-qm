@@ -45,7 +45,8 @@ export function withErrorReporting(store: ErrorLog): ErrorLog {
     ...store,
     record(event, error) {
       reportBackendError(error ?? new Error("Recorded backend failure"), `${event.category}:${event.code}`);
-      store.record(event);
+      const stack = event.category === "turn" && error instanceof Error ? error.stack : undefined;
+      store.record(stack ? { ...event, message: `${event.message}\n${stack.slice(0, 8192)}` } : event);
     },
   };
 }

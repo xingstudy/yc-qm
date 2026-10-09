@@ -237,13 +237,16 @@ test('an org scope reads everything — the dashboard\'s default "All scopes" vi
       manifest: { name: "summarize", description: "sum it up", requiredCapabilities: [], body: "..." },
       createdBy: "U1",
     });
-    s.built.errors.record({
-      category: "turn",
-      code: "boom",
-      message: "redacted",
-      scopeLabel: "personal:U1",
-      sessionId: "sess-1",
-    });
+    s.built.errors.record(
+      {
+        category: "turn",
+        code: "boom",
+        message: "run r-1 attempt 3: provider unavailable",
+        scopeLabel: "personal:U1",
+        sessionId: "sess-1",
+      },
+      new Error("provider unavailable"),
+    );
     s.built.errors.record({ category: "turn", code: "bang", message: "redacted", scopeLabel: "channel:C9" });
 
     const crons = await json(await fetch(`${s.base}/v1/admin/crons?scope=org:default-org`, { headers: ALICE_ADMIN }));
@@ -279,6 +282,7 @@ test('an org scope reads everything — the dashboard\'s default "All scopes" vi
       ["boom"],
       "sessionId narrows to that session's errors (the transcript error strip)",
     );
+    assert.match(bySession.errors[0].message, /run r-1 attempt 3: provider unavailable\nError: provider unavailable/);
     const noSession = await json(
       await fetch(`${s.base}/v1/admin/errors?scope=org:default-org&sessionId=sess-none`, { headers: ALICE_ADMIN }),
     );

@@ -513,7 +513,7 @@ test("a durable turn_failure entry renders like the live inline error (survives 
     { type: "user", payload: { text: "how did it go?" }, createdAt: 100 },
     {
       type: "system",
-      payload: { kind: "turn_failure", message: "API integrators: you can reduce refusals…" },
+      payload: { kind: "turn_failure", message: "API integrators: you can reduce refusals…", runId: "r-1" },
       createdAt: 110,
     },
   ];
@@ -522,7 +522,7 @@ test("a durable turn_failure entry renders like the live inline error (survives 
   const err = msgs[1] as { role?: string; stopReason?: string; errorMessage?: string };
   assert.equal(err.role, "assistant");
   assert.equal(err.stopReason, "error");
-  assert.equal(err.errorMessage, "API integrators: you can reduce refusals…");
+  assert.equal(err.errorMessage, "API integrators: you can reduce refusals… (run r-1)");
 });
 
 test("user entries carry the stored speaker name and slack ts onto the rebuilt message", () => {

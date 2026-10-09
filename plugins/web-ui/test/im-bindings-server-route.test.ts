@@ -2000,8 +2000,10 @@ test("WeCom remembers an opened direct chat and sends Bot locator messages", asy
       event: { eventtype: "enter_chat" },
     },
   });
-  await waitFor(() => wecomWelcomes.some(({ reqId }) => reqId === "wecom-enter-locate"));
-  assert.match(wecomWelcomes.at(-1)?.content ?? "", /以后可以直接在这里向我提问/);
+  assert.equal(
+    wecomWelcomes.some(({ reqId }) => reqId === "wecom-enter-locate"),
+    false,
+  );
 
   await waitFor(() => {
     const stored = uiState.get(`${user}#im-bindings`)?.value as

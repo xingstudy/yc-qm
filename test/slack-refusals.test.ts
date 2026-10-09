@@ -43,7 +43,7 @@ test("refusalNote: a failed turn hides the internal reason but keeps the admin l
     "dm",
   );
   assert.doesNotMatch(note, /TypeError|sandbox\.ts/);
-  assert.match(note, /something went wrong on my end/);
+  assert.match(note, /unexpected internal error/);
   assert.match(note, /Full error: https:/);
 });
 

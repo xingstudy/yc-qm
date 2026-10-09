@@ -9,6 +9,7 @@ import {
 } from "../src/core/failure-copy.ts";
 import { SECURITY_QUARANTINE_REFUSAL_TEXT } from "../plugins/chassis/src/security-quarantine.ts";
 import { GENERIC_FAILURE_TEXT } from "../plugins/chassis/src/failure-copy.ts";
+import { turnFailureMessage } from "../src/core/turn-error.ts";
 
 test("the shared failure policy renders quarantine canned, refused reasons verbatim, everything else generic", () => {
   const quarantine = {
@@ -37,8 +38,34 @@ test("the shared failure policy renders quarantine canned, refused reasons verba
 
   const failed = { status: "failed", reason: "TypeError: fetch failed at sandbox.ts:42" };
   assert.equal(userFacingFailureText(failed), GENERIC_FAILURE_TEXT);
-  assert.equal(userFacingFailureClause(failed), "something went wrong on my end");
+  assert.equal(
+    userFacingFailureClause(failed),
+    "an unexpected internal error interrupted the turn; try again or contact an administrator",
+  );
   assert.doesNotMatch(userFacingFailureText(failed), /TypeError|sandbox\.ts/);
 
   assert.equal(userFacingFailureText({ status: "refused" }), GENERIC_FAILURE_TEXT);
+});
+
+test("known infrastructure failures explain the cause without exposing raw diagnostics", () => {
+  for (const [error, expected] of [
+    [new Error("provider returned 429; token=private"), "rate limiting"],
+    [new Error("request timed out at /private/path"), "timed out"],
+    [new Error("fetch failed", { cause: new Error("ECONNRESET private-host") }), "could not be reached"],
+    [new Error("provider HTTP 503 private-host"), "temporarily unavailable"],
+    [new Error("invalid api key private-token"), "could not authenticate"],
+    [new Error("Codex turn exceeded 300s wall clock"), "timed out"],
+    [new Error("maximum context length is 200000 private-token"), "context limit"],
+  ] as const) {
+    const reason = turnFailureMessage(error);
+    const visible = userFacingFailureText({ status: "failed", reason });
+    assert.match(visible, new RegExp(expected));
+    assert.equal(userFacingFailureClause({ status: "failed", reason }), reason);
+    assert.doesNotMatch(visible, /private/);
+  }
+  assert.equal(userFacingFailureText({ status: "failed", reason: "provider 429 private" }), GENERIC_FAILURE_TEXT);
+  assert.equal(
+    userFacingFailureText({ status: "failed", reason: "private" }, "r-1"),
+    `${GENERIC_FAILURE_TEXT} (run r-1)`,
+  );
 });
