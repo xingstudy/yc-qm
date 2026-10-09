@@ -1,8 +1,7 @@
-FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS wireproxy-build
+FROM golang:1.26.9-alpine@sha256:cdfd4fe2da6b225d8b40c6b7a105736e548e83ff56d5d8f9394446eeb5eb84e0 AS wireproxy-build
 
-RUN apk add --no-cache go \
-  && go mod download github.com/windtf/wireproxy@v1.1.3 \
-  && cp -R /root/go/pkg/mod/github.com/windtf/wireproxy@v1.1.3 /wireproxy \
+RUN go mod download github.com/windtf/wireproxy@v1.1.3 \
+  && cp -R /go/pkg/mod/github.com/windtf/wireproxy@v1.1.3 /wireproxy \
   && chmod -R u+w /wireproxy \
   && cd /wireproxy \
   && go get golang.org/x/crypto@v0.55.0 golang.org/x/net@v0.57.0 \
