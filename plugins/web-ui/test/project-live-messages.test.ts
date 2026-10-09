@@ -159,6 +159,8 @@ test("an open project conversation receives peer messages during a run and recon
       scrollHeight: { configurable: true, value: 1000 },
       clientHeight: { configurable: true, value: 100 },
     });
+    scroller.scrollTop = 1000;
+    scroller.dispatchEvent(new Event("scroll"));
     scroller.scrollTop = 100;
     scroller.dispatchEvent(new Event("scroll"));
     const anotherPeer = { ...peer, seq: 2, payload: { text: "Another message from B", authorId: "peer" } };
