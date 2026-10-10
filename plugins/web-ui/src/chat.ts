@@ -724,7 +724,7 @@ export function createChatSurface(
         agent.state.messages.map((message) => (message as { entrySeq?: number }).entrySeq).filter(Number.isSafeInteger),
       );
       const previous = new Set(streamedPeerMessages.map((message) => (message as { entrySeq?: number }).entrySeq));
-      const peers = (page.entries ?? []).filter((entry) => {
+      const peers = inheritedTranscript(chatState.forkSession ?? {}, page.entries ?? []).current.filter((entry) => {
         const payload = entry.payload as { authorId?: unknown } | null;
         return (
           entry.type === "user" &&
