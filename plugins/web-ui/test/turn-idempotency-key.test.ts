@@ -100,7 +100,8 @@ test("every send gesture mints exactly one key, carried on the prompt message so
     composer.indexOf("async function sendPrompt"),
     composer.indexOf("const LARGE_PASTE_CHARS"),
   );
-  assert.match(send, /agent\.prompt\(userSendMessage\(text, attachments\.length \? attachments : undefined\)\)/);
+  assert.match(send, /const wireText = encodedDraft\(text\);/);
+  assert.match(send, /agent\.prompt\(userSendMessage\(wireText, attachments\.length \? attachments : undefined\)\)/);
 });
 
 test("the queue path keys each message and a resend after a failed submit reuses the same key", () => {

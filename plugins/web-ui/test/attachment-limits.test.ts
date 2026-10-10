@@ -140,7 +140,8 @@ test("queued turns carry the staged attachments; attachment-only queues are real
   assert.match(fn, /const staged = composerState\.attachments;/);
   assert.match(fn, /if \(\(!text && !staged\.length\) \|\| !threadRef\) return;/);
   assert.match(fn, /await uploadAttachments\(staged\)/);
-  assert.match(fn, /enqueueTurn\(agent, threadRef, text, uploaded, queuedFilesKey\(sendable\)\)/);
+  assert.match(fn, /const wireText = encodedDraft\(text\);/);
+  assert.match(fn, /enqueueTurn\(agent, threadRef, wireText, uploaded, queuedFilesKey\(sendable\)\)/);
   assert.match(bridge, /attachments: CoreAttachment\[\] = \[\],\n\): Promise<QueuedRun>/);
 });
 
