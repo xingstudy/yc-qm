@@ -4,7 +4,7 @@ RUN go mod download github.com/windtf/wireproxy@v1.1.3 \
   && cp -R /go/pkg/mod/github.com/windtf/wireproxy@v1.1.3 /wireproxy \
   && chmod -R u+w /wireproxy \
   && cd /wireproxy \
-  && go get golang.org/x/crypto@v0.55.0 golang.org/x/net@v0.57.0 \
+  && go get golang.org/x/crypto@v0.57.0 golang.org/x/net@v0.60.0 \
   && mkdir -p /out \
   && CGO_ENABLED=0 go build -o /out/wireproxy ./cmd/wireproxy
 

@@ -1,12 +1,12 @@
 FROM golang:1.26.9-alpine@sha256:cdfd4fe2da6b225d8b40c6b7a105736e548e83ff56d5d8f9394446eeb5eb84e0 AS gh-builder
 
 ARG GH_VERSION=2.99.0
-ARG X_MOD_VERSION=0.40.0
+ARG X_MOD_VERSION=0.41.0
 RUN go mod download "github.com/cli/cli/v2@v${GH_VERSION}" \
   && mkdir /tmp/gh \
   && cp -a "/go/pkg/mod/github.com/cli/cli/v2@v${GH_VERSION}/." /tmp/gh \
   && cd /tmp/gh \
-  && go get "golang.org/x/mod@v${X_MOD_VERSION}" \
+  && go get "golang.org/x/mod@v${X_MOD_VERSION}" golang.org/x/net@v0.60.0 \
   && GH_VERSION="$GH_VERSION" SOURCE_DATE_EPOCH=1785456000 go run script/build.go bin/gh \
   && install bin/gh /usr/local/bin/gh \
   && go version -m /usr/local/bin/gh | grep -Eq "golang.org/x/mod[[:space:]]+v${X_MOD_VERSION}([[:space:]]|$)"
