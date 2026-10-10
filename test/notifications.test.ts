@@ -187,7 +187,7 @@ test("project mention notifications are scoped to current recipients and hide co
       threadRef: "web:owner:mention",
       audience: [],
     },
-    text: "Hello <@member|周明>，请查收。",
+    text: "@member，Hello <@member|周明>，请查收。",
   });
   assert.equal(turned.status, "ok");
   assert.ok(turned.sessionId);
@@ -254,6 +254,7 @@ test("project mention notifications are scoped to current recipients and hide co
     assert.deepEqual(before.conversationUnread[turned.sessionId], { messages: 1, mentions: 1 });
     const mention = before.notifications.find((item) => item.summary?.includes("Hello"));
     assert.ok(mention);
+    assert.equal(mention.summary, "@member，Hello @周明，请查收。");
     const sharedResult = before.notifications.find((item) => item.summary?.includes("Scheduled result"));
     assert.equal(sharedResult?.sessionId, turned.sessionId);
     assert.equal(sharedResult?.cronId, undefined);
@@ -288,6 +289,32 @@ test("project mention notifications are scoped to current recipients and hide co
   }
 });
 
+test("project notifications match a handwritten username in the original message, not the model envelope", async () => {
+  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "qm-mention-envelope-")), orgId: "acme" }));
+  await built.app.upsertDirectory([
+    { principalId: "owner", displayName: "Owner", type: "internal" },
+    { principalId: "qa-member", displayName: "QA Member", type: "internal" },
+  ]);
+  const project = await built.app.createProject("owner", "Mention envelope");
+  assert.ok(project);
+  assert.equal((await built.app.addProjectMember(project.id, "owner", "qa-member")).status, "ok");
+  const turned = await built.app.turn({
+    surface: "web",
+    actor: { externalId: "owner" },
+    conversation: {
+      kind: "group",
+      channelRef: projectGroupRef(project.id),
+      threadRef: "web:owner:envelope",
+      audience: [],
+    },
+    text: "@qa-member",
+  });
+  assert.equal(turned.status, "ok");
+  for (let attempt = 0; attempt < 50 && !(await built.notifications.list("qa-member")).length; attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal((await built.notifications.list("qa-member"))[0]?.kind, "mention");
+});
+
 test("mentions preserve selected identities and recognize Chinese punctuation without matching emails or name prefixes", () => {
   const person = { principalId: "zhou@example.com", displayName: "周明", slackId: "U123" };
   const wire = encodeMentions("请联系 @周明，谢谢。", [person]);
@@ -299,6 +326,7 @@ test("mentions preserve selected identities and recognize Chinese punctuation wi
   for (const text of ["name@周明", "@周明明", "<@other|周明>", "<@zhou@example.com.other>"])
     assert.equal(mentionsPerson(text, person), false, text);
   assert.equal(mentionsPerson(wire, { principalId: "same-name", displayName: "周明" }), false);
+  assert.equal(mentionsPerson("@qa-member", { principalId: "qa-member", displayName: "QA Member" }), true);
 });
 
 test("project member search accepts one Chinese character and limits mention candidates to accessible project members", async () => {

@@ -1492,9 +1492,15 @@ export function buildApp(
             .map((window) => window.principalId);
           if (!participants.length) return;
           if (entry.type === "user" && groupEntry) {
-            const payload = entry.payload as { authorId?: unknown; text?: unknown; hidden?: unknown } | null;
+            const payload = entry.payload as {
+              authorId?: unknown;
+              text?: unknown;
+              display?: unknown;
+              hidden?: unknown;
+            } | null;
             if (payload?.hidden !== true && typeof payload?.authorId === "string") {
-              const text = typeof payload.text === "string" ? payload.text : "";
+              let text = typeof payload.text === "string" ? payload.text : "";
+              if (typeof payload.display === "string" && payload.display.trim()) text = payload.display;
               await Promise.all(
                 participants
                   .filter((recipient) => recipient !== payload.authorId)

@@ -75,7 +75,8 @@ async function visibleNotification(ctx: ApiCtx, record: NotificationRecord, allo
         cronId: undefined,
         fireKey: undefined,
       };
-    const text = entrySearchText(found.entry.payload);
+    const display = (found.entry.payload as { display?: unknown } | null)?.display;
+    const text = typeof display === "string" && display.trim() ? display : entrySearchText(found.entry.payload);
     return {
       ...base,
       cronId: undefined,

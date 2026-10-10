@@ -43,5 +43,7 @@ export function encodeMentions(text: string, people: readonly MentionPerson[]): 
 export function mentionsPerson(text: string, person: MentionPerson): boolean {
   if ([...text.matchAll(WIRE_MENTION)].some((match) => match[1] === person.principalId || match[1] === person.slackId))
     return true;
-  return Boolean(person.displayName.trim() && namePattern(person.displayName).test(text.replace(WIRE_MENTION, "")));
+  return [person.displayName, person.principalId].some(
+    (name) => name.trim() && namePattern(name).test(text.replace(WIRE_MENTION, "")),
+  );
 }
