@@ -56,8 +56,8 @@ test("core deploy image pins a patched wireproxy release", () => {
   assert.ok(
     Number(major) > 1 || (Number(major) === 1 && (Number(minor) > 1 || (Number(minor) === 1 && Number(patch) >= 3))),
   );
-  assert.match(dockerfile, /golang\.org\/x\/crypto@v0\.55\.0\b/);
-  assert.match(dockerfile, /golang\.org\/x\/net@v0\.57\.0\b/);
+  assert.match(dockerfile, /golang\.org\/x\/crypto@v0\.57\.0\b/);
+  assert.match(dockerfile, /golang\.org\/x\/net@v0\.60\.0\b/);
   assert.match(dockerfile, /^FROM golang:1\.26\.9-alpine@sha256:[a-f0-9]{64} AS wireproxy-build$/m);
   assert.doesNotMatch(dockerfile, /apk add --no-cache go/);
   assert.match(dockerfile, /cp -R \/go\/pkg\/mod\/github\.com\/windtf\/wireproxy@v1\.1\.3 \/wireproxy/);

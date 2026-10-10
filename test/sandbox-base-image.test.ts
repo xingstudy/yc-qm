@@ -42,12 +42,13 @@ test("the sandbox base builds a patched GitHub CLI", () => {
   const dockerfile = readFileSync(new URL("../fly/Dockerfile", import.meta.url), "utf8");
   const localBuild = readFileSync(new URL("../scripts/local-sandbox-build.sh", import.meta.url), "utf8");
   assert.match(dockerfile, /ARG GH_VERSION=2\.99\.0/);
-  assert.match(dockerfile, /ARG X_MOD_VERSION=0\.40\.0/);
+  assert.match(dockerfile, /ARG X_MOD_VERSION=0\.41\.0/);
   assert.match(dockerfile, /^FROM golang:1\.26\.9-alpine@sha256:[a-f0-9]{64} AS gh-builder$/m);
   assert.match(dockerfile, /ARG GOPROXY=https:\/\/proxy\.golang\.org,direct/);
   assert.match(dockerfile, /ARG PIP_INDEX_URL=https:\/\/pypi\.org\/simple/);
   assert.match(dockerfile, /GOPROXY="\$GOPROXY" go mod download/);
   assert.match(dockerfile, /go get "golang\.org\/x\/mod@v\$\{X_MOD_VERSION\}"/);
+  assert.match(dockerfile, /go get[^\n]*golang\.org\/x\/net@v0\.60\.0\b/);
   assert.match(dockerfile, /go version -m \/usr\/local\/bin\/gh \| grep -Eq/);
   assert.match(localBuild, /--build-arg "GOPROXY=\$\{GOPROXY\}"/);
   assert.match(localBuild, /--build-arg "PIP_INDEX_URL=\$\{PIP_INDEX_URL\}"/);
