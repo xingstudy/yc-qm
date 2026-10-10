@@ -379,7 +379,12 @@ export interface App {
   ): Promise<SessionBackgroundOutput | null>;
   listContexts(principalId: string): Promise<ContextSummary[]>;
   listProjects(principalId: string): Promise<ProjectView[]>;
-  projectMemberCandidates(id: string, principalId: string, query: string): Promise<ProjectMemberCandidate[] | null>;
+  projectMemberCandidates(
+    id: string,
+    principalId: string,
+    query: string,
+    membersOnly?: boolean,
+  ): Promise<ProjectMemberCandidate[] | null>;
   createProject(principalId: string, name: string): Promise<ProjectView | null>;
   addProjectMember(id: string, principalId: string, memberId: string): Promise<ProjectViewMutation>;
   removeProjectMember(id: string, principalId: string, memberId: string): Promise<ProjectViewMutation>;

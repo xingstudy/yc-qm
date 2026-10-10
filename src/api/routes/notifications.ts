@@ -1,3 +1,4 @@
+import { mentionText } from "../../../plugins/chassis/src/mentions.ts";
 import type { NotificationRecord } from "../../notifications/notification-store.ts";
 import { entrySearchText } from "../../sessions/entry-search.ts";
 import { deliveryStatusForRun } from "../../delivery/delivery-store.ts";
@@ -80,7 +81,7 @@ async function visibleNotification(ctx: ApiCtx, record: NotificationRecord, allo
       cronId: undefined,
       fireKey: undefined,
       source: session.title ?? session.channelName ?? "Project conversation",
-      summary: text?.replace(/\s+/g, " ").slice(0, 120) ?? "New message",
+      summary: text ? mentionText(text).replace(/\s+/g, " ").slice(0, 120) : "New message",
     };
   }
   return { ...base, unavailable: true, cronId: undefined, fireKey: undefined };

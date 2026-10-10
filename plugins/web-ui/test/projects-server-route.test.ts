@@ -101,3 +101,20 @@ test("project routes bind the signed-in principal and relay canonical scope and 
     },
   );
 });
+
+test("mention candidate search relays the single-character query and signed viewer", async () => {
+  const before = calls.length;
+  const response = await fetch(
+    `${base}/api/projects/p1/member-candidates?q=${encodeURIComponent("周")}&membersOnly=true&principalId=mallory`,
+    { headers },
+  );
+  assert.equal(response.status, 200);
+  const call = calls
+    .slice(before)
+    .find((call) => new URL(call.url, "http://core").pathname === "/v1/projects/p1/member-candidates");
+  assert.ok(call);
+  const query = new URL(call.url, "http://core").searchParams;
+  assert.equal(query.get("q"), "周");
+  assert.equal(query.get("membersOnly"), "true");
+  assert.equal(query.get("principalId"), "alice");
+});

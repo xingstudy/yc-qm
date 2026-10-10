@@ -1,3 +1,4 @@
+import { mentionsPerson } from "../plugins/chassis/src/mentions.ts";
 import { migrateRegisteredPgSchemas } from "./persistence/pg-pool.ts";
 import {
   createMemorySandboxLifecycleStore,
@@ -1499,18 +1500,15 @@ export function buildApp(
                   .filter((recipient) => recipient !== payload.authorId)
                   .map(async (recipient) => {
                     const member = await directory.get(recipient).catch(() => null);
-                    const name = member?.displayName?.trim();
-                    const explicit = text.includes(`<@${recipient}>`);
-                    const named = name
-                      ? new RegExp(
-                          `(?:^|\\s)@${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[\\s,.!?;:])`,
-                          "iu",
-                        ).test(text)
-                      : false;
+                    const mentioned = mentionsPerson(text, {
+                      principalId: recipient,
+                      displayName: member?.displayName ?? "",
+                      slackId: member?.slackId,
+                    });
                     await notifications.add({
                       id: `session:${session.id}:${appended.seq}:${recipient}`,
                       recipient,
-                      kind: explicit || named ? "mention" : "message",
+                      kind: mentioned ? "mention" : "message",
                       createdAt: appended.createdAt,
                       sessionId: session.id,
                       entrySeq: appended.seq,

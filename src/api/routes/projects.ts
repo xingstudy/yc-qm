@@ -36,10 +36,15 @@ async function projectMemberCandidates(ctx: ApiCtx): Promise<void> {
   const principalId = capabilityPrincipal(ctx, requested);
   if (principalId === null) return;
   const query = (ctx.url.searchParams.get("q") ?? "").trim();
-  if (!principalId || query.length < 2 || query.length > 100) {
-    return sendJson(ctx.res, 400, { error: "bad_request", message: "principalId and a 2 to 100 character q required" });
+  if (!principalId || query.length < 1 || query.length > 100) {
+    return sendJson(ctx.res, 400, { error: "bad_request", message: "principalId and a 1 to 100 character q required" });
   }
-  const matches = await ctx.app.projectMemberCandidates(ctx.params.id!, principalId, query);
+  const matches = await ctx.app.projectMemberCandidates(
+    ctx.params.id!,
+    principalId,
+    query,
+    ctx.url.searchParams.get("membersOnly") === "true",
+  );
   return matches ? sendJson(ctx.res, 200, { matches }) : sendJson(ctx.res, 404, { error: "not_found" });
 }
 

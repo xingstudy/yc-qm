@@ -5934,7 +5934,7 @@ const apiRoutes: readonly WebRoute[] = [
       return relayCore(
         res,
         "GET",
-        `/v1/projects/${encodeURIComponent(id)}/member-candidates?principalId=${encodeURIComponent(user)}&q=${encodeURIComponent(q)}`,
+        `/v1/projects/${encodeURIComponent(id)}/member-candidates?principalId=${encodeURIComponent(user)}&q=${encodeURIComponent(q)}${url.searchParams.get("membersOnly") === "true" ? "&membersOnly=true" : ""}`,
       );
     },
   },
