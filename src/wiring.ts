@@ -1,3 +1,4 @@
+import { mentionsPerson } from "../plugins/chassis/src/mentions.ts";
 import { migrateRegisteredPgSchemas } from "./persistence/pg-pool.ts";
 import {
   createMemorySandboxLifecycleStore,
@@ -1491,26 +1492,29 @@ export function buildApp(
             .map((window) => window.principalId);
           if (!participants.length) return;
           if (entry.type === "user" && groupEntry) {
-            const payload = entry.payload as { authorId?: unknown; text?: unknown; hidden?: unknown } | null;
+            const payload = entry.payload as {
+              authorId?: unknown;
+              text?: unknown;
+              display?: unknown;
+              hidden?: unknown;
+            } | null;
             if (payload?.hidden !== true && typeof payload?.authorId === "string") {
-              const text = typeof payload.text === "string" ? payload.text : "";
+              let text = typeof payload.text === "string" ? payload.text : "";
+              if (typeof payload.display === "string" && payload.display.trim()) text = payload.display;
               await Promise.all(
                 participants
                   .filter((recipient) => recipient !== payload.authorId)
                   .map(async (recipient) => {
                     const member = await directory.get(recipient).catch(() => null);
-                    const name = member?.displayName?.trim();
-                    const explicit = text.includes(`<@${recipient}>`);
-                    const named = name
-                      ? new RegExp(
-                          `(?:^|\\s)@${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[\\s,.!?;:])`,
-                          "iu",
-                        ).test(text)
-                      : false;
+                    const mentioned = mentionsPerson(text, {
+                      principalId: recipient,
+                      displayName: member?.displayName ?? "",
+                      slackId: member?.slackId,
+                    });
                     await notifications.add({
                       id: `session:${session.id}:${appended.seq}:${recipient}`,
                       recipient,
-                      kind: explicit || named ? "mention" : "message",
+                      kind: mentioned ? "mention" : "message",
                       createdAt: appended.createdAt,
                       sessionId: session.id,
                       entrySeq: appended.seq,

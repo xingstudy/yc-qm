@@ -45,10 +45,14 @@ test("read-only slack sessions strip directives and decode user wire at render",
     /!chatState\.agent && chatState\.forkSession !== null && surfaceOf\(chatState\.forkSession\) === "slack"/,
     "the read-only Slack predicate lives in one place",
   );
-  assert.match(chat, /return isReadOnlySlackView\(\) \? stripSlackDirectives\(text\) : text;/, "assistant text strips");
   assert.match(
     chat,
-    /isReadOnlySlackView\(\) \? slackWireBubble\(messageText\(message\)\) : markdown\(messageText\(message\)\)/,
+    /return isReadOnlySlackView\(\) \? stripSlackDirectives\(text\) : mentionText\(text\);/,
+    "assistant text strips Slack directives and renders project mention labels",
+  );
+  assert.match(
+    chat,
+    /isReadOnlySlackView\(\) \? slackWireBubble\(messageText\(message\)\) : markdown\(mentionText\(messageText\(message\)\)\)/,
     "user bubbles wire-decode in a read-only Slack view",
   );
 });

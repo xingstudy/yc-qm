@@ -1,5 +1,6 @@
 import "./support/auto-fake-sprites.ts";
 
+import { encodeMentions, mentionText, mentionsPerson } from "../plugins/chassis/src/mentions.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -170,7 +171,7 @@ test("project mention notifications are scoped to current recipients and hide co
   const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "qm-notifications-")), orgId: "acme" }));
   await built.app.upsertDirectory([
     { principalId: "owner", displayName: "Owner", type: "internal" },
-    { principalId: "member", displayName: "Member", type: "internal" },
+    { principalId: "member", displayName: "周明", type: "internal" },
     { principalId: "other", displayName: "Other", type: "internal" },
   ]);
   const project = await built.app.createProject("owner", "Shared chat");
@@ -186,7 +187,7 @@ test("project mention notifications are scoped to current recipients and hide co
       threadRef: "web:owner:mention",
       audience: [],
     },
-    text: "Hello <@member>",
+    text: "@member，Hello <@member|周明>，请查收。",
   });
   assert.equal(turned.status, "ok");
   assert.ok(turned.sessionId);
@@ -253,6 +254,7 @@ test("project mention notifications are scoped to current recipients and hide co
     assert.deepEqual(before.conversationUnread[turned.sessionId], { messages: 1, mentions: 1 });
     const mention = before.notifications.find((item) => item.summary?.includes("Hello"));
     assert.ok(mention);
+    assert.equal(mention.summary, "@member，Hello @周明，请查收。");
     const sharedResult = before.notifications.find((item) => item.summary?.includes("Scheduled result"));
     assert.equal(sharedResult?.sessionId, turned.sessionId);
     assert.equal(sharedResult?.cronId, undefined);
@@ -282,6 +284,88 @@ test("project mention notifications are scoped to current recipients and hide co
       notifications: Array<{ summary?: string; unavailable?: boolean }>;
     };
     assert.ok(after.notifications.every((item) => item.unavailable === true && item.summary === undefined));
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("project notifications match a handwritten username in the original message, not the model envelope", async () => {
+  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "qm-mention-envelope-")), orgId: "acme" }));
+  await built.app.upsertDirectory([
+    { principalId: "owner", displayName: "Owner", type: "internal" },
+    { principalId: "qa-member", displayName: "QA Member", type: "internal" },
+  ]);
+  const project = await built.app.createProject("owner", "Mention envelope");
+  assert.ok(project);
+  assert.equal((await built.app.addProjectMember(project.id, "owner", "qa-member")).status, "ok");
+  const turned = await built.app.turn({
+    surface: "web",
+    actor: { externalId: "owner" },
+    conversation: {
+      kind: "group",
+      channelRef: projectGroupRef(project.id),
+      threadRef: "web:owner:envelope",
+      audience: [],
+    },
+    text: "@qa-member",
+  });
+  assert.equal(turned.status, "ok");
+  for (let attempt = 0; attempt < 50 && !(await built.notifications.list("qa-member")).length; attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal((await built.notifications.list("qa-member"))[0]?.kind, "mention");
+});
+
+test("mentions preserve selected identities and recognize Chinese punctuation without matching emails or name prefixes", () => {
+  const person = { principalId: "zhou@example.com", displayName: "周明", slackId: "U123" };
+  const wire = encodeMentions("请联系 @周明，谢谢。", [person]);
+  assert.equal(wire, "请联系 <@zhou@example.com|周明>，谢谢。");
+  assert.equal(mentionText(wire), "请联系 @周明，谢谢。");
+  assert.equal(encodeMentions(wire, [person]), wire);
+  for (const text of [wire, "@周明。", "你好，@周明！", "Hello <@U123>", "<@zhou@example.com>"])
+    assert.equal(mentionsPerson(text, person), true, text);
+  for (const text of ["name@周明", "@周明明", "<@other|周明>", "<@zhou@example.com.other>"])
+    assert.equal(mentionsPerson(text, person), false, text);
+  assert.equal(mentionsPerson(wire, { principalId: "same-name", displayName: "周明" }), false);
+  assert.equal(mentionsPerson("@qa-member", { principalId: "qa-member", displayName: "QA Member" }), true);
+});
+
+test("project member search accepts one Chinese character and limits mention candidates to accessible project members", async () => {
+  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "qm-mention-search-")), orgId: "acme" }));
+  await built.app.upsertDirectory([
+    { principalId: "owner", displayName: "周负责人", type: "internal" },
+    { principalId: "member", displayName: "周明", type: "internal" },
+    { principalId: "outsider", displayName: "周外部", type: "internal" },
+  ]);
+  const project = await built.app.createProject("owner", "Mention search");
+  assert.ok(project);
+  assert.equal((await built.app.addProjectMember(project.id, "owner", "member")).status, "ok");
+  const server = createInsecureTestServer(built.app);
+  server.listen(0);
+  try {
+    const base = `http://localhost:${(server.address() as AddressInfo).port}`;
+    const path = `${base}/v1/projects/${project.id}/member-candidates?q=${encodeURIComponent("周")}`;
+    const candidates = await fetch(`${path}&principalId=owner`);
+    assert.equal(candidates.status, 200);
+    assert.deepEqual(
+      ((await candidates.json()) as { matches: { principalId: string }[] }).matches.map((person) => person.principalId),
+      ["outsider"],
+    );
+    const mentions = await fetch(`${path}&principalId=member&membersOnly=true`);
+    assert.equal(mentions.status, 200);
+    assert.deepEqual(
+      new Set(
+        ((await mentions.json()) as { matches: { principalId: string }[] }).matches.map((person) => person.principalId),
+      ),
+      new Set(["owner", "member"]),
+    );
+    assert.equal((await fetch(`${path}&principalId=outsider&membersOnly=true`)).status, 404);
+    assert.equal((await fetch(`${path}&principalId=member`)).status, 404);
+    await built.organization.invite({ principalId: "member", email: null, displayName: "周明", actor: "test" });
+    await built.organization.setStatus({ principalId: "member", status: "suspended", actor: "test" });
+    assert.equal((await fetch(`${path}&principalId=member&membersOnly=true`)).status, 404);
+    await built.organization.setStatus({ principalId: "member", status: "active", actor: "test" });
+    assert.equal((await built.app.removeProjectMember(project.id, "owner", "member")).status, "ok");
+    assert.equal((await fetch(`${path}&principalId=member&membersOnly=true`)).status, 404);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

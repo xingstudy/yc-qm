@@ -1,4 +1,5 @@
 import { appEditSlug } from "./app-edit";
+import { encodeMentions, mentionPeople, mentionText, type MentionPerson } from "../../chassis/src/mentions";
 import { getRuntimeConfig, loadRuntimeConfig, saveRuntimeConfig, subscribeRuntimeConfig } from "./runtime-config-store";
 import type { Agent, AgentMessage } from "@earendil-works/pi-agent-core";
 import { createFileDragState } from "./file-drag";
@@ -209,6 +210,11 @@ export function slashQuery(draft: string): string | null {
   return m ? (m[2] ?? "") : null;
 }
 
+export function mentionQuery(draft: string, cursor: number): { query: string; start: number; end: number } | null {
+  const match = /(?:^|[\s（(，。！？、；：])@([^\s@<>|，。！？、；：（）()]{1,100})$/u.exec(draft.slice(0, cursor));
+  return match ? { query: match[1]!, start: cursor - match[1]!.length - 1, end: cursor } : null;
+}
+
 export function resyncModelSelection(): void {
   try {
     localStorage.removeItem(LEGACY_MODEL_STORAGE_KEY);
@@ -231,6 +237,21 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
   let modelSelectionRevision = 0;
   let effortSelectionRevision = 0;
   let fastSelectionRevision = 0;
+  let draftValue = "";
+  let selectedMentionScope: string | null = null;
+  const selectedMentions = new Map<string, MentionPerson>();
+  let mentionRange: ReturnType<typeof mentionQuery> = null;
+  let mentionMatches: MentionPerson[] = [];
+  let mentionActiveIndex = 0;
+  let mentionRequest = 0;
+  let mentionSearchKey = "";
+  let mentionTimer: ReturnType<typeof setTimeout> | undefined;
+  let mentionLoading = false;
+  let mentionError = "";
+
+  function encodedDraft(text = composerState.draft): string {
+    return encodeMentions(text, selectedMentionScope === ctx.chat.state.scopeId ? [...selectedMentions.values()] : []);
+  }
 
   function isUnsentNewChat(): boolean {
     return (
@@ -241,8 +262,8 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
 
   function persistDraft(): void {
     if (!ctx.chat.state.threadRef) return;
-    saveDraft(ctx.chat.state.threadRef, composerState.draft);
-    if (isUnsentNewChat()) saveDraft(newChatDraftKey(appState.me?.user), composerState.draft);
+    saveDraft(ctx.chat.state.threadRef, encodedDraft());
+    if (isUnsentNewChat()) saveDraft(newChatDraftKey(appState.me?.user), encodedDraft());
   }
 
   function clearActiveDraft(): void {
@@ -251,7 +272,17 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
   }
 
   const composerState = {
-    draft: "",
+    get draft(): string {
+      return draftValue;
+    },
+    set draft(value: string) {
+      if (selectedMentionScope !== ctx.chat.state.scopeId) {
+        selectedMentions.clear();
+        selectedMentionScope = ctx.chat.state.scopeId;
+      }
+      for (const person of mentionPeople(value)) selectedMentions.set(person.displayName, person);
+      draftValue = mentionText(value);
+    },
     attachments: [] as Attachment[],
     error: "",
     processingFiles: false,
@@ -324,7 +355,10 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
   }
 
   function resetComposer(): void {
+    closeMentionMenu();
+    mentionSearchKey = "";
     composerState.draft = "";
+    selectedMentions.clear();
     composerState.attachments = [];
     composerState.pasteView = null;
     pastedTextIds.clear();
@@ -548,7 +582,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
         @submit=${(e: Event) => submitComposer(e, agent)}
         @keydown=${(e: KeyboardEvent) => composerShortcut(e, agent, inputBlocked)}
       >
-        ${header} ${slashMenu(agent)}
+        ${header} ${slashMenu(agent)} ${mentionMenu(agent)}
         ${
           activeRuntimeConfig?.upgradeAvailable
             ? html`<div class="runtime-upgrade">
@@ -627,6 +661,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
                   @input=${(e: InputEvent) => onDraftInput(e, agent)}
                   @keydown=${(e: KeyboardEvent) => onComposerKeydown(e, agent)}
                   @paste=${(e: ClipboardEvent) => void onComposerPaste(e, agent)}
+                  @select=${(e: Event) => searchMentions(e.currentTarget as HTMLTextAreaElement, agent)}
                 ></textarea>
               `
         }
@@ -793,10 +828,14 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
                   class="queued-edit-input"
                   aria-label="Edit queued message"
                   rows="3"
-                  .value=${live(queuedEdit.text)}
+                  .value=${live(mentionText(queuedEdit.text))}
                   ?disabled=${queuedEdit.saving}
                   @input=${(event: Event) => {
-                    if (queuedEdit) queuedEdit.text = (event.target as HTMLTextAreaElement).value;
+                    if (queuedEdit)
+                      queuedEdit.text = encodeMentions(
+                        (event.target as HTMLTextAreaElement).value,
+                        mentionPeople(queuedEdit.original),
+                      );
                   }}
                   @keydown=${(event: KeyboardEvent) => {
                     if (event.isComposing || queuedEdit?.saving) return;
@@ -832,8 +871,8 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
             : html`
                 <div class="queued-chip" role="listitem">
                   <span class="queued-tag">${t("Queued")}</span>
-                  <span class="queued-text" dir="auto" ${tip(q.text || "Files, no text")}
-                    >${q.text || (q.hasAttachments ? "(files)" : "")}</span
+                  <span class="queued-text" dir="auto" ${tip(mentionText(q.text) || "Files, no text")}
+                    >${mentionText(q.text) || (q.hasAttachments ? "(files)" : "")}</span
                   >
                   <button
                     type="button"
@@ -1747,6 +1786,105 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     ctx.chat.drawActiveChat(agent);
   }
 
+  function closeMentionMenu(): void {
+    ++mentionRequest;
+    clearTimeout(mentionTimer);
+    mentionRange = null;
+    mentionMatches = [];
+    mentionLoading = false;
+    mentionError = "";
+  }
+
+  function searchMentions(input: HTMLTextAreaElement, agent: Agent): void {
+    const projectId = ctx.chat.state.scopeId?.match(/^group:web-project-(.+)$/)?.[1];
+    const range = input.selectionStart === input.selectionEnd ? mentionQuery(input.value, input.selectionStart) : null;
+    const key = `${ctx.chat.state.threadRef}:${projectId}:${range?.start}:${range?.query}`;
+    if (key === mentionSearchKey) return;
+    mentionSearchKey = key;
+    closeMentionMenu();
+    if (!projectId || !range) {
+      ctx.chat.drawActiveChat(agent);
+      return;
+    }
+    mentionRange = range;
+    mentionActiveIndex = 0;
+    mentionLoading = true;
+    ctx.chat.drawActiveChat(agent);
+    const request = mentionRequest;
+    const scope = ctx.chat.state.scopeId;
+    const thread = ctx.chat.state.threadRef;
+    mentionTimer = setTimeout(async () => {
+      const current = (): boolean =>
+        request === mentionRequest &&
+        agent === ctx.chat.state.agent &&
+        scope === ctx.chat.state.scopeId &&
+        thread === ctx.chat.state.threadRef;
+      try {
+        const result = await api<{ matches: MentionPerson[] }>(
+          `/api/projects/${encodeURIComponent(projectId)}/member-candidates?q=${encodeURIComponent(range.query)}&membersOnly=true`,
+        );
+        if (current()) mentionMatches = result.matches;
+      } catch (error) {
+        if (current()) mentionError = errMessage(error, "Couldn't search for people.");
+      } finally {
+        if (current()) {
+          mentionLoading = false;
+          ctx.chat.drawActiveChat(agent);
+        }
+      }
+    }, 200);
+  }
+
+  function acceptMention(person: MentionPerson, agent: Agent): void {
+    if (!mentionRange) return;
+    const { start, end } = mentionRange;
+    const namesakes = mentionMatches.filter((match) => match.displayName === person.displayName);
+    let suffix =
+      namesakes.length > 1 ? namesakes.findIndex((match) => match.principalId === person.principalId) + 1 : 0;
+    let displayName = suffix ? `${person.displayName} (${suffix})` : person.displayName;
+    while (selectedMentions.has(displayName) && selectedMentions.get(displayName)!.principalId !== person.principalId)
+      displayName = `${person.displayName} (${++suffix})`;
+    const inserted = `@${displayName} `;
+    selectedMentionScope = ctx.chat.state.scopeId;
+    selectedMentions.set(displayName, { ...person, displayName });
+    composerState.draft =
+      composerState.draft.slice(0, start) + inserted + composerState.draft.slice(end).replace(/^ /, "");
+    closeMentionMenu();
+    persistDraft();
+    ctx.chat.drawActiveChat(agent);
+    requestAnimationFrame(() => {
+      const input = ctx.chat.state.host?.querySelector<HTMLTextAreaElement>(".composer-input");
+      input?.focus({ preventScroll: true });
+      input?.setSelectionRange(start + inserted.length, start + inserted.length);
+    });
+  }
+
+  function mentionMenu(agent: Agent): TemplateResult | typeof nothing {
+    if (!mentionRange) return nothing;
+    return html`<div class="slash-popover mention-popover" role="listbox" aria-label=${t("Project members")}>
+      <div class="menu-title">${t("Project members")}</div>
+      ${
+        mentionLoading || mentionError || !mentionMatches.length
+          ? html`<div class="slash-empty" role="status">
+              ${mentionError || t(mentionLoading ? "Loading…" : "No matching members.")}
+            </div>`
+          : mentionMatches.map(
+              (person, index) =>
+                html`<button
+                  type="button"
+                  role="option"
+                  aria-selected=${index === mentionActiveIndex ? "true" : "false"}
+                  class="slash-option ${index === mentionActiveIndex ? "active" : ""}"
+                  @mousedown=${(event: Event) => event.preventDefault()}
+                  @click=${() => acceptMention(person, agent)}
+                >
+                  <span class="slash-name">@${person.displayName}</span>
+                </button>`,
+            )
+      }
+    </div>`;
+  }
+
   function slashMenu(agent: Agent): TemplateResult | typeof nothing {
     const slash = currentSlashMenu();
     if (!slash.open) return nothing;
@@ -1807,6 +1945,8 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     composerState.error = "";
     composerState.slashDismissed = false;
     slashActiveIndex = 0;
+    const hadMentions = mentionRange !== null;
+    searchMentions(e.currentTarget as HTMLTextAreaElement, agent);
     const armed = slashQuery(composerState.draft) !== null;
     if (armed && skillsCache === null && !skillsLoading) void loadSkills(agent);
     const popoverShown = Boolean(ctx.chat.state.host?.querySelector(".slash-popover"));
@@ -1820,7 +1960,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
         button.disabled = collapsed;
       }
     }
-    if (armed || popoverShown || hadError) {
+    if (armed || popoverShown || hadError || hadMentions || mentionRange) {
       ctx.chat.drawActiveChat(agent);
       return;
     }
@@ -1861,6 +2001,26 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
 
   function onComposerKeydown(e: KeyboardEvent, agent: Agent): void {
     if (e.isComposing || e.keyCode === 229) return;
+    if (mentionRange) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeMentionMenu();
+        return ctx.chat.drawActiveChat(agent);
+      }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (mentionMatches.length)
+          mentionActiveIndex =
+            (mentionActiveIndex + (e.key === "ArrowDown" ? 1 : mentionMatches.length - 1)) % mentionMatches.length;
+        return ctx.chat.drawActiveChat(agent);
+      }
+      if (!e.shiftKey && (e.key === "Enter" || e.key === "Tab")) {
+        e.preventDefault();
+        const person = mentionMatches[mentionActiveIndex];
+        if (person) acceptMention(person, agent);
+        return;
+      }
+    }
     const slash = currentSlashMenu();
     if (slash.open) {
       if (e.key === "Escape") {
@@ -1919,12 +2079,15 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
   async function queueDraft(agent: Agent): Promise<void> {
     const threadRef = ctx.chat.state.threadRef;
     const text = composerState.draft.trim();
+    const wireText = encodedDraft(text);
     const staged = composerState.attachments;
     if ((!text && !staged.length) || !threadRef) return;
     clearActiveDraft();
     composerState.draft = "";
+    selectedMentions.clear();
     composerState.attachments = [];
     composerState.error = "";
+    closeMentionMenu();
     ctx.chat.drawActiveChat(agent);
     clearComposerDom(agent);
     const { uploaded, skipped } = await uploadAttachments(staged);
@@ -1934,11 +2097,11 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     const transientIds = new Set(skipped.filter((s) => !s.permanent).flatMap((s) => (s.id ? [s.id] : [])));
     const sendable = staged.filter((a) => !droppedIds.has(a.id));
     if (!text && !uploaded.length) {
-      if (stillHere()) restoreStagedOnFailure(text, sendable, composerState.error || "Could not queue the files.");
+      if (stillHere()) restoreStagedOnFailure(wireText, sendable, composerState.error || "Could not queue the files.");
       return ctx.chat.drawActiveChat(agent);
     }
-    if (!(await enqueueTurn(agent, threadRef, text, uploaded, queuedFilesKey(sendable)))) {
-      if (stillHere()) restoreStagedOnFailure(text, sendable, composerState.error);
+    if (!(await enqueueTurn(agent, threadRef, wireText, uploaded, queuedFilesKey(sendable)))) {
+      if (stillHere()) restoreStagedOnFailure(wireText, sendable, composerState.error);
     } else if (transientIds.size && stillHere()) {
       restageAttachments(
         staged.filter((a) => transientIds.has(a.id)),
@@ -2074,6 +2237,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     if (composerState.pasteView) closePasteView(agent);
     if (agent.state.isStreaming) return queueDraft(agent);
     const text = composerState.draft.trim();
+    const wireText = encodedDraft(text);
     if (ctx.chat.state.threadRef) {
       bumpSessionActivity(ctx.chat.state.threadRef);
       ctx.chat.state.pendingSend = ctx.chat.state.threadRef;
@@ -2089,9 +2253,9 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     try {
       if (ctx.chat.state.normalStreamFn) agent.streamFn = ctx.chat.state.normalStreamFn;
       ctx.chat.scrollToBottom();
-      await agent.prompt(userSendMessage(text, attachments.length ? attachments : undefined));
-      restoreBlockedSend(agent, sentFromThread, text, attachments);
-      restoreFailedAttachments(agent, text, attachments);
+      await agent.prompt(userSendMessage(wireText, attachments.length ? attachments : undefined));
+      restoreBlockedSend(agent, sentFromThread, wireText, attachments);
+      restoreFailedAttachments(agent, wireText, attachments);
     } catch (err) {
       ctx.chat.state.pendingSend = null;
       if (ctx.chat.state.threadRef && ctx.chat.state.sessionId === null) dropPendingSession(ctx.chat.state.threadRef);
@@ -2438,6 +2602,10 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
 
   function closeMenus(): boolean {
     let changed = false;
+    if (mentionRange) {
+      closeMentionMenu();
+      changed = true;
+    }
     if (composerState.openMenu) {
       cancelLoadoutClose();
       loadoutSection = null;
@@ -2453,6 +2621,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
   }
 
   function dispose(): void {
+    closeMentionMenu();
     window.removeEventListener("model-account-changed", refreshAccount);
     cancelLoadoutClose();
     unsubscribeRuntime?.();

@@ -579,9 +579,25 @@ export function createSessionMethods(
       return projectsForViewer(principalId);
     },
 
-    async projectMemberCandidates(id, principalId, query) {
+    async projectMemberCandidates(id, principalId, query, membersOnly = false) {
       if (!deps.projects || !deps.organization) return null;
       const project = await deps.projects.get(id);
+      if (membersOnly) {
+        if (
+          !project ||
+          project.orgId !== orgIdOf() ||
+          (await deps.organization.checkRuntimeActive(principalId))?.status !== "active" ||
+          !(await managedProjectMembership(projectScopeId(id), principalId))
+        )
+          return null;
+        const wanted = normDirectoryQuery(query);
+        return (await projectView(project)).members
+          .filter((member) =>
+            [member.principalId, member.displayName].some((value) => normDirectoryQuery(value).includes(wanted)),
+          )
+          .slice(0, 50)
+          .map((member) => ({ ...member, email: null }));
+      }
       if (!project || project.orgId !== orgIdOf() || !samePerson(project.ownerId, principalId)) {
         return null;
       }

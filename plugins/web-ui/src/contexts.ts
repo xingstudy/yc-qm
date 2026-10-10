@@ -1248,7 +1248,7 @@ function scheduleMemberSearch(context: CoreContext): void {
   contextsState.slackBusy = false;
   contextsState.slackError = "";
   const query = contextsState.memberQuery.trim();
-  if (query.length < 2) {
+  if (query.length < 1) {
     if (hadVisibleState || contextsState.memberMatches.length) {
       contextsState.memberMatches = [];
       drawContexts();
@@ -1270,10 +1270,10 @@ async function searchProjectMembers(event: SubmitEvent, context: CoreContext): P
   const query = input?.value.trim() ?? "";
   contextsState.memberQuery = query;
   contextsState.memberError = "";
-  if (query.length < 2) {
+  if (query.length < 1) {
     contextsState.memberMatches = [];
     contextsState.memberSearchedQuery = "";
-    contextsState.memberError = "Enter at least two characters.";
+    contextsState.memberError = "Enter at least one character.";
     drawContexts();
     return;
   }

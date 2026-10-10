@@ -74,22 +74,36 @@ test("an open project conversation receives peer messages during a run and recon
     threadRef: "web:owner:project",
     scopeId: "group:project",
     title: "Project chat",
+    forkedFrom: { sessionId: "parent-session", title: "Parent chat" },
+    forkBoundarySeq: 9,
     type: "dm" as const,
     createdAt: Date.now(),
   };
   const initial: SessionEntry = {
-    seq: 0,
+    seq: 10,
     type: "user",
     createdAt: Date.now(),
     payload: { text: "Start", authorId: "owner" },
   };
   const peer: SessionEntry = {
-    seq: 1,
+    seq: 12,
     type: "user",
     createdAt: Date.now() + 1,
     payload: { text: "Message from B", authorId: "peer" },
   };
-  let entries = [initial];
+  const inherited: SessionEntry = {
+    seq: 0,
+    type: "user",
+    createdAt: Date.now() - 1000,
+    payload: { text: "Old message from the parent chat", authorId: "peer" },
+  };
+  const reply: SessionEntry = {
+    seq: 11,
+    type: "assistant",
+    createdAt: Date.now(),
+    payload: { text: "Earlier assistant reply" },
+  };
+  let entries = [initial, reply];
   let reads = 0;
   let sentText: string | null = null;
   const originalFetch = globalThis.fetch;
@@ -154,7 +168,6 @@ test("an open project conversation receives peer messages during a run and recon
     conv.state.agent!.state.messages.push({ role: "user", content: "Just sent" } as never);
     conv.drawActiveChat();
     assert.equal(host.querySelector(".user-row:not([data-entry-seq]) .speaker-label")?.textContent, "owner");
-    conv.state.agent!.state.messages.pop();
     Object.defineProperty(conv.state.agent!.state, "isStreaming", { configurable: true, value: true });
     Object.defineProperty(conv.state.agent!.state, "streamingMessage", {
       configurable: true,
@@ -193,20 +206,25 @@ test("an open project conversation receives peer messages during a run and recon
     assert.equal(host.querySelectorAll('.user-row[data-queued-run-id="next-run"]').length, 0);
     conv.state.agent!.state.messages.pop();
     conv.composer.setQueuedRuns(row.threadRef, []);
-    entries = [initial, peer];
+    entries = [inherited, initial, reply, peer];
     delivery.emit("delivery", { threadRef: row.threadRef });
-    await until(() => host.querySelectorAll('.user-row[data-entry-seq="1"]').length === 1);
-    const peerRow = host.querySelector<HTMLElement>('.user-row[data-entry-seq="1"]')!;
+    await until(() => host.querySelectorAll('.user-row[data-entry-seq="12"]').length === 1);
+    assert.equal(host.querySelector('.user-row[data-entry-seq="0"]'), null);
+    assert.ok(host.querySelector(".user-row:not([data-entry-seq])")?.textContent?.includes("Just sent"));
+    assert.equal(host.querySelectorAll(".assistant-row:not(.streaming)").length, 1);
+    assert.ok(host.querySelector(".assistant-row:not(.streaming)")?.textContent?.includes("Earlier assistant reply"));
+    assert.equal(host.querySelector(".assistant-row .user-bubble"), null);
+    const peerRow = host.querySelector<HTMLElement>('.user-row[data-entry-seq="12"]')!;
     const liveReply = host.querySelector<HTMLElement>(".assistant-row.streaming")!;
     assert.ok(peerRow.compareDocumentPosition(liveReply) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING);
     assert.equal(peerRow.querySelector(".speaker-label")?.textContent, "peer");
     await until(() => reads === 1);
     conv.state.agent!.state.messages.push(...entriesToMessages([peer], transcriptModel()));
     conv.drawActiveChat();
-    assert.equal(host.querySelectorAll('.user-row[data-entry-seq="1"]').length, 1);
+    assert.equal(host.querySelectorAll('.user-row[data-entry-seq="12"]').length, 1);
     delivery.emit("delivery", { threadRef: row.threadRef });
     await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(host.querySelectorAll('.user-row[data-entry-seq="1"]').length, 1);
+    assert.equal(host.querySelectorAll('.user-row[data-entry-seq="12"]').length, 1);
     const scroller = host.querySelector<HTMLElement>(".chat-scroll")!;
     Object.defineProperties(scroller, {
       scrollHeight: { configurable: true, value: 1000 },
@@ -216,10 +234,10 @@ test("an open project conversation receives peer messages during a run and recon
     scroller.dispatchEvent(new Event("scroll"));
     scroller.scrollTop = 100;
     scroller.dispatchEvent(new Event("scroll"));
-    const anotherPeer = { ...peer, seq: 2, payload: { text: "Another message from B", authorId: "peer" } };
-    entries = [initial, peer, anotherPeer];
+    const anotherPeer = { ...peer, seq: 13, payload: { text: "Another message from B", authorId: "peer" } };
+    entries = [inherited, initial, reply, peer, anotherPeer];
     delivery.emit("delivery", { threadRef: row.threadRef });
-    await until(() => host.querySelectorAll('.user-row[data-entry-seq="2"]').length === 1);
+    await until(() => host.querySelectorAll('.user-row[data-entry-seq="13"]').length === 1);
     assert.ok(host.querySelector(".chat-new-messages"));
     assert.equal(scroller.scrollTop, 100);
     assert.equal(reads, 1);
@@ -231,8 +249,8 @@ test("an open project conversation receives peer messages during a run and recon
     await until(() =>
       conv!.state.agent!.state.messages.some((message) => JSON.stringify(message).includes("Another message from B")),
     );
-    assert.equal(host.querySelectorAll('.user-row[data-entry-seq="1"]').length, 1);
-    assert.equal(host.querySelectorAll('.user-row[data-entry-seq="2"]').length, 1);
+    assert.equal(host.querySelectorAll('.user-row[data-entry-seq="12"]').length, 1);
+    assert.equal(host.querySelectorAll('.user-row[data-entry-seq="13"]').length, 1);
   } finally {
     conv?.dispose();
     for (const es of FakeEventSource.instances) es.close();

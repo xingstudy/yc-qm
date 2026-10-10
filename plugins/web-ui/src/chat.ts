@@ -1,3 +1,4 @@
+import { mentionText } from "../../chassis/src/mentions";
 import { appEditSlug } from "./app-edit";
 import { isConnectionReturn } from "./connection-return";
 import "./onboarding-welcome";
@@ -723,7 +724,7 @@ export function createChatSurface(
         agent.state.messages.map((message) => (message as { entrySeq?: number }).entrySeq).filter(Number.isSafeInteger),
       );
       const previous = new Set(streamedPeerMessages.map((message) => (message as { entrySeq?: number }).entrySeq));
-      const peers = (page.entries ?? []).filter((entry) => {
+      const peers = inheritedTranscript(chatState.forkSession ?? {}, page.entries ?? []).current.filter((entry) => {
         const payload = entry.payload as { authorId?: unknown } | null;
         return (
           entry.type === "user" &&
@@ -1816,7 +1817,7 @@ export function createChatSurface(
           ${speaker ? html`<div class="speaker-label">${speaker}</div>` : nothing}
           <div class="message-bubble user-bubble ${deleted ? "deleted-bubble" : ""}">
             <div class="pin-content">
-              ${isReadOnlySlackView() ? slackWireBubble(messageText(message)) : markdown(messageText(message))}
+              ${isReadOnlySlackView() ? slackWireBubble(messageText(message)) : markdown(mentionText(messageText(message)))}
               ${edited || deleted ? html`<span class="revision-badge">(${t(deleted ? "deleted" : "edited")})</span>` : nothing}
             </div>
             <button class="pin-toggle" type="button" hidden aria-expanded="false">Show more</button>
@@ -2039,7 +2040,7 @@ export function createChatSurface(
 
   function assistantDisplayText(text: string, stopReason?: string): string {
     if (stopReason === "aborted" && text.trim() === "(stopped)") return "";
-    return isReadOnlySlackView() ? stripSlackDirectives(text) : text;
+    return isReadOnlySlackView() ? stripSlackDirectives(text) : mentionText(text);
   }
 
   function slackWireBubble(text: string): TemplateResult {

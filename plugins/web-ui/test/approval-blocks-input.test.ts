@@ -35,7 +35,7 @@ test("the composer locks input on blocking approvals only, while every approval 
 test("a send swallowed by a pending approval is restored to the composer with the reason", () => {
   assert.match(
     composer,
-    /await agent\.prompt\(userSendMessage\(text, attachments\.length \? attachments : undefined\)\);\s*restoreBlockedSend\(agent, sentFromThread, text, attachments\);/,
+    /await agent\.prompt\(userSendMessage\(wireText, attachments\.length \? attachments : undefined\)\);\s*restoreBlockedSend\(agent, sentFromThread, wireText, attachments\);/,
   );
   const restore = composer.slice(
     composer.indexOf("function restoreBlockedSend"),
