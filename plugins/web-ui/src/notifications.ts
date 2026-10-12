@@ -292,6 +292,13 @@ function draw(): void {
     { key: "cron_failure", label: "Task failed" },
     { key: "action", label: "Action required" },
   ];
+  const pageNumbers = [
+    ...new Set([
+      1,
+      ...Array.from({ length: Math.min(5, pages) }, (_, i) => Math.max(1, Math.min(page - 2, pages - 4)) + i),
+      pages,
+    ]),
+  ].sort((a, b) => a - b);
   let empty = "Loading notifications…";
   if (error) empty = error;
   else if (loadedFor) {
@@ -373,9 +380,30 @@ function draw(): void {
         empty,
       })}
       <nav class="notification-pagination" aria-label=${t("Notification pages")}>
-        <button class="btn" type="button" ?disabled=${loading || page <= 1} @click=${() => loadPage(page - 1)}>
-          ${t("Previous page")}
-        </button>
+        <span class="notification-page-total">${t("Notifications")}: ${total} · ${t("Per page")}: 20</span>
+        <div class="notification-page-buttons">
+          <button class="btn" type="button" ?disabled=${loading || page <= 1} @click=${() => loadPage(page - 1)}>
+            ${t("Previous page")}
+          </button>
+          ${pageNumbers.map(
+            (number, index) => html`
+              ${index > 0 && number - pageNumbers[index - 1]! > 1 ? html`<span class="notification-page-gap">…</span>` : nothing}
+              <button
+                class="btn notification-page-number ${page === number ? "active" : ""}"
+                type="button"
+                aria-label=${`${t("Page")} ${number}`}
+                aria-current=${page === number ? "page" : nothing}
+                ?disabled=${loading}
+                @click=${() => loadPage(number)}
+              >
+                ${number}
+              </button>
+            `,
+          )}
+          <button class="btn" type="button" ?disabled=${loading || page >= pages} @click=${() => loadPage(page + 1)}>
+            ${t("Next page")}
+          </button>
+        </div>
         <form
           @submit=${(event: SubmitEvent) => {
             event.preventDefault();
@@ -385,7 +413,7 @@ function draw(): void {
           }}
         >
           <label
-            >${t("Page")}
+            >${t("Jump to")}
             <input
               type="number"
               aria-label=${t("Page")}
@@ -396,12 +424,9 @@ function draw(): void {
               ?disabled=${loading}
             />
           </label>
-          <span>/ ${pages} · ${t("Notifications")}: ${total}</span>
+          <span>${t("Page unit")}</span>
           <button class="btn" type="submit" ?disabled=${loading}>${t("Go to page")}</button>
         </form>
-        <button class="btn" type="button" ?disabled=${loading || page >= pages} @click=${() => loadPage(page + 1)}>
-          ${t("Next page")}
-        </button>
       </nav>
     `,
     host,

@@ -372,7 +372,7 @@ test("repeated task notifications collapse without marking read and paginate wit
       { id: "cron:job:failed", kind: "cron_failure", createdAt: 29, readAt: null, source: "Earlier failed job" },
       { id: "cron:job:old", cronId: "job", kind: "cron_success", createdAt: 28, readAt: 0, source: "Earlier job" },
       { id: "cron:other:1", cronId: "other", kind: "cron_success", createdAt: 27, readAt: null, source: "Other job" },
-      ...Array.from({ length: 24 }, (_, index) => ({
+      ...Array.from({ length: 224 }, (_, index) => ({
         id: `action:${index}`,
         kind: "action",
         createdAt: 26 - index,
@@ -394,6 +394,18 @@ test("repeated task notifications collapse without marking read and paginate wit
     await booted;
     await settled();
     assert.equal(document.querySelectorAll(".notification-group").length, 18);
+    assert.deepEqual(
+      [...document.querySelectorAll(".notification-page-number")].map((item) => item.textContent?.trim()),
+      ["1", "2", "3", "4", "5", "12"],
+    );
+    assert.equal(document.querySelectorAll(".notification-page-gap").length, 1);
+    document.querySelector<HTMLButtonElement>('.notification-page-number[aria-label="页码 12"]')!.click();
+    await settled();
+    assert.equal(document.querySelector(".notification-page-number.active")!.getAttribute("aria-current"), "page");
+    assert.equal(document.querySelector(".notification-page-number.active")!.textContent?.trim(), "12");
+    assert.equal(document.querySelectorAll(".notification-row").length, 8);
+    document.querySelector<HTMLButtonElement>('.notification-page-number[aria-label="页码 1"]')!.click();
+    await settled();
     const history = document.querySelector<HTMLDetailsElement>(".notification-history")!;
     assert.equal(history.open, false);
     assert.match(history.querySelector("summary")!.textContent!, /通知: 2/);
@@ -406,22 +418,22 @@ test("repeated task notifications collapse without marking read and paginate wit
     assert.equal(button("上一页").disabled, true);
     button("下一页").click();
     await settled();
-    assert.equal(document.querySelectorAll(".notification-row").length, 8);
+    assert.equal(document.querySelectorAll(".notification-row").length, 20);
     assert.equal(document.querySelector<HTMLInputElement>(".notification-pagination input")!.value, "2");
-    assert.equal(button("下一页").disabled, true);
+    assert.equal(button("下一页").disabled, false);
     button("上一页").click();
     await settled();
     assert.equal(document.querySelector<HTMLInputElement>(".notification-pagination input")!.value, "1");
     assert.equal(document.querySelectorAll(".notification-group").length, 18);
     const input = document.querySelector<HTMLInputElement>(".notification-pagination input")!;
-    input.value = "2";
+    input.value = "12";
     button("跳转").click();
     await settled();
-    assert.equal(document.querySelector<HTMLInputElement>(".notification-pagination input")!.value, "2");
+    assert.equal(document.querySelector<HTMLInputElement>(".notification-pagination input")!.value, "12");
     assert.equal(document.querySelectorAll(".notification-row").length, 8);
-    assert.ok(h.requests.includes("/api/notifications?page=2"));
+    assert.ok(h.requests.includes("/api/notifications?page=12"));
     const invalid = document.querySelector<HTMLInputElement>(".notification-pagination input")!;
-    invalid.value = "3";
+    invalid.value = "13";
     button("跳转").click();
     await settled();
     assert.equal(document.querySelectorAll(".notification-row").length, 8);

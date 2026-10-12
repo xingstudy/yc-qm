@@ -13178,6 +13178,7 @@ body.app-edit-embed .custom-chat-shell.app-edit-chat > .chat-bottom-dock {
 }
 
 .notification-pagination,
+.notification-page-buttons,
 .notification-pagination form,
 .notification-pagination label {
   display: flex;
@@ -13189,6 +13190,29 @@ body.app-edit-embed .custom-chat-shell.app-edit-chat > .chat-bottom-dock {
 
 .notification-pagination {
   margin: 20px auto;
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+
+.notification-page-buttons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.notification-page-number {
+  min-width: 34px;
+  justify-content: center;
+}
+
+.notification-page-number.active {
+  border-color: var(--brand-accent);
+  background: var(--brand-accent);
+  color: var(--primary-foreground);
+}
+
+.notification-page-gap {
+  padding-inline: 4px;
 }
 
 .notification-pagination input {
