@@ -12,8 +12,12 @@ test("only an actually stuck prompt gets elevation", () => {
   assert.match(css, /\.user-row\.stuck > \.user-bubble/);
 });
 
-test("prompt offset reserves the pane's measured pins height", () => {
-  assert.match(css, /top: var\(--chat-sticky-top, 0px\)/);
+test("user messages stay in normal flow while pinned navigation keeps its sticky position", () => {
+  const prompt = css.match(/\.message-stack \.user-row:not\(:has\(~ \.user-row\)\) \{[^}]*\}/)?.[0] ?? "";
+  assert.match(prompt, /position: relative;/);
+  assert.match(prompt, /top: auto;/);
+  assert.doesNotMatch(css, /\.user-row[^{}]*\{[^}]*position: (?:sticky|fixed);/);
+  assert.match(css, /\.pinned-strip \{[^}]*position: sticky;/);
   assert.match(css, /max-height: min\(38cqh, 240px\)/);
 });
 

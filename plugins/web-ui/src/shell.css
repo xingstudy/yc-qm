@@ -1717,8 +1717,8 @@ a.chat-row-open {
   align-items: flex-end;
 }
 .message-stack .user-row:not(:has(~ .user-row)) {
-  position: sticky;
-  top: var(--chat-sticky-top, 0px);
+  position: relative;
+  top: auto;
   z-index: 3;
   padding-top: 8px;
   margin-top: -8px;
