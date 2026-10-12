@@ -30,6 +30,13 @@ let unread = 0;
 let conversationUnread: Record<string, { messages: number; mentions: number }> = {};
 let loadedFor: string | null = null;
 let filter: Kind | "all" = "all";
+let status: "all" | "unread" | "read" = "all";
+let read = 0;
+let total = 0;
+let kindCounts: Partial<Record<Kind, number>> = {};
+let page = 1;
+let pages = 1;
+let loading = false;
 let error = "";
 let refreshSeq = 0;
 let host: HTMLElement | null = null;
@@ -72,6 +79,14 @@ export function resetNotifications(): void {
   unread = 0;
   conversationUnread = {};
   loadedFor = null;
+  status = "all";
+  filter = "all";
+  read = 0;
+  total = 0;
+  kindCounts = {};
+  page = 1;
+  pages = 1;
+  loading = false;
   error = "";
   changed();
 }
@@ -80,15 +95,31 @@ export async function refreshNotifications(): Promise<void> {
   const user = appState.me?.user;
   if (!user) return;
   const seq = ++refreshSeq;
+  loading = true;
+  draw();
+  const query = new URLSearchParams();
+  if (status !== "all") query.set("status", status);
+  if (filter !== "all") query.set("kind", filter);
+  if (page > 1) query.set("page", String(page));
   try {
     const result = await api<{
       notifications: NotificationView[];
       unread: number;
+      read?: number;
+      total?: number;
+      kindCounts?: Partial<Record<Kind, number>>;
+      page?: number;
+      pages?: number;
       conversationUnread: Record<string, { messages: number; mentions: number }>;
-    }>("/api/notifications");
+    }>(`/api/notifications${query.size ? `?${query}` : ""}`);
     if (appState.me?.user !== user || seq !== refreshSeq) return;
     items = result.notifications ?? [];
     unread = result.unread ?? 0;
+    read = result.read ?? items.filter((item) => item.readAt !== null).length;
+    total = result.total ?? items.length;
+    kindCounts = result.kindCounts ?? {};
+    page = result.page ?? 1;
+    pages = result.pages ?? 1;
     conversationUnread = result.conversationUnread ?? {};
     loadedFor = user;
     error = "";
@@ -96,7 +127,16 @@ export async function refreshNotifications(): Promise<void> {
     if (appState.me?.user !== user || seq !== refreshSeq) return;
     error = t("Could not load notifications.");
   }
+  loading = false;
   changed();
+}
+
+function loadPage(number: number): void {
+  page = number;
+  items = [];
+  loadedFor = null;
+  error = "";
+  void refreshNotifications();
 }
 
 async function markNotificationRead(id: string): Promise<void> {
@@ -237,7 +277,14 @@ function draw(): void {
     host.className = "pane notifications-page";
     appState.mainEl.replaceChildren(host);
   }
-  const visible = filter === "all" ? items : items.filter((item) => item.kind === filter);
+  const groups = new Map<string, NotificationView[]>();
+  for (const item of items) {
+    const cronId = item.kind.startsWith("cron_") ? (item.cronId ?? /^cron:([^:]+):/.exec(item.id)?.[1]) : undefined;
+    const key = cronId ? `cron:${cronId}` : item.id;
+    const group = groups.get(key) ?? [];
+    group.push(item);
+    groups.set(key, group);
+  }
   const filters: Array<{ key: Kind | "all"; label: string }> = [
     { key: "all", label: "All" },
     { key: "mention", label: "Mentioned me" },
@@ -247,34 +294,115 @@ function draw(): void {
   ];
   let empty = "Loading notifications…";
   if (error) empty = error;
-  else if (loadedFor) empty = filter === "all" ? "No notifications." : "No notifications of this type.";
+  else if (loadedFor) {
+    if (status === "unread")
+      empty = filter === "all" ? "No unread notifications." : "No unread notifications of this type.";
+    else if (status === "read")
+      empty = filter === "all" ? "No read notifications." : "No read notifications of this type.";
+    else empty = filter === "all" ? "No notifications." : "No notifications of this type.";
+  }
   render(
     html`
       ${listPageTpl({
         title: "Notifications",
         subtitle: unread ? `${t("Unread notifications")}: ${unread}` : "All caught up",
-        controls: html`<button class="btn" type="button" ?disabled=${unread === 0} @click=${() => void markAllRead()}>
-          ${icon(CheckCheck, 15)} ${t("Mark all as read")}
-        </button>`,
+        controls: html`
+          <div class="list-page-actions" role="group" aria-label=${t("Read status")}>
+            ${(
+              [
+                { key: "all", label: "All notifications", count: unread + read },
+                { key: "unread", label: "Unread", count: unread },
+                { key: "read", label: "Read", count: read },
+              ] as const
+            ).map(
+              ({ key, label, count }) =>
+                html`<button
+                  class="notification-filter-chip ${status === key ? "active" : ""}"
+                  type="button"
+                  aria-pressed=${status === key}
+                  @click=${() => {
+                    status = key;
+                    loadPage(1);
+                  }}
+                >
+                  ${t(label)} <span class="notification-filter-count">${count}</span>
+                </button>`,
+            )}
+          </div>
+          <button class="btn" type="button" ?disabled=${unread === 0} @click=${() => void markAllRead()}>
+            ${icon(CheckCheck, 15)} ${t("Mark all as read")}
+          </button>
+        `,
         filters: html`<div class="notification-filters" role="group" aria-label=${t("Notification type")}>
           ${filters.map(({ key, label }) => {
-            const count = key === "all" ? items.length : items.filter((item) => item.kind === key).length;
+            const count =
+              key === "all" ? Object.values(kindCounts).reduce((sum, value) => sum + value, 0) : (kindCounts[key] ?? 0);
             return html`<button
               class="notification-filter-chip ${filter === key ? "active" : ""}"
               type="button"
               aria-pressed=${filter === key}
               @click=${() => {
                 filter = key;
-                draw();
+                loadPage(1);
               }}
             >
               ${t(label)} <span class="notification-filter-count">${count}</span>
             </button>`;
           })}
         </div>`,
-        rows: visible.map(notificationRow),
+        rows: [...groups.values()].map(
+          ([latest, ...older]) =>
+            html`<div class="notification-group">
+              ${notificationRow(latest!)}
+              ${
+                older.length
+                  ? html`<details class="notification-history">
+                      <summary>
+                        <span class="notification-expand">${t("Show task history")}</span>
+                        <span class="notification-collapse">${t("Hide task history")}</span>
+                        · ${t("Notifications")}: ${older.length}
+                        ${older.some((item) => item.readAt === null) ? html` · ${t("Unread")}: ${older.filter((item) => item.readAt === null).length}` : nothing}
+                        ${older.some((item) => item.kind === "cron_failure") ? html` · ${t("Task failed")}: ${older.filter((item) => item.kind === "cron_failure").length}` : nothing}
+                      </summary>
+                      <div class="notification-history-rows">${older.map(notificationRow)}</div>
+                    </details>`
+                  : nothing
+              }
+            </div>`,
+        ),
         empty,
       })}
+      <nav class="notification-pagination" aria-label=${t("Notification pages")}>
+        <button class="btn" type="button" ?disabled=${loading || page <= 1} @click=${() => loadPage(page - 1)}>
+          ${t("Previous page")}
+        </button>
+        <form
+          @submit=${(event: SubmitEvent) => {
+            event.preventDefault();
+            const input = (event.currentTarget as HTMLFormElement).querySelector("input")!;
+            const value = Number(input.value);
+            if (!loading && Number.isInteger(value) && value >= 1 && value <= pages) loadPage(value);
+          }}
+        >
+          <label
+            >${t("Page")}
+            <input
+              type="number"
+              aria-label=${t("Page")}
+              min="1"
+              max=${pages}
+              required
+              .value=${String(page)}
+              ?disabled=${loading}
+            />
+          </label>
+          <span>/ ${pages} · ${t("Notifications")}: ${total}</span>
+          <button class="btn" type="submit" ?disabled=${loading}>${t("Go to page")}</button>
+        </form>
+        <button class="btn" type="button" ?disabled=${loading || page >= pages} @click=${() => loadPage(page + 1)}>
+          ${t("Next page")}
+        </button>
+      </nav>
     `,
     host,
   );
