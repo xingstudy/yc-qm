@@ -55,7 +55,8 @@ function harness(
 }
 
 test("cron runs persist results and notify success or failure separately from delivery", async () => {
-  const success = harness("Done");
+  const reply = `${"Weather report. ".repeat(200)}Final forecast.`;
+  const success = harness(reply);
   const cron = await success.crons.create({
     schedule: { everyMs: 1000 },
     action: "report",
@@ -65,7 +66,7 @@ test("cron runs persist results and notify success or failure separately from de
     destination: { type: "web", target: "web:U1:setup" },
   });
   await runNowSettled(success.scheduler, cron.id);
-  assert.equal((await success.crons.listFires(cron.id)).runs[0]?.reply, "Done");
+  assert.equal((await success.crons.listFires(cron.id)).runs[0]?.reply, reply);
   assert.equal((await success.notifications.list("U1"))[0]?.kind, "cron_success");
   assert.equal((await success.deliveries.pending("web")).length, 1);
 

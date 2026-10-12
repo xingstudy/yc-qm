@@ -21,6 +21,7 @@ import {
 } from "./cron-format";
 import { tip } from "./tooltip";
 import { focusTextInputOnDesktop } from "./viewport";
+import { markdown } from "./message-markdown";
 
 export interface CronView {
   id: string;
@@ -636,14 +637,22 @@ function cronRunHistory(c: CronView): TemplateResult {
     ${heading}
     <div class="cron-run-list">
       ${[...runs].reverse().map((run) => {
-        const detail = run.note ?? (run.reply ? clipWords(run.reply, 120) : "");
+        const detail = run.note ?? run.reply ?? "";
         return html` <div class="cron-run-row" data-fire-key=${run.fireKey}>
           <span class="badge">${t(run.status ?? "completed")}</span>
           ${run.deliveryStatus ? html`<span class="badge">${t(deliveryStatusLabel(run.deliveryStatus))}</span>` : nothing}
           <span class="cron-run-time">${cronRunTiming(run)}</span>
-          <span class=${run.note ? "cron-run-detail cron-run-error" : "cron-run-detail"} ${tip(detail)}>
-            ${detail}
-          </span>
+          ${
+            detail
+              ? html`<details class="cron-run-output">
+                  <summary class=${run.note ? "cron-run-detail cron-run-error" : "cron-run-detail"}>
+                    ${t("View full result")} · ${clipWords(detail, 120)}
+                  </summary>
+                  ${run.note ? html`<p class="cron-run-error">${run.note}</p>` : nothing}
+                  ${run.reply ? html`<div class="assistant-body cron-run-result">${markdown(run.reply)}</div>` : nothing}
+                </details>`
+              : nothing
+          }
           ${
             run.resultSessionId || run.sessionId
               ? html`<span class="cron-run-links">

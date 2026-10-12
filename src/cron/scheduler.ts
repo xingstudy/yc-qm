@@ -27,7 +27,7 @@ import { errMessage } from "../util/errors.ts";
 import { sleep } from "../util/async.ts";
 
 const TICK_LEASE_KEY = "cron:scheduler:tick";
-const CRON_FIRE_REPLY_MAX_CHARS = 2000;
+const CRON_FIRE_NOTE_MAX_CHARS = 2000;
 const STRANDED_SWEEP_INTERVAL_MS = 10 * 60_000;
 const FIRE_GC_INTERVAL_MS = 6 * 60 * 60_000;
 const BUSY_DEFER_MS = 30_000;
@@ -105,7 +105,7 @@ function cronFireLogReply(s: string): string {
   if (echoesCronContextMarkers(s)) {
     return "[reply echoed cron runtime context; omitted]";
   }
-  return truncate(s, CRON_FIRE_REPLY_MAX_CHARS);
+  return s;
 }
 
 function isOneShotSchedule(schedule: Cron["schedule"]): boolean {
@@ -241,7 +241,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         endedAt: now(),
         ...(scheduledAt !== undefined ? { scheduledAt } : {}),
         status: result.status ?? "ok",
-        ...(result.note ? { note: truncate(result.note, CRON_FIRE_REPLY_MAX_CHARS) } : {}),
+        ...(result.note ? { note: truncate(result.note, CRON_FIRE_NOTE_MAX_CHARS) } : {}),
       });
       if (isOneShotSchedule(cron.schedule)) await deps.crons.setEnabled(cron.id, false);
       return { authzFailed: false };
@@ -289,7 +289,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         endedAt: now(),
         ...(scheduledAt !== undefined ? { scheduledAt } : {}),
         status: "failed",
-        note: truncate(errMessage(e), CRON_FIRE_REPLY_MAX_CHARS),
+        note: truncate(errMessage(e), CRON_FIRE_NOTE_MAX_CHARS),
       });
       throw e;
     }
@@ -315,7 +315,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         endedAt: now(),
         ...(scheduledAt !== undefined ? { scheduledAt } : {}),
         status: outcome.status ?? (outcome.authzFailed ? "refused" : "ok"),
-        ...(outcome.note ? { note: truncate(outcome.note, CRON_FIRE_REPLY_MAX_CHARS) } : {}),
+        ...(outcome.note ? { note: truncate(outcome.note, CRON_FIRE_NOTE_MAX_CHARS) } : {}),
         ...(outcome.reply !== undefined ? { reply: cronFireLogReply(outcome.reply) } : {}),
         ...(outcome.sessionId ? { sessionId: outcome.sessionId } : {}),
       });

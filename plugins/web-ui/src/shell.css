@@ -6310,10 +6310,20 @@ a.connector-widget:focus-visible {
   padding: 9px 0;
 }
 
-.cron-detail-runs .cron-run-detail {
+.cron-run-output {
+  min-width: 0;
   flex-basis: 100%;
   order: 1;
   white-space: normal;
+}
+
+.cron-run-output summary {
+  cursor: pointer;
+}
+
+.cron-run-result {
+  margin-top: 12px;
+  overflow-wrap: anywhere;
 }
 
 .cron-detail-actions {

@@ -1209,6 +1209,7 @@ const ZH: Record<string, string> = {
   "No runs yet.": "尚无运行记录。",
   Worklog: "工作日志",
   "View result in conversation": "在原对话查看结果",
+  "View full result": "查看完整结果",
   "Open original conversation": "打开原对话",
   "Original conversation is unavailable. Results are available in run history.":
     "原对话不可用，结果仍可在运行记录中查看。",
