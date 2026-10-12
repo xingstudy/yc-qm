@@ -81,7 +81,7 @@ test("activity previews use the row width before ellipsizing", () => {
 test("stopped work shares posted reply rendering and shows one status without activity", () => {
   assert.match(chat, /workBlock\(work, false, "", "", true\)/);
   const block = chat.slice(chat.indexOf("  function workBlock("), chat.indexOf("  function approvalSummaryView("));
-  assert.match(block, /postSpeechText\(item.row\)/);
+  assert.match(block, /timelineSpeechText\(item\)/);
   assert.match(block, /replies.map\(\(reply\) => html`<div class="streaming-text"/);
   assert.match(block, /if \(stopped && fold === nothing\) fold = html`<div class="stopped-head">/);
   assert.doesNotMatch(chat, /stopped-note|function stoppedWork/);

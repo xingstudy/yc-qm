@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { postCallText, postResultOk } from "../src/surface-post.ts";
-import { postSpeechText, type ToolRowModel } from "../src/timeline.ts";
+import { postSpeechText, timelineSpeechText, type ToolRowModel } from "../src/timeline.ts";
 import type { ToolActivity } from "../src/core-bridge.ts";
 
 const call: ToolActivity = {
@@ -30,6 +30,7 @@ for (const [name, payload, ok] of [
     };
     assert.equal(postResultOk(payload), ok);
     assert.equal(postSpeechText(row), ok ? "The answer" : null);
+    assert.equal(timelineSpeechText({ kind: "tool", row }), ok ? "The answer" : null);
     assert.equal(postSpeechText(row, true), ok ? "The answer" : null);
   });
 }
