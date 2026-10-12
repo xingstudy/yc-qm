@@ -13136,10 +13136,20 @@ body.app-edit-embed .custom-chat-shell.app-edit-chat > .chat-bottom-dock {
   gap: 10px;
 }
 
-.notification-history {
-  margin-top: 6px;
+.notification-group:has(.notification-history) {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
+  background: var(--card);
+}
+
+.notification-group:has(.notification-history) > .notification-row {
+  border: 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+.notification-history {
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
   background: var(--muted);
 }
 
