@@ -119,6 +119,7 @@ import {
   streamingTextTail,
   currentTextPhase,
   postSpeechText,
+  timelineSpeechText,
   toolCategory,
   toolExecutionOutput,
   toolRowKind,
@@ -2568,7 +2569,7 @@ export function createChatSurface(
       (work.status === "working" || work.status === "thinking");
     const replies: string[] = [];
     const timeline = messageWorkTimeline(work, active ? "" : text).filter((item) => {
-      const speech = item.kind === "tool" ? postSpeechText(item.row) : null;
+      const speech = timelineSpeechText(item);
       if (speech === null) return true;
       replies.push(speech);
       return false;

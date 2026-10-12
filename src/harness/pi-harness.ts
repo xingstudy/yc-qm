@@ -1959,12 +1959,27 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
                   .then(() => turn.emit({ type: "thinking", payload: block, scopeLabel: turn.scopeLabel }))
                   .catch(swallowAs("pi: thinking entry persist", undefined));
               }
-              if (contentHasToolUse(stepContent)) {
-                const narration = textFromContent(stepContent).trim();
-                if (narration)
+              const hasTools = contentHasToolUse(stepContent);
+              if (hasTools || (!turn.surfaceTools && !entry.ref.silentRequested)) {
+                const narration = textFromContent(stepContent);
+                if (narration.trim())
                   thinkTail = thinkTail
-                    .then(() => turn.emit({ type: "text", payload: { text: narration }, scopeLabel: turn.scopeLabel }))
-                    .catch(swallowAs("pi: text entry persist", undefined));
+                    .then(async () => {
+                      const textEntry = await turn.emit({
+                        type: "text",
+                        payload: {
+                          text: hasTools ? narration.trim() : narration,
+                          ...(!hasTools ? { phase: "final_answer" } : {}),
+                        },
+                        scopeLabel: turn.scopeLabel,
+                      });
+                      if (!hasTools) await tapeEntryMirror(textEntry);
+                    })
+                    .catch((err) => {
+                      tapeError = asError(err);
+                      toolAbort.abort();
+                      void entry.agentSession.abort().catch(swallowAs("pi: text-failure abort", undefined));
+                    });
               }
               curStart = undefined;
               curFirst = undefined;

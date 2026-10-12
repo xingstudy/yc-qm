@@ -10,6 +10,7 @@ import {
   toolCategory,
   toolRowKind,
   toolExecutionOutput,
+  timelineSpeechText,
   type ToolRowModel,
 } from "../src/timeline.ts";
 
@@ -20,6 +21,29 @@ function act(seq: number, type: ToolActivity["type"], payload: unknown): ToolAct
 function row(call: unknown, result?: unknown): ToolRowModel {
   return { call: act(1, "tool_call", call), result: result === undefined ? null : act(2, "tool_result", result) };
 }
+
+test("steered answers stay visible outside folded work without duplicating the final reply", () => {
+  const answer = "Earlier answer\n\n".repeat(1000) + "```ts\nconst kept = true;\n```";
+  const work: WorkBlock = {
+    status: "complete",
+    activity: [
+      act(1, "text", { text: "Checking", phase: "commentary" }),
+      act(2, "text", { text: answer, phase: "final_answer" }),
+      act(3, "text", { text: "After the next steer", phase: "final_answer" }),
+      act(4, "text", { text: "Done", phase: "final_answer" }),
+    ],
+  };
+  assert.deepEqual(messageWorkTimeline(work, "Done").map(timelineSpeechText).filter(Boolean), [
+    answer,
+    "After the next steer",
+  ]);
+  work.status = "working";
+  assert.deepEqual(messageWorkTimeline(work, "").map(timelineSpeechText).filter(Boolean), [
+    answer,
+    "After the next steer",
+    "Done",
+  ]);
+});
 
 test("thinking, tool calls, and results stay in seq order — never bucketed by type", () => {
   const work: WorkBlock = {

@@ -112,6 +112,13 @@ export function postSpeechText(row: ToolRowModel, allowInFlight = false): string
   return allowInFlight && !row.approval && !row.pending ? text : null;
 }
 
+export function timelineSpeechText(item: TimelineItem): string | null {
+  if (item.kind === "tool") return postSpeechText(item.row);
+  if (item.kind !== "text") return null;
+  const payload = item.activity.payload as { text?: string; phase?: string } | null;
+  return payload?.phase === "final_answer" && payload.text?.trim() ? payload.text : null;
+}
+
 function orphanCallSignature(row: ToolRowModel): string | null {
   if (!row.call || row.result || row.approval) return null;
   const p = (row.call.payload ?? {}) as ToolPayload;

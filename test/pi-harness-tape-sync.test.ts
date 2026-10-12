@@ -6,6 +6,7 @@ import type { HarnessLlmRequestRecord, HarnessTurnInput } from "../src/harness/h
 import { promptEnvelopeBody, type NewEntry, type NewTapeRecord } from "../src/sessions/session-store.ts";
 import { createMemorySessionStore } from "../src/sessions/memory-session-store.ts";
 import { createMemoryRunSignalStore } from "../src/runs/run-signal-store.ts";
+import { createTranscriptSource } from "../src/harness/tape-projection.ts";
 import type { ScopeId, SessionEntry } from "../src/types.ts";
 
 type Sink = {
@@ -86,6 +87,13 @@ for (const variant of ["text", "images", "documents", "finished during preparati
     const signals = createMemoryRunSignalStore();
     const harness = createPiHarness({ apiKey: "sk-test", signals });
     const sink: Sink = { entries: [], tape: [] };
+    const store = createMemorySessionStore();
+    const session = await store.getOrCreateByThread(`web:tester:steer-${variant}`, "dm", "personal:tester" as ScopeId);
+    await store.addParticipant(session.id, "tester", undefined, { includeHistory: true });
+    const { lease } = await store.acquireLease(session.id);
+    assert.ok(lease);
+    const firstReply =
+      variant === "text" ? "    preserved indentation\n\n" + "Long answer\n\n".repeat(1000) : "first step";
     const documentBase64 = (await readFile(new URL("./fixtures/documents/sample.pdf", import.meta.url))).toString(
       "base64",
     );
@@ -101,11 +109,23 @@ for (const variant of ["text", "images", "documents", "finished during preparati
       calls += 1;
       tapeRowsAtDispatch.push(sink.tape.filter((rec) => rec.kind === "message").length);
       requestMessages.push((JSON.parse(String(init?.body ?? "{}")) as { messages?: [] }).messages ?? []);
-      if (calls === 1) return gatedSse(textReplyEvents("first step"), steerQueued);
+      if (calls === 1) return gatedSse(textReplyEvents(firstReply), steerQueued);
       return sse(textReplyEvents("final reply"));
     }) as typeof globalThis.fetch;
     try {
-      const turn = turnInput("tape-order", sink, { runId: "run-order" });
+      const turn = turnInput(session.id, sink, {
+        session,
+        runId: "run-order",
+        emit: async (entry) => {
+          const appended = await store.append(lease, entry);
+          sink.entries.push(appended);
+          return appended;
+        },
+        tape: async (rec) => {
+          sink.tape.push(rec);
+          await store.appendTape(lease, rec);
+        },
+      });
       if (withImages)
         turn.prepareSteer = async (text) => {
           if (finishDuringPreparation) {
@@ -138,6 +158,31 @@ for (const variant of ["text", "images", "documents", "finished during preparati
         return;
       }
       assert.equal(result.reply, "final reply");
+      assert.deepEqual(
+        sink.entries.filter((entry) => entry.type === "text").map((entry) => entry.payload),
+        [
+          { text: firstReply, phase: "final_answer" },
+          { text: "final reply", phase: "final_answer" },
+        ],
+        "every response remains in the transcript after steering",
+      );
+      assert.equal(
+        sink.tape.filter(
+          (rec) => rec.kind === "annotation" && (rec.payload as { entry?: { type?: string } }).entry?.type === "text",
+        ).length,
+        2,
+        "native tape rendering retains the same response entries",
+      );
+      const transcript = createTranscriptSource(store);
+      for (const read of [await transcript.forRender(session.id), await transcript.forViewer(session.id, "tester")])
+        assert.deepEqual(
+          read.entries.filter((entry) => entry.type === "text").map((entry) => entry.payload),
+          [
+            { text: firstReply, phase: "final_answer" },
+            { text: "final reply", phase: "final_answer" },
+          ],
+          "reloading either transcript preserves the full answer before the steer",
+        );
 
       const messageRows = sink.tape.filter((rec) => rec.kind === "message");
       assert.deepEqual(
@@ -182,29 +227,43 @@ for (const variant of ["text", "images", "documents", "finished during preparati
   });
 }
 
-test("a failed tape append fails the turn loudly with the append error, no checkpoint", async () => {
-  const harness = createPiHarness({ apiKey: "sk-test" });
-  const sink: Sink = { entries: [], tape: [] };
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = (async () => sse(textReplyEvents("a reply that must not survive"))) as typeof globalThis.fetch;
-  try {
-    const turn = turnInput("tape-fatal", sink, {
-      tape: async (rec: NewTapeRecord) => {
-        if (rec.kind === "message" && (rec.payload as { role?: string }).role === "assistant")
-          throw new Error("tape insert refused");
-        sink.tape.push(rec);
-      },
-    });
-    await assert.rejects(harness.turns.runTurn(turn), /tape insert refused/);
-    assert.equal(
-      sink.tape.some((rec) => rec.kind === "annotation" && (rec.payload as { subturnEnd?: unknown }).subturnEnd),
-      false,
-      "no completeness checkpoint is stamped over the failure",
-    );
-  } finally {
-    globalThis.fetch = realFetch;
-  }
-});
+for (const failure of ["message", "text", "text mirror"]) {
+  test(`a failed ${failure} append fails the turn loudly with the append error, no checkpoint`, async () => {
+    const harness = createPiHarness({ apiKey: "sk-test" });
+    const sink: Sink = { entries: [], tape: [] };
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => sse(textReplyEvents("a reply that must not survive"))) as typeof globalThis.fetch;
+    try {
+      const turn = turnInput("tape-fatal", sink, {
+        tape: async (rec: NewTapeRecord) => {
+          if (
+            (failure === "message" &&
+              rec.kind === "message" &&
+              (rec.payload as { role?: string }).role === "assistant") ||
+            (failure === "text mirror" &&
+              rec.kind === "annotation" &&
+              (rec.payload as { entry?: { type?: string } }).entry?.type === "text")
+          )
+            throw new Error("tape insert refused");
+          sink.tape.push(rec);
+        },
+      });
+      const emit = turn.emit;
+      turn.emit = async (entry) => {
+        if (failure === "text" && entry.type === "text") throw new Error("tape insert refused");
+        return emit(entry);
+      };
+      await assert.rejects(harness.turns.runTurn(turn), /tape insert refused/);
+      assert.equal(
+        sink.tape.some((rec) => rec.kind === "annotation" && (rec.payload as { subturnEnd?: unknown }).subturnEnd),
+        false,
+        "no completeness checkpoint is stamped over the failure",
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+}
 
 test("a lease lost mid-turn fails the turn instead of degrading silently", async () => {
   const harness = createPiHarness({ apiKey: "sk-test" });
