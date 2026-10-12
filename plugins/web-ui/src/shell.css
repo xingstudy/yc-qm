@@ -6319,6 +6319,7 @@ a.connector-widget:focus-visible {
 
 .cron-run-output summary {
   cursor: pointer;
+  list-style-position: inside;
 }
 
 .cron-run-result {

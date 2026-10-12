@@ -40,8 +40,8 @@ function durableStub(): ReplayDedupe {
   };
 }
 
-function durablePortalLoginStore(): PortalLoginTransactionStore {
-  const store = createMemoryPortalLoginTransactionStore();
+function durablePortalLoginStore(now: () => number = Date.now): PortalLoginTransactionStore {
+  const store = createMemoryPortalLoginTransactionStore(now);
   return { ...store, durable: true };
 }
 
@@ -208,11 +208,15 @@ test("portal login transactions are durable source-auth records with one claiman
 });
 
 test("a claimed portal login can publish its result after the global creation limit is full", async (t) => {
-  const srv = start();
+  const now = Date.now();
+  const srv = start(
+    durableStub(),
+    durablePortalLoginStore(() => now),
+  );
   t.after(() => srv.close());
   const state = "a".repeat(64);
   const resultState = "b".repeat(64);
-  const expiresAtMs = Date.now() + 60_000;
+  const expiresAtMs = now + 60_000;
   assert.deepEqual(
     (
       await portalLogin(srv.base, PORTAL_LOGIN_CREATE_PATH, {
