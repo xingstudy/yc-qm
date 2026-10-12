@@ -92,15 +92,37 @@ async function listNotifications(ctx: ApiCtx): Promise<void> {
   const viewer = viewerOf(ctx);
   if (!viewer || !ctx.deps.notifications) return sendJson(ctx.res, 403, { error: "forbidden" });
   ctx.res.setHeader("Cache-Control", "no-store");
+  const status = ctx.url.searchParams.get("status") ?? "all";
+  const kind = ctx.url.searchParams.get("kind") ?? "all";
+  const limit = Number(ctx.url.searchParams.get("limit") ?? 20);
+  const requestedPage = Number(ctx.url.searchParams.get("page") ?? 1);
+  if (
+    !["all", "unread", "read"].includes(status) ||
+    !["all", "mention", "cron_success", "cron_failure", "action"].includes(kind) ||
+    !Number.isInteger(limit) ||
+    limit < 1 ||
+    limit > 100 ||
+    !Number.isSafeInteger(requestedPage) ||
+    requestedPage < 1
+  )
+    return sendJson(ctx.res, 400, { error: "bad_request" });
   const records = await ctx.deps.notifications.list(viewer);
+  const notices = records.filter((record) => record.kind !== "message");
+  const unread = notices.filter((record) => record.readAt === undefined).length;
+  const matching = notices.filter(
+    (record) => status === "all" || (record.readAt === undefined) === (status === "unread"),
+  );
+  const kindCounts = matching.reduce<Partial<Record<NotificationRecord["kind"], number>>>((counts, record) => {
+    counts[record.kind] = (counts[record.kind] ?? 0) + 1;
+    return counts;
+  }, {});
+  const filtered = matching.filter((record) => kind === "all" || record.kind === kind);
+  const pages = Math.max(1, Math.ceil(filtered.length / limit));
+  const page = Math.min(requestedPage, pages);
+  const pageRecords = filtered.slice((page - 1) * limit, page * limit);
   const { owned } = await ctx.app.listCronsForViewer(viewer);
   const allowedCrons = new Set(owned.map((cron) => cron.id));
-  const notifications = await Promise.all(
-    records
-      .filter((record) => record.kind !== "message")
-      .slice(0, 200)
-      .map((record) => visibleNotification(ctx, record, allowedCrons)),
-  );
+  const notifications = await Promise.all(pageRecords.map((record) => visibleNotification(ctx, record, allowedCrons)));
   const unreadSessions = await Promise.all(
     [
       ...new Set(
@@ -124,7 +146,12 @@ async function listNotifications(ctx: ApiCtx): Promise<void> {
     }, {});
   return sendJson(ctx.res, 200, {
     notifications,
-    unread: records.filter((record) => record.kind !== "message" && record.readAt === undefined).length,
+    unread,
+    read: notices.length - unread,
+    kindCounts,
+    total: filtered.length,
+    page,
+    pages,
     conversationUnread,
   });
 }

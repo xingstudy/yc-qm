@@ -283,7 +283,7 @@ test("notifications deep link renders localized unread items without clearing th
     assert.match(h.mainText(), /Shared project/);
     assert.doesNotMatch(h.mainText(), /选择一个对话/);
     assert.equal(document.querySelectorAll(".notification-row.unread").length, 1);
-    assert.equal(document.querySelectorAll(".notification-filter-chip").length, 5);
+    assert.equal(document.querySelectorAll(".notification-filters .notification-filter-chip").length, 5);
     const card = document.querySelector<HTMLAnchorElement>(".notification-row .notification-content");
     assert.ok(card?.href.includes(SESSION.id));
     assert.ok(card?.textContent?.includes("Shared project"));
@@ -291,9 +291,164 @@ test("notifications deep link renders localized unread items without clearing th
       button.textContent?.includes("任务完成"),
     );
     completed?.click();
+    for (let i = 0; i < 20 && !h.mainText().includes("暂无此类通知"); i++)
+      await new Promise((resolve) => setTimeout(resolve, 0));
     assert.match(h.mainText(), /暂无此类通知/);
     assert.equal(document.querySelectorAll(".notification-row").length, 0);
     assert.equal(h.requests.filter((path) => path.includes("/read")).length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test("all, unread and read notifications combine with type filters and preserve read records", async () => {
+  const h = await harness({
+    path: "/notifications",
+    locale: "zh-CN",
+    notifications: [
+      { id: "mention:unread", kind: "mention", createdAt: 3, readAt: null, source: "Unread mention" },
+      { id: "mention:read", kind: "mention", createdAt: 2, readAt: 0, source: "Read mention" },
+      { id: "task:unread", kind: "cron_success", createdAt: 1, readAt: null, source: "Unread task" },
+    ],
+  });
+  const button = (label: string) =>
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+      (item) => item.textContent?.trim().replace(/\s+\d+$/, "") === label,
+    )!;
+  const rows = () => [...document.querySelectorAll(".notification-source")].map((item) => item.textContent?.trim());
+  const settled = async () => {
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  try {
+    const booted = h.boot();
+    h.releaseSessions();
+    await booted;
+    await settled();
+    assert.deepEqual(rows(), ["Unread mention", "Read mention", "Unread task"]);
+    button("未读").click();
+    await settled();
+    assert.equal(button("未读").getAttribute("aria-pressed"), "true");
+    assert.ok(h.requests.includes("/api/notifications?status=unread"));
+    assert.deepEqual(rows(), ["Unread mention", "Unread task"]);
+    button("提及我").click();
+    await settled();
+    assert.deepEqual(rows(), ["Unread mention"]);
+    document.querySelector<HTMLButtonElement>(".notification-mark-read")!.click();
+    await settled();
+    assert.deepEqual(rows(), []);
+    assert.match(h.mainText(), /暂无此类未读通知/);
+    button("已读").click();
+    await settled();
+    assert.deepEqual(rows(), ["Unread mention", "Read mention"]);
+    button("全部通知").click();
+    await settled();
+    assert.deepEqual(rows(), ["Unread mention", "Read mention"]);
+    button("全部").click();
+    await settled();
+    button("未读").click();
+    await settled();
+    assert.deepEqual(rows(), ["Unread task"]);
+    button("全部标为已读").click();
+    await settled();
+    assert.deepEqual(rows(), []);
+    assert.match(h.mainText(), /暂无未读通知/);
+    assert.equal(button("全部标为已读").disabled, true);
+    button("已读").click();
+    await settled();
+    assert.equal(button("已读").getAttribute("aria-pressed"), "true");
+    assert.deepEqual(rows(), ["Unread mention", "Read mention", "Unread task"]);
+    assert.equal(document.querySelectorAll(".notification-row.unread").length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test("repeated task notifications collapse without marking read and paginate with other notices", async () => {
+  const h = await harness({
+    path: "/notifications",
+    locale: "zh-CN",
+    notifications: [
+      { id: "cron:job:latest", cronId: "job", kind: "cron_success", createdAt: 30, readAt: 0, source: "Latest job" },
+      { id: "cron:job:failed", kind: "cron_failure", createdAt: 29, readAt: null, source: "Earlier failed job" },
+      { id: "cron:job:old", cronId: "job", kind: "cron_success", createdAt: 28, readAt: 0, source: "Earlier job" },
+      { id: "cron:other:1", cronId: "other", kind: "cron_success", createdAt: 27, readAt: null, source: "Other job" },
+      ...Array.from({ length: 224 }, (_, index) => ({
+        id: `action:${index}`,
+        kind: "action",
+        createdAt: 26 - index,
+        readAt: 0,
+        source: `Action ${index}`,
+      })),
+    ],
+  });
+  const settled = async () => {
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  const button = (label: string) =>
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+      (item) => item.textContent?.trim().replace(/\s+\d+$/, "") === label,
+    )!;
+  try {
+    const booted = h.boot();
+    h.releaseSessions();
+    await booted;
+    await settled();
+    assert.equal(document.querySelectorAll(".notification-group").length, 18);
+    assert.deepEqual(
+      [...document.querySelectorAll(".notification-page-number")].map((item) => item.textContent?.trim()),
+      ["1", "2", "3", "4", "5", "12"],
+    );
+    assert.equal(document.querySelectorAll(".notification-page-gap").length, 1);
+    document.querySelector<HTMLButtonElement>('.notification-page-number[aria-label="页码 12"]')!.click();
+    await settled();
+    assert.equal(document.querySelector(".notification-page-number.active")!.getAttribute("aria-current"), "page");
+    assert.equal(document.querySelector(".notification-page-number.active")!.textContent?.trim(), "12");
+    assert.equal(document.querySelectorAll(".notification-row").length, 8);
+    document.querySelector<HTMLButtonElement>('.notification-page-number[aria-label="页码 1"]')!.click();
+    await settled();
+    const history = document.querySelector<HTMLDetailsElement>(".notification-history")!;
+    assert.equal(history.open, false);
+    assert.match(history.querySelector("summary")!.textContent!, /通知: 2/);
+    assert.match(history.querySelector("summary")!.textContent!, /未读: 1/);
+    assert.match(history.querySelector("summary")!.textContent!, /任务失败: 1/);
+    history.querySelector("summary")!.click();
+    assert.equal(history.open, true);
+    assert.equal(history.querySelectorAll(".notification-row").length, 2);
+    assert.equal(h.requests.filter((path) => path.includes("/read")).length, 0);
+    assert.equal(button("上一页").disabled, true);
+    button("下一页").click();
+    await settled();
+    assert.equal(document.querySelectorAll(".notification-row").length, 20);
+    assert.equal(document.querySelector<HTMLInputElement>(".notification-pagination input")!.value, "2");
+    assert.equal(button("下一页").disabled, false);
+    button("上一页").click();
+    await settled();
+    assert.equal(document.querySelector<HTMLInputElement>(".notification-pagination input")!.value, "1");
+    assert.equal(document.querySelectorAll(".notification-group").length, 18);
+    const input = document.querySelector<HTMLInputElement>(".notification-pagination input")!;
+    input.value = "12";
+    button("跳转").click();
+    await settled();
+    assert.equal(document.querySelector<HTMLInputElement>(".notification-pagination input")!.value, "12");
+    assert.equal(document.querySelectorAll(".notification-row").length, 8);
+    assert.ok(h.requests.includes("/api/notifications?page=12"));
+    const invalid = document.querySelector<HTMLInputElement>(".notification-pagination input")!;
+    invalid.value = "13";
+    button("跳转").click();
+    await settled();
+    assert.equal(document.querySelectorAll(".notification-row").length, 8);
+    button("任务失败").click();
+    await settled();
+    assert.equal(document.querySelectorAll(".notification-row").length, 1);
+    assert.match(h.mainText(), /Earlier failed job/);
+    assert.equal(document.querySelector<HTMLInputElement>(".notification-pagination input")!.max, "1");
+    button("未读").click();
+    await settled();
+    assert.equal(document.querySelectorAll(".notification-row.unread").length, 1);
+    button("已读").click();
+    await settled();
+    assert.equal(document.querySelectorAll(".notification-row").length, 0);
+    assert.match(h.mainText(), /暂无此类已读通知/);
   } finally {
     await h.close();
   }

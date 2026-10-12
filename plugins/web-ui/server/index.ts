@@ -7482,7 +7482,14 @@ const apiRoutes: readonly WebRoute[] = [
   {
     method: "GET",
     path: "/api/notifications",
-    handle: (c) => relayCore(c.res, "GET", `/v1/notifications?principalId=${encodeURIComponent(c.user)}`),
+    handle: (c) => {
+      const query = new URLSearchParams({ principalId: c.user });
+      for (const key of ["status", "kind", "limit", "page"]) {
+        const value = c.url.searchParams.get(key);
+        if (value !== null) query.set(key, value);
+      }
+      return relayCore(c.res, "GET", `/v1/notifications?${query}`);
+    },
   },
   {
     method: "POST",

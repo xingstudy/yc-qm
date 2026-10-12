@@ -39,6 +39,129 @@ test("notification store deduplicates per recipient and keeps read state isolate
   assert.equal((await store.list("A")).find((record) => record.id === "five")?.readAt, undefined);
 });
 
+test("notification status filters paginate beyond 200 and preserve read history and recipients", async () => {
+  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "qm-unread-")), orgId: "acme" }));
+  for (let i = 0; i < 201; i++)
+    await built.notifications.add({
+      id: `read:${i}`,
+      recipient: "owner",
+      kind: "action",
+      createdAt: i + 10,
+      readAt: 0,
+    });
+  await built.notifications.add({ id: "old:unread", recipient: "owner", kind: "action", createdAt: 1 });
+  await built.notifications.add({ id: "message", recipient: "owner", kind: "message", createdAt: 2 });
+  await built.notifications.add({ id: "other:unread", recipient: "other", kind: "mention", createdAt: 3 });
+  const server = createInsecureTestServer(built.app, { notifications: built.notifications });
+  server.listen(0);
+  const base = `http://localhost:${(server.address() as AddressInfo).port}`;
+  const list = async (query: string) => {
+    const response = await fetch(`${base}/v1/notifications?${query}`);
+    assert.equal(response.status, 200);
+    return (await response.json()) as {
+      notifications: Array<{ id: string; readAt: number | null }>;
+      unread: number;
+      read: number;
+      total: number;
+      kindCounts: Record<string, number>;
+      page: number;
+      pages: number;
+    };
+  };
+  try {
+    const all = await list("principalId=owner");
+    assert.equal(all.notifications.length, 20);
+    assert.ok(all.notifications.every((item) => item.readAt === 0));
+    assert.equal(all.unread, 1);
+    assert.equal(all.read, 201);
+    assert.equal(all.total, 202);
+    const ids = all.notifications.map((item) => item.id);
+    assert.equal(all.pages, 11);
+    for (let number = 2; number <= all.pages; number++) {
+      const result = await list(`principalId=owner&page=${number}`);
+      assert.equal(result.page, number);
+      ids.push(...result.notifications.map((item) => item.id));
+    }
+    assert.equal((await list("principalId=owner&page=999")).page, 11);
+    assert.equal(ids.length, 202);
+    assert.equal(new Set(ids).size, 202);
+    assert.equal(ids.at(-1), "old:unread");
+    const unread = await list("principalId=owner&status=unread&kind=action");
+    assert.deepEqual(
+      unread.notifications.map((item) => item.id),
+      ["old:unread"],
+    );
+    assert.deepEqual(unread.kindCounts, { action: 1 });
+    assert.equal(unread.pages, 1);
+    assert.deepEqual(
+      (await list("principalId=other&status=unread")).notifications.map((item) => item.id),
+      ["other:unread"],
+    );
+    assert.equal((await list("principalId=owner&status=read")).total, 201);
+    const marked = await fetch(`${base}/v1/notifications/old%3Aunread/read?principalId=owner`, { method: "POST" });
+    assert.equal(marked.status, 200);
+    assert.deepEqual((await list("principalId=owner&status=unread")).notifications, []);
+    assert.equal((await list("principalId=owner&status=read&kind=action")).total, 202);
+    for (const query of [
+      "limit=0",
+      "limit=101",
+      "limit=1.5",
+      "status=invalid",
+      "kind=message",
+      "page=0",
+      "page=-1",
+      "page=1.5",
+      "page=invalid",
+      "page=9007199254740992",
+    ])
+      assert.equal((await fetch(`${base}/v1/notifications?principalId=owner&${query}`)).status, 400, query);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("notification pages order tied timestamps and clamp after read-state changes", async () => {
+  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "qm-notice-page-")), orgId: "acme" }));
+  for (const id of ["z", "m", "a"])
+    await built.notifications.add({ id, recipient: "owner", kind: "mention", createdAt: 10 });
+  const server = createInsecureTestServer(built.app, { notifications: built.notifications });
+  server.listen(0);
+  const base = `http://localhost:${(server.address() as AddressInfo).port}`;
+  const list = async (page = 1) => {
+    const response = await fetch(`${base}/v1/notifications?principalId=owner&status=unread&limit=2&page=${page}`);
+    assert.equal(response.status, 200);
+    return (await response.json()) as { notifications: Array<{ id: string }>; page: number; pages: number };
+  };
+  try {
+    const first = await list();
+    assert.deepEqual(
+      first.notifications.map((item) => item.id),
+      ["z", "m"],
+    );
+    const second = await list(2);
+    assert.deepEqual(
+      second.notifications.map((item) => item.id),
+      ["a"],
+    );
+    assert.equal(second.page, 2);
+    await built.notifications.markRead("owner", "m", 11);
+    const clamped = await list(2);
+    assert.equal(clamped.page, 1);
+    assert.deepEqual(
+      clamped.notifications.map((item) => item.id),
+      ["z", "a"],
+    );
+    await built.notifications.add({ id: "new", recipient: "owner", kind: "mention", createdAt: 11 });
+    const refreshed = await list();
+    assert.deepEqual(
+      refreshed.notifications.map((item) => item.id),
+      ["new", "z"],
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("delivery status is separate from the completed run status", async () => {
   const deliveries = createDeliveryStore();
   const run = { fireKey: "cron:task:manual:one", threadRef: "cron:task:fire:one", firedAt: 1, status: "ok" as const };

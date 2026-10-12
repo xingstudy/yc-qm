@@ -90,6 +90,12 @@ export async function harness(opts: HarnessOptions): Promise<Harness> {
   const realSetInterval = globalThis.setInterval;
   const requests: string[] = [];
   const uiStateWrites: Harness["uiStateWrites"] = [];
+  const notifications = (opts.notifications ?? []) as Array<{
+    id: string;
+    readAt: number | null;
+    kind: string;
+    createdAt: number;
+  }>;
   let pinnedProjects = opts.pinnedProjects ?? [];
   const inFlight = new Set<Promise<Response>>();
   let releaseSessions = (): void => {};
@@ -136,8 +142,36 @@ export async function harness(opts: HarnessOptions): Promise<Harness> {
     }
     if (path.startsWith("/api/ui-state")) return Response.json({ value: null, updatedAt: 0 });
     if (path === "/api/contexts") return Response.json({ contexts: opts.contexts ?? [] });
-    if (path === "/api/notifications")
-      return Response.json({ notifications: opts.notifications ?? [], unread: opts.notifications?.length ?? 0 });
+    if (path === "/api/notifications" || path.startsWith("/api/notifications?")) {
+      const query = new URL(path, "http://localhost").searchParams;
+      const status = query.get("status") ?? "all";
+      const matching = notifications.filter(
+        (item) => status === "all" || (item.readAt === null) === (status === "unread"),
+      );
+      const kindCounts = matching.reduce<Record<string, number>>((counts, item) => {
+        counts[item.kind] = (counts[item.kind] ?? 0) + 1;
+        return counts;
+      }, {});
+      const filtered = matching.filter((item) => !query.get("kind") || item.kind === query.get("kind"));
+      const pages = Math.max(1, Math.ceil(filtered.length / 20));
+      const page = Math.min(Number(query.get("page") ?? 1), pages);
+      const unread = notifications.filter((item) => item.readAt === null).length;
+      return Response.json({
+        notifications: filtered.slice((page - 1) * 20, page * 20),
+        unread,
+        read: notifications.length - unread,
+        total: filtered.length,
+        kindCounts,
+        page,
+        pages,
+      });
+    }
+    if (path.startsWith("/api/notifications/") && init?.method === "POST") {
+      const id = decodeURIComponent(path.slice("/api/notifications/".length).replace(/\/read$/, ""));
+      for (const item of notifications)
+        if (path === "/api/notifications/read-all" || item.id === id) item.readAt ??= Date.now();
+      return Response.json({ marked: true });
+    }
     if (path === "/api/crons") return Response.json({ crons: opts.crons ?? [], visible: [] });
     if (/^\/api\/crons\/[^/]+\/runs$/.test(path)) return Response.json({ runs: opts.cronRuns ?? [] });
     if (path.startsWith("/api/sessions/") && path.includes("/approvals")) {
