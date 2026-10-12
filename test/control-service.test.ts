@@ -440,6 +440,82 @@ test('scope:"personal" runs at the invoking user\'s personal scope and DMs them,
   assert.equal(r.channel, undefined);
 });
 
+test("personal web crons and self-addressed reminders keep the creating conversation as their destination", async () => {
+  const { built, control } = setup();
+  await built.app.upsertDirectory([{ principalId: "U1", displayName: "Alice", type: "internal" }]);
+  const web = {
+    key: "web-here",
+    type: "web",
+    target: "web:U1:chat",
+    audienceScopeId: scopeId("personal", "U1"),
+    label: "this conversation",
+  };
+  const cap = claims("U1", scopeId("personal", "U1"), { destinations: [web], defaultDestinationKey: web.key });
+  for (const routing of [{ scope: "personal" as const }, { recipient: "Alice" }, {}]) {
+    const result = await control.createCron({ schedule: { everyMs: 3_600_000 }, action: "Report", ...routing }, cap);
+    assert.ok(result.ok, JSON.stringify(result));
+    assert.deepEqual(result.cron.destination, { type: "web", target: web.target, audienceScopeId: cap.scopeId });
+    assert.equal(result.cron.ownerScopeId, cap.scopeId);
+    assert.equal(result.cron.recipientConsent, undefined);
+  }
+});
+
+test("personal web cron delivery never redirects a private task into a shared or another person's conversation", async () => {
+  const { built, control } = setup();
+  await built.app.upsertDirectory([{ principalId: "U2", displayName: "Bob", type: "internal" }]);
+  for (const [scope, audience] of [
+    [scopeId("group", "room"), scopeId("group", "room")],
+    [scopeId("personal", "U1"), scopeId("personal", "U2")],
+  ]) {
+    const web = {
+      key: "web-here",
+      type: "web",
+      target: "web:chat",
+      audienceScopeId: audience,
+      label: "this conversation",
+    };
+    const cap = claims("U1", scope, { destinations: [web], defaultDestinationKey: web.key });
+    const result = await control.createCron(
+      { schedule: { everyMs: 3_600_000 }, action: "Private", scope: "personal" },
+      cap,
+    );
+    assert.ok(result.ok, JSON.stringify(result));
+    assert.deepEqual(result.cron.destination, {
+      type: "principal",
+      target: "U1",
+      audienceScopeId: scopeId("personal", "U1"),
+      onBehalfOf: "U1",
+    });
+  }
+  const web = {
+    key: "web-here",
+    type: "web",
+    target: "web:U1:chat",
+    audienceScopeId: scopeId("personal", "U1"),
+    label: "this conversation",
+  };
+  const principal = {
+    key: "user",
+    type: "principal",
+    target: "U1",
+    audienceScopeId: scopeId("personal", "U1"),
+    label: "user",
+  };
+  const cap = claims("U1", scopeId("personal", "U1"), {
+    destinations: [web, principal],
+    defaultDestinationKey: web.key,
+  });
+  for (const routing of [{ recipient: "Bob" }, { destinationKey: principal.key }]) {
+    const result = await control.createCron(
+      { schedule: { firstFireAt: Date.now() + 1000 }, action: "Report", ...routing },
+      cap,
+    );
+    assert.ok(result.ok, JSON.stringify(result));
+    assert.equal(result.cron.destination?.type, "principal");
+    assert.equal(result.cron.destination?.target, "recipient" in routing ? "U2" : "U1");
+  }
+});
+
 test('scope:"personal" can\'t be combined with an addressed target, a destinationKey, or scopeFloor', async () => {
   const { control } = setup();
   const withChannel = await control.createCron(

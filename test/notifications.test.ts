@@ -11,6 +11,7 @@ import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { createDeliveryStore, deliveryStatusForRun } from "../src/delivery/delivery-store.ts";
 import { createNotificationStore } from "../src/notifications/notification-store.ts";
 import { createInsecureTestServer } from "../src/api/server.ts";
+import { createControlService } from "../src/api/control-service.ts";
 import { projectGroupRef } from "../src/projects/project-store.ts";
 import { buildApp } from "./support/test-app.ts";
 import { testConfig } from "./support/test-config.ts";
@@ -208,14 +209,18 @@ test("scheduled web result links the owner's notification to the original chat",
     text: "Set up a report",
   });
   assert.equal(turned.status, "ok");
-  const cron = await built.crons.create({
-    schedule: { everyMs: 3_600_000 },
-    action: "Report",
-    owner: "owner",
-    createdBy: "owner",
-    ownerScopeId: "personal:owner",
-    destination: { type: "web", target: threadRef },
-  });
+  const created = await createControlService(built.app, built.scheduler, built.admin).createCron(
+    { schedule: { everyMs: 3_600_000 }, action: "Report", scope: "personal" },
+    {
+      actorId: "owner",
+      scopeId: "personal:owner",
+      exp: Date.now() + 60_000,
+      destination: { type: "web", target: threadRef, audienceScopeId: "personal:owner" },
+    },
+  );
+  assert.ok(created.ok, JSON.stringify(created));
+  const cron = created.cron;
+  assert.equal(cron.destination?.type, "web");
   const fireKey = `cron:${cron.id}:manual:personal`;
   const runThreadRef = `cron:${cron.id}:fire:personal`;
   await built.crons.recordFire(cron.id, {
@@ -226,7 +231,7 @@ test("scheduled web result links the owner's notification to the original chat",
     sessionId: "run-worklog",
   });
   await built.deliveries.enqueue({
-    destination: { type: "web", target: threadRef },
+    destination: cron.destination!,
     text: "Report is ready",
     idempotencyKey: fireKey,
     provenance: {

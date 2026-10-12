@@ -472,6 +472,21 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
         destination = resolved.destination;
       }
 
+      if (
+        destination?.type === "principal" &&
+        destination.target === capability.actorId &&
+        destinationKey === undefined
+      ) {
+        const resolved = resolveCapabilityDestination(capability, undefined);
+        const current = resolved.ok ? resolved.destination : undefined;
+        if (
+          capability.scopeId === `personal:${capability.actorId}` &&
+          current?.type === "web" &&
+          current.audienceScopeId === capability.scopeId
+        )
+          destination = current;
+      }
+
       if (!destination) {
         return {
           ok: false,

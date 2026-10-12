@@ -280,6 +280,7 @@ export async function runTrigger(deps: TriggerDeps, spec: TriggerSpec): Promise<
       await spec.onClaimed?.();
       if (spec.message !== undefined) {
         status = "ok";
+        reply = spec.message;
         if (!spec.destination) return;
         if (!consented) {
           status = "refused";

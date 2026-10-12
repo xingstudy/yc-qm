@@ -562,6 +562,7 @@ test("a notification run link opens the styled cron detail and keeps its run tar
 });
 
 test("a task without a conversation explains where results remain and does not create a chat for editing", async () => {
+  const reply = `${"北京天气播报：晴。".repeat(300)}\n\n**完整结果结尾**`;
   const h = await harness({
     path: "/crons/cron-alone",
     locale: "zh-CN",
@@ -577,15 +578,28 @@ test("a task without a conversation explains where results remain and does not c
         createdAt: 123,
       },
     ],
+    cronRuns: [{ fireKey: "cron:cron-alone:123", threadRef: "test:run", firedAt: 123, status: "ok", reply }],
   });
   try {
     const booted = h.boot();
     h.releaseSessions();
     await booted;
-    for (let i = 0; i < 20 && !document.querySelector(".cron-detail-fields"); i++) {
+    for (let i = 0; i < 20 && !document.querySelector(".cron-run-output"); i++) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
     assert.match(h.mainText(), /未关联对话，结果可在运行记录中查看/);
+    assert.match(h.mainText(), /成功/);
+    const output = document.querySelector<HTMLDetailsElement>(".cron-run-output");
+    assert.ok(output);
+    assert.equal(output.open, false);
+    const summary = output.querySelector<HTMLElement>("summary");
+    assert.match(summary?.textContent ?? "", /查看完整结果/);
+    assert.doesNotMatch(summary?.textContent ?? "", /完整结果结尾/);
+    summary?.click();
+    assert.equal(output.open, true);
+    assert.equal((output.querySelector("qm-markdown") as HTMLElement & { content: string }).content, reply);
+    summary?.click();
+    assert.equal(output.open, false);
     document.querySelector<HTMLButtonElement>(".cron-detail-actions button")?.click();
     assert.ok(document.querySelector(".cron-edit-dialog"));
     assert.equal(
