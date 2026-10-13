@@ -6,6 +6,7 @@ import { html, localeCode, t } from "./i18n";
 import { listPageTpl } from "./list-page";
 import { appState } from "./shell-state";
 import { icon } from "./ui";
+export { unreadBadgeValue } from "./session-list";
 
 type Kind = "message" | "mention" | "cron_success" | "cron_failure" | "action";
 
@@ -48,11 +49,6 @@ function changed(): void {
 
 export function notificationUnreadCount(): number {
   return unread;
-}
-
-export function unreadBadgeValue(counts: { messages: number; mentions: number }): string {
-  if (counts.mentions > 0) return "@";
-  return counts.messages > 99 ? "99+" : String(counts.messages);
 }
 
 export function sessionUnread(sessionId: string): { messages: number; mentions: number } {

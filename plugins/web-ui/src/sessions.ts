@@ -53,7 +53,7 @@ import {
   type CoreSession,
 } from "./core-bridge";
 import { deepLinkPath, isPlainLeftClick, sessionLink, UI_BASE } from "./deep-link";
-import { markSessionNotificationsRead, sessionUnread, unreadBadgeValue } from "./notifications";
+import { markSessionNotificationsRead, scopeUnread, sessionUnread, unreadBadgeValue } from "./notifications";
 import {
   activityOf,
   chatBrowseStatusMatches,
@@ -494,6 +494,7 @@ function newChatHint(name: string): string {
 
 function recentItem(item: RecentItem): TemplateResult {
   if (item.kind === "session") return sessionRow(item.session);
+  const unread = scopeUnread(item.sessions.map((session) => session.id));
   const collapsed = sessionsState.collapsedProjectScopes.has(item.scopeId);
   let glyph: IconNode | null = Folder;
   if (item.groupKind === "personal") glyph = null;
@@ -528,6 +529,7 @@ function recentItem(item: RecentItem): TemplateResult {
                 </span>
                 <span class="recent-project-name" dir="auto">${name.replace(/^#/, "")}</span>
                 ${item.groupKind === "project" && sessionsState.pinnedProjectScopes.has(item.scopeId) ? html`<span class="recent-project-pin" aria-label=${t("Pinned project")}>${icon(Pin, 11)}</span>` : nothing}
+                ${unread.messages ? html`<span class="nav-badge" aria-label=${t(unread.mentions ? "Mentioned me" : "New message")}>${unreadBadgeValue(unread)}</span>` : nothing}
               </button>
               <div class="session-menu recent-project-menu ${menuOpen ? "menu-open" : ""}">
                 <span class="recent-project-count">${item.sessions.length}</span>
