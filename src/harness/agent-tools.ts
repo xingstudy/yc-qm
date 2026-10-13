@@ -2217,7 +2217,9 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       "{everyMs} is ONLY for genuine sub-day polling where wall-clock time does not matter (first run one " +
       "interval from now, not immediately; an everyMs of 24h+ is rejected — use {cron,timezone} instead), or " +
       '{firstFireAt} (epoch ms; fires once then auto-cancels — use Date.now() for "send now").\n' +
-      "DELIVERY: by default a cron posts back to this conversation. To deliver elsewhere, set `recipient` " +
+      "DELIVERY: a NEW cron defaults to this conversation. If the user asks for a new task here, create it; " +
+      "do not resume a matching task from another conversation. Patching or enabling an existing cron preserves " +
+      "its destination; verify the returned destination before claiming it will post here. To deliver elsewhere, set `recipient` " +
       "(a teammate's name → a DM; core resolves the name and the result echoes who it matched), `channel` " +
       "(a channel name → that channel), `participants` (a list of member ids → a group DM, which has no name; " +
       "you're added automatically; the group must already exist — post to it once with the slack tool's " +
@@ -2538,7 +2540,13 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           });
           if (isUnavailable(r)) return unavailable(callId, "cron");
           if (!r.ok) return recordResult(callId, { tool: "cron", error: r.code }, text(`[error] ${r.message}`), true);
-          return recordResult(callId, { tool: "cron", id }, text(`Updated cron ${fmtCronLine(r.cron)}`));
+          return recordResult(
+            callId,
+            { tool: "cron", id },
+            text(
+              `Updated cron ${fmtCronLine(r.cron)}\nDelivery destination unchanged; use action=retarget to move it.`,
+            ),
+          );
         }
         case "delete": {
           const id = needId();

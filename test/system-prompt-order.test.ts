@@ -162,6 +162,19 @@ const slackDm = (thread: string, text: string, extra: Partial<OrchestratorInput>
   surface: "slack",
 });
 
+test("a single authorized delivery target is visible for retargeting an existing cron", async () => {
+  const { orchestrator } = buildOrchestrator();
+  const result = await orchestrator.handleTurn(
+    dm("web:U1:current", "!sysprompt", { surface: "web", deliveryTarget: "web:U1:current" }),
+  );
+  assert.equal(result.status, "ok");
+  assert.match(result.reply ?? "", /Where scheduled tasks post/);
+  assert.match(result.reply ?? "", /this conversation \(default — where we're talking now\): destinationKey `/);
+
+  const withoutTarget = await orchestrator.handleTurn(dm("dm:U1:no-delivery", "!sysprompt"));
+  assert.doesNotMatch(withoutTarget.reply ?? "", /Where scheduled tasks post/);
+});
+
 test("system prompt is ordered cached-prefix → volatile tail, with memory LAST (after every other block)", async () => {
   const { orchestrator: orch, memory } = buildOrchestrator();
 
