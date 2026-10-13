@@ -2386,7 +2386,7 @@ test("cron list/get/runs/patch/delete/run/disable/retarget each dispatch", async
   assert.match(textOut(await call(tool("cron"), { action: "runs", id: "cron-1", limit: 1 })), /checked inbox/);
   assert.match(
     textOut(await call(tool("cron"), { action: "patch", id: "cron-1", title: "renamed" })),
-    /Updated cron.*renamed/s,
+    /Updated cron.*renamed.*Delivery destination unchanged; use action=retarget to move it\./s,
   );
   assert.match(textOut(await call(tool("cron"), { action: "delete", id: "cron-1" })), /Deleted cron cron-1/);
   assert.match(textOut(await call(tool("cron"), { action: "run", id: "cron-1" })), /Fired cron cron-1/);

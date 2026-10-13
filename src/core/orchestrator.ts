@@ -1186,7 +1186,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         defaultDestination = input.origin.destination;
       }
       const cronBlock =
-        delivery.candidates.length > 1 && deps.signingSecret && deps.apiBaseUrl
+        delivery.candidates.length > 0 && deps.signingSecret && deps.apiBaseUrl
           ? `\n\n${deliveryMenu(delivery.candidates, delivery.defaultKey)}`
           : "";
 
