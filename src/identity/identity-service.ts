@@ -131,7 +131,7 @@ export function createIdentityService(
     return (await statusStore.get(key)) ?? initial;
   }
 
-  async function projectStatus(record: IdentityStatusRecord): Promise<void> {
+  async function writeProjection(record: IdentityStatusRecord): Promise<void> {
     const key = personKey(record.principalId);
     if (record.status === "active") {
       if (store.deleteIf) {
@@ -156,6 +156,25 @@ export function createIdentityService(
     }
   }
 
+  async function projectStatus(current: IdentityStatusRecord): Promise<void> {
+    const key = personKey(current.principalId);
+    for (;;) {
+      statusVersions.set(key, current);
+      try {
+        await writeProjection(current);
+      } catch (error) {
+        if (!error || typeof error !== "object" || !("code" in error) || error.code !== "40001") throw error;
+        const latest = await statusStore.get(key);
+        if (!latest || latest.sessionVersion <= current.sessionVersion) throw error;
+        current = latest;
+        continue;
+      }
+      const latest = (await statusStore.get(key)) ?? current;
+      if (latest.sessionVersion === current.sessionVersion && latest.status === current.status) return;
+      current = latest;
+    }
+  }
+
   async function applyVersionedStatus(
     externalId: string,
     source: DeactivationSource,
@@ -163,14 +182,8 @@ export function createIdentityService(
     sessionVersion: number,
   ): Promise<void> {
     const key = personKey(externalId);
-    let current = await persistStatus({ principalId: externalId, source, status, sessionVersion, at: Date.now() });
-    for (;;) {
-      statusVersions.set(key, current);
-      await projectStatus(current);
-      const latest = (await statusStore.get(key)) ?? current;
-      if (latest.sessionVersion === current.sessionVersion && latest.status === current.status) break;
-      current = latest;
-    }
+    const current = await persistStatus({ principalId: externalId, source, status, sessionVersion, at: Date.now() });
+    await projectStatus(current);
     remember(key, await store.get(key));
   }
 
@@ -195,7 +208,6 @@ export function createIdentityService(
           sessionVersion: record.sessionVersion,
           at: record.at,
         });
-        statusVersions.set(key, migrated);
         await projectStatus(migrated);
       } else if (store.deleteIf) {
         await store.deleteIf(key, (current) => current.status === "active");
@@ -206,7 +218,6 @@ export function createIdentityService(
     const statuses = await statusStore.all();
     statusVersions.clear();
     for (const status of statuses) {
-      statusVersions.set(personKey(status.principalId), status);
       await projectStatus(status);
     }
     deactivated.clear();
