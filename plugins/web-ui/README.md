@@ -50,10 +50,17 @@ are `wechat`, `wecom`, `feishu`, `qq`, and `dingtalk`; legacy `work-wechat` is a
 ## IM commands
 
 WeChat, WeCom, Feishu, QQ, and DingTalk use the same live-task behavior. While a task is running, ordinary
-messages automatically steer that task. Send `/new <instruction>` to queue a separate task instead. The explicit
+messages automatically steer that task. Send `/new` or `/new <instruction>` to start a fresh web conversation
+while keeping the same IM chat. Chinese commands such as `新开对话`, `新建一个对话`, and `重新开始对话` work too.
+Subsequent IM messages follow the saved conversation even after a service restart. The explicit
 `/steer <instruction>` form remains available and reports an error when no task is running. Intermediate thinking,
 tool, and partial-reply updates are coalesced to at most one update every eight seconds; the final reply still
 includes any unsent status.
+
+WeCom network disconnects use the SDK's automatic reconnection. If the connection remains unavailable for
+90 seconds, the bridge reconnects it under its existing ownership lease. Disconnected bridges do not renew
+their ready status; a connection displaced by another client is not automatically reclaimed. Failed inbound
+requests receive a retry notice instead of silently disappearing.
 
 Inbound message normalization is shared across all five providers. The accepted platform formats are kept aligned
 with the installed official SDK/protocol definitions:

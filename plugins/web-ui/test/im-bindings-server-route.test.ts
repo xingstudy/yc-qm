@@ -698,6 +698,7 @@ const {
   drainImSdkDeliveries,
   formatImRunProgress,
   syncImRunProgress,
+  syncImSdkBridges,
 } = await import("../server/index.ts");
 const surface = createServer((req, res) => void handler(req, res));
 await new Promise<void>((resolve) => surface.listen(0, "127.0.0.1", resolve));
@@ -1251,8 +1252,11 @@ test("Feishu locator requires a real direct conversation before sending", async 
   await waitFor(() => coreTurns.length === turnsBeforeNew + 1);
   assert.equal(coreSignals.length, signalsBeforeNew);
   assert.equal((coreTurns.at(-1) as { text: string }).text, "另起一个市场调研任务");
+  const newThreadRef = (coreTurns.at(-1) as { conversation: { threadRef: string } }).conversation.threadRef;
+  assert.notEqual(newThreadRef, firstTurn.conversation.threadRef);
 
   coreActiveRuns.delete(firstTurn.conversation.threadRef);
+  coreActiveRuns.delete(newThreadRef);
   const turnsBeforeRefusal = coreTurns.length;
   const sendsBeforeRefusal = larkSent.length;
   await handler({
@@ -2073,6 +2077,130 @@ test("WeCom remembers an opened direct chat and sends Bot locator messages", asy
   const failedBody = (await failedLocate.json()) as { error: string; message: string };
   assert.equal(failedBody.error, "send_failed");
   assert.match(failedBody.message, /wecom proactive send failed/);
+});
+
+test("WeCom new-conversation commands preserve the IM target and persist the next message route", async () => {
+  const user = "wecom-new-conversation-user";
+  const credentials = await fetch(`${base}/api/im-bindings/work-wechat/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { botId: "wecom-new-bot", secret: "wecom-new-secret" } }),
+  });
+  assert.equal(credentials.status, 200);
+  let client = wecomClients.at(-1)!;
+  let messageNumber = 0;
+  const send = async (text: string, target = "wecom-new-target", id = `new-conversation-${++messageNumber}`) => {
+    const before = coreTurns.length;
+    client.emit("message.text", {
+      headers: { req_id: id },
+      body: { msgid: id, from: { userid: target }, chattype: "single", msgtype: "text", text: { content: text } },
+    });
+    await waitFor(() => coreTurns.length === before + 1);
+    return coreTurns.at(-1) as { text: string; conversation: { threadRef: string }; deliveryTarget: string };
+  };
+  const first = await send("继续当前对话");
+  const routeKey = `${user}#conversation-${createHash("sha256").update(first.deliveryTarget).digest("hex").slice(0, 48)}`;
+  forcedUiStateConflicts.set(routeKey, 1);
+  let previousThreadRef = first.conversation.threadRef;
+  let firstNewThreadRef = "";
+  for (const command of ["/new", "/new 分析市场", "新开对话", "请新建一个对话", "重新开始对话"]) {
+    const signalsBefore = coreSignals.length;
+    const next = await send(command);
+    assert.notEqual(next.conversation.threadRef, previousThreadRef);
+    previousThreadRef = next.conversation.threadRef;
+    firstNewThreadRef ||= next.conversation.threadRef;
+    assert.equal(next.deliveryTarget, first.deliveryTarget);
+    assert.equal(coreSignals.length, signalsBefore);
+    if (command.startsWith("/new ")) assert.equal(next.text, "分析市场");
+    client.simulateNetworkDisconnect();
+    await waitFor(() => client.isConnected);
+    const continued = await send("接着说");
+    assert.equal(continued.conversation.threadRef, next.conversation.threadRef);
+    assert.equal(continued.deliveryTarget, first.deliveryTarget);
+    assert.equal(
+      (uiState.get(routeKey)?.value as { threadRef: string } | undefined)?.threadRef,
+      next.conversation.threadRef,
+    );
+  }
+  const beforeExplanation = coreTurns.at(-1) as { conversation: { threadRef: string } };
+  assert.equal((await send("解释如何新开对话")).conversation.threadRef, beforeExplanation.conversation.threadRef);
+  client.disconnect();
+  const rebound = await fetch(`${base}/api/im-bindings/work-wechat/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { botId: "wecom-new-bot", secret: "wecom-new-secret" } }),
+  });
+  assert.equal(rebound.status, 200);
+  client = wecomClients.at(-1)!;
+  assert.equal(
+    (await send("/new", "wecom-new-target", "new-conversation-2")).conversation.threadRef,
+    firstNewThreadRef,
+  );
+  assert.equal((await send("重连后继续最新对话")).conversation.threadRef, previousThreadRef);
+  const other = await send("另一个 IM 聊天", "wecom-other-target");
+  assert.notEqual(other.deliveryTarget, first.deliveryTarget);
+  assert.equal(other.conversation.threadRef, other.deliveryTarget);
+  coreTurnRejectBeforeRequest = true;
+  try {
+    client.emit("message.text", {
+      headers: { req_id: "wecom-inbound-failed" },
+      body: {
+        msgid: "wecom-inbound-failed",
+        from: { userid: "wecom-new-target" },
+        chattype: "single",
+        msgtype: "text",
+        text: { content: "这次请求失败" },
+      },
+    });
+    await waitFor(() =>
+      wecomSent.some((message) => message.target === "wecom-new-target" && /重试/.test(message.content)),
+    );
+  } finally {
+    coreTurnRejectBeforeRequest = false;
+  }
+});
+
+test("WeCom reconnects a stalled bridge without reclaiming displaced connections", async () => {
+  const user = "wecom-stalled-user";
+  const credentials = await fetch(`${base}/api/im-bindings/work-wechat/credentials`, {
+    method: "POST",
+    headers: headers(user),
+    body: JSON.stringify({ credentials: { botId: "wecom-stalled-bot", secret: "wecom-stalled-secret" } }),
+  });
+  assert.equal(credentials.status, 200);
+  const client = wecomClients.at(-1)!;
+  const count = wecomClients.length;
+  const readyKey = `web-ui-im#ready-${createHash("sha256").update(`${user}\0work-wechat\0wecom-stalled-bot`).digest("hex").slice(0, 48)}`;
+  const readyBefore = uiState.get(readyKey);
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  try {
+    client.disconnect();
+    now += 30_000;
+    await syncImSdkBridges();
+    assert.equal(client.isConnected, false);
+    assert.deepEqual(uiState.get(readyKey), readyBefore);
+    now += 60_001;
+    await syncImSdkBridges();
+    await waitFor(() => client.isConnected);
+    assert.equal(wecomClients.length, count);
+    client.emit("event.disconnected_event", {});
+    client.disconnect();
+    now += 90_001;
+    await syncImSdkBridges();
+    assert.equal(client.isConnected, false);
+    const rebound = await fetch(`${base}/api/im-bindings/work-wechat/credentials`, {
+      method: "POST",
+      headers: headers(user),
+      body: JSON.stringify({ credentials: { botId: "wecom-stalled-bot", secret: "wecom-stalled-secret" } }),
+    });
+    assert.equal(rebound.status, 200);
+    assert.notEqual(wecomClients.at(-1), client);
+    assert.equal(wecomClients.at(-1)?.isConnected, true);
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test("WeCom leaves idle network reconnection to the SDK before draining later replies", async () => {
