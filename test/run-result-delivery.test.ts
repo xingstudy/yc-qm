@@ -12,6 +12,7 @@ import type { Run } from "../src/runs/run-store.ts";
 import type { OrchestratorInput } from "../src/core/orchestrator.ts";
 import type { Principal, TurnResult } from "../src/types.ts";
 import { SECURITY_QUARANTINE_REFUSAL_TEXT } from "../plugins/chassis/src/security-quarantine.ts";
+import { FAILURE_REASONS, workWechatFailureText } from "../plugins/chassis/src/failure-copy.ts";
 
 const actor: Principal = { id: "internal:U1", type: "internal" };
 const turn = (text: string, deliveryTarget?: string): OrchestratorInput => ({
@@ -227,16 +228,33 @@ test("runResultDelivery skips terminal results that cannot be safely replayed", 
 });
 
 test("runResultDelivery closes Enterprise WeChat streams for terminal results without reply text", () => {
-  for (const [result, text] of [
-    [{ status: "refused", reason: "internal reason" } as TurnResult, "消息无法处理。"],
-    [{ status: "react", reactions: ["thumbsup"] } as TurnResult, "消息已处理。"],
-    [{ status: "silent" } as TurnResult, "消息已处理。"],
-    [{ status: "ok" } as TurnResult, "消息已处理。"],
-  ] as const) {
+  for (const result of [
+    { status: "refused", reason: "internal reason" },
+    { status: "refused", refusalKind: "session_busy" },
+    { status: "refused", refusalKind: "security_quarantine" },
+    { status: "react", reactions: ["thumbsup"] },
+    { status: "silent" },
+    { status: "ok" },
+  ] as TurnResult[]) {
     const terminal = run({ result });
     terminal.request = { ...terminal.request, surface: "im:work-wechat" };
-    assert.equal(runResultDelivery(terminal)?.text, text);
+    const text = runResultDelivery(terminal)?.text ?? "";
+    assert.equal(text, workWechatFailureText(result, "r-1"));
+    assert.doesNotMatch(text, /internal reason|消息已处理/);
   }
+});
+
+test("WeCom failure deliveries include the classified cause, run reference, and administrator record link", () => {
+  const failed = run({
+    status: "failed",
+    result: { status: "failed", reason: FAILURE_REASONS.timeout, sessionId: "s-1" },
+  });
+  failed.request = { ...failed.request, surface: "im:work-wechat" };
+  const text = runResultDelivery(failed, [], () => "https://admin.test/sessions/s-1")?.text ?? "";
+  assert.match(text, /模型或工具执行超时/);
+  assert.match(text, /任务编号：r-1/);
+  assert.match(text, /需管理员权限.*https:\/\/admin.test\/sessions\/s-1/);
+  assert.equal(runResultDelivery({ ...failed, request: { ...failed.request, origin: { kind: "ambient" } } }), null);
 });
 
 test("wired stores: a completed turn lands in the outbox unless the live path acked it", async () => {

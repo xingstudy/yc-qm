@@ -15,6 +15,7 @@ import {
 } from "../sessions/session-store.ts";
 import { turnRecordedFailure } from "./web-transcript-delivery.ts";
 import { errMessage } from "../util/errors.ts";
+import { workWechatFailureText } from "../../plugins/chassis/src/failure-copy.ts";
 
 export interface RunResultDelivery {
   destination: Destination;
@@ -83,7 +84,10 @@ export function runResultDelivery(
     const detail = adminUrl ? ` — full error: ${adminUrl}` : "";
     return {
       destination,
-      text: `⚠️ I couldn't finish that turn: ${clause} (run ${run.id})${detail}`,
+      text:
+        surface === "im:work-wechat"
+          ? `${workWechatFailureText(run.result ?? { status: "failed" }, run.id)}${adminUrl ? `\n详细记录（需管理员权限）：${adminUrl}` : ""}`
+          : `⚠️ I couldn't finish that turn: ${clause} (run ${run.id})${detail}`,
       provenance,
       idempotencyKey,
     };
@@ -106,7 +110,7 @@ export function runResultDelivery(
   ) {
     return {
       destination,
-      text: run.result.status === "refused" ? "消息无法处理。" : "消息已处理。",
+      text: workWechatFailureText(run.result, run.id),
       provenance,
       idempotencyKey,
     };
