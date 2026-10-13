@@ -247,3 +247,6 @@ export function shouldStartProactiveOpener(state: {
     !state.sessions.some((session) => session.id && !session.threadRef.startsWith("cron:"))
   );
 }
+export function unreadBadgeValue(counts: { messages: number; mentions: number }): string {
+  return `${counts.mentions > 0 ? "@ " : ""}${counts.messages > 999 ? "999+" : counts.messages}`;
+}

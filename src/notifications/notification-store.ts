@@ -24,6 +24,14 @@ export interface NotificationStore {
   linkSession(recipient: string, id: string, sessionId: string, entrySeq: number): Promise<void>;
 }
 
+export function isConversationNotification(record: NotificationRecord): boolean {
+  return (
+    record.kind === "message" ||
+    record.kind === "mention" ||
+    ((record.kind === "cron_success" || record.kind === "cron_failure") && record.entrySeq !== undefined)
+  );
+}
+
 export function createNotificationStore(
   backing: DurableMap<NotificationRecord>,
   onChanged?: (record: NotificationRecord) => void,
@@ -59,10 +67,7 @@ export function createNotificationStore(
     },
     async markSessionMessagesRead(recipient, sessionId, at = Date.now()) {
       const unread = (await list(recipient)).filter(
-        (record) =>
-          record.sessionId === sessionId &&
-          record.readAt === undefined &&
-          (record.kind === "message" || record.kind === "mention"),
+        (record) => record.sessionId === sessionId && record.readAt === undefined && isConversationNotification(record),
       );
       await Promise.all(unread.map((record) => markRead(recipient, record.id, at)));
       return unread.length;

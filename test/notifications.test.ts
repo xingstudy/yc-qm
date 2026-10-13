@@ -40,6 +40,25 @@ test("notification store deduplicates per recipient and keeps read state isolate
   assert.equal((await store.list("A")).find((record) => record.id === "five")?.readAt, undefined);
 });
 
+test("reading a conversation clears delivered task replies but keeps unlinked task notices unread", async () => {
+  const store = createNotificationStore(createMemoryMap());
+  for (const recipient of ["A", "B"])
+    for (const kind of ["cron_success", "cron_failure"] as const) {
+      await store.add({ id: `${recipient}:${kind}:reply`, recipient, kind, createdAt: 1, sessionId: "s", entrySeq: 0 });
+      await store.add({ id: `${recipient}:${kind}:notice`, recipient, kind, createdAt: 1, sessionId: "s" });
+    }
+  assert.equal(await store.markSessionMessagesRead("A", "s", 0), 2);
+  assert.ok(
+    (await store.list("A")).filter((record) => record.entrySeq !== undefined).every((record) => record.readAt === 0),
+  );
+  assert.ok(
+    (await store.list("A"))
+      .filter((record) => record.entrySeq === undefined)
+      .every((record) => record.readAt === undefined),
+  );
+  assert.ok((await store.list("B")).every((record) => record.readAt === undefined));
+});
+
 test("notification status filters paginate beyond 200 and preserve read history and recipients", async () => {
   const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "qm-unread-")), orgId: "acme" }));
   for (let i = 0; i < 201; i++)
@@ -284,11 +303,26 @@ test("scheduled web result links the owner's notification to the original chat",
     assert.equal(successfulRun?.resultEntrySeq, result?.entrySeq);
     const notices = (await fetch(`${base}/v1/notifications?principalId=owner`).then((response) => response.json())) as {
       notifications: Array<{ fireKey?: string; sessionId?: string; entrySeq?: number; cronId?: string }>;
+      conversationUnread: Record<string, { messages: number; mentions: number }>;
     };
+    assert.deepEqual(notices.conversationUnread[turned.sessionId!], { messages: 1, mentions: 0 });
     const failedNotice = notices.notifications.find((notice) => notice.fireKey === failedFireKey);
     assert.equal(failedNotice?.sessionId, turned.sessionId);
     assert.equal(failedNotice?.entrySeq, undefined);
     assert.equal(failedNotice?.cronId, cron.id);
+    const read = await fetch(`${base}/v1/notifications/sessions/${turned.sessionId}/read?principalId=owner`, {
+      method: "POST",
+    });
+    assert.equal(read.status, 200);
+    assert.equal(((await read.json()) as { marked: number }).marked, 1);
+    const after = (await fetch(`${base}/v1/notifications?principalId=owner`).then((response) => response.json())) as {
+      conversationUnread: Record<string, { messages: number; mentions: number }>;
+    };
+    assert.deepEqual(after.conversationUnread, {});
+    assert.equal(
+      (await built.notifications.list("owner")).find((record) => record.fireKey === failedFireKey)?.readAt,
+      undefined,
+    );
     assert.equal((await fetch(`${base}/v1/crons/${cron.id}/runs?principalId=other`)).status, 404);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -366,7 +400,7 @@ test("project mention notifications are scoped to current recipients and hide co
     assert.equal(ordinary.notifications.length, 1);
     assert.equal((ordinary.notifications[0] as { kind: string }).kind, "cron_success");
     assert.equal(ordinary.unread, 1);
-    assert.deepEqual(ordinary.conversationUnread[turned.sessionId], { messages: 1, mentions: 0 });
+    assert.deepEqual(ordinary.conversationUnread[turned.sessionId], { messages: 2, mentions: 0 });
     const before = (await fetch(`${base}/v1/notifications?principalId=member`).then((response) => response.json())) as {
       notifications: Array<{
         id: string;
@@ -379,7 +413,7 @@ test("project mention notifications are scoped to current recipients and hide co
       conversationUnread: Record<string, { messages: number; mentions: number }>;
     };
     assert.equal(before.unread, 2);
-    assert.deepEqual(before.conversationUnread[turned.sessionId], { messages: 1, mentions: 1 });
+    assert.deepEqual(before.conversationUnread[turned.sessionId], { messages: 2, mentions: 1 });
     const mention = before.notifications.find((item) => item.summary?.includes("Hello"));
     assert.ok(mention);
     assert.equal(mention.summary, "@member，Hello @周明，请查收。");
@@ -396,12 +430,9 @@ test("project mention notifications are scoped to current recipients and hide co
       method: "POST",
     });
     assert.equal(marked.status, 200);
-    assert.equal(((await marked.json()) as { marked: number }).marked, 1);
+    assert.equal(((await marked.json()) as { marked: number }).marked, 2);
     assert.ok((await built.notifications.list("member")).find((record) => record.id === mention.id)?.readAt);
-    assert.equal(
-      (await built.notifications.list("member")).find((record) => record.id === resultNotice?.id)?.readAt,
-      undefined,
-    );
+    assert.ok((await built.notifications.list("member")).find((record) => record.id === resultNotice?.id)?.readAt);
 
     assert.equal((await built.app.removeProjectMember(project.id, "owner", "member")).status, "ok");
     const revoked = await fetch(`${base}/v1/notifications/sessions/${turned.sessionId}/read?principalId=member`, {

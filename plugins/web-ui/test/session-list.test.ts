@@ -22,8 +22,17 @@ import {
   watchActivityLabel,
   withPendingSession,
   withoutUnsentPending,
+  unreadBadgeValue,
 } from "../src/session-list.ts";
 import type { CoreSession } from "../src/core-bridge.ts";
+
+test("unread badges show counts through 999 and preserve mentions alongside the count", () => {
+  for (const count of [0, 1, 99, 100, 999])
+    assert.equal(unreadBadgeValue({ messages: count, mentions: 0 }), String(count));
+  assert.equal(unreadBadgeValue({ messages: 1000, mentions: 0 }), "999+");
+  assert.equal(unreadBadgeValue({ messages: 5, mentions: 2 }), "@ 5");
+  assert.equal(unreadBadgeValue({ messages: 1000, mentions: 2 }), "@ 999+");
+});
 
 function pending(threadRef: string): CoreSession {
   return {
