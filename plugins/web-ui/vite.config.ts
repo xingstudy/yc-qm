@@ -1,10 +1,19 @@
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, type Plugin, type ProxyOptions } from "vite";
 import { fileURLToPath } from "node:url";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 
 const SERVER = process.env.WEB_UI_SERVER_URL ?? "http://localhost:8096";
+const devProxy: ProxyOptions = {
+  target: SERVER,
+  changeOrigin: true,
+  configure(proxy) {
+    proxy.on("proxyReq", (outgoing, req) => {
+      if (req.headers.origin === `http://${req.headers.host}`) outgoing.setHeader("origin", new URL(SERVER).origin);
+    });
+  },
+};
 
 const here = (rel: string): string => fileURLToPath(new URL(rel, import.meta.url));
 
@@ -80,10 +89,10 @@ export default defineConfig({
     port: Number(process.env.VITE_PORT ?? 5173),
     fs: { allow: [fileURLToPath(new URL("..", import.meta.url))] },
     proxy: {
-      "/signin": SERVER,
-      "/share": SERVER,
-      "/me": SERVER,
-      "/api": SERVER,
+      "/signin": devProxy,
+      "/share": devProxy,
+      "/me": devProxy,
+      "/api": devProxy,
     },
   },
 });
