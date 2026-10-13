@@ -60,7 +60,10 @@ includes any unsent status.
 WeCom network disconnects use the SDK's automatic reconnection. If the connection remains unavailable for
 90 seconds, the bridge reconnects it under its existing ownership lease. Disconnected bridges do not renew
 their ready status; a connection displaced by another client is not automatically reclaimed. Failed inbound
-requests receive a retry notice instead of silently disappearing.
+requests receive a notice with the failed stage and recovery steps instead of silently disappearing.
+Failed runs report classified causes and a run id in Chinese; refusals and empty replies are explicit.
+After repeated progress-query failures, WeCom reports that the execution status is unknown without canceling
+the task or closing its reply stream. Raw internal diagnostics remain in the administrator logs.
 
 Inbound message normalization is shared across all five providers. The accepted platform formats are kept aligned
 with the installed official SDK/protocol definitions:

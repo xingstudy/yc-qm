@@ -44,6 +44,7 @@ import {
 import { mintPortalIdentity, verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { createBrandingCache, injectBranding } from "../../chassis/src/branding.ts";
 import { parseSuggestedActivities } from "../../chassis/src/suggested-activities.ts";
+import { workWechatFailureText } from "../../chassis/src/failure-copy.ts";
 
 import {
   CORE_API_URL as CORE,
@@ -1882,7 +1883,20 @@ function launchImRunProgress(user: string, progress: StoredImRunProgress, persis
         progress,
       ),
     )
-    .catch((error: unknown) => console.error(`[web-ui] ${provider} progress failed:`, String(error)));
+    .catch(async (error: unknown) => {
+      console.error(`[web-ui] ${provider} progress failed:`, String(error));
+      if (
+        provider !== "work-wechat" ||
+        follower.canceled ||
+        follower.finalizing ||
+        !ownsImBridge(user, provider, progress.resourceId)
+      )
+        return;
+      const text = `⚠️ 任务进度查询或更新连续失败，目前无法确认执行状态。任务不会因此取消，请先等待最终回复，避免重复提交；持续无回复可联系管理员查询。\n任务编号：${runId}`;
+      await sendImProgress(user, provider, target, runId, text, progress, {}).catch((replyError: unknown) =>
+        console.error("[web-ui] WeCom progress error reply failed:", String(replyError)),
+      );
+    });
   imRunProgressFollowers.set(key, follower);
   void follower.promise.finally(() => {
     if (imRunProgressFollowers.get(key) === follower) imRunProgressFollowers.delete(key);
@@ -2171,20 +2185,36 @@ async function postImSdkMessageNow(
   const { binding, resource } = remembered;
   const { turn, threadRef } = imTurn(provider, { user, binding }, input);
   const posted = await postImTurn(user, turn as Record<string, unknown>, threadRef);
-  if (posted.status < 200 || posted.status >= 300) throw new Error(`core turn failed (${posted.status})`);
   let body: {
     runId?: unknown;
     status?: unknown;
     reply?: unknown;
     reason?: unknown;
+    refusalKind?: unknown;
     replayed?: unknown;
     steered?: unknown;
   };
   try {
     body = JSON.parse(posted.text) as typeof body;
   } catch {
-    return {};
+    throw new Error(`core turn returned invalid JSON (${posted.status})`);
   }
+  if (
+    provider === "work-wechat" &&
+    ((body.status === "failed" && typeof body.runId !== "string") ||
+      (body.status === "refused" && posted.status !== 200))
+  )
+    return {
+      reply: workWechatFailureText(
+        {
+          status: body.status,
+          ...(typeof body.reason === "string" ? { reason: body.reason } : {}),
+          ...(typeof body.refusalKind === "string" ? { refusalKind: body.refusalKind } : {}),
+        },
+        typeof body.runId === "string" ? body.runId : undefined,
+      ),
+    };
+  if (posted.status < 200 || posted.status >= 300) throw new Error(`core turn failed (${posted.status})`);
   if (body.status === "refused" && typeof body.reason === "string") {
     if (provider === "work-wechat") return { reply: body.reason };
     await imSdkRuntimes
@@ -2204,7 +2234,8 @@ async function postImSdkMessageNow(
   if (body.steered === true && runId) return { runId, steered: true };
   if (posted.status === 200 && runId) return { runId, replayed: true };
   if (body.status === "queued") return runId ? { runId } : {};
-  let reply = "消息已处理。";
+  let reply =
+    provider === "work-wechat" ? workWechatFailureText({ status: String(body.status ?? "") }, runId) : "消息已处理。";
   if (typeof body.reply === "string" && body.reply) reply = body.reply;
   else if (body.status === "failed" && typeof body.reason === "string")
     reply = `⚠️ I couldn't finish that turn: ${body.reason}`;
@@ -2775,6 +2806,8 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         finishRunMapping = resolve;
       });
       pendingRunMappings.add(runMapping);
+      let stage = "读取消息或附件";
+      let submittedRunId: string | undefined;
       void (async () => {
         const content = await weComMessageContent(client, body);
         const pending: PendingReply = {
@@ -2782,6 +2815,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
           streamId,
           expiresAt: Date.now() + 5 * 60_000,
         };
+        stage = "提交消息或调整任务";
         const posted = await postImSdkMessage(user, "work-wechat", {
           externalUserId: body.from.userid,
           externalChatId: target,
@@ -2798,6 +2832,8 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
             expiresAt: pending.expiresAt,
           }),
         });
+        submittedRunId = posted.runId;
+        stage = "向企业微信发送回复";
         if (posted.replayed) return;
         if (posted.steered && posted.runId) {
           const previous = pendingRepliesByRun.get(posted.runId);
@@ -2827,11 +2863,23 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         .then(() => completedMessageIds.set(body.msgid, true))
         .catch((error: unknown) => {
           console.error("[web-ui] WeCom message failed:", String(error));
+          const serviceStatus =
+            error instanceof Error
+              ? error.message.match(
+                  /^(?:core (?:turn|active run) failed|core turn returned invalid JSON) \((\d{3})\)$/,
+                )?.[1]
+              : undefined;
+          const detail =
+            stage === "读取消息或附件"
+              ? "消息尚未提交，请检查附件后重试。"
+              : "暂时无法确认消息处理状态，任务可能仍在执行，请先等待或查看网页对话，避免重复提交；持续无回复请联系管理员。";
           if (ownsImBridge(user, resource.provider, resource.resourceId))
             void client
               .sendMessage(target, {
                 msgtype: "markdown",
-                markdown: { content: "暂时无法确认消息处理状态，请稍后查看或重试；原有对话会保留。" },
+                markdown: {
+                  content: `⚠️ ${stage}时发生异常。${serviceStatus ? `服务返回 HTTP ${serviceStatus}。` : ""}${detail}${submittedRunId ? `\n任务编号：${submittedRunId}` : ""}\n原有对话会保留；发送 /new 可新开网页对话，IM 聊天窗口不变。`,
+                },
               })
               .catch((replyError: unknown) => console.error("[web-ui] WeCom error reply failed:", String(replyError)));
         })
