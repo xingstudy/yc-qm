@@ -8,7 +8,7 @@ import {
   userFacingFailureText,
 } from "../src/core/failure-copy.ts";
 import { SECURITY_QUARANTINE_REFUSAL_TEXT } from "../plugins/chassis/src/security-quarantine.ts";
-import { GENERIC_FAILURE_TEXT } from "../plugins/chassis/src/failure-copy.ts";
+import { FAILURE_REASONS, GENERIC_FAILURE_TEXT, workWechatFailureText } from "../plugins/chassis/src/failure-copy.ts";
 import { NonRetryableTurnError, turnFailureMessage } from "../src/core/turn-error.ts";
 
 test("the shared failure policy renders quarantine canned, refused reasons verbatim, everything else generic", () => {
@@ -75,4 +75,30 @@ test("known infrastructure failures explain the cause without exposing raw diagn
     userFacingFailureText({ status: "failed", reason: "private" }, "r-1"),
     `${GENERIC_FAILURE_TEXT} (run r-1)`,
   );
+});
+
+test("WeCom explains failures, refusals, and empty replies without exposing raw diagnostics", () => {
+  for (const [reason, expected] of [
+    [FAILURE_REASONS.rateLimit, /限流/],
+    [FAILURE_REASONS.timeout, /超时/],
+    [FAILURE_REASONS.connection, /无法连接/],
+    [FAILURE_REASONS.unavailable, /暂时不可用/],
+    [FAILURE_REASONS.authentication, /认证失败/],
+    [FAILURE_REASONS.context, /上下文.*限制/],
+    ["Codex turn exceeded 300s wall clock", /超时/],
+    ["token=private /secret/path", /内部异常/],
+  ] as const) {
+    const text = workWechatFailureText({ status: "failed", reason }, "r-1");
+    assert.match(text, expected);
+    assert.match(text, /任务编号：r-1/);
+    assert.doesNotMatch(text, /private|secret|300s/);
+  }
+  assert.match(workWechatFailureText({ status: "refused", refusalKind: "session_busy" }), /正在执行.*未执行/);
+  assert.match(
+    workWechatFailureText({ status: "refused", refusalKind: "security_quarantine", reason: "secret" }),
+    /安全检查/,
+  );
+  assert.doesNotMatch(workWechatFailureText({ status: "refused", reason: "secret" }), /secret/);
+  assert.match(workWechatFailureText({ status: "ok" }), /没有生成文字回复/);
+  assert.doesNotMatch(workWechatFailureText({ status: "failed" }, "r-1\nsecret"), /secret|任务编号：/);
 });

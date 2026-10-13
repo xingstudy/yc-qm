@@ -131,6 +131,69 @@ test("versioned active status remains absent from the legacy deactivation map", 
   assert.equal(rehydrated.classify("U-blue-green").type, "internal");
 });
 
+for (const operation of ["hydrate", "apply"] as const) {
+  for (const status of ["active", "deactivated"] as const) {
+    test(`${operation} follows a newer identity status when its projection is rejected (${status})`, async () => {
+      const backing = createMemoryMap<DeactivationRecord>();
+      const statuses = createMemoryMap<IdentityStatusRecord>();
+      const stale: IdentityStatusRecord = {
+        principalId: "U-projection-race",
+        source: "manual",
+        status,
+        sessionVersion: 1,
+        at: 1,
+      };
+      const latest: IdentityStatusRecord = {
+        ...stale,
+        status: status === "active" ? "deactivated" : "active",
+        sessionVersion: 2,
+        at: 2,
+      };
+      await statuses.put(stale.principalId, stale);
+      const rejectStaleProjection = async (): Promise<never> => {
+        await statuses.put(latest.principalId, latest);
+        if (latest.status === "active") await backing.delete(latest.principalId);
+        else await backing.put(latest.principalId, latest);
+        throw Object.assign(new Error("organization identity projection does not match user state"), {
+          code: "40001",
+        });
+      };
+      const svc = createIdentityService(
+        {
+          ...backing,
+          ...(status === "active" ? { deleteIf: rejectStaleProjection } : { putIfAbsent: rejectStaleProjection }),
+        },
+        statuses,
+      );
+      if (operation === "hydrate") await svc.hydrate();
+      else if (status === "active") await svc.reactivate(stale.principalId, 1);
+      else await svc.deactivate(stale.principalId, "manual", 1);
+      assert.equal(svc.classify(stale.principalId).type, latest.status === "active" ? "internal" : "guest");
+      assert.deepEqual(await statuses.get(latest.principalId), latest);
+      assert.deepEqual(await backing.get(latest.principalId), latest.status === "active" ? null : latest);
+    });
+  }
+}
+
+for (const code of ["40001", "08006"]) {
+  test(`identity projection propagates ${code} without a newer authoritative status`, async () => {
+    const backing = createMemoryMap<DeactivationRecord>();
+    const statuses = createMemoryMap<IdentityStatusRecord>();
+    const failure = Object.assign(new Error("projection failed"), { code });
+    const svc = createIdentityService(
+      {
+        ...backing,
+        async putIfAbsent() {
+          throw failure;
+        },
+      },
+      statuses,
+    );
+    await assert.rejects(svc.deactivate("U-rejected", "manual", 1), (error) => error === failure);
+    assert.equal(await backing.get("U-rejected"), null);
+  });
+}
+
 test("external members written by one instance reach another over the same backing", async () => {
   const externalMembers = createMemoryMap<ExternalMember>();
   const writer = createIdentityService(undefined, { externalMembers });

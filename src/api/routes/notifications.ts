@@ -1,5 +1,5 @@
 import { mentionText } from "../../../plugins/chassis/src/mentions.ts";
-import type { NotificationRecord } from "../../notifications/notification-store.ts";
+import { isConversationNotification, type NotificationRecord } from "../../notifications/notification-store.ts";
 import { entrySearchText } from "../../sessions/entry-search.ts";
 import { deliveryStatusForRun } from "../../delivery/delivery-store.ts";
 import { sendJson } from "../http.ts";
@@ -127,7 +127,7 @@ async function listNotifications(ctx: ApiCtx): Promise<void> {
     [
       ...new Set(
         records
-          .filter((record) => (record.kind === "message" || record.kind === "mention") && record.readAt === undefined)
+          .filter((record) => isConversationNotification(record) && record.readAt === undefined)
           .map((record) => record.sessionId),
       ),
     ]
@@ -138,7 +138,7 @@ async function listNotifications(ctx: ApiCtx): Promise<void> {
   const conversationUnread = records
     .filter((record) => record.sessionId && visibleSessions.has(record.sessionId) && record.readAt === undefined)
     .reduce<Record<string, { messages: number; mentions: number }>>((counts, record) => {
-      if (record.kind !== "message" && record.kind !== "mention") return counts;
+      if (!isConversationNotification(record)) return counts;
       const current = (counts[record.sessionId!] ??= { messages: 0, mentions: 0 });
       current.messages++;
       if (record.kind === "mention") current.mentions++;

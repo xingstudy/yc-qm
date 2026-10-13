@@ -44,6 +44,7 @@ import {
 import { mintPortalIdentity, verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { createBrandingCache, injectBranding } from "../../chassis/src/branding.ts";
 import { parseSuggestedActivities } from "../../chassis/src/suggested-activities.ts";
+import { workWechatFailureText } from "../../chassis/src/failure-copy.ts";
 
 import {
   CORE_API_URL as CORE,
@@ -412,6 +413,7 @@ interface ImSdkRuntime {
   resourceId: string;
   fingerprint: string;
   stop: () => void;
+  reconcile?: () => boolean;
   send: (
     target: string,
     text: string,
@@ -1178,6 +1180,8 @@ function imSdkFingerprint(secret: ImSdkResourceSecret): string {
 }
 
 async function markImBridgeReady(user: string, resource: ImResourceRecord): Promise<void> {
+  if (imSdkRuntimes.get(imRuntimeKey(user, resource.provider))?.reconcile?.() === false)
+    throw new Error("机器人消息连接尚未恢复，请稍后重试或检查 Bot 凭据");
   const secret = readImSdkSecret(resource);
   if (!secret) throw new Error("平台 Bot 凭据缺失，请重新绑定");
   const leaseExpiresAt = imBridgeLeases.get(imBridgeKey(user, resource.provider, resource.resourceId)) ?? 0;
@@ -1879,7 +1883,20 @@ function launchImRunProgress(user: string, progress: StoredImRunProgress, persis
         progress,
       ),
     )
-    .catch((error: unknown) => console.error(`[web-ui] ${provider} progress failed:`, String(error)));
+    .catch(async (error: unknown) => {
+      console.error(`[web-ui] ${provider} progress failed:`, String(error));
+      if (
+        provider !== "work-wechat" ||
+        follower.canceled ||
+        follower.finalizing ||
+        !ownsImBridge(user, provider, progress.resourceId)
+      )
+        return;
+      const text = `⚠️ 任务进度查询或更新连续失败，目前无法确认执行状态。任务不会因此取消，请先等待最终回复，避免重复提交；持续无回复可联系管理员查询。\n任务编号：${runId}`;
+      await sendImProgress(user, provider, target, runId, text, progress, {}).catch((replyError: unknown) =>
+        console.error("[web-ui] WeCom progress error reply failed:", String(replyError)),
+      );
+    });
   imRunProgressFollowers.set(key, follower);
   void follower.promise.finally(() => {
     if (imRunProgressFollowers.get(key) === follower) imRunProgressFollowers.delete(key);
@@ -2168,20 +2185,36 @@ async function postImSdkMessageNow(
   const { binding, resource } = remembered;
   const { turn, threadRef } = imTurn(provider, { user, binding }, input);
   const posted = await postImTurn(user, turn as Record<string, unknown>, threadRef);
-  if (posted.status < 200 || posted.status >= 300) throw new Error(`core turn failed (${posted.status})`);
   let body: {
     runId?: unknown;
     status?: unknown;
     reply?: unknown;
     reason?: unknown;
+    refusalKind?: unknown;
     replayed?: unknown;
     steered?: unknown;
   };
   try {
     body = JSON.parse(posted.text) as typeof body;
   } catch {
-    return {};
+    throw new Error(`core turn returned invalid JSON (${posted.status})`);
   }
+  if (
+    provider === "work-wechat" &&
+    ((body.status === "failed" && typeof body.runId !== "string") ||
+      (body.status === "refused" && posted.status !== 200))
+  )
+    return {
+      reply: workWechatFailureText(
+        {
+          status: body.status,
+          ...(typeof body.reason === "string" ? { reason: body.reason } : {}),
+          ...(typeof body.refusalKind === "string" ? { refusalKind: body.refusalKind } : {}),
+        },
+        typeof body.runId === "string" ? body.runId : undefined,
+      ),
+    };
+  if (posted.status < 200 || posted.status >= 300) throw new Error(`core turn failed (${posted.status})`);
   if (body.status === "refused" && typeof body.reason === "string") {
     if (provider === "work-wechat") return { reply: body.reason };
     await imSdkRuntimes
@@ -2201,7 +2234,8 @@ async function postImSdkMessageNow(
   if (body.steered === true && runId) return { runId, steered: true };
   if (posted.status === 200 && runId) return { runId, replayed: true };
   if (body.status === "queued") return runId ? { runId } : {};
-  let reply = "消息已处理。";
+  let reply =
+    provider === "work-wechat" ? workWechatFailureText({ status: String(body.status ?? "") }, runId) : "消息已处理。";
   if (typeof body.reply === "string" && body.reply) reply = body.reply;
   else if (body.status === "failed" && typeof body.reason === "string")
     reply = `⚠️ I couldn't finish that turn: ${body.reason}`;
@@ -2710,6 +2744,20 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
       maxAuthFailureAttempts: 1,
       maxReconnectAttempts: -1,
     });
+    let authenticated = false;
+    let disconnectedAt = 0;
+    let displaced = false;
+    client.on("authenticated", () => {
+      authenticated = true;
+      disconnectedAt = 0;
+    });
+    client.on("disconnected", () => {
+      authenticated = false;
+      disconnectedAt ||= Date.now();
+    });
+    client.on("event.disconnected_event", () => {
+      displaced = true;
+    });
     type PendingReply = {
       frame: WsFrameHeaders;
       streamId: string;
@@ -2758,6 +2806,8 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         finishRunMapping = resolve;
       });
       pendingRunMappings.add(runMapping);
+      let stage = "读取消息或附件";
+      let submittedRunId: string | undefined;
       void (async () => {
         const content = await weComMessageContent(client, body);
         const pending: PendingReply = {
@@ -2765,6 +2815,7 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
           streamId,
           expiresAt: Date.now() + 5 * 60_000,
         };
+        stage = "提交消息或调整任务";
         const posted = await postImSdkMessage(user, "work-wechat", {
           externalUserId: body.from.userid,
           externalChatId: target,
@@ -2781,6 +2832,8 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
             expiresAt: pending.expiresAt,
           }),
         });
+        submittedRunId = posted.runId;
+        stage = "向企业微信发送回复";
         if (posted.replayed) return;
         if (posted.steered && posted.runId) {
           const previous = pendingRepliesByRun.get(posted.runId);
@@ -2810,6 +2863,25 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
         .then(() => completedMessageIds.set(body.msgid, true))
         .catch((error: unknown) => {
           console.error("[web-ui] WeCom message failed:", String(error));
+          const serviceStatus =
+            error instanceof Error
+              ? error.message.match(
+                  /^(?:core (?:turn|active run) failed|core turn returned invalid JSON) \((\d{3})\)$/,
+                )?.[1]
+              : undefined;
+          const detail =
+            stage === "读取消息或附件"
+              ? "消息尚未提交，请检查附件后重试。"
+              : "暂时无法确认消息处理状态，任务可能仍在执行，请先等待或查看网页对话，避免重复提交；持续无回复请联系管理员。";
+          if (ownsImBridge(user, resource.provider, resource.resourceId))
+            void client
+              .sendMessage(target, {
+                msgtype: "markdown",
+                markdown: {
+                  content: `⚠️ ${stage}时发生异常。${serviceStatus ? `服务返回 HTTP ${serviceStatus}。` : ""}${detail}${submittedRunId ? `\n任务编号：${submittedRunId}` : ""}\n原有对话会保留；发送 /new 可新开网页对话，IM 聊天窗口不变。`,
+                },
+              })
+              .catch((replyError: unknown) => console.error("[web-ui] WeCom error reply failed:", String(replyError)));
         })
         .finally(() => {
           finishRunMapping();
@@ -2852,6 +2924,16 @@ async function startImSdkResource(user: string, resource: ImResourceRecord): Pro
     runtime = {
       resourceId: resource.resourceId,
       fingerprint,
+      reconcile: () => {
+        if (authenticated && client.isConnected) return true;
+        disconnectedAt ||= Date.now();
+        if (!displaced && Date.now() - disconnectedAt >= 90_000) {
+          disconnectedAt = Date.now();
+          client.disconnect();
+          client.connect();
+        }
+        return false;
+      },
       stop: () => {
         pendingRepliesByRun.clear();
         steeredRunIds.clear();
@@ -3160,6 +3242,12 @@ async function connectImSdkResource(user: string, provider: Exclude<ImProviderId
   await claimImResourceOwner(user, provider, resource.resourceId);
   try {
     if (await claimImBridge(user, provider, resource.resourceId)) {
+      const runtimeKey = imRuntimeKey(user, provider);
+      const runtime = imSdkRuntimes.get(runtimeKey);
+      if (runtime?.reconcile?.() === false) {
+        runtime.stop();
+        imSdkRuntimes.delete(runtimeKey);
+      }
       await activateImSdkResource(user, resource);
       await markImBridgeReady(user, resource);
     } else if (!(await hasReadyImBridge(user, resource))) {
@@ -4392,7 +4480,11 @@ function imSteerText(text: string): string | undefined {
 
 function imNewTurnText(text: string): string | undefined {
   const match = text.match(/^\/new(?:\s+([\s\S]*))?$/i);
-  return match ? (match[1] ?? "").trim() : undefined;
+  if (match) return (match[1] ?? "").trim();
+  const natural = text.match(
+    /^(?:请|帮我|请帮我|麻烦)?\s*(?:(?:新开|新建|另开|另起|开启|开始|创建|换到|换|开)(?:一个|个)?(?:全新|新的|新)?(?:对话|会话)|重新开始(?:对话|会话)?)(?:[，,：:\s]+([\s\S]*?))?[。！!]?$/,
+  );
+  return natural ? (natural[1] ?? "").trim() : undefined;
 }
 
 async function postImTurn(
@@ -4400,7 +4492,45 @@ async function postImTurn(
   turn: Record<string, unknown>,
   threadRef: string,
 ): Promise<{ status: number; text: string }> {
-  return coreFetchAsImUser(user, IM_SDK_CONNECT_TIMEOUT_MS, () => postImTurnAsPrincipal(turn, threadRef));
+  const text = typeof turn.text === "string" ? turn.text.trim() : "";
+  const newText = imNewTurnText(text);
+  const key = imStateKey("conversation", threadRef);
+  let currentThreadRef = threadRef;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const stored = await readUiStateRecord(user, key);
+    const saved = stored.value as { threadRef?: unknown; newTurns?: unknown } | null;
+    if (typeof saved?.threadRef === "string" && saved.threadRef.startsWith(`${threadRef}:conversation:`))
+      currentThreadRef = saved.threadRef;
+    if (newText === undefined) break;
+    const token = typeof turn.idempotencyKey === "string" ? turn.idempotencyKey : randomUUID();
+    const newTurnId = createHash("sha256").update(token).digest("hex").slice(0, 32);
+    currentThreadRef = `${threadRef}:conversation:${newTurnId}`;
+    const newTurns = Array.isArray(saved?.newTurns)
+      ? saved.newTurns.filter((value): value is string => typeof value === "string" && /^[a-f0-9]{32}$/.test(value))
+      : [];
+    if (saved?.threadRef === currentThreadRef || newTurns.includes(newTurnId)) break;
+    try {
+      await writeUiStateValue(
+        user,
+        key,
+        { threadRef: currentThreadRef, newTurns: [...newTurns, newTurnId] },
+        stored.updatedAt,
+      );
+      break;
+    } catch (error) {
+      if (!(error instanceof Error && error.message === "ui-state write conflict") || attempt === 2) throw error;
+    }
+  }
+  const request = {
+    ...turn,
+    conversation: { ...(turn.conversation as Record<string, unknown>), threadRef: currentThreadRef },
+    ...(newText !== undefined ? { text: newText || "新开对话" } : {}),
+  };
+  return coreFetchAsImUser(user, IM_SDK_CONNECT_TIMEOUT_MS, () =>
+    newText !== undefined
+      ? coreFetch("POST", "/v1/turns?async=1", JSON.stringify(request), IM_SDK_CONNECT_TIMEOUT_MS)
+      : postImTurnAsPrincipal(request, currentThreadRef),
+  );
 }
 
 async function postImTurnAsPrincipal(
@@ -4409,20 +4539,6 @@ async function postImTurnAsPrincipal(
 ): Promise<{ status: number; text: string }> {
   const text = typeof turn.text === "string" ? turn.text : "";
   const steerText = imSteerText(text);
-  const newTurnText = imNewTurnText(text);
-  if (newTurnText !== undefined) {
-    if (!newTurnText)
-      return {
-        status: 200,
-        text: JSON.stringify({ status: "refused", reason: "用法：/new 需要补充新任务内容。" }),
-      };
-    return coreFetch(
-      "POST",
-      "/v1/turns?async=1",
-      JSON.stringify({ ...turn, text: newTurnText }),
-      IM_SDK_CONNECT_TIMEOUT_MS,
-    );
-  }
   if (steerText !== undefined && !steerText)
     return {
       status: 200,
@@ -5004,7 +5120,7 @@ export async function drainImSdkDeliveries(
   );
 }
 
-async function syncImSdkBridges(): Promise<void> {
+export async function syncImSdkBridges(): Promise<void> {
   const stored = await listStoredImBindings();
   const active = new Set<string>();
   for (const { user, state } of stored) {
@@ -5028,6 +5144,7 @@ async function syncImSdkBridges(): Promise<void> {
         console.error(`[web-ui] ${provider} connection failed:`, String(error)),
       );
       if (imSdkRuntimes.has(key)) {
+        if (imSdkRuntimes.get(key)?.reconcile?.() === false) continue;
         await markImBridgeReady(user, resource).catch((error: unknown) =>
           console.error(`[web-ui] ${provider} ready heartbeat failed:`, String(error)),
         );
