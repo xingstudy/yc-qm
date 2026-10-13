@@ -2,15 +2,15 @@ import { parseSuggestedActivities } from "../../chassis/src/suggested-activities
 import { api } from "./core-bridge";
 import type { Me } from "./shell-state";
 
-const requests = new WeakMap<Me, { until: number; pending: Promise<void> }>();
+const requests = new WeakMap<Me, Promise<void>>();
 
 export function loadGeneratedActivities(me: Me, onChange?: () => void): Promise<void> {
   if (!me.suggestedActivitiesGeneration) return Promise.resolve();
   const snapshot = () => JSON.stringify(me.suggestedActivities ?? []);
   const cached = requests.get(me);
-  if (cached && cached.until > Date.now()) {
+  if (cached) {
     const before = snapshot();
-    return cached.pending.then(() => {
+    return cached.then(() => {
       if (snapshot() !== before) onChange?.();
     });
   }
@@ -28,7 +28,9 @@ export function loadGeneratedActivities(me: Me, onChange?: () => void): Promise<
       if (!response.pending) return;
       await new Promise((resolve) => setTimeout(resolve, 10_000));
     }
-  })().catch(() => undefined);
-  requests.set(me, { until: Date.now() + 5 * 60_000, pending });
+  })()
+    .catch(() => undefined)
+    .finally(() => requests.delete(me));
+  requests.set(me, pending);
   return pending;
 }

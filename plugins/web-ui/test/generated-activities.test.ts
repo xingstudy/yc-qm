@@ -2,11 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "vite";
 
-test("generation coalesces requests, honors empty fallback, and stays disabled by default", async () => {
+test("generation coalesces in-flight requests, reloads completed results, and stays disabled by default", async () => {
   const oldFetch = globalThis.fetch;
-  const oldNow = Date.now;
   let calls = 0;
-  let time = 1000;
   let activities: unknown[] = [
     { id: "app", title: "Build my project tracker", prompt: "Help build my tracker.", icon: "🛠️" },
   ];
@@ -14,7 +12,6 @@ test("generation coalesces requests, honors empty fallback, and stays disabled b
     calls++;
     return Response.json({ activities });
   };
-  Date.now = () => time;
   const vite = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom" });
   try {
     const { loadGeneratedActivities } = await vite.ssrLoadModule("/src/generated-activities.ts");
@@ -25,7 +22,6 @@ test("generation coalesces requests, honors empty fallback, and stays disabled b
     assert.equal(calls, 1);
     assert.deepEqual(me.suggestedActivities, activities);
     activities = [];
-    time += 5 * 60_000;
     await loadGeneratedActivities(me);
     assert.deepEqual(me.suggestedActivities, []);
     assert.equal(calls, 2);
@@ -33,7 +29,28 @@ test("generation coalesces requests, honors empty fallback, and stays disabled b
     assert.equal(calls, 3);
   } finally {
     globalThis.fetch = oldFetch;
-    Date.now = oldNow;
+    await vite.close();
+  }
+});
+
+test("a failed activity request preserves the previous cards and retries on the next visit", async () => {
+  const oldFetch = globalThis.fetch;
+  const activities = [{ id: "app", title: "Build my project tracker", prompt: "Help build my tracker.", icon: "🛠️" }];
+  const previous = [{ id: "old", title: "Review my work", prompt: "Review my work.", icon: "📚" }];
+  let calls = 0;
+  globalThis.fetch = async () =>
+    ++calls === 1 ? Response.json({ error: "unavailable" }, { status: 503 }) : Response.json({ activities });
+  const vite = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom" });
+  try {
+    const { loadGeneratedActivities } = await vite.ssrLoadModule("/src/generated-activities.ts");
+    const me = { user: "alice", org: "test", suggestedActivitiesGeneration: true, suggestedActivities: previous };
+    await loadGeneratedActivities(me);
+    assert.deepEqual(me.suggestedActivities, previous);
+    await loadGeneratedActivities(me);
+    assert.equal(calls, 2);
+    assert.deepEqual(me.suggestedActivities, activities);
+  } finally {
+    globalThis.fetch = oldFetch;
     await vite.close();
   }
 });
