@@ -1,4 +1,5 @@
 import { withDocumentInputs, type DocumentModel } from "./document-inputs.ts";
+import { measuredDirectCall, measuredModelStream } from "../usage/usage-service.ts";
 import { gatewayModelsJson, gatewayModelsVersion } from "../model/gateway-models.ts";
 import { Type } from "typebox";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -363,25 +364,50 @@ async function directAnthropicJson(
   const gateway = modelGatewayRequest(modelGateway, model);
   const requestModel = gateway?.model ?? model;
   const requestKey = gateway?.apiKey ?? apiKey;
-  const res = await fetch(`${requestModel.baseUrl}/v1/messages`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": requestKey,
-      "anthropic-version": "2023-06-01",
-      ...gateway?.headers,
-    },
-    body: JSON.stringify({
-      model: gateway?.target ?? requestModel.id,
-      max_tokens: 64,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
-    }),
-    signal: AbortSignal.timeout(2_000),
+  return measuredDirectCall(model.id, async () => {
+    const res = await fetch(`${requestModel.baseUrl}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": requestKey,
+        "anthropic-version": "2023-06-01",
+        ...gateway?.headers,
+      },
+      body: JSON.stringify({
+        model: gateway?.target ?? requestModel.id,
+        max_tokens: 64,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userPrompt }],
+      }),
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (!res.ok) throw new Error(`Anthropic helper request failed (${res.status})`);
+    const json = (await res.json()) as {
+      content?: Array<{ text?: string }>;
+      usage?: {
+        input_tokens: number;
+        output_tokens: number;
+        cache_read_input_tokens?: number;
+        cache_creation_input_tokens?: number;
+      };
+    };
+    const usage = json.usage;
+    return {
+      result: json.content?.[0]?.text,
+      ...(usage
+        ? {
+            usage: {
+              input: usage.input_tokens,
+              output: usage.output_tokens,
+              cacheRead: usage.cache_read_input_tokens ?? 0,
+              cacheWrite: usage.cache_creation_input_tokens ?? 0,
+              totalTokens: usage.input_tokens + usage.output_tokens,
+              costUsd: null,
+            },
+          }
+        : {}),
+    };
   });
-  if (!res.ok) return undefined;
-  const json = (await res.json()) as { content?: Array<{ text?: string }> };
-  return json.content?.[0]?.text;
 }
 
 const APPROVAL_SUMMARY_PROMPT = [
@@ -1244,12 +1270,14 @@ export async function buildModelRuntime(
     options?: ModelsApiStreamOptions<TApi>,
   ) => {
     const routed = route(model, options as ModelsSimpleStreamOptions | undefined);
-    return stream(routed.model as Model<TApi>, context, routed.options as unknown as ModelsApiStreamOptions<TApi>);
+    return measuredModelStream(model, () =>
+      stream(routed.model as Model<TApi>, context, routed.options as unknown as ModelsApiStreamOptions<TApi>),
+    );
   }) as typeof runtime.stream;
   const streamSimple = runtime.streamSimple.bind(runtime);
   runtime.streamSimple = ((model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions) => {
     const routed = route(model, options);
-    return streamSimple(routed.model, context, routed.options);
+    return measuredModelStream(model, () => streamSimple(routed.model, context, routed.options));
   }) as typeof runtime.streamSimple;
   return runtime;
 }

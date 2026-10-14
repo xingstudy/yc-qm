@@ -28,6 +28,7 @@ import {
 } from "./skill-registry";
 import { listBackLink, listPageTpl } from "./list-page";
 import { scopeTitle } from "./contexts";
+import { projectScopeName } from "../../chassis/src/project-label.js";
 import { scopedSession, scopedViewTopbar } from "./session-scope";
 import { focusDialogCancel, restoreDialogFocus, trapDialogFocus } from "./dialog-focus";
 import { SkillsRefreshSequence } from "./skills-refresh";
@@ -1305,7 +1306,12 @@ export async function renderSkills(): Promise<void> {
             context.scopeId !== personal &&
             (context.kind === "group" || (context.kind === "channel" && context.isPrivate)),
         )
-        .map((context) => ({ scopeId: context.scopeId, name: context.name || context.scopeId })),
+        .map((context) => ({
+          scopeId: context.scopeId,
+          name:
+            projectScopeName(context.scopeId, context.project?.name ?? context.name) ??
+            scopeTitle(context.scopeId, context.name),
+        })),
     ].filter((scope) => scope.scopeId);
   } catch (e) {
     if (!skillsRefreshes.isCurrent(request) || seq !== appState.viewRenderSeq || appState.currentView !== "skills")

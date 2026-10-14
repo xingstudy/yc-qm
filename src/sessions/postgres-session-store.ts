@@ -33,6 +33,7 @@ import type {
   TapeRecord,
 } from "./session-store.ts";
 import { tsPrefixQuery } from "./entry-search.ts";
+import { usageMetered } from "../usage/usage-context.ts";
 import {
   cronIdOf,
   legacyOriginPattern,
@@ -566,6 +567,15 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
              ON sessions(parent_session_id) WHERE parent_session_id IS NOT NULL`,
         ],
       },
+      {
+        id: "sessions/store/0018-usage-metered",
+        statements: [
+          `SET LOCAL lock_timeout = '3s'`,
+          `ALTER TABLE session_llm_requests ADD COLUMN IF NOT EXISTS usage_metered BOOLEAN NOT NULL DEFAULT FALSE`,
+          `CREATE INDEX IF NOT EXISTS session_llm_requests_unmetered
+           ON session_llm_requests(created_at,id) WHERE NOT usage_metered`,
+        ],
+      },
     ],
     [
       {
@@ -993,7 +1003,7 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
         transport: rec.transport ?? null,
       };
       await q(
-        "INSERT INTO session_llm_requests(id, session_id, turn_seq, step, model, scope_label, prompt_hash, truncated, created_at, ttft_ms, duration_ms, step_gap_ms, tool_wall_json, usage_json, transport_json, gap_phases_json) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
+        "INSERT INTO session_llm_requests(id, session_id, turn_seq, step, model, scope_label, prompt_hash, truncated, created_at, ttft_ms, duration_ms, step_gap_ms, tool_wall_json, usage_json, transport_json, gap_phases_json, usage_metered) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
         [
           full.id,
           full.sessionId,
@@ -1011,6 +1021,7 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
           full.usage ? JSON.stringify(full.usage) : null,
           full.transport ? JSON.stringify(full.transport) : null,
           full.gapPhases ? JSON.stringify(full.gapPhases) : null,
+          usageMetered(),
         ],
         { signal },
       );

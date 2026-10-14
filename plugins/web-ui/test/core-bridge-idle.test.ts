@@ -7,9 +7,18 @@ import {
   pollRun,
   setClock,
   RUN_IDLE_MS,
+  sharedContextLabel,
   type Acc,
   type AssistantWork,
 } from "../src/core-bridge.ts";
+
+test("shared Project labels use names without channel prefixes and identify unknown names", () => {
+  assert.equal(sharedContextLabel("group:web-project-p1", "Launch Project"), "Launch Project");
+  assert.equal(sharedContextLabel("group:web-project-p1", "p1"), "Unknown Project · p1");
+  assert.equal(sharedContextLabel("group:web-project-p1", null), "Unknown Project · p1");
+  assert.equal(sharedContextLabel("channel:C1", "engineering"), "#engineering");
+  assert.equal(sharedContextLabel("personal:alice", "Alice"), null);
+});
 
 const MODEL = { id: "m", api: "anthropic", provider: "anthropic" } as unknown as Model<Api>;
 

@@ -458,6 +458,16 @@ import {
 import { createPostgresErrorLog } from "./admin/postgres-error-log.ts";
 import { createMetricsSink, type MetricsSink } from "./admin/metrics-sink.ts";
 import { createPostgresMetricsSink } from "./admin/postgres-metrics-sink.ts";
+import { createPostgresUsageStore } from "./usage/postgres-usage-store.ts";
+import type { UsageStore } from "./usage/usage-store.ts";
+import { createUsagePricingStore, type UsagePrice, type UsagePricingStore } from "./usage/usage-pricing.ts";
+import {
+  createUsageService,
+  instrumentUsageHarness,
+  instrumentUsageModels,
+  instrumentUsageOrchestrator,
+  type UsageService,
+} from "./usage/usage-service.ts";
 import { errMessage, swallowAs } from "./util/errors.ts";
 import { createKeyedQueue, sleep, withTimeout } from "./util/async.ts";
 import { createSlackInstallationStore, type SlackInstallationStore } from "./surfaces/slack-installation.ts";
@@ -557,6 +567,8 @@ export interface BuiltApp {
   rateLimiter: RateLimiter;
   errors: ErrorLog;
   metrics: MetricsSink;
+  usage?: UsageStore;
+  usagePricing?: UsagePricingStore;
   crons: CronStore;
   credentialUsage: CredentialUsageSink;
   egressAudit: EgressAuditSink;
@@ -800,6 +812,8 @@ export function buildApp(
   const brokeredTools = deploymentLayer.brokeredTools;
   const orgScope = scopeId("org", config.orgId);
   const metrics = config.databaseUrl ? createPostgresMetricsSink(config.databaseUrl) : createMetricsSink();
+  const usage = config.databaseUrl ? createPostgresUsageStore(config.databaseUrl) : undefined;
+  let usageService: UsageService | undefined;
   const postgresAuditLog = config.databaseUrl ? createPostgresAuditLog(config.databaseUrl) : null;
   const auditLog: AuditLog = postgresAuditLog ?? createAuditLog();
   const directory = config.databaseUrl ? createPostgresDirectoryStore(config.databaseUrl) : createDirectoryStore();
@@ -1978,9 +1992,101 @@ export function buildApp(
     onCaptureError: (e, scope) =>
       errors.record({ category: "memory", code: "capture_failed", message: errMessage(e), scopeLabel: scope }, e),
   });
-  const projects = createProjectStore(artifactMap<Project>("projects"), {
+  const projectMap = artifactMap<Project>("projects");
+  const projects = createProjectStore(projectMap, {
     isActiveMember: (principalId) => identity.isInternal(identity.classify(principalId)),
     advisoryLock,
+  });
+  const usagePricing = usage
+    ? createUsagePricingStore(artifactMap<{ versions: UsagePrice[] }>("usage_prices"), (key, fn) =>
+        advisoryLock.withLock(`usage-price:${key}`, fn),
+      )
+    : undefined;
+  if (usage) {
+    usage.setDirectoryReader?.(async (orgId) => {
+      const [users, units, currentProjects] = await Promise.all([
+        organizationStore.listUsers(orgId),
+        organizationStore.listUnits(orgId),
+        projects.directory(orgId),
+      ]);
+      return {
+        user: users.map((u) => ({
+          id: u.principalId,
+          name: u.displayName ?? u.principalId,
+          status: u.status === "invited" ? "unknown" : u.status,
+        })),
+        department: units.map((u) => ({ id: u.id, name: u.name, status: u.status })),
+        project: currentProjects.map((p) => ({ id: p.id, name: p.name, status: "active" })),
+      };
+    });
+    usage.setLifecycleReader?.(async (orgId) => {
+      const [users, units, currentProjects] = await Promise.all([
+        organizationStore.listUsers(orgId),
+        organizationStore.listUnits(orgId),
+        projectMap.all(),
+      ]);
+      return {
+        user: Object.fromEntries(
+          users.map((user) => [user.principalId, user.status === "invited" ? "unknown" : user.status]),
+        ),
+        project: Object.fromEntries(
+          currentProjects.filter((project) => project.orgId === orgId).map((project) => [project.id, "active"]),
+        ),
+        department: Object.fromEntries(units.map((unit) => [unit.id, unit.status])),
+      };
+    });
+    usageService = createUsageService(
+      usage,
+      config.orgId,
+      async (principalId, home) => {
+        const groupRef = home.startsWith("group:") ? home.slice(6) : "";
+        const projectId = groupRef.startsWith("web-project-") ? groupRef.slice(12) : "";
+        const project = projectId ? await projects.get(projectId) : null;
+        return organizationStore.transact(config.orgId, async (tx) => {
+          const user = principalId ? await tx.getUser(config.orgId, principalId) : null;
+          const members = principalId ? await tx.listUnitMembersForUser(config.orgId, principalId) : [];
+          const primary = members.find((member) => member.isPrimary);
+          const unit = primary ? await tx.getUnit(config.orgId, primary.unitId) : null;
+          const unitPath: string[] = [];
+          const unitAncestors: Array<{ id: string; name: string }> = [];
+          let current = unit;
+          while (current && !unitPath.includes(current.id)) {
+            unitPath.push(current.id);
+            unitAncestors.push({ id: current.id, name: current.name });
+            current = current.parentId ? await tx.getUnit(config.orgId, current.parentId) : null;
+          }
+          return {
+            principalName: user?.displayName ?? principalId,
+            projectId,
+            projectName: project?.name ?? (projectId ? "已删除 Project" : "无 Project"),
+            unitId: unit?.id ?? "",
+            unitName: unit?.name ?? "未分配",
+            unitPath,
+            unitAncestors,
+          };
+        });
+      },
+      usagePricing
+        ? {
+            store: usagePricing,
+            model: (id) => {
+              const model = resolveModel(id);
+              return model
+                ? {
+                    provider: model.provider === "openai-codex" ? "openai" : String(model.provider),
+                    id: model.id.replace(/^codex\//, ""),
+                  }
+                : undefined;
+            },
+          }
+        : undefined,
+    );
+    for (const adapter of adapters.values()) instrumentUsageHarness(adapter, usageService);
+    instrumentUsageModels(harness.models, usageService);
+  }
+  const usageProjection = createUntrackedSweeper(() => usageService?.drain(), 10_000, {
+    label: "usage projection",
+    immediate: true,
   });
   const canReadScope = createCanReadScope({ managedGroups: projects, directory, identity, sessions });
   const canWriteScope = createCanWriteScope({ managedGroups: projects, directory, identity });
@@ -2265,6 +2371,10 @@ export function buildApp(
     layerBrokerFor,
   };
   const orchestrator = createOrchestrator(orchestratorDeps);
+  if (usageService)
+    instrumentUsageOrchestrator(orchestrator, usageService, (input) =>
+      orchestratorDeps.resolution.scopeFor(input.conversation, input.actor),
+    );
 
   const uuidId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const recoveryAdminBase = config.publicWebUrl?.replace(/\/$/, "");
@@ -2923,6 +3033,7 @@ export function buildApp(
   }
   const runtime: Runtime = {
     start() {
+      usageProjection.start();
       organizationMemberJobs?.start?.();
       portalLoginTransactions.start?.();
       customProviderRefresh.start();
@@ -2950,6 +3061,7 @@ export function buildApp(
       await Promise.all(workers.map((w) => w.releaseInFlight()));
     },
     async stop() {
+      await usageProjection.stop();
       customProviderRefresh.stop();
       directorySync.stop();
       identityLinking.stop();
@@ -2970,6 +3082,8 @@ export function buildApp(
       void runActivity.close?.();
       await mcpToolService.close();
       await harness.turns.close?.();
+      await usageService?.drain().catch(swallowAs("usage: shutdown drain", undefined));
+      await usage?.close();
       await tasks.close?.();
       await organizationMemberJobs?.close?.();
       await portalLoginTransactions.close?.();
@@ -3033,6 +3147,8 @@ export function buildApp(
     errors,
     metrics,
     crons,
+    usage,
+    usagePricing,
     credentialUsage,
     egressAudit,
     identity,
@@ -3170,6 +3286,9 @@ export function serverDeps(
     auditLog: built.auditLog,
     errors: built.errors,
     metrics: built.metrics,
+    usage: built.usage,
+    projects: built.projects,
+    usagePricing: built.usagePricing,
     crons: built.crons,
     loops: built.loops,
     credentialServices: () => built.credentialTools.map((tool) => tool.service),
