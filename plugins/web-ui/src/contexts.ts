@@ -20,6 +20,7 @@ import {
   api,
   isContinuable,
   sharedContextLabel,
+  projectContextLabel,
   type CoreContext,
   type CoreProject,
   type CoreSession,
@@ -27,7 +28,6 @@ import {
 } from "./core-bridge";
 import { UI_BASE } from "./deep-link";
 import { errMessage } from "../../chassis/src/errors";
-import { projectDisplayName } from "../../chassis/src/project-label.js";
 import { actionSnippet, fieldSelect, formatBytes, icon, initials, menuSelect, relTime } from "./ui";
 import { focusTextInputOnDesktop } from "./viewport";
 import { appState, replacePanePreservingFocus, switchView, syncUrlFromState } from "./shell";
@@ -198,7 +198,7 @@ function contextMeta(c: CoreContext): { title: string; sub: string; glyph: IconN
   if (c.project) {
     const memberCount = projectPeople(c).length;
     return {
-      title: projectDisplayName(c.project.id, c.project.name),
+      title: projectContextLabel(c, contextsState.list)!,
       sub: t(`${memberCount} ${memberCount === 1 ? "member" : "members"}`),
       glyph: Folder,
     };

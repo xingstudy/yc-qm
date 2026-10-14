@@ -2,7 +2,7 @@
 
 ## 展示规则
 
-Project 的 ID 继续用于路由、筛选、权限与关联，名称用于主要展示。列表、范围选择、图例、悬停摘要和确认内容优先显示名称；完整 ID 保留在辅助信息或标题中，便于排查与对应。同名对象在选择器中附短 ID，避免误选。名称未知时明确显示“名称未知 Project + 短 ID”，不能将无法解析直接判断为删除。
+Project 的 ID 继续用于路由、筛选、权限与关联，名称用于主要展示。列表、范围选择、图例、悬停摘要和确认内容优先显示名称；完整 ID 保留在辅助信息或标题中，便于排查与对应。同名对象附创建人的名称或账号，避免误选；创建人同名时用账号，同一创建人建立多个同名 Project 或创建人缺失时再附短 ID。当前 Project 创建时的负责人即创建人，现有系统没有转让负责人操作，因此目录从 `ownerId` 解析创建人；未来若增加转让，需独立保留创建人字段。名称未知时明确显示“名称未知 Project + 短 ID”，不能将无法解析直接判断为删除。
 
 ## 已定位的问题与修复范围
 
@@ -24,6 +24,13 @@ Project 的 ID 继续用于路由、筛选、权限与关联，名称用于主�
 - 受影响测试共 88 项通过：Project 名称与 Postgres 使用量/API 11 项、管理后台使用量与治理 27 项、Web UI 消费者 44 项、管理范围目录 6 项。Postgres 使用专用测试容器及独立临时数据库，未跳过数据库用例。
 - Core、Admin、Web UI 项目类型检查通过；修改代码 ESLint、Prettier 和差异空白检查通过。Core 默认 Node 堆限额不足，使用 `NODE_OPTIONS=--max-old-space-size=6144` 完成检查。
 - WSL 三个本地镜像构建成功并应用到既有 QA；数据库已备份，保留更新前镜像。构建中的已有字体资源、模块外置及 bundle 大小提示仍存在。
-- QA 使用量趋势及排行原来显示 `4016a5e9-445c-47d6-81f9-e8e73b30984c`，更新后显示 `devops`。Project 筛选和治理范围列表中的两个同名项目分别显示 `devops · 4016a5e9`、`devops · afebcc43`；无会话项目 `testproject` 也可以选择。Web 主界面正常展示 `devops`、`testproject`。
+- QA 使用量趋势原来显示 Project ID，更新后按当前名称及创建人显示。Project 筛选中的两个同名项目分别显示 `devops · lijixing`、`devops · dev-admin`；治理范围显示创建人账号 `devops · lijixing@qfpay.com`、`devops · dev-admin`。无会话项目 `testproject` 也可以选择。Web 主界面只在当前用户可见的 Project 之间判断重名。
 - CSV 保留原有字段及其顺序，在明细末尾增加 `projectDisplayName`；保留 `projectName` 历史快照及 `projectId`。图例悬停保留完整对象 ID，页面与权限继续按 ID 定位。
 - 未运行全量测试或触发远端发布；本次不涉及 schema、权限或历史费用的修改。现有 QA 保留供验收。
+
+## 创建人区分补充验证（2026-10-14）
+
+- 补充回归 84 项通过：Project 名称与 Postgres 使用量/API 13 项、管理范围目录 6 项、管理后台使用量与治理 27 项、Web UI 消费者 38 项；覆盖不同创建人、同名创建人、同一创建人重复创建及创建人缺失。
+- Core、Admin、Web UI 类型检查、修改代码 ESLint、Prettier、knip 及根测试分片计划检查通过。WSL 使用 Node 24.19.0、npm 11.17.0。
+- 三个本地镜像构建并更新 QA 成功，Core、Admin、Web UI 均健康；使用量筛选、趋势图及治理范围选择已在页面核验。
+- 验收截图：[同名 Project 按创建人区分](screenshots/usage/project-creators.png)。

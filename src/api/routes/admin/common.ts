@@ -5,7 +5,7 @@ import { sendJson } from "../../http.ts";
 import { orgScope, requireScopedAdmin } from "../shared.ts";
 import { type ApiCtx } from "../route.ts";
 import { projectScopeId } from "../../../projects/project-store.ts";
-import { projectScopeName } from "../../../../plugins/chassis/src/project-label.js";
+import { projectOptionName, projectScopeName } from "../../../../plugins/chassis/src/project-label.js";
 
 export async function requireScopedResource<T>(
   ctx: ApiCtx,
@@ -55,14 +55,19 @@ export async function discoverScopes(
   for (const id of extraScopeIds) {
     if (!labels.has(id)) labels.set(id, "");
   }
-  for (const project of (await deps.projects?.directory(orgScope(deps).slice(4))) ?? [])
-    labels.set(projectScopeId(project.id), project.name);
+  const projects = (await deps.projects?.directory(orgScope(deps).slice(4))) ?? [];
+  let membersById: Map<string, string> | undefined;
+  if (new Set(projects.map((project) => project.name)).size < projects.length)
+    membersById = new Map((await app.directoryMembers()).map((member) => [member.principalId, member.displayName]));
+  const choices = projects.map((project) => ({ ...project, creatorName: membersById?.get(project.creatorId) }));
+  for (const project of choices)
+    labels.set(projectScopeId(project.id), projectOptionName(project, choices, "名称未知 Project"));
   for (const [id, label] of labels) {
     const name = projectScopeName(id, label, "名称未知 Project");
     if (name) labels.set(id, name);
   }
   if ([...labels.values()].some((l) => !l)) {
-    const membersById = new Map((await app.directoryMembers()).map((m) => [m.principalId, m.displayName]));
+    membersById ??= new Map((await app.directoryMembers()).map((m) => [m.principalId, m.displayName]));
     const channelsById = new Map((await app.directoryChannels()).map((c) => [c.channelId, c.name]));
     for (const [id, label] of labels) {
       if (label) continue;

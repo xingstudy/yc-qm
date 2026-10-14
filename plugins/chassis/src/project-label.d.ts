@@ -5,3 +5,8 @@ export function projectScopeName(
   name?: string | null,
   unknownLabel?: string,
 ): string | null;
+export function projectOptionName(
+  project: { id: string; name?: string | null; creatorId?: string; creatorName?: string | null },
+  projects: readonly { id: string; name?: string | null; creatorId?: string; creatorName?: string | null }[],
+  unknownLabel?: string,
+): string;

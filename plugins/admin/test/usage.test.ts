@@ -237,8 +237,8 @@ test("manual and scheduled refresh update facets while retaining selected filter
         if (url.endsWith("/facets"))
           return {
             project: [
-              { id: "aaaaaaaa-1", name: "Same Project" },
-              { id: "bbbbbbbb-2", name: "Same Project" },
+              { id: "aaaaaaaa-1", name: "Same Project · Alice" },
+              { id: "bbbbbbbb-2", name: "Same Project · Bob" },
               { id: "cccccccc-3", name: "cccccccc-3" },
             ],
             user: Array.from({ length: ++facetRequests }, (_, i) => ({
@@ -283,7 +283,7 @@ test("manual and scheduled refresh update facets while retaining selected filter
   const projectOptions = nodes(projectFilter).filter((element) => element.className === "usage-option");
   assert.deepEqual(
     projectOptions.map((element) => element.children[1]?.textContent),
-    ["Same Project · aaaaaaaa", "Same Project · bbbbbbbb", "名称未知 Project · cccccccc"],
+    ["Same Project · Alice", "Same Project · Bob", "名称未知 Project · cccccccc"],
   );
   assert.equal((projectOptions[0] as Element & { title: string }).title, "aaaaaaaa-1");
   assert.equal(checks()[0]!.checked, true);
@@ -581,15 +581,15 @@ test("admin shared labels render current Project names, duplicate identifiers an
   const labels = script.slice(script.indexOf("function dirLabel"), script.indexOf("function scopeCell"));
   const label = new Function("scopeDir", "scopeKind", "adminTr", `${helpers}\n${labels}\nreturn shortName;`)(
     [
-      { scopeId: "group:web-project-aaaaaaaa-1", label: "Launch" },
-      { scopeId: "group:web-project-bbbbbbbb-2", label: "Launch" },
+      { scopeId: "group:web-project-aaaaaaaa-1", label: "Launch · Alice" },
+      { scopeId: "group:web-project-bbbbbbbb-2", label: "Launch · Bob" },
       { scopeId: "group:web-project-current", label: "Renamed Project" },
     ],
     (id: string) => id.split(":")[0],
     (text: string) => text,
   );
   assert.equal(label("group:web-project-current"), "Renamed Project");
-  assert.equal(label("group:web-project-aaaaaaaa-1"), "Launch · aaaaaaaa");
+  assert.equal(label("group:web-project-aaaaaaaa-1"), "Launch · Alice");
   assert.equal(label("group:web-project-missing"), "Unknown Project · missing");
 });
 

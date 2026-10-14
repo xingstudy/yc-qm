@@ -10,7 +10,7 @@ import type { Attachment } from "@earendil-works/pi-web-ui";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Usage } from "@earendil-works/pi-ai";
 import type { Agent, AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import { errMessage, swallow } from "../../chassis/src/errors.ts";
-import { projectScopeName } from "../../chassis/src/project-label.js";
+import { projectOptionName, projectScopeName } from "../../chassis/src/project-label.js";
 import { userFacingFailureText } from "../../chassis/src/failure-copy.ts";
 import { groupDmText } from "./group-dm-label.ts";
 import { base64ToBytes } from "./paste-text.ts";
@@ -252,6 +252,20 @@ export interface CoreProject {
   slackChannel?: { channelId: string; channelName: string; linkedBy?: string; linkedAt?: number };
   createdAt?: number;
   updatedAt?: number;
+}
+
+export function projectContextLabel(context: CoreContext, contexts: readonly CoreContext[]): string | null {
+  if (!context.project) return null;
+  const choice = (project: CoreProject) => ({
+    id: project.id,
+    name: project.name,
+    creatorId: project.ownerId,
+    creatorName: project.members.find((member) => member.principalId === project.ownerId)?.displayName,
+  });
+  return projectOptionName(
+    choice(context.project),
+    contexts.flatMap((item) => (item.project ? [choice(item.project)] : [])),
+  );
 }
 
 export function slackThreadUrl(workspaceUrl: string | null, threadRef: string): string | null {

@@ -459,6 +459,7 @@ import { createPostgresErrorLog } from "./admin/postgres-error-log.ts";
 import { createMetricsSink, type MetricsSink } from "./admin/metrics-sink.ts";
 import { createPostgresMetricsSink } from "./admin/postgres-metrics-sink.ts";
 import { createPostgresUsageStore } from "./usage/postgres-usage-store.ts";
+import { projectOptionName } from "../plugins/chassis/src/project-label.js";
 import type { UsageStore } from "./usage/usage-store.ts";
 import { createUsagePricingStore, type UsagePrice, type UsagePricingStore } from "./usage/usage-pricing.ts";
 import {
@@ -2009,6 +2010,8 @@ export function buildApp(
         organizationStore.listUnits(orgId),
         projects.directory(orgId),
       ]);
+      const userNames = new Map(users.map((user) => [user.principalId, user.displayName]));
+      const choices = currentProjects.map((project) => ({ ...project, creatorName: userNames.get(project.creatorId) }));
       return {
         user: users.map((u) => ({
           id: u.principalId,
@@ -2016,7 +2019,7 @@ export function buildApp(
           status: u.status === "invited" ? "unknown" : u.status,
         })),
         department: units.map((u) => ({ id: u.id, name: u.name, status: u.status })),
-        project: currentProjects.map((p) => ({ id: p.id, name: p.name, status: "active" })),
+        project: choices.map((p) => ({ id: p.id, name: projectOptionName(p, choices), status: "active" })),
       };
     });
     usage.setLifecycleReader?.(async (orgId) => {
