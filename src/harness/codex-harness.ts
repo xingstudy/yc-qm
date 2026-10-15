@@ -1,3 +1,4 @@
+import { measuredHarnessTurn } from "../usage/usage-service.ts";
 import {
   nativeUtilityModel,
   nativeProviderEnv,
@@ -778,7 +779,7 @@ function createCodexHarnessInstance(opts: CodexHarnessOptions, binding?: NativeP
     rmSync(current.jail, { recursive: true, force: true });
   };
 
-  const runPrompt = async (turn: HarnessTurnInput, toolsEnabled = true): Promise<HarnessTurnResult> => {
+  const performPrompt = async (turn: HarnessTurnInput, toolsEnabled = true): Promise<HarnessTurnResult> => {
     if (closed) throw new NonRetryableTurnError("codex harness is closed");
     if (turn.cancel?.aborted) return { reply: "", stopped: true };
     if (turn.runtime?.modelId && !modelSupportedByHarness(turn.runtime?.modelId, "codex")) {
@@ -1400,6 +1401,8 @@ function createCodexHarnessInstance(opts: CodexHarnessOptions, binding?: NativeP
     return turnResult;
   };
 
+  const runPrompt = (turn: HarnessTurnInput, toolsEnabled = true) =>
+    measuredHarnessTurn("codex", turn, (measured) => performPrompt(measured, toolsEnabled));
   const single = oneShotRunner((turn) => runPrompt(turn, false));
 
   const harness = defineHarness(

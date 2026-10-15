@@ -48,6 +48,7 @@ import { deleteModelProvider, getModelProviders, putModelProvider } from "./admi
 import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./admin/custom-providers.ts";
 import { deleteMcpServer, getMcpServers, putMcpServer } from "./admin/mcp-servers.ts";
 import { directorySourceAdminRoutes } from "./admin/directory-sources.ts";
+import { adminUsage, adminUsagePricing, adminUsageCost, adminUsageLayout } from "./admin/usage.ts";
 import { listSecurityFlags, releaseSecurityTaint } from "./admin/security.ts";
 
 const timed =
@@ -110,6 +111,14 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/admin/resources", auth: "either", handle: getAdminResources },
   { method: "GET", path: "/v1/admin/retention", auth: "either", handle: retention },
   { method: "GET", path: "/v1/admin/metrics", auth: "either", handle: metrics },
+  { method: "GET", path: "/v1/admin/usage", auth: "either", handle: adminUsage },
+  { method: "GET", path: "/v1/admin/usage/layout", auth: "either", handle: adminUsageLayout },
+  { method: "POST", path: "/v1/admin/usage/layout", auth: "either", handle: adminUsageLayout },
+  { method: "GET", path: "/v1/admin/usage/pricing", auth: "either", handle: adminUsagePricing },
+  { method: "POST", path: "/v1/admin/usage/pricing", auth: "either", handle: adminUsagePricing },
+  { method: "POST", path: "/v1/admin/usage/cost-preview", auth: "either", handle: adminUsageCost },
+  { method: "POST", path: "/v1/admin/usage/cost-confirm", auth: "either", handle: adminUsageCost },
+  { method: "GET", path: "/v1/admin/usage/:mode", auth: "either", handle: adminUsage },
   { method: "GET", path: "/v1/admin/egress", auth: "either", handle: egress },
   { method: "GET", path: "/v1/admin/sessions", auth: "either", handle: listAdminSessions },
   { method: "GET", path: "/v1/admin/sessions/:id/llm", auth: "either", handle: getAdminSessionLlm },

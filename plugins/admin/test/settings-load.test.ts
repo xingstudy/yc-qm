@@ -17,9 +17,15 @@ test("settings navigation never starts the all-scopes history scan", () => {
   for (const view of ["customize", "models", "credentials", "governance", "connectors", "onboarding", "history"]) {
     let scans = 0;
     let settings = 0;
+    let destroys = 0;
     const node = { classList: { toggle() {} } };
     const context = vm.createContext({
       transcriptObserver: null,
+      usageDashboard: {
+        destroy() {
+          destroys++;
+        },
+      },
       managerMode: false,
       MANAGER_VIEWS: new Set(["org-units", "org-groups"]),
       scopeDir: null,
@@ -46,6 +52,8 @@ test("settings navigation never starts the all-scopes history scan", () => {
     vm.runInContext(`render({view:${JSON.stringify(view)}, scope:"org:example"})`, context);
     assert.equal(scans, view === "history" ? 1 : 0, view);
     assert.equal(settings, view === "history" ? 0 : 1, view);
+    assert.equal(destroys, 1, view);
+    assert.equal(context.usageDashboard, null, view);
   }
 });
 

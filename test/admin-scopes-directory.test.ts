@@ -19,6 +19,7 @@ function start() {
     config: built.config,
     environments: built.environments,
     organization: built.organization,
+    projects: built.projects,
   });
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
@@ -27,6 +28,27 @@ function start() {
 
 const ALICE_ADMIN = { "x-admin-actor": "admin-alice@default-org" };
 const json = async (r: Response): Promise<any> => r.json();
+
+test("admin Project directory uses current names without sessions and protects the directory", async () => {
+  const s = start();
+  try {
+    const project = await s.built.projects.create({ name: "Initial Project", ownerId: "admin-alice" });
+    const scopeId = `group:web-project-${project.id}`;
+    const read = async () => json(await fetch(`${s.base}/v1/admin/scopes`, { headers: ALICE_ADMIN }));
+    const initial = await read();
+    assert.equal(initial.scopes.find((row: any) => row.scopeId === scopeId)?.label, "Initial Project");
+    assert.equal(initial.scopes.find((row: any) => row.scopeId === scopeId)?.sessions, 0);
+    await s.built.sessions.getOrCreateByThread("project-old-thread", "group", scopeId, "Initial Project");
+    await s.built.projects.rename(project.id, "admin-alice", "Renamed Project");
+    const renamed = await read();
+    assert.equal(renamed.scopes.find((row: any) => row.scopeId === scopeId)?.label, "Renamed Project");
+    const denied = await fetch(`${s.base}/v1/admin/scopes`, { headers: { "x-admin-actor": "outsider@default-org" } });
+    assert.equal(denied.status, 403);
+    assert.ok(!(await denied.text()).includes("Renamed Project"));
+  } finally {
+    await s.close();
+  }
+});
 
 test("the admin scope directory lists every known scope with labels and counts (powers the picker)", async () => {
   const s = start();

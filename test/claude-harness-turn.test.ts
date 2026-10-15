@@ -419,6 +419,20 @@ test("each steered prompt gets its own LLM request record", async () => {
   assert.ok(Math.abs((llmRequests[1]!.usage?.costUsd ?? 0) - 0.2) < 1e-9);
 });
 
+test("Claude marks missing SDK cost unknown while preserving measured tokens", async () => {
+  currentScript = async function* (prompts) {
+    await prompts[Symbol.asyncIterator]().next();
+    yield assistantMessage("missing-cost", "hello", { input_tokens: 12, output_tokens: 7 });
+    yield resultMessage("hello", { total_cost_usd: undefined });
+  };
+  const harness = createClaudeHarness({});
+  const { turn, llmRequests } = harnessTurn();
+  await harness.turns.runTurn(turn);
+  assert.equal(llmRequests[0]?.usage?.costKnown, false);
+  assert.equal(llmRequests[0]?.usage?.input, 12);
+  assert.equal(llmRequests[0]?.usage?.output, 7);
+});
+
 test("a turn that dies before its first result still records exactly one request row", async () => {
   currentScript = async function* (prompts) {
     await prompts[Symbol.asyncIterator]().next();

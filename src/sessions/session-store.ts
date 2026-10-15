@@ -337,6 +337,7 @@ export interface ScopeSessionStats {
 }
 
 export interface LlmCallUsage {
+  costKnown?: boolean;
   input: number;
   output: number;
   cacheRead: number;

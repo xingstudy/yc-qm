@@ -69,21 +69,25 @@ test("OpenCode prevents MCP tools from taking core, bridge, or native tool names
 });
 
 test("OpenCode observes cancellation before runtime startup, session creation, and prompt dispatch", () => {
-  const runPrompt = harnessSource.slice(
+  const performPrompt = harnessSource.slice(
+    harnessSource.indexOf("const performPrompt ="),
     harnessSource.indexOf("const runPrompt ="),
-    harnessSource.indexOf("const single ="),
   );
   const runPromptWithRuntime = harnessSource.slice(
     harnessSource.indexOf("const runPromptWithRuntime ="),
-    harnessSource.indexOf("const runPrompt ="),
+    harnessSource.indexOf("const performPrompt ="),
   );
   const guards = [...runPromptWithRuntime.matchAll(/if \(turn\.cancel\?\.aborted\)/g)].map(
     (match) => match.index ?? -1,
   );
   const session = runPromptWithRuntime.indexOf("rt.client.session.create({");
   const prompt = runPromptWithRuntime.indexOf("rt.client.session.prompt({");
-  const preRuntimeGuard = runPrompt.indexOf("if (turn.cancel?.aborted)");
-  const acquireRuntime = runPrompt.indexOf("await acquireRuntime(turn)");
+  const preRuntimeGuard = performPrompt.indexOf("if (turn.cancel?.aborted)");
+  const acquireRuntime = performPrompt.indexOf("await acquireRuntime(turn)");
+  assert.match(
+    harnessSource,
+    /const runPrompt = \(turn: HarnessTurnInput\) => measuredHarnessTurn\("opencode", turn, performPrompt\)/,
+  );
   assert.ok(preRuntimeGuard >= 0);
   assert.ok(acquireRuntime >= 0);
   assert.ok(preRuntimeGuard < acquireRuntime);

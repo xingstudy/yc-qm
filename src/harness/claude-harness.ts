@@ -1,3 +1,4 @@
+import { measuredHarnessTurn } from "../usage/usage-service.ts";
 import {
   nativeUtilityModel,
   nativeProviderEnv,
@@ -299,7 +300,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
   const defaultTurnWallClockMs = opts.turnWallClockMs ?? CONFIG_DEFAULTS.turnWallClockSec * 1000;
   const active = new Set<Query>();
 
-  const runPrompt = async (turn: HarnessTurnInput, toolsEnabled = true): Promise<HarnessTurnResult> => {
+  const performPrompt = async (turn: HarnessTurnInput, toolsEnabled = true): Promise<HarnessTurnResult> => {
     if (closed) throw new NonRetryableTurnError("claude harness is closed");
     if (turn.cancel?.aborted) return { reply: "", stopped: true };
     if (turn.runtime?.modelId && !modelSupportedByHarness(turn.runtime?.modelId, "claude")) {
@@ -589,6 +590,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
                 cacheWrite: stepUsage.cacheWrite,
                 totalTokens: stepUsage.input + stepUsage.output + stepUsage.cacheRead + stepUsage.cacheWrite,
                 costUsd,
+                ...(message.total_cost_usd == null ? { costKnown: false } : {}),
               }
             : null,
         });
@@ -861,6 +863,8 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
     }
   };
 
+  const runPrompt = (turn: HarnessTurnInput, toolsEnabled = true) =>
+    measuredHarnessTurn("claude", turn, (measured) => performPrompt(measured, toolsEnabled));
   const single = oneShotRunner((turn) => runPrompt(turn, false));
 
   return defineHarness(
