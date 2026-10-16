@@ -59,12 +59,14 @@ export class KeychainOperations {
   private latestLoad = 0;
   private epoch = 0;
   private mutation: symbol | null = null;
+  mutationAction: string | null = null;
   private dropEpoch: number | null = null;
 
   reset(): void {
     this.latestLoad++;
     this.epoch++;
     this.mutation = null;
+    this.mutationAction = null;
     this.dropEpoch = null;
   }
 
@@ -84,16 +86,18 @@ export class KeychainOperations {
     return this.epoch;
   }
 
-  beginMutation(): KeychainMutation | null {
+  beginMutation(action: string | null = null): KeychainMutation | null {
     if (this.mutation) return null;
     const token = Symbol();
     this.mutation = token;
+    this.mutationAction = action;
     return { token, epoch: this.epoch };
   }
 
   finishMutation(operation: KeychainMutation): boolean {
     if (!this.isCurrentEpoch(operation.epoch) || this.mutation !== operation.token) return false;
     this.mutation = null;
+    this.mutationAction = null;
     return true;
   }
 

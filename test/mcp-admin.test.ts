@@ -17,8 +17,9 @@ const ADMIN = { "content-type": "application/json", "x-admin-actor": "admin-alic
 test("MCP admin validates and preserves credential scope, without returning secrets", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "mcp-admin-"));
   const built = buildApp(testConfig({ dataDir: dir }));
+  const backing = createMemoryMap<StoredMcpServer>();
   const store = createMcpServerStore({
-    backing: createMemoryMap<StoredMcpServer>(),
+    backing,
     keyMaterial: "mcp-admin-test-key",
   });
   const server = createInsecureTestServer(built.app, {
@@ -39,6 +40,14 @@ test("MCP admin validates and preserves credential scope, without returning secr
       headers,
       body: JSON.stringify({ url: "https://8.8.8.8/mcp", validate: false, ...body }),
     });
+  for (const endpoint of ["https://8.8.8.8/trello", "https://8.8.8.8/custom/mcp"]) {
+    const response = await put({ url: endpoint, auth: "user-oauth" });
+    assert.equal(response.status, 200);
+    assert.equal((await store.get("crm"))?.url, endpoint);
+    assert.equal((await store.get("crm"))?.auth, "user-oauth");
+  }
+  assert.equal((await put({ url: "http://8.8.8.8/mcp", auth: "user-oauth" })).status, 400);
+  assert.equal((await put({ url: "https://127.0.0.1/mcp", auth: "user-oauth" })).status, 400);
   assert.equal((await put({ credentialScope: "other" })).status, 400);
   assert.equal((await put({ credentialScope: "per-user" })).status, 400);
   assert.equal(
@@ -88,6 +97,42 @@ test("MCP admin validates and preserves credential scope, without returning secr
   assert.equal((await store.get("crm"))?.credentialScope, "shared");
   assert.equal((await store.get("crm"))?.credentialHost, undefined);
   assert.equal((await store.get("crm"))?.credentialAccountType, undefined);
+  const oauth = {
+    authorizationUrl: "https://8.8.8.8/authorize",
+    tokenUrl: "https://8.8.8.8/token",
+    scopes: ["read"],
+    tokenEndpointAuthMethod: "client_secret_basic",
+  };
+  const configured = await put({
+    auth: "user-oauth",
+    clientId: "registered-app",
+    clientSecret: "oauth-app-secret",
+    oauth,
+  });
+  assert.equal(configured.status, 200);
+  assert.doesNotMatch(await configured.text(), /oauth-app-secret/);
+  assert.doesNotMatch(JSON.stringify(await backing.get("crm")), /oauth-app-secret/);
+  assert.ok((await backing.get("crm"))?.clientSecretEnc);
+  assert.equal((await store.get("crm"))?.clientSecret, "oauth-app-secret");
+  assert.equal((await put({ auth: "user-oauth" })).status, 200);
+  assert.deepEqual((await store.get("crm"))?.oauth, oauth);
+  assert.equal((await put({ auth: "user-oauth", clientId: "different-app" })).status, 400);
+  for (const invalid of [
+    { authorizationUrl: "https://8.8.8.8/authorize" },
+    { authorizationUrl: "http://8.8.8.8/authorize", tokenUrl: "https://8.8.8.8/token" },
+    { authorizationUrl: "https://127.0.0.1/authorize", tokenUrl: "https://8.8.8.8/token" },
+    { scopes: ["read write"] },
+    { tokenEndpointAuthMethod: "private_key_jwt" },
+    { clientSecret: "plaintext-must-not-be-persisted" },
+  ])
+    assert.equal((await put({ auth: "user-oauth", oauth: invalid })).status, 400);
+  assert.equal((await put({ auth: "user-oauth", clientId: "", oauth: {} })).status, 200);
+  assert.equal((await store.get("crm"))?.clientId, undefined);
+  assert.equal((await store.get("crm"))?.clientSecret, undefined);
+  assert.equal((await put({ auth: "user-token", tokenHeader: "X-API-Key", tokenPrefix: "" })).status, 200);
+  assert.equal((await store.get("crm"))?.tokenPrefix, "");
+  assert.equal((await put({ auth: "user-token", tokenHeader: "Cookie" })).status, 400);
+  assert.equal((await put({ auth: "user-token", tokenPrefix: "bad\r\nheader" })).status, 400);
 });
 
 test("production wiring keeps strict per-user tokens separate from operator fallbacks", async (t) => {

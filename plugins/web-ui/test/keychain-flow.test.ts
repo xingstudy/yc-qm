@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
+import { createContext, runInContext } from "node:vm";
 import { isActiveGrant, isExpiredCredential, KeychainOperations, keychainSummary } from "../src/keychain-state.ts";
 
 const connectorsSource = readFileSync(new URL("../src/connectors.ts", import.meta.url), "utf8");
@@ -141,10 +143,10 @@ test("keychain overview wires managed connector grants into account controls", (
 test("destructive controls settle duplicate attempts while a mutation is busy", () => {
   assert.match(connectorsSource, /\?disabled=\$\{keychainOperations\.mutationInFlight\}/);
   assert.match(connectorsSource, /connectorNotice = t\("Another keychain change is still in progress\."\)/);
-  assert.equal(connectorsSource.match(/const operation = beginKeychainMutation\(\)/g)?.length, 3);
+  assert.equal(connectorsSource.match(/const operation = beginKeychainMutation\(/g)?.length, 3);
   assert.equal(
     connectorsSource.match(/if \(keychainOperations\.finishMutation\(operation\)\) drawConnectors\(\)/g)?.length,
-    3,
+    5,
   );
 });
 
@@ -204,4 +206,65 @@ test("keychain refresh rediscovers MCP tools before reloading the account state"
   );
   assert.match(connectorsSource, /connectorNotice = t\("Refreshing MCP tools…"\)/);
   assert.match(connectorsSource, /No MCP tools were found\. Reconnect the account if this is unexpected\./);
+});
+
+test("connector start shows progress, prevents duplicates and recovers from failures", async () => {
+  const operations = new KeychainOperations();
+  const requests: Array<{ resolve: (value: unknown) => void; reject: (error: Error) => void }> = [];
+  const paints: Array<string | null> = [];
+  const context = createContext({
+    keychainOperations: operations,
+    connectorProviders: {},
+    connectorNotice: "",
+    location: { href: "" },
+    t: (value: string) => value,
+    connectorErrorNotice: (error: Error) => error.message,
+    drawConnectors: () => paints.push(operations.mutationAction),
+    api: () => new Promise((resolve, reject) => requests.push({ resolve, reject })),
+  });
+  const source = connectorsSource.slice(
+    connectorsSource.indexOf("async function startConnector("),
+    connectorsSource.indexOf("async function saveMcpToken("),
+  );
+  runInContext(stripTypeScriptTypes(source), context);
+  const start = () => runInContext('startConnector("trello")', context) as Promise<void>;
+  const failed = start();
+  assert.equal(operations.mutationAction, "connect:trello");
+  assert.deepEqual(paints, ["connect:trello"]);
+  await start();
+  assert.equal(requests.length, 1);
+  requests[0].reject(new Error("Unavailable"));
+  await failed;
+  assert.equal(operations.mutationInFlight, false);
+  assert.equal(operations.mutationAction, null);
+  assert.equal(context.connectorNotice, "Unavailable");
+
+  const missingUrl = start();
+  requests[1].resolve({});
+  await missingUrl;
+  assert.equal(operations.mutationAction, null);
+  assert.equal(context.connectorNotice, "No authorization URL was returned.");
+
+  const stale = start();
+  operations.reset();
+  const current = start();
+  requests[2].resolve({ authorizeUrl: "https://example.com/stale" });
+  await stale;
+  assert.equal(context.location.href, "");
+  assert.equal(operations.mutationAction, "connect:trello");
+  requests[3].resolve({ authorizeUrl: "https://example.com/authorize" });
+  await current;
+  assert.equal(context.location.href, "https://example.com/authorize");
+});
+
+test("keychain async controls expose busy state and respect reduced motion", () => {
+  for (const action of ["connect:", "token:", "delete:", "disconnect:", "revoke:"])
+    assert.ok(connectorsSource.includes("aria-busy=${keychainOperations.mutationAction === `" + action), action);
+  assert.match(connectorsSource, /aria-busy=\$\{keychainOperations.dropInFlight\}/);
+  assert.match(connectorsSource, /aria-busy=\$\{mcpRefreshInFlight\}/);
+  assert.match(shellCssSource, /button\[aria-busy="true"\]::before/);
+  assert.match(
+    shellCssSource,
+    /prefers-reduced-motion: reduce[\s\S]*button\[aria-busy="true"\]::before\s*\{\s*animation: none/,
+  );
 });

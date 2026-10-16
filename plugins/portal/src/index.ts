@@ -929,7 +929,7 @@ async function coreImpersonate(
 
 function isOAuthPublicPassthrough(method: string, pathname: string): boolean {
   if (method !== "GET") return false;
-  if (/^\/v1\/connectors\/oauth\/[^/]+\/callback$/.test(pathname)) return true;
+  if (/^\/v1\/connectors\/oauth\/[^/]+\/(callback|client-metadata)$/.test(pathname)) return true;
   return false;
 }
 

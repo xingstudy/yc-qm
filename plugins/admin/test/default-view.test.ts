@@ -161,8 +161,30 @@ test("MCP server management is available as an admin view and keeps credentials 
   assert.match(html, /api\("DELETE", "\/api\/mcp-servers\/" \+ encodeURIComponent\(id\)\)/);
   assert.match(html, /Credentials are write-only and never displayed after saving\./);
   assert.match(html, /Validate and discover tools before saving/);
-  assert.match(html, /value="user-oauth">Atlassian user OAuth/);
-  assert.match(html, /Each user connects their own Atlassian account in Keychain/);
+  assert.match(html, /value="user-oauth">Per-user OAuth/);
+  assert.match(html, /Each user connects their own account in Keychain/);
+});
+
+test("MCP user OAuth preserves the configured endpoint when selecting auth or editing", () => {
+  const source = html.slice(
+    html.indexOf("function syncMcpAuthFields()"),
+    html.indexOf("function renderMcpServerList("),
+  );
+  const elements = new Map<string, { value: string; hidden: boolean }>();
+  const $ = (id: string) => {
+    if (!elements.has(id)) elements.set(id, { value: "", hidden: false });
+    return elements.get(id)!;
+  };
+  $("mcp-server-auth").value = "user-oauth";
+  $("mcp-server-url").value = "https://mcp.trello.com/v1";
+  vm.runInNewContext(`${source}; syncMcpAuthFields();`, {
+    $,
+    location: { origin: "https://qm.test" },
+    adminTr: (value: string) => value,
+  });
+  assert.equal($("mcp-server-url").value, "https://mcp.trello.com/v1");
+  assert.equal($("mcp-user-oauth-hint").hidden, false);
+  assert.equal($("mcp-bearer-token-field").hidden, true);
 });
 
 test("temporary onboarding covers model credentials, Slack, and OAuth setup", () => {
