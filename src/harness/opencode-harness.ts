@@ -1,4 +1,5 @@
 import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
+import { measuredHarnessTurn } from "../usage/usage-service.ts";
 import {
   documentExtension,
   documentFallbackText,
@@ -512,6 +513,7 @@ function usageFromInfo(info: AssistantMessageInfo | undefined): LlmCallUsage | n
     cacheWrite,
     totalTokens: input + output + reasoning + cacheRead + cacheWrite,
     costUsd: info?.cost ?? 0,
+    ...(info?.cost == null ? { costKnown: false } : {}),
   };
 }
 
@@ -1614,7 +1616,7 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
     }
   };
 
-  const runPrompt = async (turn: HarnessTurnInput): Promise<HarnessTurnResult> => {
+  const performPrompt = async (turn: HarnessTurnInput): Promise<HarnessTurnResult> => {
     if (turn.cancel?.aborted) return { reply: "", stopped: true };
     if (closed) throw new Error("OpenCode harness is closed");
     const { lease, deadline, wallMs } = await acquireRuntime(turn);
@@ -1626,6 +1628,7 @@ export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harnes
     }
   };
 
+  const runPrompt = (turn: HarnessTurnInput) => measuredHarnessTurn("opencode", turn, performPrompt);
   const single = oneShotRunner(async (turn) => {
     auxiliaryHarness ??= createOpenCodeHarness({
       ...(opts.modelId !== undefined ? { modelId: opts.modelId } : {}),

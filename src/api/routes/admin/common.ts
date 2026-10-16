@@ -4,6 +4,8 @@ import { parseScopeId, scopeId as makeScopeId, type Principal } from "../../../t
 import { sendJson } from "../../http.ts";
 import { orgScope, requireScopedAdmin } from "../shared.ts";
 import { type ApiCtx } from "../route.ts";
+import { projectScopeId } from "../../../projects/project-store.ts";
+import { projectOptionName, projectScopeName } from "../../../../plugins/chassis/src/project-label.js";
 
 export async function requireScopedResource<T>(
   ctx: ApiCtx,
@@ -39,7 +41,7 @@ export async function discoverScopes(
   const labels = new Map<string, string>([[orgScope(deps), "org-wide"]]);
   for (const s of (await deps.sessions?.distinctScopes()) ?? []) {
     if (!labels.has(s.scopeId) || (s.channelName && !labels.get(s.scopeId))) {
-      labels.set(s.scopeId, s.channelName ? `#${s.channelName}` : "");
+      labels.set(s.scopeId, s.channelName ? (projectScopeName(s.scopeId, s.channelName) ?? `#${s.channelName}`) : "");
     }
   }
   const people = [
@@ -53,8 +55,19 @@ export async function discoverScopes(
   for (const id of extraScopeIds) {
     if (!labels.has(id)) labels.set(id, "");
   }
+  const projects = (await deps.projects?.directory(orgScope(deps).slice(4))) ?? [];
+  let membersById: Map<string, string> | undefined;
+  if (new Set(projects.map((project) => project.name)).size < projects.length)
+    membersById = new Map((await app.directoryMembers()).map((member) => [member.principalId, member.displayName]));
+  const choices = projects.map((project) => ({ ...project, creatorName: membersById?.get(project.creatorId) }));
+  for (const project of choices)
+    labels.set(projectScopeId(project.id), projectOptionName(project, choices, "名称未知 Project"));
+  for (const [id, label] of labels) {
+    const name = projectScopeName(id, label, "名称未知 Project");
+    if (name) labels.set(id, name);
+  }
   if ([...labels.values()].some((l) => !l)) {
-    const membersById = new Map((await app.directoryMembers()).map((m) => [m.principalId, m.displayName]));
+    membersById ??= new Map((await app.directoryMembers()).map((m) => [m.principalId, m.displayName]));
     const channelsById = new Map((await app.directoryChannels()).map((c) => [c.channelId, c.name]));
     for (const [id, label] of labels) {
       if (label) continue;

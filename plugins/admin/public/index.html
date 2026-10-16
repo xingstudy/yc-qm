@@ -8239,6 +8239,8 @@
     </dialog>
 
     <script>
+      "PROJECT_LABEL_BUNDLE";
+      "USAGE_DASHBOARD_BUNDLE";
       const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");
       function browserRandomUUID() {
         if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -9782,6 +9784,7 @@
         "No turns sampled.": "尚无轮次样本。",
         Published: "已发布",
         Unknown: "未知",
+        "Unknown Project": "名称未知 Project",
         granted: "已授予",
         "not granted": "未授予",
         "built-in": "内置",
@@ -9959,6 +9962,7 @@
         User: "用户",
         Keychain: "密钥链",
         Metrics: "指标",
+        Usage: "使用量",
         Sessions: "会话",
         Files: "文件",
         Memory: "记忆",
@@ -10968,7 +10972,7 @@
         },
         {
           label: "Logs",
-          views: ["history", "slack", "judgments", "errors", "audit", "egress"],
+          views: ["usage", "history", "slack", "judgments", "errors", "audit", "egress"],
         },
         {
           label: "Artifacts",
@@ -11190,6 +11194,7 @@
         keychain: "Keychain",
         user: "User",
         metrics: "Metrics",
+        usage: "Usage",
         egress: "Egress",
         history: "Sessions",
         files: "Files",
@@ -11221,6 +11226,7 @@
         "deployments",
       ]);
       const ORG_WIDE = new Set([
+        "usage",
         "retention",
         "users",
         "org-members",
@@ -11896,6 +11902,7 @@
       }
       function stateToUrl(st) {
         const p = new URLSearchParams();
+        if (st.view === "usage") for (const [key, value] of new URLSearchParams(st.usageQuery)) p.append(key, value);
         if ((st.view || DEFAULT_VIEW) === "history") {
           if (st.session) {
             if (st.turn != null) p.set("turn", String(st.turn));
@@ -11974,6 +11981,27 @@
         else if (session) resolvedView = "history";
         return {
           view: resolvedView,
+          usageQuery:
+            resolvedView === "usage"
+              ? new URLSearchParams(
+                  [...p].filter(([key]) =>
+                    [
+                      "start",
+                      "end",
+                      "granularity",
+                      "dimension",
+                      "rankBy",
+                      "range",
+                      "user",
+                      "project",
+                      "department",
+                      "model",
+                      "source",
+                      "auth",
+                    ].includes(key),
+                  ),
+                ).toString()
+              : null,
           setup: p.get("setup"),
           slack: p.get("slack"),
           scope:
@@ -11997,7 +12025,10 @@
       }
 
       let transcriptObserver = null;
+      let usageDashboard = null;
       function render(st) {
+        usageDashboard?.destroy();
+        usageDashboard = null;
         if (managerMode && !MANAGER_VIEWS.has(st.view)) {
           st = { view: "org-units", scope: `org:${orgId}`, session: null, page: 1 };
           history.replaceState(st, "", stateToUrl(st));
@@ -12028,6 +12059,7 @@
           "audit",
           "egress",
           "metrics",
+          "usage",
           "history",
           "slack",
           "judgments",
@@ -12087,6 +12119,12 @@
         return view === "history" && orgWideView() && !urlToState().session;
       }
       function renderCurrentData() {
+        if (view === "usage") {
+          usageDashboard?.destroy();
+          pageShell({ title: VIEW_TITLE.usage, titleI18n: true });
+          usageDashboard = mountUsageDashboard($("view-data"), { base: API_BASE, locale: adminLocaleCode() });
+          return;
+        }
         if (historyIsIndex()) return void renderScopeIndex();
         renderData();
       }
@@ -12321,7 +12359,7 @@
       }
 
       function scopeTitle(id) {
-        return scopeKind(id) === "org" ? adminTr("All scopes") : dirLabel(id) || id;
+        return scopeKind(id) === "org" ? adminTr("All scopes") : shortName(id);
       }
 
       function shortName(scopeId) {
@@ -12329,6 +12367,12 @@
         const kind = scopeKind(scopeId);
         if (kind === "org") return "org";
         const lbl = dirLabel(scopeId);
+        const projectId = projectIdFromScope(scopeId);
+        if (projectId) {
+          const name = projectDisplayName(projectId, lbl, adminTr("Unknown Project"));
+          const duplicates = (scopeDir || []).filter((row) => projectIdFromScope(row.scopeId) && row.label === lbl);
+          return lbl && duplicates.length > 1 ? `${name} · ${projectId.slice(0, 8)}` : name;
+        }
         if (lbl) return lbl;
         const rest = String(scopeId).slice(kind.length + 1);
         if (kind === "channel" || kind === "group") return rest.startsWith("#") ? rest : "#" + rest;
@@ -12339,8 +12383,7 @@
         return rest || scopeId;
       }
       function scopeCell(id, extraCls) {
-        const lbl = dirLabel(id);
-        return nodeCell(stacked(lbl || id, lbl ? id : ""), "mono" + (extraCls ? " " + extraCls : ""));
+        return nodeCell(stacked(shortName(id), id || ""), "mono" + (extraCls ? " " + extraCls : ""));
       }
       function historyScopeCell(id, extraCls = "") {
         return nodeCell(
@@ -12685,7 +12728,7 @@
         }
       }
 
-      const FOCUS_REFRESH_EXEMPT = new Set(["governance", "connectors", "user", "design-system"]);
+      const FOCUS_REFRESH_EXEMPT = new Set(["governance", "connectors", "user", "design-system", "usage"]);
       window.addEventListener("focus", () => {
         if ($("app-view").classList.contains("hidden")) return;
         if (isGovLike(view) || FOCUS_REFRESH_EXEMPT.has(view)) return;
@@ -16984,6 +17027,7 @@
         if (
           !(sel instanceof HTMLSelectElement) ||
           sel.dataset.ddHost ||
+          sel.dataset.usageNative ||
           sel.hasAttribute("hidden") ||
           sel.multiple ||
           sel.size > 1
@@ -18864,7 +18908,7 @@
                 "Remove '" +
                   (g.name || g.id) +
                   "' from " +
-                  (dirLabel(g.ownerScopeId) || g.ownerScopeId) +
+                  shortName(g.ownerScopeId) +
                   "? It stops being available to agents in that scope (kept for audit).",
               ),
             )
@@ -19239,7 +19283,8 @@
         const pick = document.createElement("div");
         pick.className = "scopepick";
         pick.style.cssText = "display:flex; align-items:center; gap:6px; flex-wrap:wrap;";
-        const labelOf = (id) => (choices.find((c) => c.scopeId === id) || {}).label || dirLabel(id) || id;
+        const labelOf = (id) =>
+          projectIdFromScope(id) ? shortName(id) : (choices.find((c) => c.scopeId === id) || {}).label || shortName(id);
         const orgFirst = (ids) =>
           ids.sort((a, b) => {
             if (scopeKind(a) === "org") return -1;
@@ -19356,7 +19401,7 @@
             opt.title = c.scopeId;
             const name = document.createElement("span");
             name.className = "scope-name";
-            name.appendChild(stacked(c.label, c.label === c.scopeId ? "" : c.scopeId));
+            name.appendChild(stacked(labelOf(c.scopeId), c.scopeId));
             const mark = document.createElement("span");
             mark.className = "count";
             mark.textContent = on ? "✓" : "";
@@ -19676,7 +19721,7 @@
           { scopeId: orgScopeId, label: "org-wide" },
           ...scopeRows().map((row) => ({
             scopeId: row.scopeId,
-            label: row.label || dirLabel(row.scopeId) || row.scopeId,
+            label: shortName(row.scopeId),
           })),
         ];
         const scopeRow = document.createElement("div");
@@ -19853,7 +19898,7 @@
           const t = denseList(
             visible,
             (s) => ({
-              name: scopeKind(s.scopeId) === "org" ? "org" : s.label || shortName(s.scopeId),
+              name: scopeKind(s.scopeId) === "org" ? "org" : shortName(s.scopeId),
               preview: s.hasMemory ? fmtBytes(s.bytes || 0) : "empty",
               time: s.updatedAt ? relTime(s.updatedAt) : "Never",
               href: stateToUrl(
@@ -20530,7 +20575,7 @@
             (g) => [
               { text: g.principalId, cls: "mono" },
               nodeCell(mutedText(g.role ? labelRole(g.role) : adminTr("member"))),
-              nodeCell(stacked(g.scopeId, scopeKind(g.scopeId)), "mono"),
+              scopeCell(g.scopeId),
               g.grantedBy || "-",
               {
                 action: {
@@ -25146,7 +25191,7 @@
             events.map((e) => [
               { text: fmtTime(e.ts), cls: "num" },
               nodeCell(stacked(e.principalId, "")),
-              nodeCell(mutedText(e.scopeLabel || "-")),
+              scopeCell(e.scopeLabel || "-"),
             ]),
             "No recorded uses of this grant.",
           ),

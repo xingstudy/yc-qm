@@ -246,6 +246,22 @@ test("OpenCode security screening uses an auxiliary runtime while a primary turn
   assert.equal((await primaryTurn).reply, '{"decision":"auto"}');
 });
 
+test("OpenCode marks absent provider cost unknown while retaining token usage", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-opencode-missing-cost-"));
+  const harness = createOpenCodeHarness({
+    binaryPath: fakeSidecar(dir, "missing-cost", promptHandlers(okAssistant.replace("cost: 0.0353,", ""))),
+  });
+  t.after(async () => {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const rows: HarnessLlmRequestRecord[] = [];
+  await harness.turns.runTurn(turnInput([], rows));
+  assert.equal(rows[0]?.usage?.costKnown, false);
+  assert.equal(rows[0]?.usage?.input, 100);
+  assert.equal(rows[0]?.usage?.output, 20);
+});
+
 test("OpenCode restarts its bridge when MCP definitions refresh and reserves workspace aliases", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "qm-opencode-test-"));
   let mcpTools = [] as Array<{

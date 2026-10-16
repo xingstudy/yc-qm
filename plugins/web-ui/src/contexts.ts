@@ -20,6 +20,7 @@ import {
   api,
   isContinuable,
   sharedContextLabel,
+  projectContextLabel,
   type CoreContext,
   type CoreProject,
   type CoreSession,
@@ -197,7 +198,7 @@ function contextMeta(c: CoreContext): { title: string; sub: string; glyph: IconN
   if (c.project) {
     const memberCount = projectPeople(c).length;
     return {
-      title: c.project.name,
+      title: projectContextLabel(c, contextsState.list)!,
       sub: t(`${memberCount} ${memberCount === 1 ? "member" : "members"}`),
       glyph: Folder,
     };

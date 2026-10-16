@@ -36,6 +36,7 @@ type ProjectMutationEffect = (result: Extract<ProjectMutation, { status: "ok" }>
 export interface ProjectStore {
   create(input: { name: string; ownerId: string }): Promise<Project>;
   get(id: string): Promise<Project | null>;
+  directory(orgId: string): Promise<Array<{ id: string; name: string; creatorId: string }>>;
   listForMember(principalId: string): Promise<Project[]>;
   addMember(id: string, actorId: string, memberId: string, effect?: ProjectMutationEffect): Promise<ProjectMutation>;
   removeMember(id: string, actorId: string, memberId: string, effect?: ProjectMutationEffect): Promise<ProjectMutation>;
@@ -186,6 +187,11 @@ export function createProjectStore(
     async get(id) {
       const project = await backing.get(id);
       return project ? visible(project) : null;
+    },
+    async directory(orgId) {
+      return (await backing.all())
+        .filter((project) => project.orgId === orgId)
+        .map(({ id, name, ownerId }) => ({ id, name, creatorId: ownerId }));
     },
     async listForMember(principalId) {
       return (await backing.all())

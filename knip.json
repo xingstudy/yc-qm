@@ -50,6 +50,12 @@
       "entry": ["bin/qm.ts"]
     },
     "plugins/*": {},
+    "plugins/admin": {
+      "entry": ["public/usage.d.ts"]
+    },
+    "plugins/chassis": {
+      "entry": ["src/project-label.d.ts"]
+    },
     "plugins/web-ui": {
       "entry": [
         "src/shared-session.ts",

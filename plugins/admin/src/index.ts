@@ -39,6 +39,17 @@ function signedHeaders(
 
 const BASE_HTML = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../public/index.html"), "utf8")
   .replaceAll("__ADMIN_BASE__", () => ADMIN_BASE_PATH)
+  .replace('"PROJECT_LABEL_BUNDLE";', () =>
+    readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../chassis/src/project-label.js"), "utf8").replace(
+      /^export /gm,
+      "",
+    ),
+  )
+  .replace('"USAGE_DASHBOARD_BUNDLE";', () =>
+    readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../public/usage.js"), "utf8")
+      .replace('import { projectDisplayName } from "../../chassis/src/project-label.js";', "")
+      .replace(/^export /gm, ""),
+  )
   .replace(
     "<style data-admin-components></style>",
     () =>
@@ -402,6 +413,7 @@ function directorySourceCorePath(method: string, pathname: string, search: strin
 }
 
 const READS = [
+  "usage",
   "metrics",
   "egress",
   "errors",
@@ -512,6 +524,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       req.resume();
       return json(res, 403, { error: "forbidden" });
     }
+  }
+  if (
+    method === "POST" &&
+    ["/api/usage/pricing", "/api/usage/cost-preview", "/api/usage/cost-confirm", "/api/usage/layout"].includes(pathname)
+  ) {
+    if (!principal) return json(res, 401, { error: "signed_out" });
+    return forward(req, res, principal, "POST", `/v1/admin${pathname.slice(4)}`, await readBody(req));
   }
   if (method === "GET" && pathname === "/api/scopes") {
     if (!principal) return json(res, 401, { error: "signed_out" });
