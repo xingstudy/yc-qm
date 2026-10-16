@@ -54,7 +54,8 @@ test("usage presets and refresh guard use Beijing dates, visibility and current 
   assert.equal(usageAutoRefresh({ ...state, end: "2026-02-28" }, now), false);
 });
 
-test("manual and scheduled refresh update facets while retaining selected filters", async () => {
+test("manual and scheduled refresh update facets while retaining selected filters", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-14T12:00:00+08:00") });
   class Element {
     children: Element[] = [];
     textContent = "";
@@ -65,6 +66,7 @@ test("manual and scheduled refresh update facets while retaining selected filter
     multiple = false;
     checked = false;
     hidden = false;
+    disabled = false;
     className = "";
     attributes = new Map<string, string>();
     classList = {
@@ -154,6 +156,10 @@ test("manual and scheduled refresh update facets while retaining selected filter
     breakdown: [{ id: "a", name: "User 0", metrics }],
   };
   let facetRequests = 0;
+  let trendCount = 3;
+  let failSeriesPage = false;
+  let deferredSeriesPage: Promise<void> | null = null;
+  const seriesPages: number[] = [];
   const price = {
     id: "price-before",
     provider: "proxy",
@@ -205,8 +211,17 @@ test("manual and scheduled refresh update facets while retaining selected filter
           return { value: savedLayout ? { panels: savedLayout.panels } : null, updatedAt: layoutVersion };
         }
         if (url.includes("/panels?")) {
-          const keys = new URL(url, "http://localhost").searchParams.getAll("panel");
+          const params = new URL(url, "http://localhost").searchParams;
+          const keys = params.getAll("panel");
+          const offset = Number(params.get("offset") ?? 0);
+          const limit = Number(params.get("limit") ?? 20);
+          if (offset) {
+            seriesPages.push(offset);
+            if (failSeriesPage) throw new Error("page unavailable");
+            if (deferredSeriesPage) await deferredSeriesPage;
+          }
           return {
+            pagination: Object.fromEntries(keys.map((key) => [key, { total: trendCount, limit, offset }])),
             panels: Object.fromEntries(
               keys.map((key) => [
                 key,
@@ -224,7 +239,13 @@ test("manual and scheduled refresh update facets while retaining selected filter
                     ],
                   },
                   { id: "c", name: "User missing", metrics, series: [] },
-                ],
+                  ...Array.from({ length: trendCount - 3 }, (_, i) => ({
+                    id: `extra-${i}`,
+                    name: `User extra ${i}`,
+                    metrics,
+                    series: report.series,
+                  })),
+                ].slice(offset, offset + limit),
               ]),
             ),
           };
@@ -278,12 +299,12 @@ test("manual and scheduled refresh update facets while retaining selected filter
   await new Promise(setImmediate);
   assert.equal(checks().length, 1);
   const projectFilter = nodes(root).find(
-    (element) => element.className.includes("usage-filter ") && element.children[0]?.textContent === "Project",
+    (element) => element.className.includes("usage-filter ") && element.children[0]?.textContent === "项目",
   )!;
   const projectOptions = nodes(projectFilter).filter((element) => element.className === "usage-option");
   assert.deepEqual(
     projectOptions.map((element) => element.children[1]?.textContent),
-    ["Same Project · Alice", "Same Project · Bob", "名称未知 Project · cccccccc"],
+    ["Same Project · Alice", "Same Project · Bob", "名称未知项目 · cccccccc"],
   );
   assert.equal((projectOptions[0] as Element & { title: string }).title, "aaaaaaaa-1");
   assert.equal(checks()[0]!.checked, true);
@@ -293,7 +314,7 @@ test("manual and scheduled refresh update facets while retaining selected filter
   assert.equal(filterFold.open, false);
   assert.equal(filterFold.children[0]!.textContent, "筛选 · 已选 1 项");
   const userChart = nodes(root).find(
-    (el) => el.attributes.get("aria-label") === "用户 · 已知 Token" && el.tag === "section",
+    (el) => el.attributes.get("aria-label") === "用户 · Token 消耗" && el.tag === "section",
   )!;
   const svg = userChart.querySelector("svg")!;
   const legend = userChart.querySelector(".usage-legend")!;
@@ -338,7 +359,7 @@ test("manual and scheduled refresh update facets while retaining selected filter
   assert.equal(legendItems[1]!.attributes.get("data-active"), "true");
   svg.onpointerleave!();
   const groups = svg.querySelectorAll(".usage-plot-series");
-  const allSeries = legend.querySelector(".usage-legend-all")!;
+  const allSeries = userChart.querySelector(".usage-legend-all")!;
   const chartHost = userChart.querySelector(".usage-chart-container")!;
   assert.equal(chartHost.children.indexOf(svg) < chartHost.children.indexOf(legend), true);
   legendItems[1]!.onclick!();
@@ -397,7 +418,7 @@ test("manual and scheduled refresh update facets while retaining selected filter
   resizeCharts([{ target: chartHost, contentRect: { width: 0 } }]);
   assert.equal(userChart.querySelector("svg"), narrowSvg);
   const costChart = nodes(root).find(
-    (el) => el.attributes.get("aria-label") === "总览 · 已知参考费用 USD" && el.tag === "section",
+    (el) => el.attributes.get("aria-label") === "总览 · 参考费用 USD" && el.tag === "section",
   )!;
   const costPoint = costChart.querySelector(".usage-plot-point")!;
   costPoint.onfocus!();
@@ -416,7 +437,7 @@ test("manual and scheduled refresh update facets while retaining selected filter
   await new Promise(setImmediate);
   assert.ok(dateFields.every((el) => el.hidden));
   const reloadedUserChart = nodes(root).find(
-    (el) => el.tag === "section" && el.attributes.get("aria-label") === "用户 · 已知 Token",
+    (el) => el.tag === "section" && el.attributes.get("aria-label") === "用户 · Token 消耗",
   )!;
   assert.deepEqual(
     reloadedUserChart.querySelectorAll(".usage-plot-series").map((el) => el.attributes.get("display")),
@@ -476,19 +497,56 @@ test("manual and scheduled refresh update facets while retaining selected filter
   const panelSections = () =>
     nodes(root).filter((el) => el.tag === "section" && el.attributes.get("aria-label")?.includes(" · "));
   assert.equal(panelSections().length, 6);
-  assert.ok(panelSections().some((el) => el.attributes.get("aria-label") === "用户 · 已知 Token"));
-  const move = nodes(root).find((el) => el.attributes.get("aria-label") === "上移面板: 用户 · 已知 Token")!;
+  assert.ok(panelSections().some((el) => el.attributes.get("aria-label") === "用户 · Token 消耗"));
+  const move = nodes(root).find((el) => el.attributes.get("aria-label") === "上移面板: 用户 · Token 消耗")!;
   move.onclick!();
   nodes(root).find((el) => el.tag === "button" && el.textContent === "保存个人布局")!.onclick!();
   await new Promise(setImmediate);
   assert.equal(savedLayout!.panels[0]!.dimension, "user");
   assert.equal(savedLayout!.expectedUpdatedAt, 0);
-  nodes(root).find((el) => el.attributes.get("aria-label") === "移除面板: 用户 · 已知 Token")!.onclick!();
+  nodes(root).find((el) => el.attributes.get("aria-label") === "移除面板: 用户 · Token 消耗")!.onclick!();
   assert.equal(panelSections().length, 5);
   nodes(root).find((el) => el.tag === "button" && el.textContent === "重新加载布局")!.onclick!();
   await new Promise(setImmediate);
   assert.equal(panelSections().length, 6);
-  assert.equal(panelSections()[0]!.attributes.get("aria-label"), "用户 · 已知 Token");
+  assert.equal(panelSections()[0]!.attributes.get("aria-label"), "用户 · Token 消耗");
+  trendCount = 225;
+  const refresh = () => nodes(root).find((el) => el.tag === "button" && el.textContent === "刷新")!.onclick!();
+  const userPanel = () => panelSections().find((el) => el.attributes.get("aria-label") === "用户 · Token 消耗")!;
+  refresh();
+  await new Promise(setImmediate);
+  assert.equal(userPanel().querySelectorAll(".usage-plot-series").length, 20);
+  assert.ok(nodes(userPanel()).some((el) => el.textContent === "已加载 20 / 共 225 条"));
+  failSeriesPage = true;
+  nodes(userPanel()).find((el) => el.textContent === "加载更多曲线")!.onclick!();
+  await new Promise(setImmediate);
+  assert.equal(userPanel().querySelectorAll(".usage-plot-series").length, 20);
+  assert.ok(nodes(userPanel()).some((el) => el.textContent.includes("加载失败，已保留曲线")));
+  failSeriesPage = false;
+  nodes(userPanel()).find((el) => el.textContent === "加载更多曲线")!.onclick!();
+  await new Promise(setImmediate);
+  assert.equal(userPanel().querySelectorAll(".usage-plot-series").length, 120);
+  userPanel().querySelector(".usage-legend-all")!.onclick!();
+  await new Promise(setImmediate);
+  assert.equal(userPanel().querySelectorAll(".usage-plot-series").length, 225);
+  assert.ok(nodes(userPanel()).some((el) => el.textContent === "已加载 225 / 共 225 条"));
+  assert.equal(userPanel().querySelector(".usage-legend-all")!.disabled, true);
+  assert.ok(
+    userPanel()
+      .querySelectorAll(".usage-legend-name")
+      .some((el) => el.textContent === "User extra 221"),
+  );
+  assert.deepEqual(seriesPages, [20, 20, 120, 220]);
+  refresh();
+  await new Promise(setImmediate);
+  const delayed = Promise.withResolvers<void>();
+  deferredSeriesPage = delayed.promise;
+  nodes(userPanel()).find((el) => el.textContent === "加载更多曲线")!.onclick!();
+  refresh();
+  await new Promise(setImmediate);
+  delayed.resolve();
+  await new Promise(setImmediate);
+  assert.equal(userPanel().querySelectorAll(".usage-plot-series").length, 20);
   dashboard.destroy();
   assert.equal(observedCharts.size, 0);
   assert.ok(chartDisconnects > 1);

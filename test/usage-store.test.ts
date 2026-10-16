@@ -57,7 +57,9 @@ test(
       await store.project("panel-org");
       await store.project("other-panel-org");
       const query = parseUsageQuery(new URLSearchParams("start=2026-10-05&end=2026-10-07&dimension=user"), "panel-org");
-      const trend = await store.trends!(query, "tokens");
+      const page = await store.trends!({ ...query, limit: 5 }, "tokens");
+      const trend = page.items;
+      assert.equal(page.total, 7);
       assert.equal(trend.length, 5);
       assert.equal(trend[0]!.id, "user-6");
       assert.deepEqual(
@@ -66,16 +68,25 @@ test(
       );
       assert.equal(trend[0]!.series[0]!.metrics.knownCost, 0);
       assert.equal(trend[0]!.metrics.input, 1800);
-      const cost = await store.trends!(query, "costUsd");
+      const remaining = await store.trends!({ ...query, limit: 5, offset: 5 }, "tokens");
+      assert.equal(remaining.total, 7);
+      assert.deepEqual(
+        remaining.items.map((row) => row.id),
+        ["user-1", "user-0"],
+      );
+      assert.equal(new Set([...trend, ...remaining.items].map((row) => row.id)).size, 7);
+      assert.equal((await store.trends!(query, "tokens")).items.length, 7);
+      assert.deepEqual(await store.trends!({ ...query, offset: 100 }, "tokens"), { items: [], total: 7 });
+      const cost = (await store.trends!(query, "costUsd")).items;
       assert.equal(cost[0]!.id, "user-5");
       const filtered = await store.trends!({ ...query, projects: ["p-1"], departments: ["company"] }, "tokens");
-      assert.equal(filtered.length, 1);
-      assert.equal(filtered[0]!.id, "user-1");
-      const weekly = await store.trends!({ ...query, dimension: "model", granularity: "week" }, "tokens");
+      assert.equal(filtered.total, 1);
+      assert.equal(filtered.items[0]!.id, "user-1");
+      const weekly = (await store.trends!({ ...query, dimension: "model", granularity: "week" }, "tokens")).items;
       assert.equal(weekly[0]!.id, "model-6");
       assert.equal(weekly[0]!.series.length, 1);
       assert.equal(weekly[0]!.series[0]!.period, "2026-10-05");
-      assert.deepEqual(await store.trends!({ ...query, users: ["absent"] }, "activeUsers"), []);
+      assert.deepEqual(await store.trends!({ ...query, users: ["absent"] }, "activeUsers"), { items: [], total: 0 });
     } finally {
       await store.close();
     }
@@ -129,6 +140,7 @@ test(
       await store.put(usageFact("name-old", { orgId, projectName: "Old Project" }));
       await store.put(usageFact("name-id", { orgId, projectName: "p1" }));
       await store.put(usageFact("name-unknown", { orgId, projectId: "missing", projectName: "missing" }));
+      await store.put(usageFact("name-none", { orgId, projectId: "", projectName: "无 Project" }));
       await store.put(usageFact("name-foreign", { orgId: "foreign-name-org", projectName: "Foreign Project" }));
       await store.project(orgId);
       store.setDirectoryReader?.(async (requestedOrg) => {
@@ -146,8 +158,9 @@ test(
         const report = await store.report(query);
         assert.equal(report.breakdown.find((row) => row.id === "p1")?.name, name);
         assert.equal(report.breakdown.filter((row) => row.id === "p1").length, 1);
-        assert.equal(report.breakdown.find((row) => row.id === "missing")?.name, "名称未知 Project · missing");
-        assert.equal((await store.trends!(query, "tokens")).find((row) => row.id === "p1")?.name, name);
+        assert.equal(report.breakdown.find((row) => row.id === "missing")?.name, "名称未知项目 · missing");
+        assert.equal(report.breakdown.find((row) => row.id === "")?.name, "非项目");
+        assert.equal((await store.trends!(query, "tokens")).items.find((row) => row.id === "p1")?.name, name);
         const facets = await store.facets(orgId);
         assert.equal(facets.project.find((row) => row.id === "p1")?.name, name);
         assert.ok(facets.project.some((row) => row.name === "Unused Project"));

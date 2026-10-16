@@ -139,7 +139,7 @@ export interface UsageStore {
   trends?(
     query: UsageQuery,
     metric: "tokens" | "costUsd" | "calls" | "requests" | "activeUsers",
-  ): Promise<UsageTrend[]>;
+  ): Promise<{ items: UsageTrend[]; total: number }>;
   details(query: UsageQuery): Promise<{ records: UsageFact[]; total: number }>;
   facets(
     orgId: string,
