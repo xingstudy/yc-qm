@@ -3,6 +3,8 @@ import { createEnvSecretSource, type SecretSource } from "../credentials/secret-
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { decodeJwt } from "jose";
 import { mintSignedPayload, verifySignedPayload } from "../auth/signed-token.ts";
+import type { McpOAuthSettings, McpServer, McpServerStore } from "../mcp/mcp-server-store.ts";
+import { fetchPublicMcpJson } from "../mcp/mcp-client.ts";
 import { swallow } from "../util/errors.ts";
 
 export type AccountType = "default" | "personal" | "company";
@@ -38,6 +40,8 @@ type OAuthExchangeAdapter = (
 type OAuthRefreshAdapter = (args: OAuthAdapterArgs & { token: OAuthToken }) => Promise<OAuthToken>;
 
 export interface OAuthProviderConfig {
+  displayName?: string;
+  mcp?: McpOAuthSettings & { clientId?: string; clientSecret?: string; autoClientMetadataUrl?: string };
   hosts: string[];
   authUrl: string;
   tokenUrl: string;
@@ -62,6 +66,7 @@ export type FetchLike = (
 ) => Promise<{
   ok: boolean;
   status: number;
+  headers?: { get(name: string): string | null };
   json(): Promise<unknown>;
 }>;
 
@@ -96,6 +101,7 @@ function makeTokenAdapters(opts: {
   rejectErrorBody?: boolean;
   label?: string;
   clientAuth?: "body" | "basic" | "none";
+  encodeBasicCredentials?: boolean;
 }): {
   exchange: (
     args: OAuthAdapterArgs & { code: string },
@@ -105,10 +111,16 @@ function makeTokenAdapters(opts: {
   const prefix = opts.label ? `${opts.label} ` : "";
   const basic = opts.clientAuth === "basic";
   const none = opts.clientAuth === "none";
+  const basicPart = (value: string) =>
+    opts.encodeBasicCredentials ? new URLSearchParams([["", value]]).toString().slice(1) : value;
   const headers = (client: ResolvedClient) => ({
     "content-type": "application/x-www-form-urlencoded",
     ...(opts.acceptJson ? { accept: "application/json" } : {}),
-    ...(basic ? { authorization: `Basic ${Buffer.from(`${client.id}:${client.secret}`).toString("base64")}` } : {}),
+    ...(basic
+      ? {
+          authorization: `Basic ${Buffer.from(`${basicPart(client.id)}:${basicPart(client.secret)}`).toString("base64")}`,
+        }
+      : {}),
   });
   const clientBody = (client: ResolvedClient): Record<string, string> =>
     basic || none ? { client_id: client.id } : { client_id: client.id, client_secret: client.secret };
@@ -181,7 +193,24 @@ const github = makeTokenAdapters({ acceptJson: true, rejectErrorBody: true, labe
 
 const x = makeTokenAdapters({ acceptJson: true, rejectErrorBody: true, label: "x", clientAuth: "basic" });
 
-const atlassian = makeTokenAdapters({ label: "Atlassian", clientAuth: "none" });
+function mcpTokenAdapters(client: ResolvedClient) {
+  const method = client.tokenEndpointAuthMethod ?? "none";
+  let clientAuth: "basic" | "body" | "none" = "none";
+  if (method === "client_secret_basic") clientAuth = "basic";
+  if (method === "client_secret_post") clientAuth = "body";
+  return makeTokenAdapters({
+    label: "MCP",
+    acceptJson: true,
+    rejectErrorBody: true,
+    encodeBasicCredentials: true,
+    clientAuth,
+  });
+}
+
+const mcpOAuth: { exchange: OAuthExchangeAdapter; refresh: OAuthRefreshAdapter } = {
+  exchange: (args) => mcpTokenAdapters(args.client).exchange(args),
+  refresh: (args) => mcpTokenAdapters(args.client).refresh(args),
+};
 
 const slackExchange: OAuthExchangeAdapter = async ({ provider, client, code, redirectUri, fetchImpl }) => {
   const res = await fetchImpl(provider.tokenUrl, {
@@ -466,8 +495,8 @@ export const PROVIDERS: Record<string, OAuthProviderConfig> = {
     egressRule: ["mcp.atlassian.com"],
     pkce: true,
     authParams: { prompt: "consent" },
-    exchange: atlassian.exchange,
-    refresh: atlassian.refresh,
+    exchange: mcpOAuth.exchange,
+    refresh: mcpOAuth.refresh,
     setupGuide: {
       console: "Atlassian Rovo MCP",
       url: "https://developer.atlassian.com/cloud/rovo-mcp/guides/configuring-oauth-2-1/",
@@ -483,6 +512,7 @@ export const PROVIDERS: Record<string, OAuthProviderConfig> = {
 };
 
 export interface ResolvedClient {
+  tokenEndpointAuthMethod?: McpOAuthSettings["tokenEndpointAuthMethod"];
   id: string;
   secret: string;
   scopes?: string[];
@@ -493,13 +523,72 @@ export interface ResolvedClient {
   tokenUrl?: string;
 }
 
-const ATLASSIAN_MCP_RESOURCE_METADATA = "https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp";
-const ATLASSIAN_MCP_CLIENT_REF = "atlassian-dcr:";
+export function mcpOAuthCredentialHost(
+  server: Pick<McpServer, "id" | "url"> & Partial<Pick<McpServer, "auth" | "oauth" | "clientId">>,
+): string {
+  if (server.auth !== "user-token" && server.url === PROVIDERS.atlassian!.resource) return "mcp.atlassian.com";
+  const oauth = server.oauth;
+  const settings =
+    oauth || server.clientId
+      ? JSON.stringify([
+          server.clientId,
+          oauth?.authorizationUrl,
+          oauth?.tokenUrl,
+          oauth?.clientMetadataUrl,
+          oauth?.tokenEndpointAuthMethod,
+          oauth?.scopes,
+        ])
+      : "";
+  const binding = `${server.id}\u0000${server.url}${settings ? `\u0000${settings}` : ""}`;
+  const prefix = server.auth === "user-token" ? "mcp-token" : "mcp";
+  return `${prefix}-${createHash("sha256").update(binding).digest("hex").slice(0, 40)}.oauth`;
+}
 
-type AtlassianOAuthMetadata = {
+export async function oauthProviders(
+  servers?: Pick<McpServerStore, "list">,
+  publicUrl?: string,
+): Promise<Record<string, OAuthProviderConfig>> {
+  const providers = { ...PROVIDERS };
+  for (const server of (await servers?.list()) ?? []) {
+    if (!server.enabled || server.auth !== "user-oauth") continue;
+    const existing = server.url === PROVIDERS.atlassian!.resource;
+    const name = existing ? "atlassian" : `mcp-${server.id}`;
+    providers[name] = {
+      ...(existing ? PROVIDERS.atlassian! : {}),
+      displayName: server.name,
+      hosts: [mcpOAuthCredentialHost(server)],
+      authUrl: "",
+      tokenUrl: "",
+      resource: new URL(server.url).toString(),
+      scopes: server.oauth?.scopes ?? [],
+      clientIdEnv: "",
+      clientSecretEnv: "",
+      redirectPath: `${name}/callback`,
+      consentMode: "standard",
+      egressRule: [],
+      pkce: true,
+      exchange: mcpOAuth.exchange,
+      refresh: mcpOAuth.refresh,
+      mcp: {
+        ...server.oauth,
+        clientId: server.clientId,
+        clientSecret: server.clientSecret,
+        ...(publicUrl?.startsWith("https://")
+          ? { autoClientMetadataUrl: `${publicUrl.replace(/\/$/, "")}/v1/connectors/oauth/${name}/client-metadata` }
+          : {}),
+      },
+      setupGuide: { console: server.name, url: server.url, steps: ["Connect your own account in Keychain."] },
+    };
+  }
+  return providers;
+}
+
+type McpOAuthMetadata = {
   authorizationEndpoint: string;
   tokenEndpoint: string;
-  registrationEndpoint: string;
+  registrationEndpoint?: string;
+  clientMetadataSupported?: boolean;
+  tokenEndpointAuthMethods?: string[];
   scopes: string[];
 };
 
@@ -523,75 +612,174 @@ function secureOAuthUrl(value: unknown, label: string): string {
   return parsed.toString();
 }
 
-function authorizationServerMetadataUrl(authorizationServer: string): string {
-  const url = new URL(authorizationServer);
-  url.pathname = `${url.pathname.replace(/\/$/, "")}/.well-known/oauth-authorization-server`;
-  return url.toString();
-}
-
-async function atlassianOAuthMetadata(fetchImpl: FetchLike): Promise<AtlassianOAuthMetadata> {
-  const resourceResponse = await fetchImpl(ATLASSIAN_MCP_RESOURCE_METADATA, {
-    method: "GET",
-    headers: { accept: "application/json" },
-    body: "",
-  });
+async function mcpOAuthMetadata(provider: OAuthProviderConfig, fetchImpl: FetchLike): Promise<McpOAuthMetadata> {
+  const request = (url: string) => fetchImpl(url, { method: "GET", headers: { accept: "application/json" }, body: "" });
+  const settings = provider.mcp;
+  if (settings?.authorizationUrl && settings.tokenUrl) {
+    return {
+      authorizationEndpoint: secureOAuthUrl(settings.authorizationUrl, "MCP authorization endpoint"),
+      tokenEndpoint: secureOAuthUrl(settings.tokenUrl, "MCP token endpoint"),
+      scopes: settings.scopes ?? [],
+    };
+  }
+  const resourceUrl = new URL(secureOAuthUrl(provider.resource, "MCP resource"));
+  const resourceUrls = [
+    new URL(
+      `/.well-known/oauth-protected-resource${resourceUrl.pathname === "/" ? "" : resourceUrl.pathname}`,
+      resourceUrl,
+    ).toString(),
+    new URL("/.well-known/oauth-protected-resource", resourceUrl).toString(),
+  ];
+  const challenge = await request(resourceUrl.toString());
+  const header = challenge.status === 401 ? (challenge.headers?.get("www-authenticate") ?? "") : "";
+  const metadataUrl = /\bresource_metadata="([^"\r\n]+)"/i.exec(header)?.[1];
+  const scope = /\bscope="([^"\r\n]*)"/i.exec(header)?.[1];
+  const challengeScopes = scope === undefined ? undefined : scope.split(/\s+/).filter(Boolean);
+  let resourceResponse = await request(
+    metadataUrl ? secureOAuthUrl(metadataUrl, "MCP resource metadata URL") : resourceUrls[0]!,
+  );
+  if (!metadataUrl && resourceResponse.status === 404 && resourceUrls[0] !== resourceUrls[1])
+    resourceResponse = await request(resourceUrls[1]!);
   if (!resourceResponse.ok)
-    throw new Error(`Atlassian protected-resource metadata request failed (${resourceResponse.status})`);
-  const resource = jsonRecord(await resourceResponse.json(), "Atlassian protected-resource metadata");
-  if (secureOAuthUrl(resource.resource, "Atlassian protected resource") !== PROVIDERS.atlassian!.resource)
-    throw new Error("Atlassian protected-resource metadata is for a different MCP endpoint");
+    throw new Error(`MCP protected-resource metadata request failed (${resourceResponse.status})`);
+  const resource = jsonRecord(await resourceResponse.json(), "MCP protected-resource metadata");
+  if (secureOAuthUrl(resource.resource, "MCP protected resource") !== provider.resource)
+    throw new Error("MCP protected-resource metadata is for a different MCP endpoint");
   const advertisedScopes = resource.scopes_supported;
   const scopes = Array.isArray(advertisedScopes)
     ? advertisedScopes.filter((scope): scope is string => typeof scope === "string" && scope.length > 0)
     : [];
-  if (!scopes.length || scopes.length !== (Array.isArray(advertisedScopes) ? advertisedScopes.length : 0))
-    throw new Error("Atlassian protected-resource metadata returned invalid scopes");
+  if (advertisedScopes !== undefined && (!Array.isArray(advertisedScopes) || scopes.length !== advertisedScopes.length))
+    throw new Error("MCP protected-resource metadata returned invalid scopes");
   const authorizationServer = secureOAuthUrl(
     Array.isArray(resource.authorization_servers) ? resource.authorization_servers[0] : undefined,
-    "Atlassian authorization server",
+    "MCP authorization server",
   );
-  const response = await fetchImpl(authorizationServerMetadataUrl(authorizationServer), {
-    method: "GET",
-    headers: { accept: "application/json" },
-    body: "",
-  });
-  if (!response.ok) throw new Error(`Atlassian OAuth metadata request failed (${response.status})`);
-  const metadata = jsonRecord(await response.json(), "Atlassian OAuth metadata");
-  if (secureOAuthUrl(metadata.issuer, "Atlassian OAuth issuer") !== authorizationServer)
-    throw new Error("Atlassian OAuth issuer does not match the MCP authorization server");
-  const methods = Array.isArray(metadata.code_challenge_methods_supported)
-    ? metadata.code_challenge_methods_supported.map(String)
-    : [];
-  if (!methods.includes("S256")) throw new Error("Atlassian OAuth does not support PKCE S256");
+  const issuer = new URL(authorizationServer);
+  const path = issuer.pathname.replace(/\/$/, "");
+  const metadataUrls = [
+    ...new Set([
+      new URL(`/.well-known/oauth-authorization-server${path}`, issuer).toString(),
+      new URL(`/.well-known/openid-configuration${path}`, issuer).toString(),
+      new URL(`${path}/.well-known/openid-configuration`, issuer).toString(),
+      new URL(`${path}/.well-known/oauth-authorization-server`, issuer).toString(),
+    ]),
+  ];
+  let response = await request(metadataUrls[0]!);
+  for (const url of metadataUrls.slice(1)) {
+    if (response.status !== 404) break;
+    response = await request(url);
+  }
+  if (!response.ok) throw new Error(`MCP OAuth metadata request failed (${response.status})`);
+  const metadata = jsonRecord(await response.json(), "MCP OAuth metadata");
+  if (secureOAuthUrl(metadata.issuer, "MCP OAuth issuer") !== authorizationServer)
+    throw new Error("MCP OAuth issuer does not match the MCP authorization server");
+  if (
+    !Array.isArray(metadata.code_challenge_methods_supported) ||
+    !metadata.code_challenge_methods_supported.includes("S256")
+  )
+    throw new Error("MCP OAuth does not support PKCE S256");
   return {
-    authorizationEndpoint: secureOAuthUrl(metadata.authorization_endpoint, "Atlassian authorization endpoint"),
-    tokenEndpoint: secureOAuthUrl(metadata.token_endpoint, "Atlassian token endpoint"),
-    registrationEndpoint: secureOAuthUrl(metadata.registration_endpoint, "Atlassian registration endpoint"),
-    scopes,
+    authorizationEndpoint: secureOAuthUrl(metadata.authorization_endpoint, "MCP authorization endpoint"),
+    tokenEndpoint: secureOAuthUrl(metadata.token_endpoint, "MCP token endpoint"),
+    ...(metadata.registration_endpoint
+      ? { registrationEndpoint: secureOAuthUrl(metadata.registration_endpoint, "MCP registration endpoint") }
+      : {}),
+    clientMetadataSupported: metadata.client_id_metadata_document_supported === true,
+    ...(Array.isArray(metadata.token_endpoint_auth_methods_supported)
+      ? { tokenEndpointAuthMethods: metadata.token_endpoint_auth_methods_supported.map(String) }
+      : {}),
+    scopes: settings?.scopes ?? challengeScopes ?? scopes,
   };
 }
 
-function atlassianClientId(clientRef: string | undefined): string | null {
-  if (!clientRef?.startsWith(ATLASSIAN_MCP_CLIENT_REF)) return null;
-  const id = clientRef.slice(ATLASSIAN_MCP_CLIENT_REF.length);
-  return id && id.length <= 512 && /^[A-Za-z0-9._~:-]+$/.test(id) ? id : null;
+export function isDynamicOAuthProvider(provider: string, config = PROVIDERS[provider]): boolean {
+  return !!config?.resource;
 }
 
-export function isDynamicOAuthProvider(provider: string): boolean {
-  return provider === "atlassian";
-}
-
-export async function resolveAtlassianMcpClient(opts: {
-  redirectUri: string;
-  clientRef?: string;
-  fetchImpl?: FetchLike;
-}): Promise<ResolvedClient> {
-  const fetchImpl = opts.fetchImpl ?? realFetch;
-  const metadata = await atlassianOAuthMetadata(fetchImpl);
-  let clientId = atlassianClientId(opts.clientRef);
-  if (!clientId) {
-    if (opts.clientRef) throw new Error("invalid Atlassian OAuth client reference");
-    if (!opts.redirectUri) throw new Error("Atlassian OAuth redirect URI is required");
+export async function resolveMcpOAuthClient(
+  providerName: string,
+  provider: OAuthProviderConfig,
+  opts: {
+    redirectUri: string;
+    clientRef?: string;
+    fetchImpl?: FetchLike;
+  },
+): Promise<ResolvedClient> {
+  const fetchImpl = opts.fetchImpl ?? fetchPublicMcpJson;
+  const configured = provider.mcp;
+  const boundRef = `mcp-config:${provider.hosts[0]}:${createHash("sha256")
+    .update(
+      JSON.stringify([
+        configured?.clientId,
+        configured?.clientMetadataUrl ?? configured?.autoClientMetadataUrl,
+        configured?.authorizationUrl,
+        configured?.tokenUrl,
+        configured?.tokenEndpointAuthMethod,
+      ]),
+    )
+    .digest("hex")}`;
+  const staticClient = !!(configured?.clientId || configured?.clientMetadataUrl);
+  const prefix = providerName === "atlassian" ? "atlassian-dcr:" : `${providerName}-dcr:${provider.hosts[0]}:`;
+  let clientId: string | null = opts.clientRef?.startsWith(prefix) ? opts.clientRef.slice(prefix.length) : null;
+  if (
+    opts.clientRef &&
+    (staticClient || opts.clientRef === boundRef
+      ? opts.clientRef !== boundRef
+      : !clientId || clientId.length > 2048 || /[\s\x00-\x1f\x7f]/.test(clientId))
+  )
+    throw new Error("invalid MCP OAuth client reference");
+  const metadata = await mcpOAuthMetadata(provider, fetchImpl);
+  let clientRef = opts.clientRef;
+  let method = configured?.tokenEndpointAuthMethod ?? "none";
+  if (!configured?.tokenEndpointAuthMethod && configured?.clientSecret) {
+    method =
+      metadata.tokenEndpointAuthMethods?.includes("client_secret_post") &&
+      !metadata.tokenEndpointAuthMethods.includes("client_secret_basic")
+        ? "client_secret_post"
+        : "client_secret_basic";
+  }
+  if (configured?.clientId) {
+    clientId = configured.clientId;
+    clientRef = boundRef;
+  } else if (
+    configured?.clientMetadataUrl ||
+    (configured?.autoClientMetadataUrl && metadata.clientMetadataSupported && !clientId)
+  ) {
+    if (!metadata.clientMetadataSupported)
+      throw new Error("MCP authorization server does not support client metadata documents");
+    clientId = secureOAuthUrl(
+      configured.clientMetadataUrl ?? configured.autoClientMetadataUrl,
+      "MCP client metadata URL",
+    );
+    if (
+      !configured.clientMetadataUrl &&
+      opts.redirectUri &&
+      opts.redirectUri !== clientId.replace(/client-metadata$/, "callback")
+    )
+      throw new Error("MCP client metadata does not match the redirect URI");
+    if (configured.clientMetadataUrl) {
+      const response = await fetchImpl(clientId, { method: "GET", headers: { accept: "application/json" }, body: "" });
+      if (!response.ok) throw new Error(`MCP client metadata request failed (${response.status})`);
+      const document = jsonRecord(await response.json(), "MCP client metadata");
+      if (
+        document.client_id !== clientId ||
+        typeof document.client_name !== "string" ||
+        !document.client_name ||
+        !Array.isArray(document.redirect_uris) ||
+        (opts.redirectUri && !document.redirect_uris.includes(opts.redirectUri)) ||
+        (document.token_endpoint_auth_method !== undefined && document.token_endpoint_auth_method !== "none")
+      )
+        throw new Error("MCP client metadata does not match the client or redirect URI");
+    }
+    method = "none";
+    clientRef = boundRef;
+  } else if (!clientId) {
+    if (!opts.redirectUri) throw new Error("MCP OAuth redirect URI is required");
+    if (!metadata.registrationEndpoint)
+      throw new Error(
+        "MCP OAuth requires a configured Client ID, client metadata URL, or dynamic registration endpoint",
+      );
     const response = await fetchImpl(metadata.registrationEndpoint, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
@@ -604,18 +792,26 @@ export async function resolveAtlassianMcpClient(opts: {
         scope: metadata.scopes.join(" "),
       }),
     });
-    if (!response.ok) throw new Error(`Atlassian OAuth client registration failed (${response.status})`);
-    const registered = jsonRecord(await response.json(), "Atlassian OAuth client registration");
+    if (!response.ok) throw new Error(`MCP OAuth client registration failed (${response.status})`);
+    const registered = jsonRecord(await response.json(), "MCP OAuth client registration");
+    if (registered.token_endpoint_auth_method !== undefined && registered.token_endpoint_auth_method !== "none")
+      throw new Error("MCP OAuth registration requires an unsupported client authentication method");
     clientId = typeof registered.client_id === "string" ? registered.client_id : null;
   }
-  if (!clientId) throw new Error("Atlassian OAuth registration returned no client_id");
+  if (!clientId || clientId.length > 2048 || /[\s\x00-\x1f\x7f]/.test(clientId))
+    throw new Error("MCP OAuth returned an invalid client_id");
+  if (method !== "none" && !configured?.clientSecret)
+    throw new Error("MCP OAuth client authentication requires a client secret");
+  if (metadata.tokenEndpointAuthMethods && !metadata.tokenEndpointAuthMethods.includes(method))
+    throw new Error("MCP OAuth token endpoint does not support the configured client authentication method");
   return {
     id: clientId,
-    secret: "",
+    secret: configured?.clientSecret ?? "",
+    tokenEndpointAuthMethod: method,
     scopes: metadata.scopes,
-    clientRef: `${ATLASSIAN_MCP_CLIENT_REF}${clientId}`,
     authUrl: metadata.authorizationEndpoint,
     tokenUrl: metadata.tokenEndpoint,
+    clientRef: clientRef ?? `${prefix}${clientId}`,
   };
 }
 
@@ -713,9 +909,10 @@ export function authorizeUrl(
     client: ResolvedClient;
     accountType?: AccountType;
     codeChallenge?: string;
+    providerConfig?: OAuthProviderConfig;
   },
 ): string {
-  const p = PROVIDERS[provider];
+  const p = opts.providerConfig ?? PROVIDERS[provider];
   if (!p) throw new Error(`unknown OAuth provider: ${provider}`);
   const accountType = opts.accountType ?? "default";
   const scopes = scopesFor(p, opts.client);
@@ -733,7 +930,9 @@ export function authorizeUrl(
   if (scopes.length) q.set(p.scopeParam ?? "scope", scopes.join(" "));
   for (const [k, v] of Object.entries(p.authParams ?? {})) q.set(k, v);
   if (accountType === "company" && opts.client.hostedDomain) q.set("hd", opts.client.hostedDomain);
-  return `${opts.client.authUrl ?? p.authUrl}?${q.toString()}`;
+  const url = new URL(opts.client.authUrl ?? p.authUrl);
+  for (const [key, value] of q) url.searchParams.set(key, value);
+  return url.toString();
 }
 
 export async function exchangeCode(
@@ -746,9 +945,10 @@ export async function exchangeCode(
     now?: number;
     accountType?: AccountType;
     codeVerifier?: string;
+    providerConfig?: OAuthProviderConfig;
   },
 ): Promise<{ hosts: string[]; token: OAuthToken }> {
-  const p = PROVIDERS[provider];
+  const p = opts.providerConfig ?? PROVIDERS[provider];
   if (!p) throw new Error(`unknown OAuth provider: ${provider}`);
   const adapter = p.exchange ?? defaultExchange;
   return adapter({
@@ -756,15 +956,18 @@ export async function exchangeCode(
     client: opts.client,
     code,
     redirectUri,
-    fetchImpl: opts.fetchImpl ?? realFetch,
+    fetchImpl: opts.fetchImpl ?? (isDynamicOAuthProvider(provider, p) ? fetchPublicMcpJson : realFetch),
     now: opts.now ?? Date.now(),
     ...(opts.accountType ? { accountType: opts.accountType } : {}),
     ...(opts.codeVerifier ? { codeVerifier: opts.codeVerifier } : {}),
   });
 }
 
-function providerForHost(host: string): { name: string; config: OAuthProviderConfig } | null {
-  for (const [name, config] of Object.entries(PROVIDERS)) {
+function providerForHost(
+  host: string,
+  providers: Record<string, OAuthProviderConfig>,
+): { name: string; config: OAuthProviderConfig } | null {
+  for (const [name, config] of Object.entries(providers)) {
     if (config.hosts.some((h) => host === h || host.endsWith(`.${h}`))) return { name, config };
   }
   return null;
@@ -772,17 +975,19 @@ function providerForHost(host: string): { name: string; config: OAuthProviderCon
 
 export function makeRefresh(opts: {
   resolveClient: OAuthClientResolver;
+  mcpServers?: Pick<McpServerStore, "list">;
+  publicUrl?: string;
   fetchImpl?: FetchLike;
   now?: () => number;
 }): OAuthRefresh {
   return async (host, token, ctx) => {
-    const match = providerForHost(host);
+    const match = providerForHost(host, await oauthProviders(opts.mcpServers, opts.publicUrl));
     if (!match) throw new Error(`cannot refresh ${host} (unknown provider)`);
     if (match.config.refresh === null) throw new Error(`${match.name} tokens do not refresh — reconnect`);
     if (!token.refreshToken) throw new Error(`cannot refresh ${host} (no refresh token)`);
     const accountType = (ctx?.accountType ?? token.accountType) as AccountType | undefined;
-    const client = isDynamicOAuthProvider(match.name)
-      ? await resolveAtlassianMcpClient({
+    const client = isDynamicOAuthProvider(match.name, match.config)
+      ? await resolveMcpOAuthClient(match.name, match.config, {
           redirectUri: "",
           clientRef: ctx?.clientRef ?? token.clientRef,
           ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
@@ -794,7 +999,7 @@ export function makeRefresh(opts: {
       client,
       token,
       redirectUri: "",
-      fetchImpl: opts.fetchImpl ?? realFetch,
+      fetchImpl: opts.fetchImpl ?? (isDynamicOAuthProvider(match.name, match.config) ? fetchPublicMcpJson : realFetch),
       now: (opts.now ?? Date.now)(),
       ...(accountType ? { accountType } : {}),
     });

@@ -54,8 +54,8 @@ test("usage presets and refresh guard use Beijing dates, visibility and current 
   assert.equal(usageAutoRefresh({ ...state, end: "2026-02-28" }, now), false);
 });
 
-test("manual and scheduled refresh update facets while retaining selected filters", async (t) => {
-  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-14T12:00:00+08:00") });
+test("manual and scheduled refresh update facets while retaining selected filters", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-14T12:00:00+08:00") });
   class Element {
     children: Element[] = [];
     textContent = "";

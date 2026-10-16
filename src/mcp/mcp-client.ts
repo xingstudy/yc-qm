@@ -2,6 +2,7 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { Agent, buildConnector, fetch as undiciFetch } from "undici";
 import { isPrivateNetworkIp } from "../util/network.ts";
+import { validMcpTokenHeader } from "./mcp-server-store.ts";
 
 const TOKEN_SKEW_MS = 60_000;
 const MCP_ACCEPT = "application/json, text/event-stream";
@@ -97,6 +98,64 @@ function realFetch(dispatcher: Agent): McpFetch {
   };
 }
 
+async function readBody(response: McpHttpResponse, maxBytes: number): Promise<string> {
+  const contentLength = Number(response.headers?.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > maxBytes)
+    throw new Error(`MCP response exceeds ${maxBytes} bytes`);
+  const reader = bodyReader(response.body);
+  if (!reader) {
+    const text = await response.text();
+    if (Buffer.byteLength(text) > maxBytes) throw new Error(`MCP response exceeds ${maxBytes} bytes`);
+    return text;
+  }
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) throw new Error(`MCP response exceeds ${maxBytes} bytes`);
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
+}
+
+export async function fetchPublicMcpJson(
+  url: string,
+  init: { method: string; headers: Record<string, string>; body: string },
+) {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.hash)
+    throw new Error("MCP OAuth endpoints must use HTTPS without credentials or fragment");
+  const dispatcher = createMcpDispatcher();
+  try {
+    const response = await realFetch(dispatcher)(url, {
+      ...init,
+      redirect: "error",
+      signal: AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS),
+    });
+    const text = await readBody(response, TOKEN_MAX_BYTES);
+    return {
+      ok: response.ok,
+      status: response.status,
+      headers: response.headers,
+      json: async (): Promise<unknown> => {
+        try {
+          return JSON.parse(text);
+        } catch {
+          throw new Error("MCP OAuth endpoint returned invalid JSON");
+        }
+      },
+    };
+  } finally {
+    await dispatcher.close();
+  }
+}
+
 function hostOf(url: string): string {
   try {
     return new URL(url).host;
@@ -190,7 +249,7 @@ interface McpRemoteTool {
 
 export type McpAuth =
   | { mode: "none" }
-  | { mode: "bearer"; token: string }
+  | { mode: "bearer"; token: string; header?: string; prefix?: string }
   | { mode: "client-credentials"; clientId: string; clientSecret: string };
 
 export interface McpClient {
@@ -227,6 +286,11 @@ export function createMcpClient(opts: {
   if (opts.auth.mode !== "none" && new URL(opts.url).protocol !== "https:") {
     throw new Error("MCP servers with credentials must use https");
   }
+  if (
+    opts.auth.mode === "bearer" &&
+    (!validMcpTokenHeader(opts.auth.header ?? "authorization") || /[\r\n\x00]/.test(opts.auth.prefix ?? ""))
+  )
+    throw new Error("Invalid MCP token header or prefix");
   const dispatcher = opts.fetchImpl ? undefined : createMcpDispatcher();
   const fetchImpl = opts.fetchImpl ?? realFetch(dispatcher!);
   const now = opts.now ?? (() => Date.now());
@@ -243,32 +307,6 @@ export function createMcpClient(opts: {
   let epoch = 0;
   let closed = false;
   const controllers = new Set<AbortController>();
-
-  async function readBody(response: McpHttpResponse, maxBytes: number): Promise<string> {
-    const contentLength = Number(response.headers?.get("content-length"));
-    if (Number.isFinite(contentLength) && contentLength > maxBytes)
-      throw new Error(`MCP response exceeds ${maxBytes} bytes`);
-    const reader = bodyReader(response.body);
-    if (!reader) {
-      const text = await response.text();
-      if (Buffer.byteLength(text) > maxBytes) throw new Error(`MCP response exceeds ${maxBytes} bytes`);
-      return text;
-    }
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        size += value.byteLength;
-        if (size > maxBytes) throw new Error(`MCP response exceeds ${maxBytes} bytes`);
-        chunks.push(value);
-      }
-    } finally {
-      await reader.cancel().catch(() => undefined);
-    }
-    return new TextDecoder().decode(Buffer.concat(chunks));
-  }
 
   async function readSseEnvelope(
     response: McpHttpResponse,
@@ -391,7 +429,10 @@ export function createMcpClient(opts: {
   async function authHeaders(): Promise<Record<string, string>> {
     const auth = opts.auth;
     if (auth.mode === "none") return {};
-    if (auth.mode === "bearer") return { authorization: `Bearer ${auth.token}` };
+    if (auth.mode === "bearer") {
+      const prefix = auth.prefix ?? "Bearer";
+      return { [(auth.header ?? "authorization").toLowerCase()]: `${prefix ? `${prefix} ` : ""}${auth.token}` };
+    }
     return { authorization: `Bearer ${await mintToken(auth.clientId, auth.clientSecret)}` };
   }
 

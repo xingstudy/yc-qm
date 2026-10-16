@@ -6802,6 +6802,23 @@ const apiRoutes: readonly WebRoute[] = [
   },
   {
     method: "POST",
+    path: "/api/connectors/:provider/token",
+    handle: async (c) => {
+      const { req, res, user } = c;
+      const body = await readJson<{ accessToken?: unknown }>(req, res, false);
+      if (!body) return;
+      if (typeof body.accessToken !== "string" || !body.accessToken.trim())
+        return json(res, 400, { error: "bad_request", message: "Token is required" });
+      return relayCore(
+        res,
+        "POST",
+        `/v1/connectors/mcp/${encodeURIComponent(c.params.provider!)}/token`,
+        JSON.stringify({ principalId: user, accessToken: body.accessToken }),
+      );
+    },
+  },
+  {
+    method: "POST",
     path: "/api/connectors/mcp/refresh",
     handle: async (c) => {
       const { res, user } = c;
@@ -7809,6 +7826,9 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
     return res.end(JSON.stringify({ ok: true }));
   }
 
+  if (method === "GET" && /^\/v1\/connectors\/oauth\/[^/]+\/client-metadata$/.test(path)) {
+    return relayCore(res, "GET", path);
+  }
   let oauthCallbackPrefix: string | null = null;
   if (path.startsWith("/v1/connectors/oauth/")) oauthCallbackPrefix = "/v1/connectors/oauth/";
   else if (path.startsWith("/connectors/oauth/")) oauthCallbackPrefix = "/connectors/oauth/";

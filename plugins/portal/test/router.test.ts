@@ -487,6 +487,16 @@ test("the provider callback still passes through publicly with NO session/cookie
   assert.equal(cbb.cookie, null);
 });
 
+test("MCP client metadata passes through publicly while other OAuth actions stay private", async () => {
+  const result = await fetch(`${base}/v1/connectors/oauth/mcp-example/client-metadata`);
+  assert.equal(result.status, 200);
+  const body = (await result.json()) as { url: string; cookie: string | null };
+  assert.equal(body.url, "/v1/connectors/oauth/mcp-example/client-metadata");
+  assert.equal(body.cookie, null);
+  assert.equal((await fetch(`${base}/v1/connectors/oauth/mcp-example/start`, { redirect: "manual" })).status, 404);
+  assert.equal((await fetch(`${base}/v1/connectors/oauth/mcp-example/client-metadata/extra`)).status, 404);
+});
+
 test("the legacy /v1 browser-leg aliases are gone: the portal no longer serves them, /v1 stays private", async () => {
   assert.equal(
     (await fetch(`${base}/v1/connectors/oauth/consent/redeem/abc?p=google`, { redirect: "manual" })).status,

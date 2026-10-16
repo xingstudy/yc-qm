@@ -5,6 +5,9 @@ export type AppLocale = "en" | "zh-CN";
 export const LOCALE_KEY = "qm:locale";
 
 const ZH: Record<string, string> = {
+  "Set personal token": "设置个人令牌",
+  "Personal access token": "个人访问令牌",
+  "Could not save token.": "无法保存令牌。",
   "What should I change?": "需要我修改什么？",
   "Summarize this email": "总结这封邮件",
   "What should I follow up on?": "有哪些事项需要跟进？",

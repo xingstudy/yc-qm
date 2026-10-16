@@ -10,8 +10,11 @@ import {
   generateCodeVerifier,
   codeChallengeS256,
   isDynamicOAuthProvider,
-  resolveAtlassianMcpClient,
+  resolveMcpOAuthClient,
+  oauthProviders,
+  mcpOAuthCredentialHost,
   type OAuthClientResolver,
+  type OAuthProviderConfig,
   type AccountType,
   type OAuthState,
 } from "../../connectors/oauth.ts";
@@ -56,8 +59,8 @@ function parseAccountType(v: string | null | undefined): AccountType {
   return v === "personal" || v === "company" ? v : "default";
 }
 
-async function providerConfigured(deps: ServerDeps, provider: string): Promise<boolean> {
-  if (isDynamicOAuthProvider(provider)) return true;
+async function providerConfigured(deps: ServerDeps, provider: string, config?: OAuthProviderConfig): Promise<boolean> {
+  if (isDynamicOAuthProvider(provider, config ?? PROVIDERS[provider])) return true;
   try {
     await resolverFor(deps)(provider, {});
     return true;
@@ -69,12 +72,14 @@ async function providerConfigured(deps: ServerDeps, provider: string): Promise<b
 async function oauthClient(
   deps: ServerDeps,
   provider: string,
+  config: OAuthProviderConfig | undefined,
   accountType: AccountType,
   redirectUri: string,
   clientRef?: string,
 ) {
-  if (isDynamicOAuthProvider(provider)) {
-    return resolveAtlassianMcpClient({
+  if (!config) throw new Error(`unknown OAuth provider: ${provider}`);
+  if (isDynamicOAuthProvider(provider, config)) {
+    return resolveMcpOAuthClient(provider, config, {
       redirectUri,
       clientRef,
       ...(deps.oauthFetch ? { fetchImpl: deps.oauthFetch } : {}),
@@ -83,13 +88,15 @@ async function oauthClient(
   return resolverFor(deps)(provider, { accountType });
 }
 
-function parseOAuthRoute(pathname: string): { provider: string; action: "start" | "callback" } | null {
+function parseOAuthRoute(
+  pathname: string,
+): { provider: string; action: "start" | "callback" | "client-metadata" } | null {
   const prefix = "/v1/connectors/oauth/";
   if (!pathname.startsWith(prefix)) return null;
   const parts = pathname.slice(prefix.length).split("/");
   if (parts.length !== 2) return null;
   const [provider, action] = parts;
-  if (!provider || (action !== "start" && action !== "callback")) return null;
+  if (!provider || (action !== "start" && action !== "callback" && action !== "client-metadata")) return null;
   return { provider: decodeURIComponent(provider), action };
 }
 
@@ -125,8 +132,8 @@ function latestRefreshFailure(
 }
 
 async function connectorProviderStatus(deps: ServerDeps, principalId: string): Promise<Record<string, unknown>> {
-  const entries = await Promise.all(
-    Object.entries(PROVIDERS).map(async ([name, provider]) => {
+  const entries: Array<readonly [string, Record<string, unknown>]> = await Promise.all(
+    Object.entries(await oauthProviders(deps.mcpServers, deps.publicUrl)).map(async ([name, provider]) => {
       const [hosts, configured] = await Promise.all([
         Promise.all(
           provider.hosts.map(async (host) => {
@@ -140,7 +147,7 @@ async function connectorProviderStatus(deps: ServerDeps, principalId: string): P
             return { host, ...best };
           }),
         ) as Promise<HostStatus[]>,
-        providerConfigured(deps, name),
+        providerConfigured(deps, name, provider),
       ]);
       const reconnectHosts = hosts.filter((h) => h.needsReconnect);
       const latestFailure = latestRefreshFailure(hosts);
@@ -148,6 +155,7 @@ async function connectorProviderStatus(deps: ServerDeps, principalId: string): P
         name,
         {
           hosts,
+          displayName: provider.displayName,
           connected: hosts.some((h) => h.connected && !h.needsReconnect),
           ...(reconnectHosts.length ? { needsReconnect: true } : {}),
           ...latestFailure,
@@ -158,7 +166,53 @@ async function connectorProviderStatus(deps: ServerDeps, principalId: string): P
       ] as const;
     }),
   );
+  for (const server of (await deps.mcpServers?.list()) ?? []) {
+    if (!server.enabled || server.auth !== "user-token") continue;
+    const host = mcpOAuthCredentialHost(server);
+    const status = (await deps.connectorTokens?.connectorTokenStatus(host, principalId, "default")) ?? {
+      connected: false,
+    };
+    entries.push([
+      `mcp-${server.id}`,
+      {
+        ...status,
+        displayName: server.name,
+        hosts: [{ host, ...status }],
+        configured: true,
+        available: true,
+        connectionMode: "token",
+      },
+    ]);
+  }
   return Object.fromEntries(entries);
+}
+
+async function mcpTokenServer(deps: ServerDeps, provider: string) {
+  return ((await deps.mcpServers?.list()) ?? []).find(
+    (server) => server.enabled && server.auth === "user-token" && `mcp-${server.id}` === provider,
+  );
+}
+
+async function setMcpUserToken(ctx: ApiCtx): Promise<void> {
+  const { res, deps } = ctx;
+  if (!deps.connectorTokens) return sendJson(res, 501, { error: "not_configured" });
+  const body = ctx.body as Record<string, unknown>;
+  const principalId = typeof body.principalId === "string" ? body.principalId : "";
+  const token = typeof body.accessToken === "string" ? body.accessToken.trim() : "";
+  if (!principalId || !token || token.length > 16384 || /[\r\n\x00]/.test(token))
+    return sendJson(res, 400, { error: "bad_request", message: "principalId and a valid token are required" });
+  if ((await activeSessionVersion(deps, principalId)) === null) return sendJson(res, 401, { error: "unauthorized" });
+  const server = await mcpTokenServer(deps, ctx.params.provider ?? "");
+  if (!server) return sendJson(res, 404, { error: "not_found" });
+  await deps.connectorTokens.setConnectorToken(
+    mcpOAuthCredentialHost(server),
+    principalId,
+    { accessToken: token },
+    "default",
+  );
+  await deps.mcpToolService?.refreshForPrincipal(principalId, true).catch(() => undefined);
+  audit(deps, { principalId, action: "connector.token.set", resource: server.id, scopeLabel: principalId });
+  return sendJson(res, 200, { ok: true });
 }
 
 async function oauthCallback(ctx: BaseCtx): Promise<void> {
@@ -192,9 +246,18 @@ async function oauthCallback(ctx: BaseCtx): Promise<void> {
       throw new Error("OAuth principal is no longer active");
     }
     const accountType = state.accountType ?? "default";
-    const client = await oauthClient(deps, oauthRoute.provider, accountType, state.redirectUri, state.clientRef);
+    const provider = (await oauthProviders(deps.mcpServers, deps.publicUrl))[oauthRoute.provider];
+    const client = await oauthClient(
+      deps,
+      oauthRoute.provider,
+      provider,
+      accountType,
+      state.redirectUri,
+      state.clientRef,
+    );
     const { hosts, token } = await exchangeCode(oauthRoute.provider, code, state.redirectUri, {
       client,
+      providerConfig: provider,
       fetchImpl: deps.oauthFetch,
       accountType,
       ...(state.codeVerifier ? { codeVerifier: state.codeVerifier } : {}),
@@ -203,7 +266,7 @@ async function oauthCallback(ctx: BaseCtx): Promise<void> {
     const stamped = { ...token, clientRef: client.clientRef, accountType, orgId: configOrgId() };
     for (const host of hosts)
       await deps.connectorTokens.setConnectorToken(host, state.principalId, stamped, accountType);
-    if (oauthRoute.provider === "atlassian") {
+    if (isDynamicOAuthProvider(oauthRoute.provider, provider)) {
       await deps.mcpToolService?.refreshForPrincipal(state.principalId, true).catch(() => undefined);
     }
     audit(deps, {
@@ -228,7 +291,7 @@ async function oauthCallback(ctx: BaseCtx): Promise<void> {
 }
 
 async function principalHasProvider(deps: ServerDeps, provider: string, principalId: string): Promise<boolean> {
-  const p = PROVIDERS[provider];
+  const p = (await oauthProviders(deps.mcpServers, deps.publicUrl))[provider];
   if (!p || !deps.connectorTokens) return false;
   for (const host of p.hosts) {
     for (const at of CONNECTOR_STATUS_ACCOUNT_TYPES) {
@@ -253,7 +316,8 @@ async function consentRedeem(ctx: ApiCtx): Promise<void> {
   }
   const rec = peeked.rec;
   if (rec.orgId !== undefined && rec.orgId !== configOrgId()) return sendJson(res, 200, { status: "invalid" });
-  if (!PROVIDERS[rec.provider]) return sendJson(res, 200, { status: "invalid" });
+  const provider = (await oauthProviders(deps.mcpServers, deps.publicUrl))[rec.provider];
+  if (!provider) return sendJson(res, 200, { status: "invalid" });
   if (!samePerson(clicker, rec.principalId)) {
     const clickerConnected = await principalHasProvider(deps, rec.provider, clicker);
     audit(deps, {
@@ -277,7 +341,7 @@ async function consentRedeem(ctx: ApiCtx): Promise<void> {
     return sendJson(res, 200, { status: "invalid" });
   }
   try {
-    const client = await oauthClient(deps, rec.provider, rec.accountType, rec.redirectUri);
+    const client = await oauthClient(deps, rec.provider, provider, rec.accountType, rec.redirectUri);
     if (client.redirectAllowlist && !client.redirectAllowlist.includes(rec.redirectUri)) {
       return sendJson(res, 400, {
         error: "redirect_not_allowed",
@@ -285,7 +349,7 @@ async function consentRedeem(ctx: ApiCtx): Promise<void> {
       });
     }
     const returnTo = safeReturnTo(url.searchParams.get("returnTo")) ?? rec.returnTo;
-    const codeVerifier = PROVIDERS[rec.provider]?.pkce ? generateCodeVerifier() : undefined;
+    const codeVerifier = provider.pkce ? generateCodeVerifier() : undefined;
     const state = await beginOAuthFlow(deps, secret, {
       provider: rec.provider,
       principalId: rec.principalId,
@@ -303,6 +367,7 @@ async function consentRedeem(ctx: ApiCtx): Promise<void> {
       state,
       client,
       accountType: rec.accountType,
+      providerConfig: provider,
       ...(codeVerifier ? { codeChallenge: codeChallengeS256(codeVerifier) } : {}),
     });
     audit(deps, {
@@ -330,8 +395,8 @@ async function consentMint(ctx: ApiCtx): Promise<void> {
     intendedPrincipalId?: unknown;
   };
   const provider = typeof b.provider === "string" ? b.provider : "";
-  if (!PROVIDERS[provider])
-    return sendJson(res, 404, { error: "not_found", message: `unknown OAuth provider: ${provider}` });
+  const config = (await oauthProviders(deps.mcpServers, deps.publicUrl))[provider];
+  if (!config) return sendJson(res, 404, { error: "not_found", message: `unknown OAuth provider: ${provider}` });
   const accountType = parseAccountType(typeof b.accountType === "string" ? b.accountType : null);
   const base = deps.publicUrl ? deps.publicUrl.replace(/\/$/, "") : "";
   const intendedPrincipalId = personKey(typeof b.intendedPrincipalId === "string" ? b.intendedPrincipalId : "");
@@ -352,10 +417,10 @@ async function consentMint(ctx: ApiCtx): Promise<void> {
       error: "bad_request",
       message: "no public callback configured (set PUBLIC_WEB_URL) and no redirectUri supplied",
     });
-  if (!isDynamicOAuthProvider(provider)) {
+  if (!isDynamicOAuthProvider(provider, config)) {
     let client;
     try {
-      client = await oauthClient(deps, provider, accountType, redirectUri);
+      client = await oauthClient(deps, provider, config, accountType, redirectUri);
     } catch (e) {
       return sendJson(res, 501, { error: "oauth_not_configured", message: errMessage(e) });
     }
@@ -404,7 +469,7 @@ async function oauthStart(ctx: ApiCtx): Promise<void> {
   const oauthRoute = parseOAuthRoute(pathname)!;
   if (!deps.connectorTokens)
     return sendJson(res, 501, { error: "not_configured", message: "connector token store not wired" });
-  const provider = PROVIDERS[oauthRoute.provider];
+  const provider = (await oauthProviders(deps.mcpServers, deps.publicUrl))[oauthRoute.provider];
   if (!provider)
     return sendJson(res, 404, { error: "not_found", message: `unknown OAuth provider: ${oauthRoute.provider}` });
   const principalId = url.searchParams.get("principalId") ?? "";
@@ -416,7 +481,7 @@ async function oauthStart(ctx: ApiCtx): Promise<void> {
   if (sessionVersion === null)
     return sendJson(res, 401, { error: "unauthorized", message: "principal is no longer active" });
   try {
-    const client = await oauthClient(deps, oauthRoute.provider, accountType, redirectUri);
+    const client = await oauthClient(deps, oauthRoute.provider, provider, accountType, redirectUri);
     if (client.redirectAllowlist && !client.redirectAllowlist.includes(redirectUri)) {
       return sendJson(res, 400, {
         error: "redirect_not_allowed",
@@ -441,6 +506,7 @@ async function oauthStart(ctx: ApiCtx): Promise<void> {
       redirectUri,
       state,
       client,
+      providerConfig: provider,
       accountType,
       ...(codeVerifier ? { codeChallenge: codeChallengeS256(codeVerifier) } : {}),
     });
@@ -518,7 +584,10 @@ export async function oauthRevoke(ctx: ApiCtx): Promise<void> {
     return sendJson(res, 400, { error: "bad_request", message: "principalId and provider or host required" });
   }
   if (providerName) {
-    const provider = PROVIDERS[providerName];
+    const manual = await mcpTokenServer(deps, providerName);
+    const provider = manual
+      ? { hosts: [mcpOAuthCredentialHost(manual)] }
+      : (await oauthProviders(deps.mcpServers, deps.publicUrl))[providerName];
     if (!provider)
       return sendJson(res, 404, { error: "not_found", message: `unknown OAuth provider: ${providerName}` });
     for (const h of provider.hosts)
@@ -573,7 +642,27 @@ async function catalog(ctx: ApiCtx): Promise<void> {
   return sendJson(res, 200, { catalog: entries });
 }
 
+async function mcpClientMetadata(ctx: BaseCtx): Promise<void> {
+  const name = parseOAuthRoute(ctx.pathname)!.provider;
+  const provider = (await oauthProviders(ctx.deps.mcpServers, ctx.deps.publicUrl))[name];
+  const clientId = provider?.mcp?.autoClientMetadataUrl;
+  if (!clientId || !ctx.deps.publicUrl) return sendJson(ctx.res, 404, { error: "not_found" });
+  return sendJson(ctx.res, 200, {
+    client_id: clientId,
+    client_name: "QM",
+    redirect_uris: [`${ctx.deps.publicUrl.replace(/\/$/, "")}/v1/connectors/oauth/${name}/callback`],
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none",
+  });
+}
+
 export const connectorRawRoutes: ReadonlyArray<Route<BaseCtx>> = [
+  {
+    match: (m, p) => m === "GET" && parseOAuthRoute(p)?.action === "client-metadata",
+    auth: "public",
+    handle: mcpClientMetadata,
+  },
   { match: (m, p) => m === "GET" && parseOAuthRoute(p)?.action === "callback", auth: "public", handle: oauthCallback },
 ];
 
@@ -636,6 +725,7 @@ export const connectorRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { match: (m, p) => m === "GET" && parseOAuthRoute(p)?.action === "start", auth: "source", handle: oauthStart },
   { method: "GET", path: "/v1/connectors/oauth/status", auth: "source", handle: oauthStatus },
   { method: "POST", path: "/v1/connectors/mcp/refresh", auth: "source", handle: refreshMcpTools },
+  { method: "POST", path: "/v1/connectors/mcp/:provider/token", auth: "source", handle: setMcpUserToken },
   { method: "POST", path: "/v1/connectors/oauth/revoke", auth: "either", handle: oauthRevoke },
   { method: "POST", path: "/v1/connectors/token", auth: "source", handle: setToken },
   { method: "GET", path: "/v1/connectors/catalog", auth: "source", handle: catalog },
