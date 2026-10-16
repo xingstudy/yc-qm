@@ -486,6 +486,35 @@ test("the claude harness offers compaction and detection so a utility role canno
   assert.equal(verdict.respond, true);
 });
 
+test("Claude compaction honors explicit models and refuses unavailable credentials before starting the SDK", async () => {
+  currentScript = async function* (prompts) {
+    await prompts[Symbol.asyncIterator]().next();
+    yield resultMessage("A compact summary of the thread.");
+  };
+  let key: string | null = "managed-key";
+  const harness = createClaudeHarness({
+    defaultModelId: "claude-opus-5",
+    resolveModelCredential: async () => key,
+  });
+  const input = {
+    session: { id: "summary-session" } as HarnessTurnInput["session"],
+    history: [],
+    model: "claude-sonnet-5",
+    recordModelCall: () => {},
+  };
+  capturedOptions.length = 0;
+  try {
+    assert.equal(await harness.models.compactHistory!(input), "A compact summary of the thread.");
+    assert.equal(capturedOptions[0]!.model, "claude-sonnet-5");
+    key = null;
+    await assert.rejects(harness.models.compactHistory!(input), /not configured/);
+    await assert.rejects(harness.models.compactHistory!({ ...input, model: "gpt-5.4" }), /unavailable/);
+    assert.equal(capturedOptions.length, 1);
+  } finally {
+    await harness.turns.close?.();
+  }
+});
+
 test("Claude native routes custom models and utilities with isolated, refreshed credentials", async () => {
   const spec: CustomProviderSpec = {
     id: "claude-proxy",
