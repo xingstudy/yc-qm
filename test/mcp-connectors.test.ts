@@ -1,10 +1,17 @@
 import { createServer } from "node:http";
+import { mcpOAuthCredentialHost } from "../src/connectors/oauth.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { assertMcpUrlPublic, createMcpClient, mcpResultText, type McpFetch } from "../src/mcp/mcp-client.ts";
+import {
+  assertMcpUrlPublic,
+  createMcpClient,
+  fetchPublicMcpJson,
+  mcpResultText,
+  type McpFetch,
+} from "../src/mcp/mcp-client.ts";
 import {
   createMcpServerStore,
   isValidMcpServerId,
@@ -151,6 +158,18 @@ test("mcp client interoperates with an official stateful Streamable HTTP server"
   } finally {
     await new Promise<void>((resolve, reject) => http.close((error) => (error ? reject(error) : resolve())));
     await transport.close();
+  }
+});
+
+test("MCP OAuth transport rejects insecure and private metadata or token endpoints", async () => {
+  for (const url of [
+    "http://example.com/mcp",
+    "https://127.0.0.1/token",
+    "https://169.254.169.254/metadata",
+    "https://user:pass@example.com/token",
+    "https://[::1]/token",
+  ]) {
+    await assert.rejects(fetchPublicMcpJson(url, { method: "POST", headers: {}, body: "refresh_token=secret" }));
   }
 });
 
@@ -1136,6 +1155,28 @@ test("MCP discovery bounds untrusted descriptions", async () => {
   await service.close();
 });
 
+test("configured API key headers work without exposing tokens in transport headers", async () => {
+  const seen: Record<string, string>[] = [];
+  const { fetch } = fakeServerFetch();
+  const client = createMcpClient({
+    url: "https://tools.example.com/mcp",
+    auth: { mode: "bearer", token: "personal-key", header: "X-API-Key", prefix: "" },
+    fetchImpl: async (url, init) => {
+      seen.push(init.headers);
+      return fetch(url, init);
+    },
+  });
+  await client.listTools();
+  assert.ok(seen.length > 0);
+  assert.ok(seen.every((headers) => headers["x-api-key"] === "personal-key" && !headers.authorization));
+  await client.close();
+  for (const header of ["Cookie", "Host", "Content-Length", "X-Forwarded-For", "bad\r\nheader"])
+    assert.throws(
+      () => createMcpClient({ url: "https://tools.example.com/mcp", auth: { mode: "bearer", token: "key", header } }),
+      /Invalid MCP token header/,
+    );
+});
+
 test("tool service exposes only annotated read-only MCP tools during a read-only wake", async () => {
   const store = mcpStore();
   const { fetch } = fakeServerFetch();
@@ -1155,55 +1196,62 @@ test("tool service exposes only annotated read-only MCP tools during a read-only
   service.close();
 });
 
-test("user OAuth MCP tools and bearer tokens stay isolated to the connecting user", async () => {
-  const store = mcpStore();
-  await store.put(
-    server({
-      id: "atlassian",
-      url: "https://mcp.atlassian.com/v2/mcp",
-      auth: "user-oauth",
-    }),
-  );
-  const tokens: ConnectorTokenStore = {
-    async setConnectorToken() {},
-    async deleteConnectorToken() {},
-    async connectorTokenStatus() {
-      return { connected: true };
-    },
-    async connectorAccessToken(_host, principalId) {
-      if (principalId === "U1") return "token-U1";
-      if (principalId === "U2") return "token-U2";
-      return null;
-    },
-    async connectorDerivedAuth() {
-      return null;
-    },
-  };
-  const seenTokens: string[] = [];
-  const { fetch } = fakeServerFetch();
-  const service = createMcpToolService({
-    servers: store,
-    connectorTokens: tokens,
-    fetchImpl: async (url, init) => {
-      seenTokens.push(init.headers.authorization ?? "");
-      return fetch(url, init);
-    },
-    refreshIntervalMs: 3600_000,
+for (const mcpServer of [
+  { id: "atlassian", url: "https://mcp.atlassian.com/v2/mcp", auth: "user-oauth" as const },
+  { id: "trello", url: "https://mcp.trello.com/v1", auth: "user-oauth" as const },
+  { id: "custom", url: "https://custom.example.com/mcp", auth: "user-oauth" as const },
+  { id: "token", url: "https://tokens.example.com/mcp", auth: "user-token" as const },
+]) {
+  test(`${mcpServer.id} user OAuth MCP tools and bearer tokens stay isolated to the connecting user`, async () => {
+    const store = mcpStore();
+    await store.put(server(mcpServer));
+    const expectedHost = mcpOAuthCredentialHost(mcpServer);
+    const tokens: ConnectorTokenStore = {
+      async setConnectorToken() {},
+      async deleteConnectorToken() {},
+      async connectorTokenStatus() {
+        return { connected: true };
+      },
+      async connectorAccessToken(host, principalId) {
+        assert.equal(host, expectedHost);
+        if (principalId === "U1") return "token-U1";
+        if (principalId === "U2") return "token-U2";
+        return null;
+      },
+      async connectorDerivedAuth() {
+        return null;
+      },
+    };
+    const seenTokens: string[] = [];
+    const { fetch } = fakeServerFetch();
+    const service = createMcpToolService({
+      servers: store,
+      connectorTokens: tokens,
+      fetchImpl: async (url, init) => {
+        seenTokens.push(init.headers.authorization ?? "");
+        return fetch(url, init);
+      },
+      refreshIntervalMs: 3600_000,
+    });
+    await service.ready();
+    assert.equal(service.toolDefs().length, 0);
+    await service.refreshForPrincipal("U1");
+    await service.refreshForPrincipal("U2");
+    const u1 = service.toolDefs("U1").find((tool) => tool.remoteName === "query")!;
+    const u2 = service.toolDefs("U2").find((tool) => tool.remoteName === "query")!;
+    assert.notEqual(u1.capability, u2.capability);
+    await service.refreshForPrincipal("U3");
+    assert.equal(service.toolDefs("U3").length, 0);
+    assert.equal(await service.call(u1.capability, { q: "one" }, "U1"), "ran query");
+    assert.equal(await service.call(u2.capability, { q: "two" }, "U2"), "ran query");
+    await assert.rejects(() => service.call(u1.capability, {}, "U2"), /unknown MCP tool capability/);
+    assert.ok(seenTokens.includes("Bearer token-U1"));
+    assert.ok(seenTokens.includes("Bearer token-U2"));
+    await store.put(server({ ...mcpServer, url: `${mcpServer.url}/changed` }));
+    await assert.rejects(() => service.call(u1.capability, {}, "U1"));
+    await service.close();
   });
-  await service.ready();
-  assert.equal(service.toolDefs().length, 0);
-  await service.refreshForPrincipal("U1");
-  await service.refreshForPrincipal("U2");
-  const u1 = service.toolDefs("U1").find((tool) => tool.remoteName === "query")!;
-  const u2 = service.toolDefs("U2").find((tool) => tool.remoteName === "query")!;
-  assert.notEqual(u1.capability, u2.capability);
-  assert.equal(await service.call(u1.capability, { q: "one" }, "U1"), "ran query");
-  assert.equal(await service.call(u2.capability, { q: "two" }, "U2"), "ran query");
-  await assert.rejects(() => service.call(u1.capability, {}, "U2"), /unknown MCP tool capability/);
-  assert.ok(seenTokens.includes("Bearer token-U1"));
-  assert.ok(seenTokens.includes("Bearer token-U2"));
-  await service.close();
-});
+}
 
 test("missing or invalid persisted read-only state is fail-closed", async () => {
   const backing = createMemoryMap<StoredMcpServer>();

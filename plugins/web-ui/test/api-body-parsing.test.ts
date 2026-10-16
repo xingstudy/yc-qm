@@ -70,6 +70,7 @@ test("an empty body on a strict route is refused, not read as a field-clearing o
     ["PUT", "/api/memory"],
     ["POST", "/api/sessions/s1"],
     ["POST", "/api/connectors/revoke"],
+    ["POST", "/api/connectors/mcp-example/token"],
     ["POST", "/api/keychain/drops"],
     ["POST", "/api/runs/r1/signal"],
   ] as const) {
@@ -78,6 +79,24 @@ test("an empty body on a strict route is refused, not read as a field-clearing o
   }
   const reached = calls.slice(before).filter((c) => !c.url.startsWith("/v1/deployments?"));
   assert.equal(reached.length, 0, "no empty-body request may reach core (only the manage gate's list fetch may)");
+});
+
+test("personal MCP token proxy supplies the authenticated user and ignores forged identity", async () => {
+  const result = await fetch(`${base}/api/connectors/mcp-example/token`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ accessToken: "personal-test-token", principalId: "mallory", host: "evil.example" }),
+  });
+  assert.equal(result.status, 200);
+  const call = calls.findLast((entry) => entry.url.startsWith("/v1/connectors/mcp/mcp-example/token"));
+  assert.ok(call);
+  assert.deepEqual(call.body, { principalId: "alice", accessToken: "personal-test-token" });
+});
+
+test("OAuth client metadata is publicly readable through the web surface", async () => {
+  const result = await fetch(`${base}/v1/connectors/oauth/mcp-example/client-metadata`);
+  assert.equal(result.status, 200);
+  assert.ok(calls.some((entry) => entry.url.startsWith("/v1/connectors/oauth/mcp-example/client-metadata")));
 });
 
 test("a steer forwards a server-built TurnRequest; client-supplied identity fields are ignored", async () => {

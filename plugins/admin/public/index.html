@@ -8017,7 +8017,8 @@
                     <option value="none">None</option>
                     <option value="bearer">Bearer token</option>
                     <option value="client-credentials">Client credentials</option>
-                    <option value="user-oauth">Atlassian user OAuth</option>
+                    <option value="user-oauth">Per-user OAuth</option>
+                    <option value="user-token">Per-user token</option>
                   </select>
                 </label>
                 <label id="mcp-bearer-token-field" style="display: block; margin-bottom: 8px"
@@ -8050,9 +8051,84 @@
                 <p class="field-hint" id="mcp-credential-hint">
                   Leave a stored credential blank to retain it when the URL and authentication mode do not change.
                 </p>
+                <div id="mcp-token-fields" hidden>
+                  <label style="display: block; margin-bottom: 8px"
+                    >Token header
+                    <input
+                      id="mcp-token-header"
+                      type="text"
+                      value="Authorization"
+                      placeholder="Authorization or X-API-Key"
+                      style="width: 100%"
+                    />
+                  </label>
+                  <label style="display: block; margin-bottom: 8px"
+                    >Token prefix
+                    <input
+                      id="mcp-token-prefix"
+                      type="text"
+                      value="Bearer"
+                      placeholder="Leave empty for a raw API key"
+                      style="width: 100%"
+                    />
+                  </label>
+                </div>
+                <div id="mcp-oauth-fields" hidden>
+                  <label style="display: block; margin-bottom: 8px"
+                    >Token endpoint authentication
+                    <select id="mcp-oauth-client-auth" style="width: 100%">
+                      <option value="auto">Automatic</option>
+                      <option value="none">Public client (no secret)</option>
+                      <option value="client_secret_basic">Client secret via HTTP Basic</option>
+                      <option value="client_secret_post">Client secret in request body</option>
+                    </select>
+                  </label>
+                  <label style="display: block; margin-bottom: 8px"
+                    >OAuth scopes (optional)
+                    <input
+                      id="mcp-oauth-scopes"
+                      type="text"
+                      placeholder="Leave blank to discover automatically"
+                      style="width: 100%"
+                    />
+                  </label>
+                  <label style="display: block; margin-bottom: 8px"
+                    >Authorization URL (optional)
+                    <input
+                      id="mcp-oauth-authorization-url"
+                      type="url"
+                      placeholder="https://auth.example.com/authorize"
+                      style="width: 100%"
+                    />
+                  </label>
+                  <label style="display: block; margin-bottom: 8px"
+                    >Token URL (optional)
+                    <input
+                      id="mcp-oauth-token-url"
+                      type="url"
+                      placeholder="https://auth.example.com/token"
+                      style="width: 100%"
+                    />
+                  </label>
+                  <label style="display: block; margin-bottom: 8px"
+                    >Client metadata URL (optional)
+                    <input
+                      id="mcp-oauth-metadata-url"
+                      type="url"
+                      placeholder="https://app.example.com/oauth/client.json"
+                      style="width: 100%"
+                    />
+                  </label>
+                </div>
                 <p class="field-hint" id="mcp-user-oauth-hint" data-brand-copy hidden>
-                  Each user connects their own Atlassian account in Keychain. QM stores no shared Atlassian token.
+                  Each user connects their own account in Keychain. Leave Client ID blank for automatic registration.
+                  For a pre-registered app, enter its Client ID and optional secret. Override both OAuth URLs only when
+                  discovery is unavailable.
                 </p>
+                <p class="field-hint" id="mcp-user-token-hint" hidden>
+                  Each user saves their own personal token in Keychain. Tokens are never shared between users.
+                </p>
+                <p class="field-hint" id="mcp-oauth-callback" hidden></p>
                 <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 10px"
                   ><input type="checkbox" id="mcp-server-enabled" style="width: auto" checked /> Enabled</label
                 >
@@ -10287,9 +10363,26 @@
         "To switch back to the QM app, disconnect here first, then choose Add to Slack.":
           "要切换回 QM 应用，请先在此断开连接，再选择添加到 Slack。",
         "I have both tokens": "我已取得两个令牌",
-        "Atlassian user OAuth": "Atlassian 用户 OAuth",
-        "Each user connects their own Atlassian account in Keychain. QM stores no shared Atlassian token.":
-          "每位用户都在密钥链中连接自己的 Atlassian 账户。QM 不存储共享的 Atlassian 令牌。",
+        "Per-user OAuth": "每位用户 OAuth",
+        "Per-user token": "每位用户令牌",
+        "Token header": "令牌请求头",
+        "Token prefix": "令牌前缀",
+        "Token endpoint authentication": "令牌端点认证方式",
+        Automatic: "自动",
+        "Public client (no secret)": "公共客户端（无密钥）",
+        "Client secret via HTTP Basic": "通过 HTTP Basic 发送客户端密钥",
+        "Client secret in request body": "在请求正文中发送客户端密钥",
+        "OAuth scopes (optional)": "OAuth 权限范围（选填）",
+        "Authorization URL (optional)": "授权地址（选填）",
+        "Token URL (optional)": "令牌地址（选填）",
+        "Client metadata URL (optional)": "客户端元数据地址（选填）",
+        "OAuth callback URL": "OAuth 回调地址",
+        "Leave blank to discover automatically": "留空则自动发现",
+        "Leave empty for a raw API key": "使用原始 API Key 时留空",
+        "Each user saves their own personal token in Keychain. Tokens are never shared between users.":
+          "每位用户在密钥链中保存自己的令牌，用户之间不共用令牌。",
+        "Each user connects their own account in Keychain. Leave Client ID blank for automatic registration. For a pre-registered app, enter its Client ID and optional secret. Override both OAuth URLs only when discovery is unavailable.":
+          "每位用户在密钥链中连接自己的账号。自动注册时留空客户端 ID；已注册的应用填写客户端 ID 和密钥（如需）。无法自动发现时，同时填写授权地址与令牌地址。",
         Command: "命令",
         "Enter a sample command to test the scope policy.": "输入示例命令以测试范围策略。",
         "Test command": "测试命令",
@@ -15828,11 +15921,25 @@
       function syncMcpAuthFields() {
         const auth = $("mcp-server-auth").value;
         $("mcp-bearer-token-field").hidden = auth !== "bearer";
-        $("mcp-client-id-field").hidden = auth !== "client-credentials";
-        $("mcp-client-secret-field").hidden = auth !== "client-credentials";
+        $("mcp-client-id-field").hidden = auth !== "client-credentials" && auth !== "user-oauth";
+        $("mcp-client-secret-field").hidden = auth !== "client-credentials" && auth !== "user-oauth";
+        $("mcp-token-fields").hidden = auth !== "bearer" && auth !== "user-token";
+        $("mcp-oauth-fields").hidden = auth !== "user-oauth";
+        $("mcp-user-token-hint").hidden = auth !== "user-token";
+        $("mcp-oauth-callback").hidden = auth !== "user-oauth";
+        const provider =
+          $("mcp-server-url").value.trim() === "https://mcp.atlassian.com/v2/mcp"
+            ? "atlassian"
+            : "mcp-" + $("mcp-server-id").value.trim();
+        $("mcp-oauth-callback").textContent =
+          adminTr("OAuth callback URL") +
+          ": " +
+          location.origin +
+          "/v1/connectors/oauth/" +
+          encodeURIComponent(provider) +
+          "/callback";
         $("mcp-user-oauth-hint").hidden = auth !== "user-oauth";
-        $("mcp-credential-hint").hidden = auth === "user-oauth";
-        if (auth === "user-oauth") $("mcp-server-url").value = "https://mcp.atlassian.com/v2/mcp";
+        $("mcp-credential-hint").hidden = auth === "user-token";
       }
       function renderMcpServerList(servers, tools) {
         mcpServerList = servers;
@@ -15916,7 +16023,14 @@
         $("mcp-server-name").value = server.name || "";
         $("mcp-server-url").value = server.url || "";
         $("mcp-server-auth").value = server.auth || "none";
+        $("mcp-oauth-client-auth").value = server.oauth?.tokenEndpointAuthMethod || "auto";
+        $("mcp-oauth-scopes").value = (server.oauth?.scopes || []).join(" ");
+        $("mcp-oauth-authorization-url").value = server.oauth?.authorizationUrl || "";
+        $("mcp-oauth-token-url").value = server.oauth?.tokenUrl || "";
+        $("mcp-oauth-metadata-url").value = server.oauth?.clientMetadataUrl || "";
         $("mcp-server-token").value = "";
+        $("mcp-token-header").value = server.tokenHeader ?? "Authorization";
+        $("mcp-token-prefix").value = server.tokenPrefix ?? "Bearer";
         $("mcp-server-client-id").value = server.clientId || "";
         $("mcp-server-client-secret").value = "";
         $("mcp-server-token").placeholder = adminTr(
@@ -15944,7 +16058,17 @@
         $("mcp-server-name").value = "";
         $("mcp-server-url").value = "";
         $("mcp-server-auth").value = "none";
+        $("mcp-oauth-client-auth").value = "auto";
+        for (const id of [
+          "mcp-oauth-scopes",
+          "mcp-oauth-authorization-url",
+          "mcp-oauth-token-url",
+          "mcp-oauth-metadata-url",
+        ])
+          $(id).value = "";
         $("mcp-server-token").value = "";
+        $("mcp-token-header").value = "Authorization";
+        $("mcp-token-prefix").value = "Bearer";
         $("mcp-server-token").placeholder = adminTr("(write-only)");
         $("mcp-server-client-id").value = "";
         $("mcp-server-client-secret").value = "";
@@ -15956,6 +16080,9 @@
         if (mcpServerList.length) renderMcpServerList(mcpServerList, mcpTools);
       }
       $("mcp-server-auth").onchange = syncMcpAuthFields;
+      $("mcp-server-id").oninput = syncMcpAuthFields;
+      $("mcp-server-url").oninput = syncMcpAuthFields;
+      syncMcpAuthFields();
       $("mcp-server-reset").onclick = resetMcpForm;
       async function deleteMcpServer(id) {
         if (!confirm(adminTr("Delete MCP server ") + id + adminTr("? Its tools will no longer be available."))) return;
@@ -15986,9 +16113,30 @@
           validate: $("mcp-server-validate").checked,
         };
         if (auth === "bearer" && $("mcp-server-token").value) body.bearerToken = $("mcp-server-token").value;
-        if (auth === "client-credentials") {
+        if (auth === "client-credentials" || auth === "user-oauth") {
+          body.clientId = $("mcp-server-client-id").value.trim();
           if ($("mcp-server-client-id").value) body.clientId = $("mcp-server-client-id").value.trim();
           if ($("mcp-server-client-secret").value) body.clientSecret = $("mcp-server-client-secret").value;
+        }
+        if (auth === "bearer" || auth === "user-token") {
+          body.tokenHeader = $("mcp-token-header").value.trim() || "Authorization";
+          body.tokenPrefix = $("mcp-token-prefix").value;
+        }
+        if (auth === "user-oauth") {
+          const oauth = {};
+          const method = $("mcp-oauth-client-auth").value;
+          if (method !== "auto") oauth.tokenEndpointAuthMethod = method;
+          const scopes = $("mcp-oauth-scopes").value.trim();
+          if (scopes) oauth.scopes = scopes.split(/\s+/);
+          for (const [field, id] of [
+            ["authorizationUrl", "mcp-oauth-authorization-url"],
+            ["tokenUrl", "mcp-oauth-token-url"],
+            ["clientMetadataUrl", "mcp-oauth-metadata-url"],
+          ]) {
+            const value = $(id).value.trim();
+            if (value) oauth[field] = value;
+          }
+          body.oauth = oauth;
         }
         $("mcp-server-save").disabled = true;
         setStatus("st-mcp-servers", "Saving and validating…", "saving", true);

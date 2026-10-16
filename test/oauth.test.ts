@@ -11,7 +11,9 @@ import {
   generateCodeVerifier,
   codeChallengeS256,
   PROVIDERS,
-  resolveAtlassianMcpClient,
+  resolveMcpOAuthClient,
+  oauthProviders,
+  mcpOAuthCredentialHost,
   type FetchLike,
   type ResolvedClient,
   type OAuthState,
@@ -82,220 +84,368 @@ test("createSecretClientResolver refuses when the provider isn't configured (cre
   await assert.rejects(bare("google", {}), /GOOGLE_OAUTH_CLIENT_ID/);
 });
 
-test("Atlassian uses a dynamically registered public client with PKCE and no client secret", async () => {
-  const calls: Array<{ url: string; body: string }> = [];
-  const fetchImpl: FetchLike = async (url, init) => {
-    calls.push({ url, body: init.body });
-    if (url === "https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp") {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          resource: "https://mcp.atlassian.com/v2/mcp",
-          authorization_servers: ["https://auth.atlassian.test/mcp"],
-          scopes_supported: atlassianScopes,
-        }),
-      };
-    }
-    if (url === "https://auth.atlassian.test/mcp/.well-known/oauth-authorization-server") {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          issuer: "https://auth.atlassian.test/mcp",
-          authorization_endpoint: "https://auth.atlassian.test/authorize",
-          token_endpoint: "https://auth.atlassian.test/token",
-          registration_endpoint: "https://auth.atlassian.test/register",
-          code_challenge_methods_supported: ["S256"],
-        }),
-      };
-    }
-    if (url === "https://auth.atlassian.test/register") {
-      return { ok: true, status: 200, json: async () => ({ client_id: "client-123" }) };
-    }
-    if (url === "https://auth.atlassian.test/token") {
-      return { ok: true, status: 200, json: async () => ({ access_token: "at", refresh_token: "rt" }) };
-    }
-    throw new Error(`unexpected URL ${url}`);
-  };
-  const client = await resolveAtlassianMcpClient({ redirectUri: "https://qm.test/callback", fetchImpl });
-  assert.equal(client.id, "client-123");
-  assert.equal(client.clientRef, "atlassian-dcr:client-123");
-  assert.match(calls[2]!.body, /"redirect_uris":\["https:\/\/qm.test\/callback"\]/);
-  assert.match(
-    calls[2]!.body,
-    /"scope":"read:me offline_access read:jira:agent-interface write:jira:agent-interface search:jira:agent-interface"/,
-  );
-  const url = new URL(
-    authorizeUrl("atlassian", {
+const mcpServer = {
+  id: "trello",
+  name: "Trello",
+  url: "https://mcp.trello.com/v1",
+  auth: "user-oauth" as const,
+  readOnly: false,
+  enabled: true,
+  updatedAt: 0,
+  updatedBy: "admin",
+};
+const mcpServers = { list: async () => [mcpServer] };
+const providers = await oauthProviders(mcpServers);
+
+for (const providerName of ["atlassian", "mcp-trello"]) {
+  const config = providers[providerName]!;
+  const host = config.hosts[0]!;
+  const metadataUrl = `${new URL(config.resource!).origin}/.well-known/oauth-protected-resource${new URL(config.resource!).pathname}`;
+  const scopes =
+    providerName === "atlassian" ? atlassianScopes : ["offline_access", "read:board:trello", "write:board:trello"];
+  const clientPrefix = providerName === "atlassian" ? "atlassian-dcr:" : `${providerName}-dcr:${host}:`;
+
+  test(`${providerName} uses a dynamically registered public client with PKCE and no client secret`, async () => {
+    const calls: Array<{ url: string; body: string }> = [];
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, body: init.body });
+      if (url === config.resource) return { ok: false, status: 401, json: async () => ({}) };
+      if (url === metadataUrl) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            resource: config.resource,
+            authorization_servers: ["https://auth.atlassian.test/mcp"],
+            scopes_supported: scopes,
+          }),
+        };
+      }
+      if (url === "https://auth.atlassian.test/.well-known/oauth-authorization-server/mcp") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            issuer: "https://auth.atlassian.test/mcp",
+            authorization_endpoint: "https://auth.atlassian.test/authorize",
+            token_endpoint: "https://auth.atlassian.test/token",
+            registration_endpoint: "https://auth.atlassian.test/register",
+            code_challenge_methods_supported: ["S256"],
+          }),
+        };
+      }
+      if (url === "https://auth.atlassian.test/register") {
+        return { ok: true, status: 200, json: async () => ({ client_id: "client-123" }) };
+      }
+      if (url === "https://auth.atlassian.test/token") {
+        return { ok: true, status: 200, json: async () => ({ access_token: "at", refresh_token: "rt" }) };
+      }
+      throw new Error(`unexpected URL ${url}`);
+    };
+    const client = await resolveMcpOAuthClient(providerName, config, {
       redirectUri: "https://qm.test/callback",
-      state: "state",
+      fetchImpl,
+    });
+    assert.equal(client.id, "client-123");
+    assert.equal(client.clientRef, `${clientPrefix}client-123`);
+    assert.match(calls[3]!.body, /"redirect_uris":\["https:\/\/qm.test\/callback"\]/);
+    assert.match(calls[3]!.body, new RegExp(`"scope":"${scopes.join(" ")}"`));
+    const url = new URL(
+      authorizeUrl(providerName, {
+        redirectUri: "https://qm.test/callback",
+        state: "state",
+        client,
+        providerConfig: config,
+        codeChallenge: "challenge",
+      }),
+    );
+    assert.equal(url.origin + url.pathname, "https://auth.atlassian.test/authorize");
+    assert.equal(url.searchParams.get("resource"), config.resource);
+    assert.equal(url.searchParams.get("prompt"), providerName === "atlassian" ? "consent" : null);
+    assert.equal(url.searchParams.get("scope"), scopes.join(" "));
+    assert.equal(url.searchParams.get("code_challenge_method"), "S256");
+    const exchanged = await exchangeCode(providerName, "code", "https://qm.test/callback", {
       client,
-      codeChallenge: "challenge",
+      providerConfig: config,
+      fetchImpl,
+      codeVerifier: "verifier",
+    });
+    assert.equal(exchanged.token.accessToken, "at");
+    const tokenBody = calls.at(-1)!.body;
+    assert.match(tokenBody, /client_id=client-123/);
+    assert.match(tokenBody, /code_verifier=verifier/);
+    assert.doesNotMatch(tokenBody, /client_secret/);
+  });
+
+  test(`${providerName} refresh reconstructs the dynamic client from its stored client reference`, async () => {
+    const calls: Array<{ url: string; body: string }> = [];
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, body: init.body });
+      if (url === config.resource) return { ok: false, status: 401, json: async () => ({}) };
+      if (url === metadataUrl) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            resource: config.resource,
+            authorization_servers: ["https://auth.atlassian.test/mcp"],
+            scopes_supported: scopes,
+          }),
+        };
+      }
+      if (url === "https://auth.atlassian.test/.well-known/oauth-authorization-server/mcp") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            issuer: "https://auth.atlassian.test/mcp",
+            authorization_endpoint: "https://auth.atlassian.test/authorize",
+            token_endpoint: "https://auth.atlassian.test/token",
+            registration_endpoint: "https://auth.atlassian.test/register",
+            code_challenge_methods_supported: ["S256"],
+          }),
+        };
+      }
+      assert.equal(url, "https://auth.atlassian.test/token");
+      return { ok: true, status: 200, json: async () => ({ access_token: "fresh" }) };
+    };
+    const fresh = await makeRefresh({ resolveClient: resolve, fetchImpl, mcpServers })(host, {
+      accessToken: "old",
+      refreshToken: "refresh",
+      clientRef: `${clientPrefix}client-123`,
+    });
+    assert.equal(fresh.accessToken, "fresh");
+    assert.match(calls.at(-1)!.body, /client_id=client-123/);
+    assert.equal(new URLSearchParams(calls.at(-1)!.body).get("resource"), config.resource);
+    assert.doesNotMatch(calls.at(-1)!.body, /client_secret/);
+  });
+
+  test(`${providerName} connector routes register a per-user client and refresh only that user's MCP tools`, async () => {
+    const saved = new Map<string, Record<string, unknown>>();
+    const refreshed: string[] = [];
+    const tokens: ConnectorTokenStore = {
+      async setConnectorToken(host, principalId, token) {
+        saved.set(`${host}\u0000${principalId}`, token as unknown as Record<string, unknown>);
+      },
+      async deleteConnectorToken(host, principalId) {
+        saved.delete(`${host}\u0000${principalId}`);
+      },
+      async connectorTokenStatus(host, principalId) {
+        return { connected: saved.has(`${host}\u0000${principalId}`) };
+      },
+      async connectorAccessToken() {
+        return null;
+      },
+      async connectorDerivedAuth() {
+        return null;
+      },
+    };
+    const oauthFetch: FetchLike = async (url, init) => {
+      if (url === config.resource) return { ok: false, status: 401, json: async () => ({}) };
+      if (url === metadataUrl) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            resource: config.resource,
+            authorization_servers: ["https://auth.atlassian.test/mcp"],
+            scopes_supported: scopes,
+          }),
+        };
+      }
+      if (url === "https://auth.atlassian.test/.well-known/oauth-authorization-server/mcp") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            issuer: "https://auth.atlassian.test/mcp",
+            authorization_endpoint: "https://auth.atlassian.test/authorize",
+            token_endpoint: "https://auth.atlassian.test/token",
+            registration_endpoint: "https://auth.atlassian.test/register",
+            code_challenge_methods_supported: ["S256"],
+          }),
+        };
+      }
+      if (url === "https://auth.atlassian.test/register") {
+        assert.match(init.body, /"redirect_uris"/);
+        return { ok: true, status: 200, json: async () => ({ client_id: "route-client" }) };
+      }
+      assert.equal(url, "https://auth.atlassian.test/token");
+      assert.match(init.body, /client_id=route-client/);
+      assert.equal(new URLSearchParams(init.body).get("resource"), config.resource);
+      assert.doesNotMatch(init.body, /client_secret/);
+      return { ok: true, status: 200, json: async () => ({ access_token: "user-token", refresh_token: "refresh" }) };
+    };
+    const deps = {
+      connectorTokens: tokens,
+      mcpServers,
+      oauthFetch,
+      oauthStateSecret: "route-state-secret",
+      replayDedupe: { claim: async () => true },
+      mcpToolService: { refreshForPrincipal: async (principalId: string) => void refreshed.push(principalId) },
+    };
+    const redirectUri = `https://qm.test/v1/connectors/oauth/${providerName}/callback`;
+    const startPath = `/v1/connectors/oauth/${providerName}/start?principalId=U1&redirectUri=${encodeURIComponent(redirectUri)}`;
+    const started = routeResponse();
+    const startRoute = connectorRoutes.find(
+      (route) => "match" in route && route.match("GET", `/v1/connectors/oauth/${providerName}/start`),
+    )!;
+    await startRoute.handle({
+      res: started.res,
+      deps,
+      secret: "route-state-secret",
+      url: new URL(`http://qm.test${startPath}`),
+      pathname: `/v1/connectors/oauth/${providerName}/start`,
+    } as never);
+    const start = started.body();
+    assert.equal(start.status, 200);
+    const consent = new URL(String(start.value.authorizeUrl));
+    const oauthState = consent.searchParams.get("state") ?? "";
+    assert.equal(consent.origin + consent.pathname, "https://auth.atlassian.test/authorize");
+    assert.equal(consent.searchParams.get("client_id"), "route-client");
+    assert.equal(consent.searchParams.get("redirect_uri"), redirectUri);
+    assert.equal(consent.searchParams.get("resource"), config.resource);
+    assert.equal(consent.searchParams.get("prompt"), providerName === "atlassian" ? "consent" : null);
+    const callback = routeResponse();
+    const callbackRoute = connectorRawRoutes.find(
+      (route) => "match" in route && route.match("GET", `/v1/connectors/oauth/${providerName}/callback`),
+    );
+    if (!callbackRoute || !("match" in callbackRoute)) throw new Error("Atlassian callback route is missing");
+    await callbackRoute.handle({
+      res: callback.res,
+      deps,
+      secret: "route-state-secret",
+      url: new URL(
+        `http://qm.test/v1/connectors/oauth/${providerName}/callback?code=code&state=${encodeURIComponent(oauthState)}`,
+      ),
+      pathname: `/v1/connectors/oauth/${providerName}/callback`,
+    } as never);
+    assert.equal(callback.body().status, 200);
+    assert.equal(saved.get(`${host}\u0000U1`)?.accessToken, "user-token");
+    assert.equal(saved.get(`${host}\u0000U2`), undefined);
+    assert.deepEqual(refreshed, ["U1"]);
+    const statusRoute = connectorRoutes.find(
+      (route) => "path" in route && route.path === "/v1/connectors/oauth/status",
+    )!;
+    const status = routeResponse();
+    await statusRoute.handle({
+      res: status.res,
+      deps,
+      url: new URL("http://qm.test/v1/connectors/oauth/status?principalId=U1"),
+    } as never);
+    const statuses = status.body().value.providers as Record<string, { connected: boolean; displayName?: string }>;
+    assert.equal(statuses[providerName]?.connected, true);
+    if (providerName === "mcp-trello") assert.equal(statuses[providerName]?.displayName, "Trello");
+    const revokeRoute = connectorRoutes.find(
+      (route) => "path" in route && route.path === "/v1/connectors/oauth/revoke",
+    )!;
+    const revoked = routeResponse();
+    await revokeRoute.handle({ res: revoked.res, deps, body: { principalId: "U1", provider: providerName } } as never);
+    assert.equal(revoked.body().status, 200);
+    assert.equal(saved.has(`${host}\u0000U1`), false);
+  });
+}
+
+test("configured MCP providers isolate resources and reject removed or changed registrations", async () => {
+  const provider = providers["mcp-trello"]!;
+  assert.equal(provider.displayName, "Trello");
+  assert.equal(provider.pkce, true);
+  assert.equal(provider.hosts[0], mcpOAuthCredentialHost(mcpServer));
+  assert.notEqual(
+    mcpOAuthCredentialHost(mcpServer),
+    mcpOAuthCredentialHost({ ...mcpServer, url: "https://mcp.trello.com/other" }),
+  );
+  assert.notEqual(mcpOAuthCredentialHost(mcpServer), mcpOAuthCredentialHost({ ...mcpServer, id: "other" }));
+  assert.equal(mcpOAuthCredentialHost({ id: "existing", url: PROVIDERS.atlassian!.resource! }), "mcp.atlassian.com");
+  let requests = 0;
+  const fetchImpl: FetchLike = async () => {
+    requests++;
+    throw new Error("unexpected request");
+  };
+  for (const server of [
+    null,
+    { ...mcpServer, enabled: false },
+    { ...mcpServer, url: "https://mcp.trello.com/other" },
+  ]) {
+    const refresh = makeRefresh({
+      resolveClient: resolve,
+      fetchImpl,
+      mcpServers: { list: async () => (server ? [server] : []) },
+    });
+    await assert.rejects(
+      refresh(provider.hosts[0]!, { accessToken: "old", refreshToken: "refresh", clientRef: "old-client" }),
+      /unknown provider/,
+    );
+  }
+  await assert.rejects(
+    resolveMcpOAuthClient("mcp-trello", provider, {
+      redirectUri: "https://qm.test/callback",
+      clientRef: "atlassian-dcr:other-client",
+      fetchImpl,
     }),
+    /invalid MCP OAuth client reference/,
   );
-  assert.equal(url.origin + url.pathname, "https://auth.atlassian.test/authorize");
-  assert.equal(url.searchParams.get("resource"), "https://mcp.atlassian.com/v2/mcp");
-  assert.equal(url.searchParams.get("prompt"), "consent");
-  assert.equal(
-    url.searchParams.get("scope"),
-    "read:me offline_access read:jira:agent-interface write:jira:agent-interface search:jira:agent-interface",
-  );
-  assert.equal(url.searchParams.get("code_challenge_method"), "S256");
-  const exchanged = await exchangeCode("atlassian", "code", "https://qm.test/callback", {
-    client,
+  assert.equal(requests, 0);
+});
+
+test("MCP discovery supports root resource metadata, RFC 8414 issuer paths, and optional scopes", async () => {
+  const config = providers["mcp-trello"]!;
+  const requested: string[] = [];
+  const fetchImpl: FetchLike = async (url) => {
+    requested.push(url);
+    const data: Record<string, object> = {
+      "https://mcp.trello.com/.well-known/oauth-protected-resource": {
+        resource: config.resource,
+        authorization_servers: ["https://auth.example.test/tenant"],
+      },
+      "https://auth.example.test/.well-known/oauth-authorization-server/tenant": {
+        issuer: "https://auth.example.test/tenant",
+        authorization_endpoint: "https://auth.example.test/authorize",
+        token_endpoint: "https://auth.example.test/token",
+        registration_endpoint: "https://auth.example.test/register",
+        code_challenge_methods_supported: ["S256"],
+      },
+      "https://auth.example.test/register": { client_id: "generic-client" },
+    };
+    return { ok: !!data[url], status: data[url] ? 200 : 404, json: async () => data[url] };
+  };
+  const client = await resolveMcpOAuthClient("mcp-trello", config, {
+    redirectUri: "https://qm.test/callback",
     fetchImpl,
-    codeVerifier: "verifier",
   });
-  assert.equal(exchanged.token.accessToken, "at");
-  const tokenBody = calls.at(-1)!.body;
-  assert.match(tokenBody, /client_id=client-123/);
-  assert.match(tokenBody, /code_verifier=verifier/);
-  assert.doesNotMatch(tokenBody, /client_secret/);
+  assert.equal(client.id, "generic-client");
+  assert.deepEqual(client.scopes, []);
+  assert.equal(requested.length, 5);
 });
 
-test("Atlassian refresh reconstructs the dynamic client from its stored client reference", async () => {
-  const calls: Array<{ url: string; body: string }> = [];
-  const fetchImpl: FetchLike = async (url, init) => {
-    calls.push({ url, body: init.body });
-    if (url === "https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp") {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          resource: "https://mcp.atlassian.com/v2/mcp",
-          authorization_servers: ["https://auth.atlassian.test/mcp"],
-          scopes_supported: atlassianScopes,
-        }),
-      };
-    }
-    if (url === "https://auth.atlassian.test/mcp/.well-known/oauth-authorization-server") {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          issuer: "https://auth.atlassian.test/mcp",
-          authorization_endpoint: "https://auth.atlassian.test/authorize",
-          token_endpoint: "https://auth.atlassian.test/token",
-          registration_endpoint: "https://auth.atlassian.test/register",
-          code_challenge_methods_supported: ["S256"],
-        }),
-      };
-    }
-    assert.equal(url, "https://auth.atlassian.test/token");
-    return { ok: true, status: 200, json: async () => ({ access_token: "fresh" }) };
-  };
-  const fresh = await makeRefresh({ resolveClient: resolve, fetchImpl })("mcp.atlassian.com", {
-    accessToken: "old",
-    refreshToken: "refresh",
-    clientRef: "atlassian-dcr:client-123",
-  });
-  assert.equal(fresh.accessToken, "fresh");
-  assert.match(calls.at(-1)!.body, /client_id=client-123/);
-  assert.match(calls.at(-1)!.body, /resource=https%3A%2F%2Fmcp.atlassian.com%2Fv2%2Fmcp/);
-  assert.doesNotMatch(calls.at(-1)!.body, /client_secret/);
-});
-
-test("Atlassian connector routes register a per-user client and refresh only that user's MCP tools", async () => {
-  const saved = new Map<string, Record<string, unknown>>();
-  const refreshed: string[] = [];
-  const tokens: ConnectorTokenStore = {
-    async setConnectorToken(host, principalId, token) {
-      saved.set(`${host}\u0000${principalId}`, token as unknown as Record<string, unknown>);
-    },
-    async deleteConnectorToken() {},
-    async connectorTokenStatus() {
-      return { connected: false };
-    },
-    async connectorAccessToken() {
-      return null;
-    },
-    async connectorDerivedAuth() {
-      return null;
-    },
-  };
-  const oauthFetch: FetchLike = async (url, init) => {
-    if (url === "https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp") {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          resource: "https://mcp.atlassian.com/v2/mcp",
-          authorization_servers: ["https://auth.atlassian.test/mcp"],
-          scopes_supported: atlassianScopes,
-        }),
-      };
-    }
-    if (url === "https://auth.atlassian.test/mcp/.well-known/oauth-authorization-server") {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          issuer: "https://auth.atlassian.test/mcp",
-          authorization_endpoint: "https://auth.atlassian.test/authorize",
-          token_endpoint: "https://auth.atlassian.test/token",
-          registration_endpoint: "https://auth.atlassian.test/register",
-          code_challenge_methods_supported: ["S256"],
-        }),
-      };
-    }
-    if (url === "https://auth.atlassian.test/register") {
-      assert.match(init.body, /"redirect_uris"/);
-      return { ok: true, status: 200, json: async () => ({ client_id: "route-client" }) };
-    }
-    assert.equal(url, "https://auth.atlassian.test/token");
-    assert.match(init.body, /client_id=route-client/);
-    assert.match(init.body, /resource=https%3A%2F%2Fmcp.atlassian.com%2Fv2%2Fmcp/);
-    assert.doesNotMatch(init.body, /client_secret/);
-    return { ok: true, status: 200, json: async () => ({ access_token: "user-token", refresh_token: "refresh" }) };
-  };
-  const deps = {
-    connectorTokens: tokens,
-    oauthFetch,
-    oauthStateSecret: "route-state-secret",
-    replayDedupe: { claim: async () => true },
-    mcpToolService: { refreshForPrincipal: async (principalId: string) => void refreshed.push(principalId) },
-  };
-  const redirectUri = "https://qm.test/v1/connectors/oauth/atlassian/callback";
-  const startPath = `/v1/connectors/oauth/atlassian/start?principalId=U1&redirectUri=${encodeURIComponent(redirectUri)}`;
-  const started = routeResponse();
-  const startRoute = connectorRoutes.find(
-    (route) => "match" in route && route.match("GET", "/v1/connectors/oauth/atlassian/start"),
-  )!;
-  await startRoute.handle({
-    res: started.res,
-    deps,
-    secret: "route-state-secret",
-    url: new URL(`http://qm.test${startPath}`),
-    pathname: "/v1/connectors/oauth/atlassian/start",
-  } as never);
-  const start = started.body();
-  assert.equal(start.status, 200);
-  const consent = new URL(String(start.value.authorizeUrl));
-  const oauthState = consent.searchParams.get("state") ?? "";
-  assert.equal(consent.origin + consent.pathname, "https://auth.atlassian.test/authorize");
-  assert.equal(consent.searchParams.get("client_id"), "route-client");
-  assert.equal(consent.searchParams.get("redirect_uri"), redirectUri);
-  assert.equal(consent.searchParams.get("resource"), "https://mcp.atlassian.com/v2/mcp");
-  assert.equal(consent.searchParams.get("prompt"), "consent");
-  const callback = routeResponse();
-  const callbackRoute = connectorRawRoutes.find(
-    (route) => "match" in route && route.match("GET", "/v1/connectors/oauth/atlassian/callback"),
-  );
-  if (!callbackRoute || !("match" in callbackRoute)) throw new Error("Atlassian callback route is missing");
-  await callbackRoute.handle({
-    res: callback.res,
-    deps,
-    secret: "route-state-secret",
-    url: new URL(
-      `http://qm.test/v1/connectors/oauth/atlassian/callback?code=code&state=${encodeURIComponent(oauthState)}`,
-    ),
-    pathname: "/v1/connectors/oauth/atlassian/callback",
-  } as never);
-  assert.equal(callback.body().status, 200);
-  assert.equal(saved.get("mcp.atlassian.com\u0000U1")?.accessToken, "user-token");
-  assert.equal(saved.get("mcp.atlassian.com\u0000U2"), undefined);
-  assert.deepEqual(refreshed, ["U1"]);
+test("MCP discovery fails closed for wrong resources, issuers, insecure endpoints, missing DCR, and missing PKCE", async () => {
+  const config = providers["mcp-trello"]!;
+  for (const broken of ["resource", "issuer", "https", "registration", "pkce", "scopes"]) {
+    const fetchImpl: FetchLike = async (url) => ({
+      ok: true,
+      status: 200,
+      json: async () =>
+        url.includes("oauth-protected-resource")
+          ? {
+              resource: broken === "resource" ? "https://other.example/mcp" : config.resource,
+              authorization_servers: ["https://auth.example.test"],
+              scopes_supported: broken === "scopes" ? [1] : ["read"],
+            }
+          : {
+              issuer: broken === "issuer" ? "https://other.example" : "https://auth.example.test",
+              authorization_endpoint:
+                broken === "https" ? "http://auth.example.test/authorize" : "https://auth.example.test/authorize",
+              token_endpoint: "https://auth.example.test/token",
+              registration_endpoint: broken === "registration" ? undefined : "https://auth.example.test/register",
+              code_challenge_methods_supported: broken === "pkce" ? [] : ["S256"],
+            },
+    });
+    await assert.rejects(
+      resolveMcpOAuthClient("mcp-trello", config, { redirectUri: "https://qm.test/callback", fetchImpl }),
+      /MCP/,
+      broken,
+    );
+  }
 });
 
 test("MCP refresh route discovers tools only for the requested principal", async () => {

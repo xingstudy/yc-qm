@@ -1,7 +1,9 @@
+import { usesMcpUserCredentials } from "./mcp-server-store.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { fromJSONSchema } from "zod";
 import type { AuditLog } from "../audit/audit-log.ts";
 import type { ConnectorTokenStore } from "../credentials/keychain.ts";
+import { mcpOAuthCredentialHost } from "../connectors/oauth.ts";
 import { createKeyedQueue } from "../util/async.ts";
 import { createMcpClient, mcpResultText, type McpAuth, type McpClient, type McpFetch } from "./mcp-client.ts";
 import type { McpServer, McpServerStore } from "./mcp-server-store.ts";
@@ -81,7 +83,8 @@ export interface McpToolService {
 }
 
 function authOf(server: McpServer): McpAuth {
-  if (server.auth === "bearer") return { mode: "bearer", token: server.bearerToken ?? "" };
+  if (server.auth === "bearer")
+    return { mode: "bearer", token: server.bearerToken ?? "", header: server.tokenHeader, prefix: server.tokenPrefix };
   if (server.auth === "client-credentials")
     return { mode: "client-credentials", clientId: server.clientId ?? "", clientSecret: server.clientSecret ?? "" };
   return { mode: "none" };
@@ -300,7 +303,7 @@ export function createMcpToolService(opts: {
     const tokenStore = opts.userTokens ?? opts.connectorTokens;
     if (!tokenStore)
       throw new McpUserConnectionRequiredError(`MCP server ${server.id} requires a connected user account`);
-    const credentialHost = server.auth === "user-oauth" ? "mcp.atlassian.com" : server.credentialHost;
+    const credentialHost = usesMcpUserCredentials(server) ? mcpOAuthCredentialHost(server) : server.credentialHost;
     if (!credentialHost) throw new Error(`MCP server ${server.id} requires a credential host`);
     const token = await tokenStore.connectorAccessToken(credentialHost, principalId, server.credentialAccountType);
     if (!token)
@@ -314,7 +317,13 @@ export function createMcpToolService(opts: {
     if (cached) retire(cached.client);
     const client = createMcpClient({
       url: server.url,
-      auth: { mode: "bearer", token },
+      auth: {
+        mode: "bearer",
+        token,
+        ...(server.auth === "user-token" || server.credentialScope === "per-user"
+          ? { header: server.tokenHeader, prefix: server.tokenPrefix }
+          : {}),
+      },
       ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
       now,
       ...(opts.requestTimeoutMs ? { requestTimeoutMs: opts.requestTimeoutMs } : {}),
@@ -324,7 +333,7 @@ export function createMcpToolService(opts: {
   }
 
   async function callerClient(server: McpServer, principalId?: string): Promise<McpClient> {
-    if (server.auth === "user-oauth") {
+    if (usesMcpUserCredentials(server)) {
       if (!principalId)
         throw new McpUserConnectionRequiredError(`MCP server ${server.id} requires a connected user account`);
       return clientForUser(server, principalId);
@@ -374,7 +383,7 @@ export function createMcpToolService(opts: {
       let servers: McpServer[];
       try {
         servers = (await beforeDeadline(opts.servers.list(), deadline)).filter(
-          (s) => s.enabled && s.auth !== "user-oauth",
+          (s) => s.enabled && !usesMcpUserCredentials(s),
         );
       } catch {
         record("list", "registry", "error");
@@ -487,7 +496,7 @@ export function createMcpToolService(opts: {
       let servers: McpServer[];
       try {
         servers = (await beforeDeadline(opts.servers.list(), deadline)).filter(
-          (server) => server.enabled && server.auth === "user-oauth",
+          (server) => server.enabled && usesMcpUserCredentials(server),
         );
       } catch {
         record("list", "registry", "error", principalId);

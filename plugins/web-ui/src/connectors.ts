@@ -11,6 +11,8 @@ import { isActiveGrant, isExpiredCredential, KeychainOperations, keychainSummary
 import { html, localeCode, t } from "./i18n.ts";
 
 interface ConnectorProvider {
+  displayName?: string;
+  connectionMode?: "token";
   connected?: boolean;
   needsReconnect?: boolean;
   refreshError?: string;
@@ -110,6 +112,7 @@ let keychainGrants: KeychainGrant[] = [];
 let keychainAsks: KeychainAsk[] = [];
 let keychainScopeNames: Record<string, string> = {};
 let connectorNotice = "";
+let addingMcpToken: string | null = null;
 let loadNotice = "";
 let addingCredential: { service: string; envKey: string; purpose: string } | null = null;
 let secureDropUrl: string | null = null;
@@ -136,6 +139,7 @@ export function resetKeychainState(): void {
   keychainAsks = [];
   keychainScopeNames = {};
   connectorNotice = "";
+  addingMcpToken = null;
   loadNotice = "";
   connectorsLoading = false;
   keysLoading = false;
@@ -195,6 +199,7 @@ function credentialCard(c: KeychainCredential): TemplateResult {
           class="kc-text-action danger"
           type="button"
           data-confirm-key=${`delete:${c.id}`}
+          aria-busy=${keychainOperations.mutationAction === `delete:${c.id}`}
           ?disabled=${keychainOperations.mutationInFlight}
           @click=${() => void deleteCredential(c)}
         >
@@ -238,6 +243,7 @@ function credentialCard(c: KeychainCredential): TemplateResult {
                       class="kc-text-action"
                       type="button"
                       data-confirm-key=${`revoke:${grant.id}`}
+                      aria-busy=${keychainOperations.mutationAction === `revoke:${grant.id}`}
                       ?disabled=${keychainOperations.mutationInFlight}
                       @click=${() => void revokeGrant(grant)}
                     >
@@ -362,6 +368,7 @@ function addCredentialCard(): TemplateResult {
                 class="btn primary"
                 type="button"
                 ?disabled=${keychainOperations.dropInFlight}
+                aria-busy=${keychainOperations.dropInFlight}
                 @click=${() => void createDrop()}
               >
                 ${t(keychainOperations.dropInFlight ? "Preparing…" : "Continue")}
@@ -417,7 +424,7 @@ export function clearConnectorNotice(): void {
 }
 
 export function noteConnectorResult(provider: string, status: string): void {
-  const name = CONNECTOR_LABELS[provider]?.name ?? provider;
+  const name = CONNECTOR_LABELS[provider]?.name ?? connectorProviders[provider]?.displayName ?? provider;
   connectorNotice = `${name}: ${t(status === "connected" ? "connected." : "connection failed.")}`;
 }
 
@@ -432,10 +439,12 @@ function drawConnectors(): void {
   const loading = accountsLoading || keysLoadingFresh;
   const entries = Object.entries(connectorProviders);
   const connectorCards = entries.map(([id, p]) => {
-    const meta = CONNECTOR_LABELS[id] ?? { name: id, hosts: "" };
+    const meta = CONNECTOR_LABELS[id] ?? { name: p.displayName ?? id, hosts: "" };
     const connected = Boolean(p.connected);
     const needsReconnect = Boolean(p.needsReconnect);
     const available = Boolean(p.available);
+    let connectLabel = connected || needsReconnect ? "Reconnect" : "Connect account";
+    if (p.connectionMode === "token") connectLabel = "Set personal token";
     const hosts = new Set(
       (p.hosts ?? [])
         .map((entry) => (typeof entry === "string" ? entry : entry.host))
@@ -461,11 +470,44 @@ function drawConnectors(): void {
             ${meta.hosts ? html`<div class="kc-resource-meta">${t(meta.hosts)}</div>` : ""}
           </div>
           <div class="kc-resource-actions">
-            ${available ? html`<button class="btn" type="button" @click=${() => void startConnector(id)}>${t(connected || needsReconnect ? "Reconnect" : "Connect account")}</button>` : ""}
-            ${connected || needsReconnect ? html`<button class="kc-text-action danger" type="button" data-confirm-key=${`disconnect:${id}`} ?disabled=${keychainOperations.mutationInFlight} @click=${() => void revokeConnector(id)}>Disconnect</button>` : ""}
+            ${available ? html`<button class="btn" type="button" ?disabled=${keychainOperations.mutationInFlight} aria-busy=${keychainOperations.mutationAction === `connect:${id}`} @click=${() => void startConnector(id)}>${t(keychainOperations.mutationAction === `connect:${id}` ? "Connecting…" : connectLabel)}</button>` : ""}
+            ${connected || needsReconnect ? html`<button class="kc-text-action danger" type="button" data-confirm-key=${`disconnect:${id}`} aria-busy=${keychainOperations.mutationAction === `disconnect:${id}`} ?disabled=${keychainOperations.mutationInFlight} @click=${() => void revokeConnector(id)}>Disconnect</button>` : ""}
           </div>
         </div>
 
+        ${
+          addingMcpToken === id
+            ? html`<form class="kc-access-block" @submit=${(event: SubmitEvent) => void saveMcpToken(event, id)}>
+                <label
+                  >${t("Personal access token")}<input
+                    name="accessToken"
+                    type="password"
+                    autocomplete="off"
+                    required
+                    maxlength="16384"
+                /></label>
+                <button
+                  class="btn"
+                  type="submit"
+                  ?disabled=${keychainOperations.mutationInFlight}
+                  aria-busy=${keychainOperations.mutationAction === `token:${id}`}
+                >
+                  ${t(keychainOperations.mutationAction === `token:${id}` ? "Saving…" : "Save")}
+                </button>
+                <button
+                  class="btn"
+                  type="button"
+                  ?disabled=${keychainOperations.mutationInFlight}
+                  @click=${() => {
+                    addingMcpToken = null;
+                    drawConnectors();
+                  }}
+                >
+                  ${t("Cancel")}
+                </button>
+              </form>`
+            : ""
+        }
         ${needsReconnect && p.refreshError ? html`<div class="kc-inline-warning" role="status">${t("Refresh failed:")} ${p.refreshError}</div>` : ""}
         ${
           grants.length
@@ -485,6 +527,7 @@ function drawConnectors(): void {
                         class="kc-text-action"
                         type="button"
                         data-confirm-key=${`revoke:${grant.id}`}
+                        aria-busy=${keychainOperations.mutationAction === `revoke:${grant.id}`}
                         ?disabled=${keychainOperations.mutationInFlight}
                         @click=${() => void revokeGrant(grant)}
                       >
@@ -513,17 +556,6 @@ function drawConnectors(): void {
     credentialsContent = html`<div class="kc-empty">
       ${icon(KeyRound, 20)}
       <div><strong>No stored credentials</strong><span>Add one without pasting a secret into chat.</span></div>
-      <button
-        class="btn"
-        type="button"
-        @click=${() => {
-          addingCredential = { service: "", envKey: "", purpose: "" };
-          secureDropUrl = null;
-          drawConnectors();
-        }}
-      >
-        Add credential
-      </button>
     </div>`;
   if (!appState.mainEl) return;
   const section = (
@@ -579,9 +611,10 @@ function drawConnectors(): void {
               aria-label="Refresh keychain"
               title="Refresh keychain and discover MCP tools"
               ?disabled=${mcpRefreshInFlight}
+              aria-busy=${mcpRefreshInFlight}
               @click=${() => void refreshKeychain()}
             >
-              ${icon(RefreshCw, 17)}
+              ${mcpRefreshInFlight ? "" : icon(RefreshCw, 17)}
             </button>
             <button
               class="btn primary"
@@ -716,7 +749,7 @@ async function deleteCredential(credential: KeychainCredential): Promise<void> {
     body: `${impact} ${t("Automations using it may stop working. The credential cannot be recovered.")}`.trim(),
     action: t("Delete credential"),
     run: async () => {
-      const operation = beginKeychainMutation();
+      const operation = beginKeychainMutation(`delete:${credential.id}`);
       if (!operation) return;
       confirmation = null;
       confirmationOpener = null;
@@ -731,8 +764,8 @@ async function deleteCredential(credential: KeychainCredential): Promise<void> {
   drawConnectors();
 }
 
-function beginKeychainMutation() {
-  const operation = keychainOperations.beginMutation();
+function beginKeychainMutation(action: string) {
+  const operation = keychainOperations.beginMutation(action);
   if (operation) return operation;
   confirmation = null;
   confirmationOpener = null;
@@ -759,7 +792,7 @@ async function revokeGrant(grant: KeychainGrant): Promise<void> {
     body: `${t("This")} ${t(grant.mode === "standing" ? "standing" : "one-time")} ${t("access ends immediately. Automations using it may stop working.")}`,
     action: t("Revoke access"),
     run: async () => {
-      const operation = beginKeychainMutation();
+      const operation = beginKeychainMutation(`revoke:${grant.id}`);
       if (!operation) return;
       confirmation = null;
       confirmationOpener = null;
@@ -816,8 +849,17 @@ async function createDrop(): Promise<void> {
 }
 
 async function startConnector(provider: string): Promise<void> {
-  const stateEpoch = keychainOperations.captureEpoch();
+  if (keychainOperations.mutationInFlight) return;
+  if (connectorProviders[provider]?.connectionMode === "token") {
+    addingMcpToken = provider;
+    drawConnectors();
+    return;
+  }
+  const operation = keychainOperations.beginMutation(`connect:${provider}`);
+  if (!operation) return;
+  const stateEpoch = operation.epoch;
   connectorNotice = "";
+  drawConnectors();
   try {
     const r = await api<{ authorizeUrl?: string }>(`/api/connectors/${encodeURIComponent(provider)}/start`, {
       method: "POST",
@@ -832,7 +874,33 @@ async function startConnector(provider: string): Promise<void> {
     if (!keychainOperations.isCurrentEpoch(stateEpoch)) return;
     connectorNotice = connectorErrorNotice(e, "Could not start the connector.");
   }
+  if (keychainOperations.finishMutation(operation)) drawConnectors();
+}
+
+async function saveMcpToken(event: SubmitEvent, provider: string): Promise<void> {
+  event.preventDefault();
+  const form = event.currentTarget as HTMLFormElement;
+  const accessToken = String(new FormData(form).get("accessToken") ?? "").trim();
+  if (!accessToken) return;
+  const operation = keychainOperations.beginMutation(`token:${provider}`);
+  if (!operation) return;
+  form.reset();
+  connectorNotice = "";
   drawConnectors();
+  try {
+    await api(`/api/connectors/${encodeURIComponent(provider)}/token`, {
+      method: "POST",
+      body: JSON.stringify({ accessToken }),
+    });
+    if (!keychainOperations.isCurrentEpoch(operation.epoch)) return;
+    addingMcpToken = null;
+    await renderConnectors();
+  } catch (error) {
+    if (keychainOperations.isCurrentEpoch(operation.epoch))
+      connectorNotice = connectorErrorNotice(error, "Could not save token.");
+  } finally {
+    if (keychainOperations.finishMutation(operation)) drawConnectors();
+  }
 }
 
 async function revokeConnector(provider: string): Promise<void> {
@@ -857,11 +925,11 @@ async function revokeConnector(provider: string): Promise<void> {
     : "";
   confirmationOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   confirmation = {
-    title: `${t("Disconnect")} ${CONNECTOR_LABELS[provider]?.name ?? provider}?`,
+    title: `${t("Disconnect")} ${CONNECTOR_LABELS[provider]?.name ?? connectorProviders[provider]?.displayName ?? provider}?`,
     body: `${impact} ${t("Automations using this account may stop working.")}`.trim(),
     action: t("Disconnect account"),
     run: async () => {
-      const operation = beginKeychainMutation();
+      const operation = beginKeychainMutation(`disconnect:${provider}`);
       if (!operation) return;
       confirmation = null;
       confirmationOpener = null;

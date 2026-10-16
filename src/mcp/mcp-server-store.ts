@@ -1,7 +1,15 @@
 import { decryptSecret, deriveConnectorKey, encryptSecret } from "../connectors/connector-client-store.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
 
-export type McpServerAuthMode = "none" | "bearer" | "client-credentials" | "user-oauth";
+export type McpServerAuthMode = "none" | "bearer" | "client-credentials" | "user-oauth" | "user-token";
+
+export interface McpOAuthSettings {
+  authorizationUrl?: string;
+  tokenUrl?: string;
+  scopes?: string[];
+  tokenEndpointAuthMethod?: "none" | "client_secret_basic" | "client_secret_post";
+  clientMetadataUrl?: string;
+}
 
 export interface McpServer {
   id: string;
@@ -12,12 +20,46 @@ export interface McpServer {
   credentialHost?: string;
   credentialAccountType?: "default" | "personal" | "company";
   bearerToken?: string;
+  tokenHeader?: string;
+  tokenPrefix?: string;
   clientId?: string;
   clientSecret?: string;
+  oauth?: McpOAuthSettings;
   readOnly: boolean;
   enabled: boolean;
   updatedAt: number;
   updatedBy: string;
+}
+
+export function usesMcpUserCredentials(server: Pick<McpServer, "auth">): boolean {
+  return server.auth === "user-oauth" || server.auth === "user-token";
+}
+
+export function validMcpTokenHeader(header: string): boolean {
+  return (
+    /^[!#$%&'*+.^_`|~0-9a-z-]{1,100}$/i.test(header) &&
+    ![
+      "host",
+      "cookie",
+      "set-cookie",
+      "content-type",
+      "content-length",
+      "connection",
+      "transfer-encoding",
+      "accept",
+      "origin",
+      "referer",
+      "upgrade",
+      "expect",
+      "te",
+      "trailer",
+      "proxy-authorization",
+      "mcp-session-id",
+      "mcp-protocol-version",
+      "last-event-id",
+    ].includes(header.toLowerCase()) &&
+    !/^(sec-|proxy-|forwarded|x-forwarded-)/i.test(header)
+  );
 }
 
 export interface StoredMcpServer extends Omit<McpServer, "bearerToken" | "clientSecret"> {

@@ -5415,7 +5415,8 @@ a.connector-widget:focus-visible {
   color: var(--muted-foreground);
   font-size: 14px;
 }
-.kc-loading .spinner {
+.kc-loading .spinner,
+.keychain-page button[aria-busy="true"]::before {
   width: 16px;
   height: 16px;
   border-radius: 50%;
@@ -5423,8 +5424,16 @@ a.connector-widget:focus-visible {
   border-top-color: var(--muted-foreground);
   animation: chat-spin 0.7s linear infinite;
 }
+.keychain-page button[aria-busy="true"]::before {
+  content: "";
+  display: inline-block;
+  flex-shrink: 0;
+  vertical-align: middle;
+  margin-inline-end: 6px;
+}
 @media (prefers-reduced-motion: reduce) {
-  .kc-loading .spinner {
+  .kc-loading .spinner,
+  .keychain-page button[aria-busy="true"]::before {
     animation: none;
   }
 }

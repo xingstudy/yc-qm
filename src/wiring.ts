@@ -1418,7 +1418,7 @@ export function buildApp(
     asks: artifactMap<KeychainAsk>("keychain_asks"),
     key: credentialKey,
     refreshConnector: (() => {
-      const base = makeRefresh({ resolveClient });
+      const base = makeRefresh({ resolveClient, mcpServers, publicUrl: config.publicUrl });
       // AI subscription logins ride the same connector-refresh machinery:
       // the keychain calls this single-flight when a token is stale.
       return async (host: string, token: OAuthToken, ctx?: { accountType?: string; clientRef?: string }) => {

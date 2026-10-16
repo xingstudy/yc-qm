@@ -1,11 +1,53 @@
-import { isValidMcpServerId, type McpServer, type McpServerAuthMode } from "../../../mcp/mcp-server-store.ts";
+import {
+  isValidMcpServerId,
+  usesMcpUserCredentials,
+  validMcpTokenHeader,
+  type McpOAuthSettings,
+  type McpServer,
+  type McpServerAuthMode,
+} from "../../../mcp/mcp-server-store.ts";
 import { assertMcpUrlPublic } from "../../../mcp/mcp-client.ts";
 import { sendJson } from "../../http.ts";
 import type { ApiCtx } from "../route.ts";
 import { audit, authorizeAdmin, orgScope } from "../shared.ts";
 
-const AUTH_MODES: McpServerAuthMode[] = ["none", "bearer", "client-credentials", "user-oauth"];
-const ATLASSIAN_ROVO_MCP_URL = "https://mcp.atlassian.com/v2/mcp";
+const AUTH_MODES: McpServerAuthMode[] = ["none", "bearer", "client-credentials", "user-oauth", "user-token"];
+
+async function oauthSettings(value: unknown): Promise<McpOAuthSettings> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("oauth must be an object");
+  const input = value as Record<string, unknown>;
+  const allowed = ["authorizationUrl", "tokenUrl", "scopes", "tokenEndpointAuthMethod", "clientMetadataUrl"];
+  if (Object.keys(input).some((key) => !allowed.includes(key))) throw new Error("unsupported OAuth setting");
+  const result: McpOAuthSettings = {};
+  for (const field of ["authorizationUrl", "tokenUrl", "clientMetadataUrl"] as const) {
+    if (input[field] === undefined || input[field] === "") continue;
+    if (typeof input[field] !== "string" || input[field].length > 2048) throw new Error(`invalid ${field}`);
+    const url = new URL(input[field]);
+    if (url.protocol !== "https:" || url.username || url.password || url.hash)
+      throw new Error(`${field} must use public HTTPS`);
+    if (field === "clientMetadataUrl" && (url.pathname === "/" || url.search))
+      throw new Error("clientMetadataUrl requires a path without query");
+    await assertMcpUrlPublic(url.toString());
+    result[field] = url.toString();
+  }
+  if (!!result.authorizationUrl !== !!result.tokenUrl)
+    throw new Error("authorizationUrl and tokenUrl must be configured together");
+  if (input.scopes !== undefined) {
+    if (
+      !Array.isArray(input.scopes) ||
+      input.scopes.length > 100 ||
+      input.scopes.some((scope) => typeof scope !== "string" || !/^[\x21\x23-\x5b\x5d-\x7e]{1,256}$/.test(scope))
+    )
+      throw new Error("scopes must be an array of OAuth scope strings");
+    result.scopes = [...new Set(input.scopes as string[])];
+  }
+  if (input.tokenEndpointAuthMethod !== undefined) {
+    if (!["none", "client_secret_basic", "client_secret_post"].includes(String(input.tokenEndpointAuthMethod)))
+      throw new Error("unsupported token endpoint authentication method");
+    result.tokenEndpointAuthMethod = input.tokenEndpointAuthMethod as McpOAuthSettings["tokenEndpointAuthMethod"];
+  }
+  return result;
+}
 
 export function isMcpServerUrlAllowed(url: URL): boolean {
   return url.protocol === "https:";
@@ -91,12 +133,6 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
   if (!isMcpServerUrlAllowed(parsed)) {
     return sendJson(ctx.res, 400, { error: "bad_request", message: "MCP servers must use https" });
   }
-  if (auth === "user-oauth" && parsed.toString() !== ATLASSIAN_ROVO_MCP_URL) {
-    return sendJson(ctx.res, 400, {
-      error: "bad_request",
-      message: `user-oauth is currently available only for ${ATLASSIAN_ROVO_MCP_URL}`,
-    });
-  }
   try {
     await assertMcpUrlPublic(url);
   } catch {
@@ -104,6 +140,19 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
   }
   const existing = await ctx.deps.mcpServers.get(id);
   const reuseCredentials = canReuseMcpCredentials(existing, url, auth);
+  let oauth: McpOAuthSettings | undefined;
+  if (auth === "user-oauth") {
+    try {
+      if (b.oauth !== undefined) oauth = await oauthSettings(b.oauth);
+      else if (reuseCredentials) oauth = existing?.oauth;
+      if (oauth && Object.keys(oauth).length === 0) oauth = undefined;
+    } catch (error) {
+      return sendJson(ctx.res, 400, {
+        error: "bad_request",
+        message: error instanceof Error ? error.message : "invalid OAuth settings",
+      });
+    }
+  }
   const credentialScope = b.credentialScope ?? existing?.credentialScope ?? "shared";
   if (credentialScope !== "shared" && credentialScope !== "per-user") {
     return sendJson(ctx.res, 400, { error: "bad_request", message: "credentialScope must be shared or per-user" });
@@ -136,6 +185,14 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
       message: "per-user credentials require HTTPS (except loopback)",
     });
   }
+  const tokenHeader = b.tokenHeader ?? (reuseCredentials ? existing?.tokenHeader : undefined);
+  const tokenPrefix = b.tokenPrefix ?? (reuseCredentials ? existing?.tokenPrefix : undefined);
+  if (
+    (tokenHeader !== undefined && (typeof tokenHeader !== "string" || !validMcpTokenHeader(tokenHeader))) ||
+    (tokenPrefix !== undefined &&
+      (typeof tokenPrefix !== "string" || tokenPrefix.length > 80 || /[\r\n\x00]/.test(tokenPrefix)))
+  )
+    return sendJson(ctx.res, 400, { error: "bad_request", message: "invalid token header or prefix" });
   const server: McpServer = {
     id,
     name: typeof b.name === "string" && b.name.trim() ? b.name.trim().slice(0, 80) : id,
@@ -148,12 +205,21 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
           bearerToken: credentialValue(b.bearerToken, existing?.bearerToken, reuseCredentials),
         }
       : {}),
-    ...(auth === "client-credentials"
+    ...(auth === "client-credentials" || auth === "user-oauth"
       ? {
-          clientId: credentialValue(b.clientId, existing?.clientId, reuseCredentials),
-          clientSecret: credentialValue(b.clientSecret, existing?.clientSecret, reuseCredentials),
+          clientId:
+            auth === "user-oauth" && b.clientId === ""
+              ? undefined
+              : credentialValue(b.clientId, existing?.clientId, reuseCredentials),
+          clientSecret: credentialValue(
+            b.clientSecret,
+            existing?.clientSecret,
+            reuseCredentials && (b.clientId === undefined || b.clientId === existing?.clientId),
+          ),
         }
       : {}),
+    ...(oauth ? { oauth } : {}),
+    ...(auth === "bearer" || auth === "user-token" ? { tokenHeader, tokenPrefix } : {}),
     readOnly: mcpReadOnly(b.readOnly, existing ?? undefined),
     enabled: b.enabled !== false,
     updatedAt: Date.now(),
@@ -168,8 +234,22 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
       message: "client-credentials auth requires clientId and clientSecret",
     });
   }
+  if (
+    auth === "user-oauth" &&
+    ((server.clientId !== undefined && (server.clientId.length > 2048 || /[\s\x00-\x1f\x7f]/.test(server.clientId))) ||
+      (server.clientSecret && !server.clientId) ||
+      (oauth?.clientMetadataUrl && server.clientId) ||
+      (oauth?.authorizationUrl && !server.clientId) ||
+      (oauth?.tokenEndpointAuthMethod &&
+        oauth.tokenEndpointAuthMethod !== "none" &&
+        (!server.clientId || !server.clientSecret)))
+  )
+    return sendJson(ctx.res, 400, {
+      error: "bad_request",
+      message: "OAuth settings require a valid Client ID and matching client authentication credentials",
+    });
   let toolNames: string[] | undefined;
-  if (auth !== "user-oauth" && b.validate !== false && ctx.deps.mcpToolService) {
+  if (!usesMcpUserCredentials(server) && b.validate !== false && ctx.deps.mcpToolService) {
     try {
       toolNames = await ctx.deps.mcpToolService.probe(server);
     } catch {
