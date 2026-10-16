@@ -78,7 +78,7 @@ test("usage API requires org admin, pins org, validates queries and audits expor
       assert.equal(query.orgId, "default-org");
       assert.equal(query.dimension, "user");
       assert.equal(metric, "tokens");
-      return [{ id: "a", name: "Alice", metrics: emptyMetrics(), series: [] }];
+      return { items: [{ id: "a", name: "Alice", metrics: emptyMetrics(), series: [] }], total: 42 };
     },
     details: async () => ({ records: [], total: 0 }),
     facets: async () => ({ user: [], project: [], department: [], model: [], source: [], auth: [] }),
@@ -147,7 +147,16 @@ test("usage API requires org admin, pins org, validates queries and audits expor
     assert.equal((await fetch(`${base}/layout`, { headers })).status, 503);
     assert.equal((await postLayout({ ...layoutBody, expectedUpdatedAt: layoutRecord.updatedAt })).status, 503);
     layoutOffline = false;
-    assert.equal((await fetch(`${base}/panels?panel=user:tokens`, { headers })).status, 200);
+    const page = await fetch(`${base}/panels?panel=user:tokens&limit=20&offset=20`, { headers });
+    assert.equal(page.status, 200);
+    const pageBody = (await page.json()) as {
+      pagination: Record<string, { total: number; limit: number; offset: number }>;
+      panels: Record<string, Array<{ id: string }>>;
+    };
+    assert.deepEqual(pageBody.pagination["user:tokens"], { total: 42, limit: 20, offset: 20 });
+    assert.equal(pageBody.panels["user:tokens"]?.[0]?.id, "a");
+    assert.equal((await fetch(`${base}/panels?panel=user:tokens&limit=201`, { headers })).status, 400);
+    assert.equal((await fetch(`${base}/panels?panel=user:tokens&offset=-1`, { headers })).status, 400);
     assert.equal((await fetch(`${base}/panels?panel=user:bad`, { headers })).status, 400);
     assert.equal((await fetch(`${base}/panels?panel=user:tokens:bad`, { headers })).status, 400);
     assert.equal(

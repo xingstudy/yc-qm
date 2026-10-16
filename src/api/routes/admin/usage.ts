@@ -41,14 +41,17 @@ export async function adminUsage(ctx: ApiCtx): Promise<void> {
     try {
       const keys = [...new Set(panels.filter((p) => p.dimension !== "total").map((p) => `${p.dimension}:${p.metric}`))];
       const values = [];
+      const pagination = [];
       for (const key of keys) {
         const panel = panels.find((p) => `${p.dimension}:${p.metric}` === key)!;
-        values.push([
-          key,
-          await ctx.deps.usage.trends({ ...query, dimension: panel.dimension as typeof query.dimension }, panel.metric),
-        ]);
+        const result = await ctx.deps.usage.trends(
+          { ...query, dimension: panel.dimension as typeof query.dimension },
+          panel.metric,
+        );
+        values.push([key, result.items]);
+        pagination.push([key, { total: result.total, limit: query.limit, offset: query.offset }]);
       }
-      return sendJson(ctx.res, 200, { panels: Object.fromEntries(values) });
+      return sendJson(ctx.res, 200, { panels: Object.fromEntries(values), pagination: Object.fromEntries(pagination) });
     } catch {
       return sendJson(ctx.res, 503, { error: "usage_unavailable", message: "维度趋势暂时不可用，请重试。" });
     }

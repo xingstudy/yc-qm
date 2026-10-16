@@ -562,6 +562,20 @@ test("a model-overridden session's background pass sizes against the override's 
     "the background pass judges fullness by the override model's budget — under the scope default it would never fire",
   );
   assert.equal(compactCalls.length, 1, "exactly one background compaction against the override's budget");
+  assert.equal(compactCalls[0]!.model, OVERRIDE);
+});
+
+test("inline compaction receives the turn's explicit model", async () => {
+  const { harness, compactCalls } = spyHarness();
+  const { orch, sessions } = buildOrchestrator(harness, budgetKeepingOnlyNewest("msg 4", "msg 5"));
+  await seed(
+    sessions,
+    msgTexts(6).map((text) => ({ payload: { text } })),
+  );
+  const res = await orch.handleTurn({ ...turn("!histcount"), model: "gpt-6.1-sol" });
+  assert.equal(res.status, "ok");
+  assert.ok(compactCalls.length >= 1);
+  assert.ok(compactCalls.every((input) => input.model === "gpt-6.1-sol"));
 });
 
 test("a rapid follow-up that outran the background pass AND is over the HARD limit blocks and compacts inline", async () => {

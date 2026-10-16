@@ -83,8 +83,10 @@ export function createPostgresUsageStore(connectionString: string): UsageStore {
   let directoryReader: Parameters<NonNullable<UsageStore["setDirectoryReader"]>>[0] | undefined;
   const projectNames = async (orgId: string) =>
     new Map(((await directoryReader?.(orgId))?.project ?? []).map((project) => [project.id, project.name]));
-  const displayProject = (id: string, historical: string, names: Map<string, string>): string =>
-    id ? projectDisplayName(id, names.get(id) || historical, "名称未知 Project") : historical || "无 Project";
+  const displayProject = (id: string, historical: string, names: Map<string, string>): string => {
+    if (id) return projectDisplayName(id, names.get(id) || historical, "名称未知项目");
+    return !historical || historical === "无 Project" ? "非项目" : historical;
+  };
   const lifecycleStatus = (
     states: UsageLifecycle | undefined,
     dimension: UsageDimension,
@@ -383,31 +385,41 @@ export function createPostgresUsageStore(connectionString: string): UsageStore {
         const period =
           query.granularity === "day" ? "day" : `to_char(date_trunc('${query.granularity}',day::date),'YYYY-MM-DD')`;
         const top = await client.query(
-          `SELECT dims->>'${field}' AS id,MAX(dims->>'${name}') AS name,${SELECT_METRICS}
+          `SELECT dims->>'${field}' AS id,MAX(dims->>'${name}') AS name,${SELECT_METRICS},COUNT(*) OVER() AS total
           FROM usage_daily WHERE ${filter.sql} GROUP BY 1
           HAVING SUM((metrics->>'requests')::numeric)+SUM((metrics->>'samples')::numeric)>0
-          ORDER BY ${RANK_SQL[metric]} DESC,id LIMIT 5`,
-          filter.values,
+          ORDER BY ${RANK_SQL[metric]} DESC,id LIMIT $${filter.values.length + 1} OFFSET $${filter.values.length + 2}`,
+          [...filter.values, query.limit, query.offset],
         );
-        if (!top.rows.length) return [];
+        if (!top.rows.length) {
+          const count = await client.query(
+            `SELECT COUNT(*) AS total FROM (SELECT dims->>'${field}' FROM usage_daily WHERE ${filter.sql}
+            GROUP BY 1 HAVING SUM((metrics->>'requests')::numeric)+SUM((metrics->>'samples')::numeric)>0) objects`,
+            filter.values,
+          );
+          return { items: [], total: Number(count.rows[0].total) };
+        }
         const rows = await client.query(
           `SELECT dims->>'${field}' AS id,${period} AS period,${SELECT_METRICS}
           FROM usage_daily WHERE ${filter.sql} AND dims->>'${field}'=ANY($${filter.values.length + 1}::text[])
           GROUP BY 1,2 ORDER BY 2,1`,
           [...filter.values, top.rows.map((row) => row.id)],
         );
-        return top.rows.map((row) => ({
-          id: String(row.id ?? ""),
-          name:
-            query.dimension === "project"
-              ? displayProject(String(row.id ?? ""), String(row.name ?? ""), names)
-              : String(row.name ?? ""),
-          status: lifecycleStatus(states, query.dimension, String(row.id ?? "")),
-          metrics: metrics(row),
-          series: rows.rows
-            .filter((point) => point.id === row.id)
-            .map((point) => ({ period: String(point.period), metrics: metrics(point) })),
-        }));
+        return {
+          total: Number(top.rows[0].total),
+          items: top.rows.map((row) => ({
+            id: String(row.id ?? ""),
+            name:
+              query.dimension === "project"
+                ? displayProject(String(row.id ?? ""), String(row.name ?? ""), names)
+                : String(row.name ?? ""),
+            status: lifecycleStatus(states, query.dimension, String(row.id ?? "")),
+            metrics: metrics(row),
+            series: rows.rows
+              .filter((point) => point.id === row.id)
+              .map((point) => ({ period: String(point.period), metrics: metrics(point) })),
+          })),
+        };
       });
     },
     async details(query) {
