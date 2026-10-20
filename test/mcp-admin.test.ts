@@ -123,12 +123,27 @@ test("MCP admin validates and preserves credential scope, without returning secr
     { authorizationUrl: "https://127.0.0.1/authorize", tokenUrl: "https://8.8.8.8/token" },
     { scopes: ["read write"] },
     { tokenEndpointAuthMethod: "private_key_jwt" },
+    { registrationMode: "unknown" },
+    { registrationMode: ["dynamic"] },
+    { registrationMode: "dynamic" },
+    { registrationMode: "metadata" },
     { clientSecret: "plaintext-must-not-be-persisted" },
   ])
     assert.equal((await put({ auth: "user-oauth", oauth: invalid })).status, 400);
   assert.equal((await put({ auth: "user-oauth", clientId: "", oauth: {} })).status, 200);
   assert.equal((await store.get("crm"))?.clientId, undefined);
   assert.equal((await store.get("crm"))?.clientSecret, undefined);
+  for (const registrationMode of ["auto", "dynamic", "metadata"] as const) {
+    assert.equal((await put({ auth: "user-oauth", oauth: { registrationMode } })).status, 200);
+    assert.equal((await store.get("crm"))?.oauth?.registrationMode, registrationMode);
+    assert.equal((await put({ auth: "user-oauth" })).status, 200);
+    assert.equal((await store.get("crm"))?.oauth?.registrationMode, registrationMode);
+  }
+  assert.equal(
+    (await put({ auth: "user-oauth", oauth: { registrationMode: "dynamic", clientMetadataUrl: "https://8.8.8.8/qm" } }))
+      .status,
+    400,
+  );
   assert.equal((await put({ auth: "user-token", tokenHeader: "X-API-Key", tokenPrefix: "" })).status, 200);
   assert.equal((await store.get("crm"))?.tokenPrefix, "");
   assert.equal((await put({ auth: "user-token", tokenHeader: "Cookie" })).status, 400);
