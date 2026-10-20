@@ -54,11 +54,13 @@ test("the sandbox base builds a patched GitHub CLI", () => {
   assert.match(localBuild, /--build-arg "PIP_INDEX_URL=\$\{PIP_INDEX_URL\}"/);
 });
 
-test("the sandbox base replaces browser-use's vulnerable anyio and pypdf pins", () => {
+test("the sandbox base replaces browser-use's vulnerable aiohttp, anyio and pypdf pins", () => {
   const dockerfile = readFileSync(new URL("../fly/Dockerfile", import.meta.url), "utf8");
   const browserRuntime = dockerfile.match(/ARG BROWSER_USE_VERSION=[\s\S]*?(?=\nRUN agent_site=)/)?.[0];
 
   assert.ok(browserRuntime);
+  assert.match(browserRuntime, /s\/aiohttp==3\.13\.4\/aiohttp==3\.14\.4\//);
+  assert.match(browserRuntime, /importlib\.metadata\.version\('aiohttp'\) == '3\.14\.4'/);
   assert.match(browserRuntime, /s\/anyio==4\.12\.1\/anyio==4\.14\.2\/g/);
   assert.match(browserRuntime, /importlib\.metadata\.version\('anyio'\) == '4\.14\.2'/);
   assert.match(browserRuntime, /s\/pypdf==6\.10\.2\/pypdf==6\.19\.0\//);
