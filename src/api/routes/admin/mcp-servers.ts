@@ -16,9 +16,21 @@ const AUTH_MODES: McpServerAuthMode[] = ["none", "bearer", "client-credentials",
 async function oauthSettings(value: unknown): Promise<McpOAuthSettings> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("oauth must be an object");
   const input = value as Record<string, unknown>;
-  const allowed = ["authorizationUrl", "tokenUrl", "scopes", "tokenEndpointAuthMethod", "clientMetadataUrl"];
+  const allowed = [
+    "registrationMode",
+    "authorizationUrl",
+    "tokenUrl",
+    "scopes",
+    "tokenEndpointAuthMethod",
+    "clientMetadataUrl",
+  ];
   if (Object.keys(input).some((key) => !allowed.includes(key))) throw new Error("unsupported OAuth setting");
   const result: McpOAuthSettings = {};
+  if (input.registrationMode !== undefined) {
+    if (typeof input.registrationMode !== "string" || !["auto", "dynamic", "metadata"].includes(input.registrationMode))
+      throw new Error("unsupported OAuth registration mode");
+    result.registrationMode = input.registrationMode as McpOAuthSettings["registrationMode"];
+  }
   for (const field of ["authorizationUrl", "tokenUrl", "clientMetadataUrl"] as const) {
     if (input[field] === undefined || input[field] === "") continue;
     if (typeof input[field] !== "string" || input[field].length > 2048) throw new Error(`invalid ${field}`);
@@ -239,6 +251,8 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
     ((server.clientId !== undefined && (server.clientId.length > 2048 || /[\s\x00-\x1f\x7f]/.test(server.clientId))) ||
       (server.clientSecret && !server.clientId) ||
       (oauth?.clientMetadataUrl && server.clientId) ||
+      (oauth?.registrationMode && oauth.registrationMode !== "auto" && server.clientId) ||
+      (oauth?.registrationMode === "dynamic" && oauth.clientMetadataUrl) ||
       (oauth?.authorizationUrl && !server.clientId) ||
       (oauth?.tokenEndpointAuthMethod &&
         oauth.tokenEndpointAuthMethod !== "none" &&

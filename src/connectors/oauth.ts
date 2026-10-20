@@ -537,6 +537,7 @@ export function mcpOAuthCredentialHost(
           oauth?.clientMetadataUrl,
           oauth?.tokenEndpointAuthMethod,
           oauth?.scopes,
+          ...(oauth?.registrationMode && oauth.registrationMode !== "auto" ? [oauth.registrationMode] : []),
         ])
       : "";
   const binding = `${server.id}\u0000${server.url}${settings ? `\u0000${settings}` : ""}`;
@@ -708,6 +709,7 @@ export async function resolveMcpOAuthClient(
 ): Promise<ResolvedClient> {
   const fetchImpl = opts.fetchImpl ?? fetchPublicMcpJson;
   const configured = provider.mcp;
+  const registrationMode = configured?.registrationMode ?? "auto";
   const boundRef = `mcp-config:${provider.hosts[0]}:${createHash("sha256")
     .update(
       JSON.stringify([
@@ -716,10 +718,11 @@ export async function resolveMcpOAuthClient(
         configured?.authorizationUrl,
         configured?.tokenUrl,
         configured?.tokenEndpointAuthMethod,
+        ...(registrationMode !== "auto" ? [registrationMode] : []),
       ]),
     )
     .digest("hex")}`;
-  const staticClient = !!(configured?.clientId || configured?.clientMetadataUrl);
+  const staticClient = !!(configured?.clientId || configured?.clientMetadataUrl || registrationMode === "metadata");
   const prefix = providerName === "atlassian" ? "atlassian-dcr:" : `${providerName}-dcr:${provider.hosts[0]}:`;
   let clientId: string | null = opts.clientRef?.startsWith(prefix) ? opts.clientRef.slice(prefix.length) : null;
   if (
@@ -744,10 +747,16 @@ export async function resolveMcpOAuthClient(
     clientRef = boundRef;
   } else if (
     configured?.clientMetadataUrl ||
-    (configured?.autoClientMetadataUrl && metadata.clientMetadataSupported && !clientId)
+    registrationMode === "metadata" ||
+    (registrationMode !== "dynamic" &&
+      configured?.autoClientMetadataUrl &&
+      !clientId &&
+      (opts.clientRef === boundRef || (metadata.clientMetadataSupported && !metadata.registrationEndpoint)))
   ) {
     if (!metadata.clientMetadataSupported)
       throw new Error("MCP authorization server does not support client metadata documents");
+    if (!configured?.clientMetadataUrl && !configured?.autoClientMetadataUrl)
+      throw new Error("MCP client metadata requires a public HTTPS URL");
     clientId = secureOAuthUrl(
       configured.clientMetadataUrl ?? configured.autoClientMetadataUrl,
       "MCP client metadata URL",

@@ -8075,6 +8075,14 @@
                 </div>
                 <div id="mcp-oauth-fields" hidden>
                   <label style="display: block; margin-bottom: 8px"
+                    >OAuth client registration
+                    <select id="mcp-oauth-registration" style="width: 100%">
+                      <option value="auto">Automatic (prefer dynamic registration)</option>
+                      <option value="dynamic">Dynamic registration (DCR)</option>
+                      <option value="metadata">Client metadata document</option>
+                    </select>
+                  </label>
+                  <label style="display: block; margin-bottom: 8px"
                     >Token endpoint authentication
                     <select id="mcp-oauth-client-auth" style="width: 100%">
                       <option value="auto">Automatic</option>
@@ -10368,6 +10376,10 @@
         "Token header": "令牌请求头",
         "Token prefix": "令牌前缀",
         "Token endpoint authentication": "令牌端点认证方式",
+        "OAuth client registration": "OAuth 客户端注册方式",
+        "Automatic (prefer dynamic registration)": "自动（优先动态注册）",
+        "Dynamic registration (DCR)": "动态注册（DCR）",
+        "Client metadata document": "客户端元数据文档",
         Automatic: "自动",
         "Public client (no secret)": "公共客户端（无密钥）",
         "Client secret via HTTP Basic": "通过 HTTP Basic 发送客户端密钥",
@@ -16023,6 +16035,7 @@
         $("mcp-server-name").value = server.name || "";
         $("mcp-server-url").value = server.url || "";
         $("mcp-server-auth").value = server.auth || "none";
+        $("mcp-oauth-registration").value = server.oauth?.registrationMode || "auto";
         $("mcp-oauth-client-auth").value = server.oauth?.tokenEndpointAuthMethod || "auto";
         $("mcp-oauth-scopes").value = (server.oauth?.scopes || []).join(" ");
         $("mcp-oauth-authorization-url").value = server.oauth?.authorizationUrl || "";
@@ -16058,6 +16071,7 @@
         $("mcp-server-name").value = "";
         $("mcp-server-url").value = "";
         $("mcp-server-auth").value = "none";
+        $("mcp-oauth-registration").value = "auto";
         $("mcp-oauth-client-auth").value = "auto";
         for (const id of [
           "mcp-oauth-scopes",
@@ -16124,6 +16138,8 @@
         }
         if (auth === "user-oauth") {
           const oauth = {};
+          const registration = $("mcp-oauth-registration").value;
+          if (registration !== "auto") oauth.registrationMode = registration;
           const method = $("mcp-oauth-client-auth").value;
           if (method !== "auto") oauth.tokenEndpointAuthMethod = method;
           const scopes = $("mcp-oauth-scopes").value.trim();

@@ -133,7 +133,7 @@ test("MCP discovery handles challenges and OIDC discovery with a pre-registered 
   );
 });
 
-test("public client metadata is hosted without exposing secrets and replaces DCR when supported", async () => {
+test("public client metadata is hosted without exposing secrets when DCR is unavailable", async () => {
   const servers = { list: async () => [server] };
   const config = (await oauthProviders(servers, "https://qm.test"))["mcp-example"]!;
   let registrations = 0;
@@ -175,6 +175,146 @@ test("public client metadata is hosted without exposing secrets and replaces DCR
   assert.equal(JSON.parse(body).client_id, client.id);
   assert.deepEqual(JSON.parse(body).redirect_uris, [callback]);
   assert.doesNotMatch(body, /client_secret|access_token/);
+});
+
+for (const resource of [server.url, "https://mcp.atlassian.com/v2/mcp"]) {
+  test(`HTTPS OAuth uses DCR through callback, exchange and refresh for ${resource}`, async () => {
+    const servers = { list: async () => [{ ...server, url: resource }] };
+    const publicUrl = "https://qm.test:5443";
+    const providerName = resource === server.url ? "mcp-example" : "atlassian";
+    const config = (await oauthProviders(servers, publicUrl))[providerName]!;
+    const redirectUri = `${publicUrl}/v1/connectors/oauth/${providerName}/callback`;
+    let registrations = 0;
+    let exchanges = 0;
+    const fetchImpl: FetchLike = async (url, init) => {
+      if (url === resource) return response({}, 401);
+      if (url.includes("oauth-protected-resource"))
+        return response({ resource, authorization_servers: [metadata.issuer] });
+      if (url.includes("well-known"))
+        return response({
+          ...metadata,
+          client_id_metadata_document_supported: true,
+          registration_endpoint: "https://auth.example.test/register",
+        });
+      if (url === "https://auth.example.test/register") {
+        registrations++;
+        assert.deepEqual(JSON.parse(init.body).redirect_uris, [redirectUri]);
+        return response({ client_id: "dcr-client" });
+      }
+      assert.equal(url, metadata.token_endpoint);
+      assert.equal(new URLSearchParams(init.body).get("client_id"), "dcr-client");
+      exchanges++;
+      return response({ access_token: "access", refresh_token: "refresh" });
+    };
+    const client = await resolveMcpOAuthClient(providerName, config, { redirectUri, fetchImpl });
+    assert.equal(client.id, "dcr-client");
+    const restored = await resolveMcpOAuthClient(providerName, config, {
+      redirectUri,
+      clientRef: client.clientRef,
+      fetchImpl,
+    });
+    assert.equal(restored.id, client.id);
+    const { token } = await exchangeCode(providerName, "code", redirectUri, {
+      providerConfig: config,
+      client: restored,
+      codeVerifier: "verifier",
+      fetchImpl,
+    });
+    const refresh = makeRefresh({
+      mcpServers: servers,
+      publicUrl,
+      fetchImpl,
+      resolveClient: async () => {
+        throw new Error("must resolve the registered MCP client");
+      },
+    });
+    assert.equal((await refresh(config.hosts[0]!, { ...token, clientRef: client.clientRef })).accessToken, "access");
+    assert.equal(registrations, 1);
+    assert.equal(exchanges, 2);
+  });
+}
+
+test("registration overrides select metadata or DCR and fail closed when unavailable", async () => {
+  let supportsDcr = true;
+  let supportsMetadata = true;
+  let registrationFails = false;
+  let registrations = 0;
+  const fetchImpl: FetchLike = async (url) => {
+    if (url === server.url) return response({}, 401);
+    if (url.includes("oauth-protected-resource"))
+      return response({ resource: server.url, authorization_servers: [metadata.issuer] });
+    if (url.includes("well-known"))
+      return response({
+        ...metadata,
+        client_id_metadata_document_supported: supportsMetadata,
+        ...(supportsDcr ? { registration_endpoint: "https://auth.example.test/register" } : {}),
+      });
+    assert.equal(url, "https://auth.example.test/register");
+    registrations++;
+    return response({ client_id: "dcr-client" }, registrationFails ? 403 : 200);
+  };
+  const configFor = async (registrationMode?: "auto" | "dynamic" | "metadata", publicUrl = "https://qm.test") =>
+    (await oauthProviders({ list: async () => [{ ...server, oauth: { registrationMode } }] }, publicUrl))[
+      "mcp-example"
+    ]!;
+  const metadataConfig = await configFor("metadata");
+  const client = await resolveMcpOAuthClient("mcp-example", metadataConfig, { redirectUri: callback, fetchImpl });
+  assert.equal(client.id, "https://qm.test/v1/connectors/oauth/mcp-example/client-metadata");
+  assert.equal(registrations, 0);
+  supportsDcr = false;
+  await assert.rejects(
+    resolveMcpOAuthClient("mcp-example", await configFor("dynamic"), { redirectUri: callback, fetchImpl }),
+    /dynamic registration endpoint/,
+  );
+  supportsMetadata = false;
+  await assert.rejects(
+    resolveMcpOAuthClient("mcp-example", metadataConfig, { redirectUri: callback, fetchImpl }),
+    /does not support client metadata/,
+  );
+  supportsMetadata = true;
+  await assert.rejects(
+    resolveMcpOAuthClient("mcp-example", await configFor("metadata", "http://localhost:8088"), {
+      redirectUri: callback,
+      fetchImpl,
+    }),
+    /public HTTPS URL/,
+  );
+  const autoConfig = await configFor();
+  const existing = await resolveMcpOAuthClient("mcp-example", autoConfig, { redirectUri: callback, fetchImpl });
+  supportsDcr = true;
+  const restored = await resolveMcpOAuthClient("mcp-example", autoConfig, {
+    redirectUri: "",
+    clientRef: existing.clientRef,
+    fetchImpl,
+  });
+  assert.equal(restored.id, existing.id);
+  assert.equal(registrations, 0);
+  await assert.rejects(
+    resolveMcpOAuthClient("mcp-example", await configFor("dynamic"), {
+      redirectUri: "",
+      clientRef: existing.clientRef,
+      fetchImpl,
+    }),
+    /client reference/,
+  );
+  const dynamicConfig = await configFor("dynamic");
+  const dynamic = await resolveMcpOAuthClient("mcp-example", dynamicConfig, { redirectUri: callback, fetchImpl });
+  assert.equal(dynamic.id, "dcr-client");
+  assert.equal(registrations, 1);
+  await assert.rejects(
+    resolveMcpOAuthClient("mcp-example", metadataConfig, {
+      redirectUri: callback,
+      clientRef: dynamic.clientRef,
+      fetchImpl,
+    }),
+    /client reference/,
+  );
+  registrationFails = true;
+  await assert.rejects(
+    resolveMcpOAuthClient("mcp-example", autoConfig, { redirectUri: callback, fetchImpl }),
+    /registration failed \(403\)/,
+  );
+  assert.equal(registrations, 2);
 });
 
 test("external client metadata validates redirect registration before use", async () => {

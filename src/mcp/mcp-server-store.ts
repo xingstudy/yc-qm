@@ -4,6 +4,7 @@ import type { DurableMap } from "../persistence/durable-map.ts";
 export type McpServerAuthMode = "none" | "bearer" | "client-credentials" | "user-oauth" | "user-token";
 
 export interface McpOAuthSettings {
+  registrationMode?: "auto" | "dynamic" | "metadata";
   authorizationUrl?: string;
   tokenUrl?: string;
   scopes?: string[];
