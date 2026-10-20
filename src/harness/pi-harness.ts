@@ -1460,7 +1460,8 @@ export function resolveConfiguredModelId(configured: string | undefined, default
     if (resolveModel(candidate)) return candidate;
     swallow("pi: configured model id not in registry, falling back to default", new Error(candidate));
   }
-  return DEFAULT_AGENT_MODEL_ID;
+  if (resolveModel(DEFAULT_AGENT_MODEL_ID)) return DEFAULT_AGENT_MODEL_ID;
+  throw new NonRetryableTurnError("No available default model is configured");
 }
 
 function withFastModeHeaders(model: Model<Api>): Model<Api> {
@@ -1491,21 +1492,10 @@ export function applyTurnEffort(session: AgentSession, level?: string): void {
 
 export function createPiHarness(opts?: PiHarnessOptions): Harness {
   const configuredModelId = opts?.modelId;
+  const configuredModelForScope = (scope?: ScopeId): string | undefined =>
+    typeof configuredModelId === "function" ? configuredModelId(scope) : configuredModelId;
   const resolveModelId = (scope?: ScopeId): string =>
-    resolveConfiguredModelId(
-      typeof configuredModelId === "function" ? configuredModelId(scope) : configuredModelId,
-      opts?.defaultModelId,
-    );
-  const auxiliaryModelId = (): string =>
-    auxiliaryModelFor(
-      resolveConfiguredModelId(
-        opts?.resolveBaseModelId?.() ?? (typeof configuredModelId === "string" ? configuredModelId : undefined),
-        opts?.defaultModelId,
-      ),
-    );
-  const detectModelId = (): string => opts?.detectModelId ?? auxiliaryModelId();
-  const titleModelId = (): string => opts?.titleModelId ?? auxiliaryModelId();
-  const judgeModelId = (): string => opts?.judgeModelId ?? auxiliaryModelId();
+    resolveConfiguredModelId(configuredModelForScope(scope) ?? opts?.resolveBaseModelId?.(), opts?.defaultModelId);
   const tempDirPrefix = opts?.tempDirPrefix ?? "pi";
   const configuredProviderKeys: ProviderKeys = opts?.resolveProviderKeys
     ? {}
@@ -1521,6 +1511,33 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
   const modelGateway = opts?.modelGateway;
   const keyForModel = (keys: ProviderKeys, model: Model<Api>): string | undefined =>
     modelGatewayRequest(modelGateway, model)?.apiKey ?? keys[String(model.provider)];
+  const availableModelId = (keys: ProviderKeys, id: string | undefined): string | undefined => {
+    const model = id ? resolveModel(id) : undefined;
+    return model && keyForModel(keys, model) ? id : undefined;
+  };
+  const utilityModelId = (
+    keys: ProviderKeys,
+    requested?: string,
+    scope?: ScopeId,
+    auxiliary = false,
+  ): string | undefined => {
+    if (requested) return availableModelId(keys, requested);
+    for (const id of [
+      configuredModelForScope(scope),
+      opts?.resolveBaseModelId?.(),
+      opts?.defaultModelId,
+      DEFAULT_AGENT_MODEL_ID,
+    ]) {
+      if (!id || !resolveModel(id)) continue;
+      if (auxiliary) {
+        const auxiliaryId = availableModelId(keys, auxiliaryModelFor(id));
+        if (auxiliaryId) return auxiliaryId;
+      }
+      const modelId = availableModelId(keys, id);
+      if (modelId) return modelId;
+    }
+    return undefined;
+  };
   const captureRequests = opts?.captureRequests ?? true;
   const systemCacheSplit = opts?.systemCacheSplit ?? false;
   const scratchExec = opts?.scratchExec ?? false;
@@ -2500,10 +2517,10 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
 
       async shouldRespond(detect: HarnessDetectInput): Promise<HarnessDetectResult> {
         try {
-          const modelId = detectModelId();
-          const model = getRequiredModel(modelId);
           const providerKeys = await resolveProviderKeys();
-          if (!keyForModel(providerKeys, model)) return { respond: true };
+          const modelId = utilityModelId(providerKeys, opts?.detectModelId, detect.session.scopeId, true);
+          if (!modelId) return { respond: true };
+          const model = getRequiredModel(modelId);
           const detectSystemPrompt = buildDetectionPrompt(detect.reactionGuidance);
           const prompt = renderDetectPrompt(detect);
           detect.recordModelCall({
@@ -2521,13 +2538,19 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       },
 
       async compactHistory(input: HarnessCompactInput): Promise<string> {
-        const compactModelId = resolveModelId();
-        const model = getRequiredModel(compactModelId);
         const providerKeys = await resolveProviderKeys();
+        const modelId = utilityModelId(providerKeys, input.model, input.session.scopeId);
+        if (!modelId)
+          throw new NonRetryableTurnError(
+            input.model
+              ? `Compaction model ${input.model} is unavailable or its provider is not configured`
+              : "No available model with configured credentials for compaction",
+          );
+        const model = getRequiredModel(modelId);
         const runtime = await buildModelRuntime(providerKeys, modelGateway);
         return summarizeHistory(input.history, model, (summaryModel, context, options) => {
           input.recordModelCall({
-            model: compactModelId,
+            model: modelId,
             inputTokens: countTokens(context.systemPrompt ?? "") + countTokens(JSON.stringify(context.messages)),
             entryCount: input.history.length,
           });
@@ -2541,16 +2564,18 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       },
 
       async oneShot(systemPrompt: string, prompt: string): Promise<string | undefined> {
-        const model = getRequiredModel(resolveModelId());
         const providerKeys = await resolveProviderKeys();
-        if (!keyForModel(providerKeys, model)) return undefined;
+        const modelId = utilityModelId(providerKeys);
+        if (!modelId) return undefined;
+        const model = getRequiredModel(modelId);
         return oneShot("pi-oneshot", model, providerKeys, systemPrompt, prompt, { modelGateway });
       },
 
       async judge(systemPrompt: string, prompt: string, signal?: AbortSignal): Promise<string | undefined> {
-        const model = getRequiredModel(judgeModelId());
         const providerKeys = await resolveProviderKeys();
-        if (!keyForModel(providerKeys, model)) return undefined;
+        const modelId = utilityModelId(providerKeys, opts?.judgeModelId, undefined, true);
+        if (!modelId) return undefined;
+        const model = getRequiredModel(modelId);
         return oneShot("pi-judge", model, providerKeys, systemPrompt, prompt, {
           modelGateway,
           signal,
@@ -2567,10 +2592,10 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         recordLlmRequest,
       }) {
         try {
-          const modelId = configuredScreenModel ?? detectModelId();
-          const model = getRequiredModel(modelId);
           const providerKeys = await resolveProviderKeys();
-          if (!keyForModel(providerKeys, model)) return undefined;
+          const modelId = utilityModelId(providerKeys, configuredScreenModel ?? opts?.detectModelId, undefined, true);
+          if (!modelId) return undefined;
+          const model = getRequiredModel(modelId);
           recordModelCall({
             model: modelId,
             inputTokens: countTokens(systemPrompt) + countTokens(payload),
@@ -2616,9 +2641,10 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
 
       async generateTitle(transcript: string): Promise<string | undefined> {
         if (!transcript.trim()) return undefined;
-        const model = getRequiredModel(titleModelId());
         const providerKeys = await resolveProviderKeys();
-        if (!keyForModel(providerKeys, model)) return undefined;
+        const modelId = utilityModelId(providerKeys, opts?.titleModelId, undefined, true);
+        if (!modelId) return undefined;
+        const model = getRequiredModel(modelId);
         const out = await oneShot(
           "pi-title",
           model,
@@ -2632,9 +2658,10 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
 
       async summarizeApproval(command: string, reason: string, purpose?: string): Promise<string | undefined> {
         if (!command.trim()) return undefined;
-        const model = getRequiredModel(titleModelId());
         const providerKeys = await resolveProviderKeys();
-        if (!keyForModel(providerKeys, model)) return undefined;
+        const modelId = utilityModelId(providerKeys, opts?.titleModelId, undefined, true);
+        if (!modelId) return undefined;
+        const model = getRequiredModel(modelId);
         const prompt = [
           `Policy flagged this as: ${reason}`,
           purpose ? `Agent's stated purpose: ${purpose}` : "",

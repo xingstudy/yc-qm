@@ -65,6 +65,8 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
     value == null ? tr("未知", "Unknown") : Number(value).toLocaleString(locale, { maximumFractionDigits: 2 });
   const label = (key) =>
     ({
+      "无 Project": tr("非项目", "Non-project"),
+      非项目: tr("非项目", "Non-project"),
       human: tr("人工请求", "Human"),
       automation: tr("自动任务", "Automation"),
       system: tr("系统辅助", "System"),
@@ -91,7 +93,7 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
   const facetName = (key, item) => {
     let name =
       key === "project" && item.id
-        ? projectDisplayName(item.id, item.name, tr("名称未知 Project", "Unknown Project"))
+        ? projectDisplayName(item.id, item.name, tr("名称未知项目", "Unknown project"))
         : label(item.name || item.id) || tr("未分配", "Unassigned");
     if (key === "project" && (facets?.project ?? []).filter((row) => row.name === item.name).length > 1)
       name += ` · ${item.id.slice(0, 8)}`;
@@ -120,6 +122,9 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
     }));
   let panels = defaultPanels();
   let panelData = {};
+  let panelPagination = {};
+  const panelLoading = new Set();
+  const panelLoadErrors = new Map();
   const seriesSelections = new Map();
   const chartRenderers = new Map();
   const chartObserver = win.ResizeObserver
@@ -174,7 +179,7 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
     .usage-panel-tools{display:flex;flex-wrap:wrap;align-items:center;gap:6px}.usage-panel-tools button{padding:4px 8px;font-size:12px}.usage-layout-controls{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px}.usage-layout-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
     .usage-layout-add{border:1px solid var(--border,#dbe2ea);border-radius:10px;padding:0 12px}.usage-layout-add .usage-fields{padding:4px 0}.usage-layout-add[open]{width:100%}
     .usage-filter-fold{margin:0}.usage-filter-fold>summary{font-weight:550}.usage-dashboard .usage-filter-fold>summary{margin:8px 0}.usage-filter-grid{display:flex;flex-wrap:wrap;gap:10px;align-items:end;padding:8px 0}.usage-dashboard .usage-field input,.usage-dashboard .usage-field select{min-height:34px}.usage-dashboard .usage-chips:empty{display:none}.usage-chips{margin-top:6px}.usage-context{padding:0 4px}.usage-context p{margin:6px 0}.usage-dashboard .usage-context>summary{margin:0;font-size:12px}
-    .usage-legend{display:flex;flex-wrap:wrap;align-items:center;gap:2px 12px;font-size:13px;margin:4px 0}.usage-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+    .usage-legend{max-height:112px;overflow:auto;display:flex;flex-wrap:wrap;align-items:center;gap:2px 12px;font-size:13px;margin:4px 0}.usage-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
     .usage-legend-head{display:flex;align-items:center;min-height:22px;font-size:12px;line-height:18px;color:var(--muted,#64748b)}.usage-legend-head>span{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#app-view #main .usage-dashboard :is(.usage-legend-item,.usage-legend-all){display:inline-flex;align-items:center;gap:6px;min-height:26px;max-width:100%;width:auto;text-align:left;padding:3px 0;border:0;box-shadow:none;background:transparent;color:var(--text,#1e293b);font-size:13px;font-weight:400;line-height:20px;border-radius:3px}.usage-legend-item[aria-pressed=false]{opacity:.4}#app-view #main .usage-dashboard .usage-legend-item:hover,#app-view #main .usage-dashboard .usage-legend-item:focus-visible{background:var(--hover,#f1f5f9)}#app-view #main .usage-dashboard .usage-legend-item[data-active=true]{font-weight:600}.usage-legend-item .usage-dot{flex-shrink:0;width:12px;height:3px;border-radius:1px;margin:0}.usage-legend-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.usage-legend-value,.usage-legend-coverage{display:none}#app-view #main .usage-dashboard .usage-legend-all{color:var(--muted,#64748b);margin-left:auto}
     .usage-plot-point:focus{outline:none;stroke:var(--text,#1e293b);stroke-width:3}.usage-chart-note{font-size:12px;min-height:22px;line-height:1.7;color:var(--muted,#64748b)}
     .usage-tabs{margin-bottom:18px}.usage-tabs button[aria-pressed=true]{background:var(--usage-blue);color:#fff;border-color:var(--usage-blue)}
@@ -250,7 +255,7 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
   const dimension = select(
     [
       ["user", tr("用户", "User")],
-      ["project", "Project"],
+      ["project", tr("项目", "Project")],
       ["department", tr("部门", "Department")],
       ["model", tr("模型", "Model")],
       ["source", tr("任务来源", "Source")],
@@ -735,14 +740,14 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
   const metricLabel = (key) =>
     ({
       requests: tr("用户请求", "Requests"),
-      calls: tr("已知模型调用", "Known model calls"),
+      calls: tr("模型调用", "Model calls"),
       activeUsers: tr("活跃用户", "Active users"),
-      tokens: tr("已知 Token", "Known tokens"),
+      tokens: tr("Token 消耗", "Token usage"),
       input: tr("输入 Token", "Input tokens"),
       output: tr("输出 Token", "Output tokens"),
       cacheRead: tr("缓存读取", "Cache read"),
       cacheWrite: tr("缓存写入", "Cache write"),
-      costUsd: tr("已知参考费用 USD", "Known reference USD"),
+      costUsd: tr("参考费用 USD", "Reference cost USD"),
     })[key];
   const coverage = (metrics, key) => {
     if (!metrics) return tr("无汇总记录", "No aggregate record");
@@ -812,7 +817,10 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
         ),
         note,
       ];
-    const observedMax = Math.max(0, ...rows.flatMap((r) => keys.map((key) => valueAt(r, key) ?? 0)));
+    const observedMax = rows.reduce(
+      (max, row) => keys.reduce((value, key) => Math.max(value, valueAt(row, key) ?? 0), max),
+      0,
+    );
     const max = observedMax || 1;
     const first = Date.parse(rows[0]?.period ?? state.start);
     const last = Date.parse(rows.at(-1)?.period ?? state.end);
@@ -947,11 +955,15 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
       for (const { element, key } of pointElements) element.setAttribute("tabindex", visible(key) ? "0" : "-1");
       for (const { item, key } of legendItems) item.setAttribute("aria-pressed", String(visible(key)));
       all.setAttribute("aria-pressed", String(isolatedKey === null));
+      all.disabled = options.loading || (isolatedKey === null && !options.hasMore);
       hide();
     };
-    all.onclick = () => isolate(null);
+    all.onclick = () => {
+      isolate(null);
+      if (options.hasMore) void options.onShowAll?.();
+    };
     keys.forEach((key, index) => {
-      const color = colors[index % colors.length];
+      const color = colors[index] ?? `hsl(${Math.round(index * 137.508) % 360} 65% 45%)`;
       const item = node("button", undefined, "usage-legend-item");
       item.setAttribute("aria-label", `${tr("单独查看曲线", "Isolate series")}: ${seriesLabel(key)}`);
       item.title = `${seriesLabel(key)}${options.grouped && key ? ` · ${key}` : ""} · ${tr("点击只显示该曲线，再次点击恢复全部", "Click to isolate this series; click again to show all")}`;
@@ -1028,7 +1040,7 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
         };
       }
     });
-    if (keys.length > 1) legend.append(all);
+    if (keys.length > 1 || options.hasMore) legendHead.append(all);
     crosshair = make("line", {
       x1: left,
       x2: left,
@@ -1342,6 +1354,10 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
                 selectionId: `${panel.id}:${panel.dimension}:${panel.metric}`,
                 metric: panel.metric,
                 visual: panel.visual,
+                hasMore:
+                  (panelPagination[`${panel.dimension}:${panel.metric}`]?.total ?? groups.length) > groups.length,
+                loading: panelLoading.has(`${panel.dimension}:${panel.metric}`),
+                onShowAll: () => loadMoreSeries(panel, true),
                 names: new Map(
                   groups.map((g) => [g.id, objectName(label(g.name || g.id) || tr("未分配", "Unassigned"), g.status)]),
                 ),
@@ -1350,17 +1366,35 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
           );
         }
       }
-      if (panel.dimension !== "total")
+      if (panel.dimension !== "total" && groups) {
+        const key = `${panel.dimension}:${panel.metric}`;
+        const total = panelPagination[key]?.total ?? groups.length;
+        const controls = node("div", undefined, "usage-panel-tools usage-status");
+        controls.append(
+          node("span", tr(`已加载 ${groups.length} / 共 ${total} 条`, `Loaded ${groups.length} of ${total} series`)),
+        );
+        if (groups.length < total) {
+          const more = node(
+            "button",
+            panelLoading.has(key) ? tr("加载中…", "Loading…") : tr("加载更多曲线", "Load more series"),
+          );
+          more.disabled = panelLoading.has(key);
+          more.onclick = () => loadMoreSeries(panel);
+          controls.append(more);
+        }
+        if (panelLoadErrors.has(key)) controls.append(node("span", panelLoadErrors.get(key)));
+        section.append(controls);
         settings.append(
           node(
             "p",
             tr(
-              "按当前范围和指标取前 5 项；各曲线对应同一对象，未计量的周期保留缺口。",
-              "Top 5 for this range and metric. Each series is one object; missing measurements remain gaps.",
+              "按当前指标排序并分页加载；显示全部会继续加载剩余曲线。未计量的周期保留缺口。",
+              "Series are ranked and paginated. Show all loads remaining series. Missing measurements remain gaps.",
             ),
             "usage-chart-note",
           ),
         );
+      }
       grid.append(section);
     }
     results.append(grid);
@@ -1430,8 +1464,8 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
       node(
         "p",
         tr(
-          "费用为 SDK 金额或参考单价估算；订阅估算不代表额外付款。未知不等于零。",
-          "Costs are SDK amounts or reference estimates; subscription estimates are not extra payments. Unknown does not mean zero.",
+          "Token 消耗仅包含已计量记录，请结合覆盖率查看；费用为 SDK 金额或参考单价估算；订阅估算不代表额外付款。未知不等于零。",
+          "Token usage includes measured records only; check coverage. Costs are SDK amounts or reference estimates; subscription estimates are not extra payments. Unknown does not mean zero.",
         ),
       ),
     );
@@ -1459,7 +1493,7 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
           compare(total.activeUsers, p.activeUsers),
         ],
         [
-          tr("已知 Token", "Known tokens"),
+          tr("Token 消耗", "Token usage"),
           tokens(total),
           tokens(p),
           total.knownTokens < total.samples || p.knownTokens < p.samples
@@ -1487,7 +1521,7 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
         tr("范围", "Range"),
         tr("请求", "Requests"),
         tr("活跃用户", "Active users"),
-        tr("已知模型调用", "Known model calls"),
+        tr("模型调用", "Model calls"),
         "Token",
         "USD",
       ],
@@ -1543,7 +1577,7 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
         tr("名称", "Name"),
         tr("请求", "Requests"),
         tr("活跃用户", "Active users"),
-        tr("已知模型调用", "Known model calls"),
+        tr("模型调用", "Model calls"),
         "Token",
         "USD",
       ],
@@ -1618,7 +1652,7 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
         [
           tr("发生时间", "Time"),
           tr("用户", "User"),
-          "Project",
+          tr("项目", "Project"),
           tr("发生时部门", "Historical department"),
           tr("来源", "Source"),
           tr("模型", "Model"),
@@ -1634,7 +1668,10 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
         details.records.map((r) => [
           new Date(r.at).toLocaleString(locale, { timeZone: "Asia/Shanghai" }),
           objectName(r.principalName || tr("系统", "System"), r.principalStatus),
-          objectName(r.projectDisplayName ?? r.projectName, r.projectStatus),
+          objectName(
+            r.projectId ? (r.projectDisplayName ?? r.projectName) : tr("非项目", "Non-project"),
+            r.projectStatus,
+          ),
           objectName(r.unitName, r.unitStatus),
           label(r.source),
           r.model,
@@ -1678,7 +1715,7 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
     for (const key of Object.keys(filters)) {
       const titles = {
         user: tr("用户", "User"),
-        project: "Project",
+        project: tr("项目", "Project"),
         department: tr("部门（含子部门）", "Department (with descendants)"),
         model: tr("模型", "Model"),
         source: tr("来源", "Source"),
@@ -1860,6 +1897,10 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
     refresh.disabled = true;
     const q = query();
     const panelQuery = new URLSearchParams(q);
+    panelQuery.set("limit", "20");
+    panelQuery.set("offset", "0");
+    panelLoading.clear();
+    panelLoadErrors.clear();
     for (const key of new Set(panels.filter((p) => p.dimension !== "total").map((p) => `${p.dimension}:${p.metric}`)))
       panelQuery.append("panel", key);
     try {
@@ -1877,6 +1918,7 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
         drawFilters();
       }
       panelData = trends?.panels ?? {};
+      panelPagination = trends?.pagination ?? {};
       panelErrors = !trends;
       draw(report, details);
       lastLoad = Date.now();
@@ -1889,6 +1931,45 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
       if (id === sequence && !destroyed) {
         refresh.disabled = false;
         schedule();
+      }
+    }
+  }
+  async function loadMoreSeries(panel, all = false) {
+    const key = `${panel.dimension}:${panel.metric}`;
+    if (destroyed || panelLoading.has(key) || !controller) return;
+    const id = sequence;
+    const signal = controller.signal;
+    panelLoading.add(key);
+    panelLoadErrors.delete(key);
+    draw(lastReport, lastDetails);
+    try {
+      do {
+        const paging = panelPagination[key];
+        const q = new URLSearchParams(query());
+        q.set("offset", String(paging.offset + panelData[key].length));
+        q.set("limit", "100");
+        q.append("panel", key);
+        const result = await request(`/panels?${q}`, signal);
+        if (destroyed || id !== sequence) return;
+        const next = result.panels[key];
+        if (!next?.length) throw new Error(tr("数据已变化，请刷新后重试。", "Data changed. Refresh and retry."));
+        const merged = new Map(panelData[key].map((item) => [item.id, item]));
+        next.forEach((item) => merged.set(item.id, item));
+        const nextOffset = Number(q.get("offset")) + next.length;
+        panelData[key] = [...merged.values()];
+        panelPagination[key] = { ...result.pagination[key], offset: nextOffset - panelData[key].length };
+        draw(lastReport, lastDetails);
+      } while (all && panelData[key].length < panelPagination[key].total);
+    } catch (error) {
+      if (destroyed || id !== sequence || error.name === "AbortError") return;
+      panelLoadErrors.set(
+        key,
+        `${tr("加载失败，已保留曲线，可重试", "Loading failed; series retained. Retry")}: ${error.message}`,
+      );
+    } finally {
+      if (!destroyed && id === sequence) {
+        panelLoading.delete(key);
+        draw(lastReport, lastDetails);
       }
     }
   }

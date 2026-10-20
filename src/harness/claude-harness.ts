@@ -899,7 +899,10 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
         }
       },
       async compactHistory(input) {
-        const model = getRequiredModel(resolveModelId());
+        const modelId = input.model ?? resolveModelId(input.session.scopeId);
+        if (!modelSupportedByHarness(modelId, "claude"))
+          throw new NonRetryableTurnError(`Model ${modelId} is unavailable for claude`);
+        const model = getRequiredModel(modelId);
         const summarize = oneShotRunner(async (turn) => {
           const result = await runPrompt(turn, false);
           if (result.stopped) throw new Error("Compaction was interrupted before completion");
