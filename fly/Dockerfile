@@ -127,7 +127,7 @@ RUN if [ "$INSTALL_BROWSER_ENGINE" = "1" ]; then \
       tar xzf /tmp/browser-harness.tgz -C /tmp; \
       sed -i \
         -e 's/version = "0.13.7"/version = "0.13.7+qm.1"/' \
-        -e 's/aiohttp==3.13.4/aiohttp==3.14.3/' \
+        -e 's/aiohttp==3.13.4/aiohttp==3.14.4/' \
         -e 's/anyio==4.12.1/anyio==4.14.2/g' \
         -e 's/mcp==1.26.0/mcp==1.28.1/' \
         -e 's/pillow==12.2.0/pillow==12.3.0/' \
@@ -146,7 +146,7 @@ RUN if [ "$INSTALL_BROWSER_ENGINE" = "1" ]; then \
       /opt/browser-engine/venv/bin/pip check; \
       /opt/browser-engine/venv/bin/python -c "import browser_use; print('browser-use ok')"; \
       /opt/browser-engine/venv/bin/pip uninstall -y setuptools pip; \
-      /opt/browser-engine/venv/bin/python -c "import browser_use, importlib.metadata, msgpack; assert importlib.metadata.version('anyio') == '4.14.2'; assert importlib.metadata.version('pypdf') == '6.19.0'; print('browser runtime ok')"; \
+      /opt/browser-engine/venv/bin/python -c "import browser_use, importlib.metadata, msgpack; assert importlib.metadata.version('aiohttp') == '3.14.4'; assert importlib.metadata.version('anyio') == '4.14.2'; assert importlib.metadata.version('pypdf') == '6.19.0'; print('browser runtime ok')"; \
       /usr/bin/chromium --version; \
       /usr/bin/chromium --headless --no-sandbox --disable-gpu --dump-dom 'data:text/html,<p>browser-ok</p>' | grep browser-ok; \
       rm -rf \
