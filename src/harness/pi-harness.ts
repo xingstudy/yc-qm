@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   InMemoryCredentialStore,
+  getCurrentTools,
   type Api,
   type Context,
   type Model,
@@ -1214,10 +1215,11 @@ export async function buildModelRuntime(
   }
   const retained = <T extends object | undefined>(options: T): T =>
     cacheRetention ? ({ ...options, cacheRetention } as T) : options;
-  const wireModelId = <T extends Pick<ModelsSimpleStreamOptions, "onPayload"> | undefined>(
+  const wireModelRequest = <T extends Pick<ModelsSimpleStreamOptions, "onPayload"> | undefined>(
     options: T,
     model: Model<Api>,
     target: () => Promise<string>,
+    context: Context,
   ): T =>
     ({
       ...options,
@@ -1227,12 +1229,27 @@ export async function buildModelRuntime(
         if (!body || typeof body !== "object" || Array.isArray(body)) {
           throw new Error("model request payload must be an object");
         }
+        if (
+          (model.api === "openai-codex-responses" || model.api === "openai-responses") &&
+          "tools" in body &&
+          Array.isArray(body.tools)
+        ) {
+          const nonStrictTools = new Set(
+            (context.tools ?? getCurrentTools(context.messages))
+              .filter((tool) => tool.constrainedSampling === false)
+              .map((tool) => tool.name),
+          );
+          for (const tool of body.tools) {
+            if (tool?.type === "function" && nonStrictTools.has(tool.name) && tool.strict == null) tool.strict = false;
+          }
+        }
         return { ...body, model: await target() };
       },
     }) as T;
   const route = <T extends ModelsSimpleStreamOptions | undefined>(
     model: Model<Api>,
     options: T,
+    context: Context,
   ): { model: Model<Api>; options: T } => {
     const request = modelGatewayRequest(modelGateway, model);
     if (!request) {
@@ -1242,7 +1259,9 @@ export async function buildModelRuntime(
       return {
         model,
         options:
-          providerModelId === model.id ? passthrough : wireModelId(passthrough, model, async () => providerModelId),
+          providerModelId === model.id && model.api !== "openai-codex-responses" && model.api !== "openai-responses"
+            ? passthrough
+            : wireModelRequest(passthrough, model, async () => providerModelId, context),
       };
     }
     const routed = {
@@ -1255,12 +1274,17 @@ export async function buildModelRuntime(
     } as T;
     return {
       model: request.model,
-      options: wireModelId(routed, model, async () => {
-        await modelGateway?.refresh?.();
-        const current = modelGatewayRequest(modelGateway, model);
-        if (!current) throw new Error(`Gateway model is unavailable: ${model.id}`);
-        return current.target;
-      }),
+      options: wireModelRequest(
+        routed,
+        model,
+        async () => {
+          await modelGateway?.refresh?.();
+          const current = modelGatewayRequest(modelGateway, model);
+          if (!current) throw new Error(`Gateway model is unavailable: ${model.id}`);
+          return current.target;
+        },
+        context,
+      ),
     };
   };
   const stream = runtime.stream.bind(runtime);
@@ -1269,14 +1293,14 @@ export async function buildModelRuntime(
     context: Context,
     options?: ModelsApiStreamOptions<TApi>,
   ) => {
-    const routed = route(model, options as ModelsSimpleStreamOptions | undefined);
+    const routed = route(model, options as ModelsSimpleStreamOptions | undefined, context);
     return measuredModelStream(model, () =>
       stream(routed.model as Model<TApi>, context, routed.options as unknown as ModelsApiStreamOptions<TApi>),
     );
   }) as typeof runtime.stream;
   const streamSimple = runtime.streamSimple.bind(runtime);
   runtime.streamSimple = ((model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions) => {
-    const routed = route(model, options);
+    const routed = route(model, options, context);
     return measuredModelStream(model, () => streamSimple(routed.model, context, routed.options));
   }) as typeof runtime.streamSimple;
   return runtime;

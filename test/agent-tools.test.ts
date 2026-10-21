@@ -6,6 +6,7 @@ import { filterHistoryForAudience } from "../src/resolution/context-filter.ts";
 import { CommandDenied, NeedsApproval, type ToolContext } from "../src/tools/primitives.ts";
 import type { EntryType, SessionEntry } from "../src/types.ts";
 import type { ComputerStatus } from "../src/sandbox/sandbox.ts";
+import { McpToolExecutionError } from "../src/mcp/mcp-client.ts";
 
 function fakeToolContext(sink?: { lastExecOpts?: Parameters<ToolContext["execute"]>[1] }): ToolContext {
   return {
@@ -1610,6 +1611,57 @@ test("readOnly MCP tools cannot collide with a reserved core tool", () => {
   assert.ok(names.includes("crm_query"));
   assert.ok(!names.includes("credential_exec"));
 });
+
+for (const quarantine of [false, true]) {
+  test(`MCP tool error feedback reaches the caller only after external screening (${quarantine})`, async () => {
+    const emitted: Emitted[] = [];
+    const detail = 'Invalid action: use action="get_me"';
+    const tc = fakeToolContext();
+    tc.callMcpTool = async () => {
+      throw new McpToolExecutionError("trelloReadMember", detail);
+    };
+    const ref: ToolContextRef = {
+      current: tc,
+      scopeLabel: "personal:U1",
+      emit: (e) => {
+        emitted.push(e as Emitted);
+      },
+      screenToolResult: async ({ result, provenance, source }) => {
+        assert.equal(provenance, "external");
+        assert.equal(source, "mcp server trello");
+        assert.ok(result.includes(detail));
+        return quarantine ? { outcome: "quarantine" } : { outcome: "allow" };
+      },
+    };
+    const tools = createAgentTools(ref, {
+      mcpTools: () => [
+        {
+          name: "trello_trelloReadMember",
+          serverId: "trello",
+          remoteName: "trelloReadMember",
+          description: "Read member",
+          inputSchema: { type: "object" },
+          readOnly: true,
+          capability: "member",
+        },
+      ],
+    });
+    const tool = tools.find((t) => t.name === "trello_trelloReadMember")!;
+    assert.equal(tool.constrainedSampling, false);
+    const result = (await call(tool, {})) as { content: Array<{ type: string; text?: string }> };
+    const text = result.content.map((c) => c.text ?? "").join("\n");
+    const stored = emitted.find((e) => e.type === "tool_result")!.payload;
+    assert.equal(stored.isError, true);
+    assert.equal(stored.result, text);
+    if (quarantine) {
+      assert.match(text, /quarantined/);
+      assert.ok(!JSON.stringify(emitted).includes(detail));
+    } else {
+      assert.ok(text.includes(detail));
+      assert.equal(stored.failed, true);
+    }
+  });
+}
 
 test("finish_silently on a poll fire terminates the turn at the tool contract; off one it no-ops", async () => {
   const emitted: Emitted[] = [];
