@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { zstdDecompressSync } from "node:zlib";
 import { Type } from "typebox";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import { buildModelRuntime } from "../src/harness/pi-harness.ts";
 import { CODEX_SUBSCRIPTION_PROVIDER, getRequiredModel } from "../src/model/pi-models.ts";
 
@@ -26,7 +27,12 @@ test("Responses requests keep optional MCP parameters when a custom model omits 
     globalThis.fetch = originalFetch;
   });
   const parameters = Type.Object({ action: Type.String(), boardId: Type.Optional(Type.String()) });
-  for (const method of ["stream", "streamSimple"] as const) {
+  for (const [method, transcript] of [
+    ["stream", false],
+    ["streamSimple", false],
+    ["stream", true],
+    ["streamSimple", true],
+  ] as const) {
     let request: { tools: Array<{ strict?: boolean; parameters: unknown }> } | undefined;
     globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
       const encoded = new Headers(init?.headers).get("content-encoding") === "zstd";
@@ -34,17 +40,21 @@ test("Responses requests keep optional MCP parameters when a custom model omits 
       request = JSON.parse(text);
       return new Response(JSON.stringify({ error: { message: "offline test response" } }), { status: 400 });
     }) as typeof fetch;
-    await runtime[method](
-      model,
-      {
-        messages: [{ role: "user", content: "List boards", timestamp: 0 }],
-        tools: [{ name: "read_board", description: "Read boards", parameters }],
-      },
-      { maxRetries: 0, onPayload: (payload) => ({ ...(payload as object) }) },
-    ).result();
+    const context = {
+      messages: [{ role: "user" as const, content: "List boards", timestamp: 0 }],
+      tools: [
+        { name: "read_board", description: "Read boards", parameters, constrainedSampling: false as const },
+        { name: "other_tool", description: "Unchanged tool", parameters },
+      ],
+    };
+    await runtime[method](model, transcript ? normalizeContext(context) : context, {
+      maxRetries: 0,
+      onPayload: (payload) => ({ ...(payload as object) }),
+    }).result();
     assert.ok(request, `${method} must reach the provider request`);
     assert.equal(request.tools[0]!.strict, false);
     assert.deepEqual(request.tools[0]!.parameters, parameters);
+    assert.equal(request.tools[1]!.strict, undefined, "other tools must keep the provider's original settings");
   }
 });
 
@@ -71,13 +81,14 @@ test("codex subscription requests reach chatgpt.com with the bare model id on bo
       {
         messages: [{ role: "user", content: "hello", timestamp: 0 }],
         tools: [
-          { name: "read_board", description: "Read boards", parameters },
+          { name: "read_board", description: "Read boards", parameters, constrainedSampling: false },
           {
             name: "strict_tool",
             description: "Explicit strict tool",
             parameters,
             constrainedSampling: { type: "json_schema", strict: "require" },
           },
+          { name: "other_tool", description: "Unchanged tool", parameters },
         ],
       },
       { transport: "sse", maxRetries: 0 },
@@ -88,6 +99,7 @@ test("codex subscription requests reach chatgpt.com with the bare model id on bo
     assert.equal(request.body.tools[0]!.strict, false, "optional fields must remain optional at the provider");
     assert.deepEqual(request.body.tools[0]!.parameters, parameters);
     assert.equal(request.body.tools[1]!.strict, true, "explicit strict sampling must be preserved");
+    assert.equal(request.body.tools[2]!.strict, null, "other tools must keep the provider's original settings");
     assert.equal(response.model, "codex/gpt-5.6-sol", `${method} keeps QM's namespaced id on the assistant message`);
   }
 });

@@ -1647,6 +1647,7 @@ for (const quarantine of [false, true]) {
       ],
     });
     const tool = tools.find((t) => t.name === "trello_trelloReadMember")!;
+    assert.equal(tool.constrainedSampling, false);
     const result = (await call(tool, {})) as { content: Array<{ type: string; text?: string }> };
     const text = result.content.map((c) => c.text ?? "").join("\n");
     const stored = emitted.find((e) => e.type === "tool_result")!.payload;
