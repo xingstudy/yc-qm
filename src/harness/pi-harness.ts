@@ -1214,7 +1214,7 @@ export async function buildModelRuntime(
   }
   const retained = <T extends object | undefined>(options: T): T =>
     cacheRetention ? ({ ...options, cacheRetention } as T) : options;
-  const wireModelId = <T extends Pick<ModelsSimpleStreamOptions, "onPayload"> | undefined>(
+  const wireModelRequest = <T extends Pick<ModelsSimpleStreamOptions, "onPayload"> | undefined>(
     options: T,
     model: Model<Api>,
     target: () => Promise<string>,
@@ -1226,6 +1226,15 @@ export async function buildModelRuntime(
         const body = transformed === undefined ? payload : transformed;
         if (!body || typeof body !== "object" || Array.isArray(body)) {
           throw new Error("model request payload must be an object");
+        }
+        if (
+          (model.api === "openai-codex-responses" || model.api === "openai-responses") &&
+          "tools" in body &&
+          Array.isArray(body.tools)
+        ) {
+          for (const tool of body.tools) {
+            if (tool?.type === "function" && tool.strict == null) tool.strict = false;
+          }
         }
         return { ...body, model: await target() };
       },
@@ -1242,7 +1251,9 @@ export async function buildModelRuntime(
       return {
         model,
         options:
-          providerModelId === model.id ? passthrough : wireModelId(passthrough, model, async () => providerModelId),
+          providerModelId === model.id && model.api !== "openai-codex-responses" && model.api !== "openai-responses"
+            ? passthrough
+            : wireModelRequest(passthrough, model, async () => providerModelId),
       };
     }
     const routed = {
@@ -1255,7 +1266,7 @@ export async function buildModelRuntime(
     } as T;
     return {
       model: request.model,
-      options: wireModelId(routed, model, async () => {
+      options: wireModelRequest(routed, model, async () => {
         await modelGateway?.refresh?.();
         const current = modelGatewayRequest(modelGateway, model);
         if (!current) throw new Error(`Gateway model is unavailable: ${model.id}`);
