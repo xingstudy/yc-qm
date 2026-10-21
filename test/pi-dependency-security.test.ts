@@ -55,12 +55,14 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
 
   assert.deepEqual(lockedVersions(packages, "brace-expansion"), ["5.0.12"]);
   assert.deepEqual(lockedVersions(packages, "fast-uri").sort(), ["3.1.8", "4.1.5"]);
-  assert.deepEqual(lockedVersions(packages, "hono"), ["4.13.8"]);
+  assert.deepEqual(lockedVersions(packages, "hono"), ["4.13.11"]);
   assert.deepEqual(lockedVersions(packages, "protobufjs"), ["7.6.5"]);
   assert.deepEqual(lockedVersions(packages, "undici"), ["8.10.2"]);
   assert.deepEqual(lockedVersions(packages, "undici8"), ["8.10.2"]);
   assert.deepEqual(lockedVersions(packages, "@grpc/grpc-js"), ["1.14.5"]);
-  assert.deepEqual(lockedVersions(packages, "@modelcontextprotocol/sdk"), ["1.31.0"]);
+  assert.deepEqual(lockedVersions(packages, "@modelcontextprotocol/sdk"), ["1.32.1"]);
+  assert.deepEqual(lockedVersions(packages, "follow-redirects"), ["1.16.1"]);
+  assert.deepEqual(lockedVersions(webUiLock.packages ?? {}, "follow-redirects"), ["1.16.1"]);
   assert.deepEqual(lockedVersions(packages, "axios"), ["1.20.0"]);
   assert.deepEqual(lockedVersions(packages, "ip-address"), ["10.7.1"]);
   assert.deepEqual(lockedVersions(packages, "proxy-addr"), ["2.0.8"]);
@@ -86,7 +88,7 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
   assert.equal(dependencyVersion(piManifest, "undici"), "8.10.2");
   assert.equal(dependencyVersion(piManifest, "protobufjs"), "7.6.5");
   assert.equal(installedVersion("@hono/node-server"), "2.0.10");
-  assert.equal(installedVersion("hono"), "4.13.8");
+  assert.equal(installedVersion("hono"), "4.13.11");
 });
 
 test("MCP Streamable HTTP works through the patched Hono major", async (t) => {
