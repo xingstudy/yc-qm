@@ -484,14 +484,14 @@ export function createMcpToolService(opts: {
     latestRefresh = pending;
     return pending;
   };
-  const scheduleRefresh = () => {
+  const scheduleRefresh = (invalidateCapabilities = true) => {
     userSnapshots.clear();
-    userCapabilities.clear();
+    if (invalidateCapabilities) userCapabilities.clear();
     void trackedRefresh().catch(() => record("list", "registry", "error"));
   };
   const unsubscribe = opts.servers.onChange(scheduleRefresh);
   const timer = setInterval(() => {
-    if (!closed) scheduleRefresh();
+    if (!closed) scheduleRefresh(false);
   }, opts.refreshIntervalMs ?? REFRESH_INTERVAL_MS);
   timer.unref?.();
   const initialRefresh = trackedRefresh();

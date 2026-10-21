@@ -1341,6 +1341,43 @@ for (const mcpServer of [
   });
 }
 
+test("periodic discovery preserves active user capabilities without weakening invalidation", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const store = mcpStore();
+  await store.put(server({ auth: "user-oauth" }));
+  let tools = TOOLS;
+  let token: string | null = "user-token";
+  const { fetch } = fakeServerFetch({ tools: () => tools });
+  const service = createMcpToolService({
+    servers: store,
+    userTokens: { connectorAccessToken: async () => token },
+    fetchImpl: fetch,
+  });
+  try {
+    await service.ready();
+    await service.refreshForPrincipal("U1");
+    const original = service.toolDefs("U1")[0]!;
+    t.mock.timers.tick(5 * 60_000);
+    await service.ready();
+    assert.deepEqual(service.toolDefs("U1"), []);
+    assert.equal(await service.call(original.capability, {}, "U1"), "ran query");
+    await assert.rejects(() => service.call(original.capability, {}, "U2"), /unknown MCP tool capability/);
+    await service.refreshForPrincipal("U1");
+    assert.equal(service.toolDefs("U1")[0]!.capability, original.capability);
+    token = null;
+    await assert.rejects(() => service.call(original.capability, {}, "U1"), /Connect your account/);
+    token = "user-token";
+    tools = [{ ...TOOLS[0]!, description: "Changed contract" }];
+    await service.refreshForPrincipal("U1", true);
+    await assert.rejects(() => service.call(original.capability, {}, "U1"), /unknown MCP tool capability/);
+    const changed = service.toolDefs("U1")[0]!;
+    await store.put(server({ auth: "user-oauth", enabled: false }));
+    await assert.rejects(() => service.call(changed.capability, {}, "U1"), /unknown MCP tool capability/);
+  } finally {
+    await service.close();
+  }
+});
+
 test("missing or invalid persisted read-only state is fail-closed", async () => {
   const backing = createMemoryMap<StoredMcpServer>();
   const store = mcpStore(backing);
