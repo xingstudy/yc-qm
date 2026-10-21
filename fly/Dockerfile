@@ -47,7 +47,7 @@ ARG TARGETARCH
 ARG INSTALL_BROWSER_ENGINE=0
 ARG CHROME_VERSION=151.0.7922.137-1
 ARG CHROME_SHA=e6dabf044cf9cd0279cfe86efa431682c18bfc06d06339ce055aaa87ae871727
-ARG PIP_VERSION=26.2.1
+ARG PIP_VERSION=26.2.2
 ARG PKG_REFRESH_RUN_ID=
 
 RUN cp /etc/apt/sources.list.d/ubuntu.sources /tmp/ubuntu.sources \
@@ -130,13 +130,13 @@ RUN if [ "$INSTALL_BROWSER_ENGINE" = "1" ]; then \
         -e 's/aiohttp==3.13.4/aiohttp==3.14.4/' \
         -e 's/anyio==4.12.1/anyio==4.14.2/g' \
         -e 's/mcp==1.26.0/mcp==1.28.1/' \
-        -e 's/pillow==12.2.0/pillow==12.3.0/' \
+        -e 's/pillow==12.2.0/pillow==13.0.0/' \
         -e 's/pypdf==6.10.2/pypdf==6.19.0/' \
         -e 's/browser-harness==0.1.8/browser-harness==0.1.8+qm.1/' \
         "/tmp/browser_use-${BROWSER_USE_VERSION}/pyproject.toml"; \
       sed -i \
         -e 's/version = "0.1.8"/version = "0.1.8+qm.1"/' \
-        -e 's/pillow==12.2.0/pillow==12.3.0/' \
+        -e 's/pillow==12.2.0/pillow==13.0.0/' \
         "/tmp/browser_harness-${BROWSER_HARNESS_VERSION}/pyproject.toml"; \
       /opt/browser-engine/venv/bin/pip install --no-cache-dir \
         msgpack==1.2.1 \
@@ -146,7 +146,7 @@ RUN if [ "$INSTALL_BROWSER_ENGINE" = "1" ]; then \
       /opt/browser-engine/venv/bin/pip check; \
       /opt/browser-engine/venv/bin/python -c "import browser_use; print('browser-use ok')"; \
       /opt/browser-engine/venv/bin/pip uninstall -y setuptools pip; \
-      /opt/browser-engine/venv/bin/python -c "import browser_use, importlib.metadata, msgpack; assert importlib.metadata.version('aiohttp') == '3.14.4'; assert importlib.metadata.version('anyio') == '4.14.2'; assert importlib.metadata.version('pypdf') == '6.19.0'; print('browser runtime ok')"; \
+      /opt/browser-engine/venv/bin/python -c "import browser_use, importlib.metadata, msgpack; assert importlib.metadata.version('aiohttp') == '3.14.4'; assert importlib.metadata.version('anyio') == '4.14.2'; assert importlib.metadata.version('pypdf') == '6.19.0'; assert importlib.metadata.version('pillow') == '13.0.0'; print('browser runtime ok')"; \
       /usr/bin/chromium --version; \
       /usr/bin/chromium --headless --no-sandbox --disable-gpu --dump-dom 'data:text/html,<p>browser-ok</p>' | grep browser-ok; \
       rm -rf \
@@ -196,7 +196,7 @@ RUN agent_site=$(/opt/agent-venv/bin/python -c 'import site; print(site.getsitep
   && jq -e \
       '([.components[] | select(.name == "msgpack" and .version == "1.2.1" and .purl == "pkg:pypi/msgpack@1.2.1")] | length) == 1 and ([.components[] | select(.name == "setuptools" and .version == "78.1.1" and .purl == "pkg:pypi/setuptools@78.1.1")] | length) == 1 and ([.components[] | select(.name == "urllib3" and .version == "2.8.0" and .purl == "pkg:pypi/urllib3@2.8.0")] | length) == 1 and ([.. | strings | select(. == "pkg:pypi/msgpack@1.1.2" or . == "pkg:pypi/setuptools@70.3.0" or . == "pkg:pypi/urllib3@2.7.0")] | length) == 0' \
       "$agent_site/pip/_vendor/bom.cdx.json" \
-  && /opt/agent-venv/bin/python -c 'from pip._vendor import msgpack, pkg_resources, urllib3; assert urllib3.__version__ == "2.8.0"; assert msgpack.version == (1, 2, 1); assert str(pkg_resources.parse_version("1.2.3")) == "1.2.3"' \
+  && /opt/agent-venv/bin/python -c 'from pip._vendor import certifi, msgpack, pkg_resources, urllib3; assert certifi.__version__ == "2026.10.19"; assert urllib3.__version__ == "2.8.0"; assert msgpack.version == (1, 2, 1); assert str(pkg_resources.parse_version("1.2.3")) == "1.2.3"' \
   && /opt/agent-venv/bin/pip check \
   && /opt/agent-venv/bin/pip index versions pip \
   && /opt/agent-venv/bin/pip --version
