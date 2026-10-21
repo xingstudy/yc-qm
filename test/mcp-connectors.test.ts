@@ -10,6 +10,7 @@ import {
   createMcpClient,
   fetchPublicMcpJson,
   mcpResultText,
+  McpToolExecutionError,
   type McpFetch,
 } from "../src/mcp/mcp-client.ts";
 import {
@@ -922,12 +923,56 @@ test("remote MCP error content never enters errors or durable audit status", asy
   await service.ready();
   const capability = service.toolDefs().find((tool) => tool.remoteName === "query")!.capability;
   await assert.rejects(service.call(capability, {}), (error: Error) => {
+    assert.ok(error instanceof McpToolExecutionError);
+    assert.equal(error.toolResultText, secret);
     assert.ok(!error.message.includes(secret));
+    assert.ok(!error.stack?.includes(secret));
+    assert.ok(!JSON.stringify(error).includes(secret));
     return true;
   });
   assert.ok(!JSON.stringify(audit).includes(secret));
   await service.close();
 });
+
+for (const mode of ["bearer", "client-credentials"] as const) {
+  test(`MCP ${mode} error feedback redacts credentials and is bounded`, async () => {
+    const token = "sensitive/token+value";
+    const clientSecret = "sensitive-client-secret";
+    const client = createMcpClient({
+      url: "https://mcp.example.com/mcp",
+      auth: mode === "bearer" ? { mode, token } : { mode, clientId: "app", clientSecret },
+      fetchImpl: async (_url, init) => {
+        if (init.headers["content-type"] === "application/x-www-form-urlencoded")
+          return jsonResponse({ access_token: token, expires_in: 3600 });
+        const request = JSON.parse(init.body);
+        const result =
+          request.method === "tools/call"
+            ? {
+                isError: true,
+                structuredContent: {
+                  error: `Invalid action; ${token}; ${encodeURIComponent(token)}; ${mode === "client-credentials" ? clientSecret : ""}; ${"x".repeat(5000)}`,
+                },
+              }
+            : { protocolVersion: "2025-11-25", capabilities: {} };
+        return jsonResponse({ jsonrpc: "2.0", id: request.id, result });
+      },
+    });
+    try {
+      await assert.rejects(client.callTool("query", {}), (error: Error) => {
+        assert.ok(error instanceof McpToolExecutionError);
+        assert.match(error.toolResultText, /Invalid action/);
+        assert.match(error.toolResultText, /\[redacted\]/);
+        assert.ok(!error.toolResultText.includes(token));
+        assert.ok(!error.toolResultText.includes(encodeURIComponent(token)));
+        assert.ok(!error.toolResultText.includes(clientSecret));
+        assert.equal(error.toolResultText.length, 4000);
+        return true;
+      });
+    } finally {
+      await client.close();
+    }
+  });
+}
 
 test("MCP server storage encrypts secrets and migrates legacy records", async () => {
   const backing = createMemoryMap<StoredMcpServer>();
@@ -1062,8 +1107,51 @@ test("MCP discovery normalizes schema annotations and rejects oversized or deep 
     service.toolDefs().map((tool) => tool.remoteName),
     ["normalized"],
   );
-  assert.equal(JSON.stringify(service.toolDefs()[0]!.inputSchema).includes(marker), false);
+  const schema = service.toolDefs()[0]!.inputSchema;
+  assert.equal(schema.description, marker);
+  const query = (schema.properties as Record<string, Record<string, unknown>>).query!;
+  assert.equal(query.description, marker.repeat(10_000).slice(0, 4000));
+  for (const key of ["title", "$comment", "examples", "default"]) assert.equal(query[key], undefined);
+  assert.equal(JSON.stringify(schema["x-extension"]).includes(marker), false);
   await service.close();
+});
+
+test("MCP discovery preserves action-dependent parameter instructions for per-user tools", async () => {
+  const store = mcpStore();
+  await store.put(server({ auth: "user-oauth" }));
+  const inputSchema = {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["list", "get"], description: "Use list for my boards; get requires boardId." },
+      boardId: {
+        type: "string",
+        minLength: 1,
+        description: "Required for get; not allowed for list. Must be a board ARI.",
+      },
+      cursor: {
+        type: "string",
+        minLength: 1,
+        description: "Omit on the first page; use the returned cursor for subsequent pages.",
+      },
+    },
+    required: ["action"],
+    additionalProperties: false,
+  };
+  const { fetch } = fakeServerFetch({ tools: () => [{ name: "trelloReadBoard", inputSchema }] });
+  const service = createMcpToolService({
+    servers: store,
+    userTokens: { connectorAccessToken: async () => "user-token" },
+    fetchImpl: fetch,
+    refreshIntervalMs: 3600_000,
+  });
+  try {
+    await service.ready();
+    await service.refreshForPrincipal("U1");
+    assert.deepEqual(service.toolDefs("U1")[0]!.inputSchema, inputSchema);
+    assert.deepEqual(service.toolDefs("U2"), []);
+  } finally {
+    await service.close();
+  }
 });
 
 test("MCP discovery bounds the total normalized schema budget", async () => {

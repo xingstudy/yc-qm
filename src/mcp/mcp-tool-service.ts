@@ -5,7 +5,14 @@ import type { AuditLog } from "../audit/audit-log.ts";
 import type { ConnectorTokenStore } from "../credentials/keychain.ts";
 import { mcpOAuthCredentialHost } from "../connectors/oauth.ts";
 import { createKeyedQueue } from "../util/async.ts";
-import { createMcpClient, mcpResultText, type McpAuth, type McpClient, type McpFetch } from "./mcp-client.ts";
+import {
+  createMcpClient,
+  mcpResultText,
+  McpToolExecutionError,
+  type McpAuth,
+  type McpClient,
+  type McpFetch,
+} from "./mcp-client.ts";
 import type { McpServer, McpServerStore } from "./mcp-server-store.ts";
 
 const REFRESH_INTERVAL_MS = 5 * 60_000;
@@ -101,6 +108,10 @@ function schemaRecord(value: unknown, depth: number, nodes: { count: number }): 
     return null;
   const normalized: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
+    if (key === "description" && typeof entry === "string") {
+      normalized.description = entry.slice(0, MAX_TOOL_DESCRIPTION_CHARS);
+      continue;
+    }
     if (SCHEMA_ANNOTATIONS.has(key)) continue;
     const next = schemaValue(key, entry, depth, nodes);
     if (next === undefined) return null;
@@ -610,7 +621,7 @@ export function createMcpToolService(opts: {
           return text.length > MAX_RESULT_CHARS ? `${text.slice(0, MAX_RESULT_CHARS)}\n[truncated]` : text;
         } catch (error) {
           record("call", `${def.serverId}/${def.remoteName}`, "error", principalId);
-          if (error instanceof McpUserConnectionRequiredError) throw error;
+          if (error instanceof McpUserConnectionRequiredError || error instanceof McpToolExecutionError) throw error;
           throw new Error(`MCP tool ${def.serverId}/${def.remoteName} failed`, { cause: error });
         }
       } finally {

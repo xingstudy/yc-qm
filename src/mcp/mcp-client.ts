@@ -227,6 +227,19 @@ export interface McpToolResult {
   isError?: boolean;
 }
 
+export class McpToolExecutionError extends Error {
+  #toolResultText: string;
+
+  constructor(tool: string, toolResultText: string) {
+    super(`mcp tool ${tool} returned an error`);
+    this.#toolResultText = toolResultText;
+  }
+
+  get toolResultText(): string {
+    return this.#toolResultText;
+  }
+}
+
 export function mcpResultText(result: McpToolResult): string {
   if (!Array.isArray(result.content)) return "";
   return result.content
@@ -628,7 +641,19 @@ export function createMcpClient(opts: {
     async callTool(name, args) {
       if (closed) throw new Error("MCP client is closed");
       const result = (await call("tools/call", { name, arguments: args })) as McpToolResult;
-      if (result.isError) throw new Error(`mcp tool ${name} returned an error`);
+      if (result.isError) {
+        let text = mcpResultText(result) || JSON.stringify(result.structuredContent ?? "") || "";
+        const secrets = [
+          ...(opts.auth.mode === "bearer" ? [opts.auth.token] : []),
+          ...(opts.auth.mode === "client-credentials" ? [opts.auth.clientSecret] : []),
+          cached?.accessToken,
+        ];
+        for (const secret of secrets) {
+          if (!secret) continue;
+          text = text.replaceAll(secret, "[redacted]").replaceAll(encodeURIComponent(secret), "[redacted]");
+        }
+        throw new McpToolExecutionError(name, text.slice(0, 4000));
+      }
       return result;
     },
     async close() {
