@@ -1,5 +1,5 @@
 import { NonRetryableTurnError } from "../core/turn-error.ts";
-import { webuiModelEnabled } from "./runtime-config.ts";
+import { runtimeConfigBody, webuiModelEnabled } from "./runtime-config.ts";
 import { isSubagentThreadRef } from "../sessions/session-syscalls.ts";
 import type { Conversation, Principal, TurnRequest, TurnResult } from "../types.ts";
 import { orgId as orgIdOf } from "../config.ts";
@@ -18,11 +18,10 @@ import {
   isHarnessId,
   modelProviderAvailabilityFor,
   modelServiceable,
-  modelOfferedInWebui,
   modelUnavailableReason,
   resolveModel,
 } from "../model/pi-models.ts";
-import { builtInModelCatalog, selectableCatalogForHarness, selectableModelCatalog } from "../model/model-catalog.ts";
+import { selectableModelCatalog } from "../model/model-catalog.ts";
 import { resolveRuntimeChoiceDurable } from "../harness/harness-router.ts";
 import { swallow, swallowAs } from "../util/errors.ts";
 import { sleep } from "../util/async.ts";
@@ -269,23 +268,21 @@ export function createTurnMethods(
               reason: "that model isn't available on this deployment (its provider isn't configured)",
             };
           }
-          const configuredWebuiModels = await deps.config.getWebuiModelsDurable(targetScope, actor.id);
-          let enabledWebuiModels: string[];
-          if (configuredWebuiModels?.length) {
-            enabledWebuiModels = [...new Set([...configuredWebuiModels, orgRuntime.modelId])];
-          } else {
-            const catalog = providers?.openrouter
-              ? await selectableModelCatalog(deps.modelCredentialFetch)
-              : builtInModelCatalog();
-            enabledWebuiModels = [
-              ...new Set([
-                ...selectableCatalogForHarness(catalog, runtime.harnessId)
-                  .filter((model) => modelOfferedInWebui(model.id))
-                  .map((model) => model.id),
-                ...(orgRuntime.harnessId === runtime.harnessId ? [orgRuntime.modelId] : []),
-              ]),
-            ];
-          }
+          const webRuntime = await runtimeConfigBody(
+            {
+              deps: {
+                config: deps.config,
+                harnessId: runtimeFallback.harnessId,
+                baseModelDefault: runtimeFallback.modelId,
+                providerKeys: configuredKeys,
+                modelCredentials: deps.modelCredentials,
+                modelCredentialFetch: deps.modelCredentialFetch,
+              },
+            },
+            targetScope,
+            actor.id,
+          );
+          const enabledWebuiModels = webRuntime.modelsByHarness[runtime.harnessId] ?? [];
           const invalidModelOption =
             validateWebTurnModelOptions(req, enabledWebuiModels, providers) ??
             (!(await webuiModelEnabled({ deps }, runtime.modelId, targetScope, actor.id))

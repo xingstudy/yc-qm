@@ -43,7 +43,7 @@ test("the sandbox base builds a patched GitHub CLI", () => {
   const localBuild = readFileSync(new URL("../scripts/local-sandbox-build.sh", import.meta.url), "utf8");
   assert.match(dockerfile, /ARG GH_VERSION=2\.99\.0/);
   assert.match(dockerfile, /ARG X_MOD_VERSION=0\.41\.0/);
-  assert.match(dockerfile, /^FROM golang:1\.26\.9-alpine@sha256:[a-f0-9]{64} AS gh-builder$/m);
+  assert.match(dockerfile, /^FROM golang:1\.26\.10-alpine@sha256:[a-f0-9]{64} AS gh-builder$/m);
   assert.match(dockerfile, /ARG GOPROXY=https:\/\/proxy\.golang\.org,direct/);
   assert.match(dockerfile, /ARG PIP_INDEX_URL=https:\/\/pypi\.org\/simple/);
   assert.match(dockerfile, /GOPROXY="\$GOPROXY" go mod download/);

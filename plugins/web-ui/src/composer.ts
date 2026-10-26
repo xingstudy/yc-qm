@@ -452,6 +452,12 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     if (pendingComposerFocus) focusComposerEnd();
   }
 
+  function syncStoredModelSelection(event: StorageEvent): void {
+    if (event.key === THREAD_PICKS_STORAGE_KEY) syncRuntimeSelection(ctx.chat.state.agent ?? undefined);
+  }
+
+  window.addEventListener("storage", syncStoredModelSelection);
+
   async function changeScopeRuntime(
     change: {
       harnessId?: string;
@@ -2622,6 +2628,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
 
   function dispose(): void {
     closeMentionMenu();
+    window.removeEventListener("storage", syncStoredModelSelection);
     window.removeEventListener("model-account-changed", refreshAccount);
     cancelLoadoutClose();
     unsubscribeRuntime?.();

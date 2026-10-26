@@ -204,6 +204,14 @@ test("the model picker remembers compatible harnesses without duplicating or cha
     await composer!.refreshRuntimeSelection(null, agent, true);
     assert.equal(composer!.state.effortLevel, "high", "identical refresh preserves restored effort");
     assert.equal(composer!.state.fastMode, true, "identical refresh preserves restored Fast");
+    localStorage.setItem("web-ui:model-picks", JSON.stringify([["web:tester:picker-test", "pi:gamma"]]));
+    window.dispatchEvent(new dom.window.StorageEvent("storage", { key: "web-ui:model-picks" }));
+    assert.equal(composer!.currentModelOption()?.model.id, "gamma");
+    assert.equal(agent.state.model.id, "gamma");
+    localStorage.removeItem("web-ui:model-picks");
+    window.dispatchEvent(new dom.window.StorageEvent("storage", { key: "web-ui:model-picks" }));
+    assert.equal(composer!.currentModelOption()?.model.id, "alpha");
+    assert.equal(agent.state.model.id, "alpha");
     const siblingHost = document.createElement("section");
     document.body.append(siblingHost);
     const siblingAgent = { state: { isStreaming: false, messages: [] } } as unknown as Agent;

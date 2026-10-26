@@ -91,7 +91,7 @@
     "croner": "^10.0.1",
     "dingtalk-stream": "^2.1.6-beta.1",
     "emoji-datasource": "^16.0.0",
-    "fastify": "^5.12.5",
+    "fastify": "^5.12.7",
     "jose": "^6.2.3",
     "lru-cache": "^11.5.2",
     "modal": "^0.10.0",
@@ -105,9 +105,9 @@
     "socks-proxy-agent": "10.1.0",
     "tar-stream": "^3.2.0",
     "typebox": "^1.1.38",
-    "undici": "8.10.2",
+    "undici": "8.12.3",
     "yauzl": "^3.4.0",
-    "zod": "4.4.3",
+    "zod": "4.6.7",
     "@aws-sdk/s3-request-presigner": "^3.1061.0",
     "e2b": "^2.39.0"
   },
@@ -121,29 +121,33 @@
     "@grpc/grpc-js": "1.14.5",
     "@modelcontextprotocol/sdk": "$@modelcontextprotocol/sdk",
     "@hono/node-server": "2.0.10",
-    "hono": "4.13.11",
+    "hono": "4.13.14",
     "@fastify/ajv-compiler": {
-      "fast-uri": "3.1.8"
+      "fast-uri": "3.1.9"
     },
     "ajv": {
-      "fast-uri": "3.1.8"
+      "fast-uri": "3.1.9"
     },
     "axios": "1.20.0",
     "brace-expansion": "^5.0.12",
     "fast-json-stringify": {
-      "fast-uri": "4.1.5"
+      "fast-uri": "4.2.3"
     },
     "qs": "6.16.0",
     "protobufjs": "7.6.5",
-    "ip-address": "10.7.1",
+    "ip-address": "10.7.5",
     "proxy-addr": "2.0.8",
     "smol-toml": "1.9.0",
     "undici": "$undici",
-    "undici8": "npm:undici@8.10.2"
+    "undici8": "npm:undici@8.12.3",
+    "zod": "$zod",
+    "effect": {
+      "toml": "5.0.1"
+    }
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.11.10",
     "@types/tar-stream": "^3.1.4",
