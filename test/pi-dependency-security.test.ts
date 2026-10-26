@@ -54,19 +54,22 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
   assert.equal(pi?.license, "MIT");
 
   assert.deepEqual(lockedVersions(packages, "brace-expansion"), ["5.0.12"]);
-  assert.deepEqual(lockedVersions(packages, "fast-uri").sort(), ["3.1.8", "4.1.5"]);
-  assert.deepEqual(lockedVersions(packages, "hono"), ["4.13.11"]);
+  assert.deepEqual(lockedVersions(packages, "fast-uri").sort(), ["3.1.9", "4.2.3"]);
+  assert.deepEqual(lockedVersions(packages, "hono"), ["4.13.14"]);
   assert.deepEqual(lockedVersions(packages, "protobufjs"), ["7.6.5"]);
-  assert.deepEqual(lockedVersions(packages, "undici"), ["8.10.2"]);
-  assert.deepEqual(lockedVersions(packages, "undici8"), ["8.10.2"]);
+  assert.deepEqual(lockedVersions(packages, "undici"), ["8.12.3"]);
+  assert.deepEqual(lockedVersions(packages, "undici8"), ["8.12.3"]);
   assert.deepEqual(lockedVersions(packages, "@grpc/grpc-js"), ["1.14.5"]);
-  assert.deepEqual(lockedVersions(packages, "@modelcontextprotocol/sdk"), ["1.32.1"]);
-  assert.deepEqual(lockedVersions(packages, "follow-redirects"), ["1.16.1"]);
-  assert.deepEqual(lockedVersions(webUiLock.packages ?? {}, "follow-redirects"), ["1.16.1"]);
+  assert.deepEqual(lockedVersions(packages, "@modelcontextprotocol/sdk"), ["1.32.2"]);
   assert.deepEqual(lockedVersions(packages, "axios"), ["1.20.0"]);
-  assert.deepEqual(lockedVersions(packages, "ip-address"), ["10.7.1"]);
+  assert.deepEqual(lockedVersions(packages, "ip-address"), ["10.7.5"]);
   assert.deepEqual(lockedVersions(packages, "proxy-addr"), ["2.0.8"]);
   assert.deepEqual(lockedVersions(packages, "smol-toml"), ["1.9.0"]);
+  assert.deepEqual(lockedVersions(packages, "toml"), ["5.0.1"]);
+  assert.deepEqual(lockedVersions(packages, "zod"), ["4.6.7"]);
+  assert.deepEqual(lockedVersions(packages, "body-parser"), ["2.4.0"]);
+  assert.deepEqual(lockedVersions(packages, "follow-redirects"), ["1.16.1"]);
+  assert.deepEqual(lockedVersions(webUiLock.packages ?? {}, "follow-redirects"), ["1.16.1"]);
   assert.match(
     readFileSync(new URL(`../${piLicensePath}`, import.meta.url), "utf8"),
     /Copyright \(c\) 2025 Mario Zechner/,
@@ -78,17 +81,43 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
     );
   }
   assert.deepEqual(lockedVersions(packages, "brace-expansion"), ["5.0.12"]);
-  assert.deepEqual(lockedVersions(packages, "fast-uri").sort(), ["3.1.8", "4.1.5"]);
-  assert.deepEqual(lockedVersions(packages, "fastify"), ["5.12.5"]);
+  assert.deepEqual(lockedVersions(packages, "fast-uri").sort(), ["3.1.9", "4.2.3"]);
+  assert.deepEqual(lockedVersions(packages, "fastify"), ["5.12.7"]);
   assert.deepEqual(lockedVersions(packages, "protobufjs"), ["7.6.5"]);
   assert.deepEqual(lockedVersions(packages, "qs"), ["6.16.0"]);
   assert.deepEqual(lockedVersions(webUiLock.packages ?? {}, "qs"), ["6.16.0"]);
   assert.deepEqual(lockedVersions(packages, "@hono/node-server"), ["2.0.10"]);
   assert.equal(dependencyVersion(minimatchManifest, "brace-expansion"), "5.0.12");
-  assert.equal(dependencyVersion(piManifest, "undici"), "8.10.2");
+  assert.equal(dependencyVersion(piManifest, "undici"), "8.12.3");
   assert.equal(dependencyVersion(piManifest, "protobufjs"), "7.6.5");
   assert.equal(installedVersion("@hono/node-server"), "2.0.10");
-  assert.equal(installedVersion("hono"), "4.13.11");
+  assert.equal(installedVersion("hono"), "4.13.14");
+});
+
+test("OpenCode tool validation and Effect TOML parsing work with patched dependencies", async () => {
+  const { tool } = await import("@opencode-ai/plugin");
+  const schema = tool.schema.object({ name: tool.schema.string(), count: tool.schema.number().int().positive() });
+  assert.deepEqual(schema.parse({ name: "example", count: 2 }), { name: "example", count: 2 });
+  assert.equal(schema.safeParse({ name: "example", count: -1 }).success, false);
+
+  const effectManifest = new URL("../node_modules/effect/package.json", import.meta.url);
+  assert.equal(dependencyVersion(effectManifest, "toml"), "5.0.1");
+  const toml = createRequire(effectManifest)("toml") as { parse: (source: string) => unknown };
+  const parsed = toml.parse('[server]\nport = 8080\n[[models]]\nname = "example"\n');
+  assert.equal(Object.getPrototypeOf(parsed), null);
+  assert.deepEqual(JSON.parse(JSON.stringify(parsed)), {
+    server: { port: 8080 },
+    models: [{ name: "example" }],
+  });
+  assert.throws(() => toml.parse("port = ["));
+});
+
+test("the bundled connector SDK resolves patched HTTP and schema dependencies", () => {
+  const lock = JSON.parse(
+    readFileSync(new URL("../deploy/connector-sdk/package-lock.json", import.meta.url), "utf8"),
+  ) as { packages: Record<string, { version?: unknown }> };
+  assert.deepEqual(lockedVersions(lock.packages, "undici"), ["7.30.1"]);
+  assert.deepEqual(lockedVersions(lock.packages, "zod"), ["4.6.7"]);
 });
 
 test("MCP Streamable HTTP works through the patched Hono major", async (t) => {

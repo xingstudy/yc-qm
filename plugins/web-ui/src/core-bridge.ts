@@ -494,6 +494,7 @@ export interface RunPoll {
   finishedAt?: number | null;
 }
 export interface TurnOptions {
+  modelId?: string;
   effortLevel?: string;
   fastMode?: boolean;
   harness?: string;
@@ -1076,7 +1077,7 @@ function turnRequestBody(
     text,
     threadRef,
     ...(turnOptions.harness ? { harness: turnOptions.harness } : {}),
-    model: model.id,
+    model: turnOptions.modelId ?? model.id,
     ...(thinkingLevel ? { thinkingLevel } : {}),
     ...(typeof turnOptions.fastMode === "boolean" ? { fastMode: turnOptions.fastMode } : {}),
     ...(timezone ? { timezone } : {}),

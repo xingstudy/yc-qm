@@ -634,6 +634,7 @@ export function createChatSurface(
     if (!selected) throw new Error("No model is available");
     const harness = selected.harnessId;
     return {
+      modelId: selected.model.id,
       ...(harnessSupportsEffort(harness) ? { effortLevel: ctx.composer.state.effortLevel } : {}),
       ...(harnessSupportsFastMode(harness) ? { fastMode: ctx.composer.state.fastMode } : {}),
       harness,

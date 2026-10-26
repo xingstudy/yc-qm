@@ -359,14 +359,85 @@ test("web turns keep a persisted OpenRouter model enabled when the refreshed cat
     assert.equal(persisted.status, "queued");
 
     assert.equal(getRequiredModel("openai/gpt-4.1").provider, "openrouter");
+    const arbitrary = await turn("web:alice:arbitrary-openrouter-model", "openai/gpt-4.1");
+    assert.equal(arbitrary.status, "refused");
+    assert.match(arbitrary.reason ?? "", /not enabled for the web UI/);
     await srv.built.config.setRuntimeSelectionLatest("personal:alice", {
       harnessId: "mock",
       modelId: "openai/gpt-4.1",
     });
-    const arbitrary = await turn("web:alice:arbitrary-openrouter-model", "openai/gpt-4.1");
-    assert.equal(arbitrary.status, "refused");
-    assert.match(arbitrary.reason ?? "", /not enabled for the web UI/);
+    const scoped = await turn("web:alice:scoped-openrouter-model", "openai/gpt-4.1");
+    assert.equal(scoped.status, "queued", JSON.stringify(scoped));
   } finally {
+    await srv.close();
+  }
+});
+
+test("web turns accept scoped custom aliases advertised by the picker without bypassing scope restrictions", async () => {
+  const srv = start();
+  const scope = "personal:alice";
+  const modelId = "compat-model";
+  const turn = (model: string) =>
+    srv.built.app.turn({
+      surface: "web",
+      actor: { externalId: "alice" },
+      conversation: { kind: "dm", threadRef: `web:alice:custom-alias-${model}` },
+      text: "hello",
+      harness: "pi",
+      model,
+      async: true,
+    });
+  try {
+    for (const id of ["openai-qf2", "openai-qf3"]) {
+      await srv.built.customProviders.upsert(
+        {
+          id,
+          name: id,
+          protocol: "openai-responses",
+          baseUrl: "https://example.invalid/v1",
+          models: [{ id: modelId }],
+        },
+        "test-custom-key",
+        "admin-alice",
+      );
+    }
+    await srv.built.refreshCustomProviders();
+    srv.built.config.setApprovedHarnesses(["pi"]);
+    await srv.built.config.flushScope("org:default-org");
+    await srv.built.config.setRuntimeSelectionLatest("org:default-org", {
+      harnessId: "pi",
+      modelId: `openai-qf2/${modelId}`,
+    });
+    await srv.built.config.setRuntimeSelectionLatest(scope, { harnessId: "pi", modelId });
+    const response = await fetch(`${srv.base}/v1/runtime-config?principalId=alice&scopeId=personal%3Aalice`);
+    assert.equal(response.status, 200);
+    const picker = (await response.json()) as {
+      modelsByHarness: Record<string, string[]>;
+      modelCatalog: Record<string, { provider: string }>;
+    };
+    assert.ok(picker.modelsByHarness.pi!.includes(modelId));
+    assert.equal(picker.modelCatalog[modelId]?.provider, "openai-qf3");
+    const accepted = await turn(modelId);
+    assert.equal(accepted.status, "queued", JSON.stringify(accepted));
+    const qualified = await turn(`openai-qf3/${modelId}`);
+    assert.equal(qualified.status, "queued", JSON.stringify(qualified));
+    srv.built.config.setWebuiModels(scope, [`openai-qf2/${modelId}`]);
+    await srv.built.config.flushScope(scope);
+    for (const model of [modelId, `openai-qf3/${modelId}`]) {
+      const denied = await turn(model);
+      assert.equal(denied.status, "refused", JSON.stringify(denied));
+      assert.match(denied.reason ?? "", /not allowed for this scope/);
+    }
+    srv.built.config.setWebuiModels(scope, null);
+    await srv.built.config.flushScope(scope);
+    await srv.built.customProviders.delete("openai-qf3", "admin-alice");
+    await srv.built.refreshCustomProviders();
+    const removed = await turn(`openai-qf3/${modelId}`);
+    assert.equal(removed.status, "refused", JSON.stringify(removed));
+  } finally {
+    await srv.built.customProviders.delete("openai-qf2", "admin-alice");
+    await srv.built.customProviders.delete("openai-qf3", "admin-alice");
+    await srv.built.refreshCustomProviders();
     await srv.close();
   }
 });
