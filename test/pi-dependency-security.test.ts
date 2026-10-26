@@ -16,9 +16,12 @@ function installedVersion(path: string): string {
   return manifest.version;
 }
 
+function dependencyManifest(parentManifest: URL | string, dependency: string): string {
+  return createRequire(parentManifest).resolve(`${dependency}/package.json`);
+}
+
 function dependencyVersion(parentManifest: URL | string, dependency: string): string {
-  const requireFromParent = createRequire(parentManifest);
-  const manifest = JSON.parse(readFileSync(requireFromParent.resolve(`${dependency}/package.json`), "utf8")) as {
+  const manifest = JSON.parse(readFileSync(dependencyManifest(parentManifest, dependency), "utf8")) as {
     version?: unknown;
   };
   if (typeof manifest.version !== "string") throw new Error(`${dependency} has no package version`);
@@ -100,7 +103,8 @@ test("OpenCode tool validation and Effect TOML parsing work with patched depende
   assert.deepEqual(schema.parse({ name: "example", count: 2 }), { name: "example", count: 2 });
   assert.equal(schema.safeParse({ name: "example", count: -1 }).success, false);
 
-  const effectManifest = new URL("../node_modules/effect/package.json", import.meta.url);
+  const pluginManifest = new URL("../node_modules/@opencode-ai/plugin/package.json", import.meta.url);
+  const effectManifest = dependencyManifest(pluginManifest, "effect");
   assert.equal(dependencyVersion(effectManifest, "toml"), "5.0.1");
   const toml = createRequire(effectManifest)("toml") as { parse: (source: string) => unknown };
   const parsed = toml.parse('[server]\nport = 8080\n[[models]]\nname = "example"\n');
