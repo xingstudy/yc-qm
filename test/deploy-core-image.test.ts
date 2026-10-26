@@ -129,3 +129,10 @@ test("deploy image package installs reuse BuildKit caches", () => {
     );
   }
 });
+
+test("edge and local Compose pin the patched NGINX image", () => {
+  const image = "nginx:1.30.6-alpine@sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951";
+  for (const path of ["deploy/edge/Dockerfile", "docker-compose.yaml"]) {
+    assert.ok(readFileSync(join(repoRoot, path), "utf8").includes(image), path);
+  }
+});

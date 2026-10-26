@@ -219,3 +219,17 @@ test("package lockfiles use portable public tarball URLs without private registr
     }
   }
 });
+
+test("the Web UI keeps browser-only SDKs out of the production dependency graph", () => {
+  const { packages } = JSON.parse(
+    readFileSync(new URL("../plugins/web-ui/package-lock.json", import.meta.url), "utf8"),
+  ) as {
+    packages: Record<string, { version?: string; dev?: boolean }>;
+  };
+  assert.equal(packages["node_modules/@earendil-works/pi-web-ui"]?.dev, true);
+  assert.equal(packages["node_modules/@lmstudio/sdk"]?.dev, true);
+  const zod = Object.entries(packages).filter(([path, info]) => path.endsWith("node_modules/zod") && !info.dev);
+  assert.ok(zod.length > 0);
+  for (const [, info] of zod) assert.equal(info.version, "4.6.7");
+  assert.equal(packages["node_modules/dompurify"]?.version, "3.4.17");
+});

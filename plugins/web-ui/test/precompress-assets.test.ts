@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import type { Plugin, ResolvedConfig } from "vite";
-import { precompressStaticAssets } from "../vite.config.ts";
+import { browserRuntimeBoundary, precompressStaticAssets } from "../vite.config.ts";
 import viteConfig from "../vite.config.ts";
 
 type Hook<K extends keyof Plugin> = Extract<Plugin[K], (...args: never[]) => unknown>;
@@ -59,4 +59,28 @@ test("the build config actually registers the precompressor", () => {
   const registered = plugins.find((p) => p.name === "qm-precompress-static-assets");
   assert.ok(registered, "vite.config.ts must register the precompressor or the build ships raw assets");
   assert.equal(registered.apply, "build");
+});
+
+test("the browser build rejects unused LMStudio runtime dependencies", () => {
+  const plugin = browserRuntimeBoundary();
+  const generate = plugin.generateBundle as Hook<"generateBundle">;
+  const context = {
+    error: (message: string): never => {
+      throw new Error(message);
+    },
+  };
+  const chunk = (id: string) => ({ entry: { type: "chunk", modules: { [id]: {} } } });
+  assert.throws(
+    () =>
+      generate.call(
+        context as never,
+        {} as never,
+        chunk("/app/node_modules/@lmstudio/sdk/dist/index.js") as never,
+        false,
+      ),
+    /Unused LMStudio dependencies/,
+  );
+  assert.doesNotThrow(() =>
+    generate.call(context as never, {} as never, chunk("/app/node_modules/zod/v4/index.js") as never, false),
+  );
 });

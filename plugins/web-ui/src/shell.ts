@@ -2008,7 +2008,8 @@ window.addEventListener("focus", () => {
 });
 
 function warmDeferredChunks(): void {
-  const warm = (): void => void import("@earendil-works/pi-web-ui").catch(() => {});
+  const warm = (): void =>
+    void import("../node_modules/@earendil-works/pi-web-ui/dist/utils/attachment-utils.js").catch(() => {});
   const ric = (window as unknown as { requestIdleCallback?: (cb: () => void) => void }).requestIdleCallback;
   if (ric) ric(warm);
   else setTimeout(warm, 1500);
