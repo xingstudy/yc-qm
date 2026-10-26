@@ -507,7 +507,10 @@ export function createChatSurface(
         messages,
         tools: [],
       },
-      convertToLlm: (messages) => import("@earendil-works/pi-web-ui").then((m) => m.defaultConvertToLlm(messages)),
+      convertToLlm: (messages) =>
+        import("../node_modules/@earendil-works/pi-web-ui/dist/components/Messages.js").then((m) =>
+          m.defaultConvertToLlm(messages),
+        ),
     });
     chatState.agent = agent;
     clearLiveWork();

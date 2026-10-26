@@ -59,9 +59,25 @@ export function precompressStaticAssets(): Plugin {
   };
 }
 
+export function browserRuntimeBoundary(): Plugin {
+  return {
+    name: "qm-browser-runtime-boundary",
+    generateBundle(_options, bundle) {
+      for (const output of Object.values(bundle)) {
+        if (output.type !== "chunk") continue;
+        for (const id of Object.keys(output.modules)) {
+          if (id.includes("/node_modules/@lmstudio/")) {
+            this.error(`Unused LMStudio dependencies must not enter the browser bundle: ${id}`);
+          }
+        }
+      }
+    },
+  };
+}
+
 export default defineConfig({
   base: process.env.WEB_UI_BASE ?? "/",
-  plugins: [precompressStaticAssets()],
+  plugins: [browserRuntimeBoundary(), precompressStaticAssets()],
   resolve: {
     alias: [
       { find: /^katex$/, replacement: here("src/lazy-katex.ts") },

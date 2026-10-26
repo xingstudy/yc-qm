@@ -20,9 +20,9 @@ RUN npm install -g --allow-scripts=@anthropic-ai/claude-code \
       npm@12.0.2 \
   && npm install --prefix /tmp/npm-fixes --ignore-scripts --omit=dev \
       brace-expansion@5.0.12 \
-      ip-address@10.7.1 \
+      ip-address@10.7.5 \
       http-cache-semantics@4.3.0 \
-      undici@6.28.1 \
+      undici@6.29.1 \
       tar@7.5.22 \
   && rm -rf \
       /usr/local/lib/node_modules/npm/node_modules/brace-expansion \
@@ -98,7 +98,7 @@ RUN claude --version \
   && node --version \
   && npm --version \
   && node -e 'const tar = require("/usr/local/lib/node_modules/npm/node_modules/tar"); const { version } = require("/usr/local/lib/node_modules/npm/node_modules/tar/package.json"); if (!tar || version !== "7.5.22") throw new Error(`unexpected tar version ${version}`)' \
-  && node -e 'for (const [name, expected] of [["http-cache-semantics", "4.3.0"], ["undici", "6.28.1"]]) { require(`/usr/local/lib/node_modules/npm/node_modules/${name}`); const { version } = require(`/usr/local/lib/node_modules/npm/node_modules/${name}/package.json`); if (version !== expected) throw new Error(`${name}: unexpected version ${version}`); }' \
+  && node -e 'for (const [name, expected] of [["http-cache-semantics", "4.3.0"], ["undici", "6.29.1"]]) { require(`/usr/local/lib/node_modules/npm/node_modules/${name}`); const { version } = require(`/usr/local/lib/node_modules/npm/node_modules/${name}/package.json`); if (version !== expected) throw new Error(`${name}: unexpected version ${version}`); }' \
   && aws --version \
   && gh --version
 
@@ -131,7 +131,7 @@ RUN if [ "$INSTALL_BROWSER_ENGINE" = "1" ]; then \
         -e 's/anyio==4.12.1/anyio==4.14.2/g' \
         -e 's/mcp==1.26.0/mcp==1.28.1/' \
         -e 's/pillow==12.2.0/pillow==13.0.0/' \
-        -e 's/pypdf==6.10.2/pypdf==6.19.0/' \
+        -e 's/pypdf==6.10.2/pypdf==6.21.2/' \
         -e 's/browser-harness==0.1.8/browser-harness==0.1.8+qm.1/' \
         "/tmp/browser_use-${BROWSER_USE_VERSION}/pyproject.toml"; \
       sed -i \
@@ -146,7 +146,7 @@ RUN if [ "$INSTALL_BROWSER_ENGINE" = "1" ]; then \
       /opt/browser-engine/venv/bin/pip check; \
       /opt/browser-engine/venv/bin/python -c "import browser_use; print('browser-use ok')"; \
       /opt/browser-engine/venv/bin/pip uninstall -y setuptools pip; \
-      /opt/browser-engine/venv/bin/python -c "import browser_use, importlib.metadata, msgpack; assert importlib.metadata.version('aiohttp') == '3.14.4'; assert importlib.metadata.version('anyio') == '4.14.2'; assert importlib.metadata.version('pypdf') == '6.19.0'; assert importlib.metadata.version('pillow') == '13.0.0'; print('browser runtime ok')"; \
+      /opt/browser-engine/venv/bin/python -c "import browser_use, importlib.metadata, msgpack; assert importlib.metadata.version('aiohttp') == '3.14.4'; assert importlib.metadata.version('anyio') == '4.14.2'; assert importlib.metadata.version('pypdf') == '6.21.2'; assert importlib.metadata.version('pillow') == '13.0.0'; print('browser runtime ok')"; \
       /usr/bin/chromium --version; \
       /usr/bin/chromium --headless --no-sandbox --disable-gpu --dump-dom 'data:text/html,<p>browser-ok</p>' | grep browser-ok; \
       rm -rf \

@@ -16,10 +16,10 @@ test("the sandbox base replaces npm's vulnerable bundled dependencies", () => {
   assert.ok(npmFix);
   assert.ok(finalStage);
   assert.match(npmFix, /\bbrace-expansion@5\.0\.12\b/);
-  assert.match(npmFix, /\bip-address@10\.7\.1\b/);
+  assert.match(npmFix, /\bip-address@10\.7\.5\b/);
   for (const [name, version] of [
     ["http-cache-semantics", "4.3.0"],
-    ["undici", "6.28.1"],
+    ["undici", "6.29.1"],
   ]) {
     assert.ok(npmFix.includes(`${name}@${version}`));
     assert.ok(npmFix.includes(`/usr/local/lib/node_modules/npm/node_modules/${name}`));
@@ -63,8 +63,8 @@ test("the sandbox base replaces browser-use's vulnerable aiohttp, anyio and pypd
   assert.match(browserRuntime, /importlib\.metadata\.version\('aiohttp'\) == '3\.14\.4'/);
   assert.match(browserRuntime, /s\/anyio==4\.12\.1\/anyio==4\.14\.2\/g/);
   assert.match(browserRuntime, /importlib\.metadata\.version\('anyio'\) == '4\.14\.2'/);
-  assert.match(browserRuntime, /s\/pypdf==6\.10\.2\/pypdf==6\.19\.0\//);
-  assert.match(browserRuntime, /importlib\.metadata\.version\('pypdf'\) == '6\.19\.0'/);
+  assert.match(browserRuntime, /s\/pypdf==6\.10\.2\/pypdf==6\.21\.2\//);
+  assert.match(browserRuntime, /importlib\.metadata\.version\('pypdf'\) == '6\.21\.2'/);
   assert.equal(browserRuntime.match(/s\/pillow==12\.2\.0\/pillow==13\.0\.0\//g)?.length, 2);
   assert.match(browserRuntime, /importlib\.metadata\.version\('pillow'\) == '13\.0\.0'/);
 });

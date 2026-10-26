@@ -2377,7 +2377,8 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
 
   async function loadAnyAttachment(file: File): Promise<Attachment> {
     try {
-      const { loadAttachment } = await import("@earendil-works/pi-web-ui");
+      const { loadAttachment } =
+        await import("../node_modules/@earendil-works/pi-web-ui/dist/utils/attachment-utils.js");
       return await loadAttachment(file);
     } catch {
       return {
