@@ -1,7 +1,7 @@
 import { render, type TemplateResult } from "lit";
 import { Activity, KeyRound, Link, Plus, RefreshCw, ShieldCheck } from "lucide";
 import { api } from "./core-bridge";
-import { errMessage } from "../../chassis/src/errors";
+import { userErrorMessage as errMessage } from "./error-banner";
 import { icon } from "./ui";
 import { connectorLogo } from "./connector-logo";
 import { appState, replacePanePreservingFocus } from "./shell";

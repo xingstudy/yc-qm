@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>异常提示预览</title>
+  <style>
+    body {
+      max-width: 760px;
+      margin: 32px auto;
+      padding: 0 20px;
+    }
+    .example {
+      margin: 28px 0;
+    }
+  </style>
+  <div id="preview"></div>
+  <script type="module">
+    import "/src/shell.css";
+    import { html, render } from "lit";
+    import { turnErrorNotice, composerErrorNotice } from "/src/error-banner.ts";
+    localStorage.setItem("qm:locale", "zh-CN");
+    const examples = [
+      turnErrorNotice('API error (429): {"code":"usage_limit_reached","reset_seconds":11143} (run example-1)'),
+      composerErrorNotice(
+        "this request is not allowed with the current access; ask an administrator to check permissions (run 7dfed805-477d-4765-8a55-1f1c68555806)",
+      ),
+      turnErrorNotice("Timed out waiting for the agent to respond."),
+      turnErrorNotice("Unknown error (run example-4)"),
+    ];
+    render(
+      html`<h1>异常提示预览</h1>
+        ${examples.map((example) => html`<section class="example">${example}</section>`)}`,
+      document.getElementById("preview"),
+    );
+  </script>
+</html>

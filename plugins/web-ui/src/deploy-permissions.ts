@@ -6,7 +6,7 @@ import { api } from "./core-bridge";
 import { closeFormMenus, icon, initials, menuSelect } from "./ui";
 import { scopeChip } from "./contexts";
 import { friendlyPrincipal } from "./deploy-view";
-import { errMessage } from "../../chassis/src/errors";
+import { userErrorMessage as errMessage } from "./error-banner";
 import { peopleResults, type DirectoryMatch } from "./people-results";
 
 interface Grant {

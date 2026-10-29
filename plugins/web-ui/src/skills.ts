@@ -5,7 +5,7 @@ import { html, localeCode, t } from "./i18n.ts";
 import { Search } from "lucide";
 import { api, projectContextLabel, type CoreContext } from "./core-bridge";
 import type { SkillItem } from "./composer";
-import { errMessage } from "../../chassis/src/errors";
+import { userErrorMessage as errMessage } from "./error-banner";
 import { focusTextInputOnDesktop } from "./viewport";
 import { fieldSelect } from "./ui";
 import { appState } from "./shell";

@@ -29,8 +29,8 @@ test("a still-loading composer is not painted as a failure", () => {
   assert.match(branch, /composerState\.error\s*\?/, "the branch must split on a real error");
   assert.match(branch, /class="composer-note">\$\{t\("Loading runtime settings…"\)\}/, "loading is a note");
   const loadingAt = branch.indexOf("Loading runtime settings…");
-  const errorClassAt = branch.indexOf('class="composer-error"');
-  assert.ok(errorClassAt >= 0 && errorClassAt < loadingAt, "only the real error keeps the error class");
+  const errorNoticeAt = branch.indexOf("composerErrorNotice(composerState.error)");
+  assert.ok(errorNoticeAt >= 0 && errorNoticeAt < loadingAt, "only the real error renders a failure notice");
   assert.ok(
     !/class="composer-error">[\s\S]{0,80}Loading runtime settings…/.test(branch),
     "the loading placeholder must not render inside .composer-error",

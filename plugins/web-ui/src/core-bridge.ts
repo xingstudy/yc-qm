@@ -11,7 +11,7 @@ import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model
 import type { Agent, AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import { errMessage, swallow } from "../../chassis/src/errors.ts";
 import { projectOptionName, projectScopeName } from "../../chassis/src/project-label.js";
-import { userFacingFailureText } from "../../chassis/src/failure-copy.ts";
+import { GENERIC_FAILURE_TEXT, safeFailureReason, userFacingFailureText } from "../../chassis/src/failure-copy.ts";
 import { groupDmText } from "./group-dm-label.ts";
 import { base64ToBytes } from "./paste-text.ts";
 import { defaultEffortForModel, harnessSupportsEffort } from "./runtime-capabilities.ts";
@@ -105,7 +105,11 @@ export async function uploadAttachments(attachments: readonly PiAttachment[]): P
       uploaded.push(await toCoreAttachment(a));
     } catch (err) {
       if (err instanceof ApiError && err.status === 413) skip(oversizeAttachmentNote(a.fileName), true);
-      else skip(`"${a.fileName}" couldn't be uploaded (${errMessage(err)}). Try again.`, false);
+      else
+        skip(
+          `"${a.fileName}" couldn't be uploaded. ${safeFailureReason(errMessage(err)) ?? GENERIC_FAILURE_TEXT}`,
+          false,
+        );
     }
   }
   return { uploaded, skipped };

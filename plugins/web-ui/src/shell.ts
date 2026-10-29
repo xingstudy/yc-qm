@@ -45,7 +45,8 @@ import {
   withBase,
 } from "./core-bridge";
 import { seedRuntimeConfig } from "./runtime-config-store";
-import { errMessage, swallow } from "../../chassis/src/errors";
+import { swallow } from "../../chassis/src/errors";
+import { userErrorMessage as errMessage } from "./error-banner";
 import { brandMark, brandName, icon } from "./ui";
 import { isPhone, PHONE_MAX_WIDTH, trackVisualViewport } from "./viewport";
 import { markConnectorConnected } from "./chat";

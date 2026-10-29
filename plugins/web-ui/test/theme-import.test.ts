@@ -9,6 +9,7 @@ import {
   stripJsonc,
   themeCss,
   themeTokens,
+  ThemeImportError,
   type Palette,
 } from "../src/theme-import.ts";
 
@@ -152,6 +153,7 @@ test("a theme name is capped so the settings radio stays a label", () => {
 });
 
 test("garbage is rejected with a message that names both accepted formats", () => {
+  assert.throws(() => importTheme("notes.json", "hello there"), ThemeImportError);
   assert.throws(() => importTheme("notes.json", "hello there"), /iTerm2 \.itermcolors or a VS Code color theme/);
   assert.throws(() => importTheme("empty.json", "{}"), /editor\.background/);
 });

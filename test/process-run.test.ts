@@ -415,7 +415,7 @@ test("a crashed turn's raw exception text never reaches the stored reason", asyn
   assert.match(reason, /required service could not be reached/, "surfaces receive a safe, useful reason");
 });
 
-test("a NonRetryableTurnError keeps its human-readable reason on the stored result", async () => {
+test("a NonRetryableTurnError stores classified timeout guidance", async () => {
   const { runs } = createMemoryRunStore();
   const orchestrator = fakeOrchestrator(async () => {
     throw new NonRetryableTurnError("Codex turn exceeded 300s wall clock");
@@ -424,5 +424,5 @@ test("a NonRetryableTurnError keeps its human-readable reason on the stored resu
   await runs.enqueue({ sessionId: "s1", request: turn, maxAttempts: 1 });
   const run = await runs.claim("w1", 5_000);
   await assert.rejects(processRun({ runs, orchestrator, leaseTtlMs: 5_000 }, run!));
-  assert.equal((await runs.get(run!.id))?.result?.reason, "Codex turn exceeded 300s wall clock");
+  assert.equal((await runs.get(run!.id))?.result?.reason, "the AI service or a tool timed out; try again");
 });

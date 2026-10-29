@@ -1,7 +1,7 @@
 import { nothing } from "lit";
 import { html, t } from "./i18n.ts";
 import { api } from "./core-bridge.ts";
-import { errMessage } from "../../chassis/src/errors.ts";
+import { userErrorMessage as errMessage } from "./error-banner.ts";
 import {
   SKILL_UPLOAD_MAX_BYTES,
   type SkillImportPreview,

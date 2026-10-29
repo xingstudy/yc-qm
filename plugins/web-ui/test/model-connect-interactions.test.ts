@@ -131,7 +131,8 @@ test("AI account modal interactions", async (t) => {
     let fail = true;
     fetcher = async (path) => (fail ? Response.json({ error: "offline" }, { status: 503 }) : base(path));
     await open();
-    assert.match(doc.querySelector("[role=alert]")!.textContent!, /offline/);
+    assert.match(doc.querySelector("[role=alert]")!.textContent!, /temporarily unavailable/);
+    assert.doesNotMatch(doc.querySelector("[role=alert]")!.textContent!, /offline/);
     assert.equal(doc.querySelector(".mc-providers"), null);
     fail = false;
     button("Retry").click();

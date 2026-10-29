@@ -2,7 +2,7 @@ import { nothing, render, type TemplateResult } from "lit";
 import { html, localeCode, t } from "./i18n.ts";
 import { Check, ChevronDown, Plus } from "lucide";
 import { api } from "./core-bridge";
-import { errMessage } from "../../chassis/src/errors";
+import { userErrorMessage as errMessage, turnErrorNotice } from "./error-banner";
 import { actionSnippet, closeFormMenus, copyText, icon, relTime, setFormMenuValue, toggleFormMenu } from "./ui";
 import { listBackLink, listPageTpl } from "./list-page";
 import { ensureContexts, scopeChip } from "./contexts";
@@ -280,7 +280,7 @@ function openWebhook(w: WebhookView, opts: { push?: boolean } = {}): void {
           w.lastError
             ? html`<div class="field">
                 <label>Last error</label>
-                <div class="value" style="color:var(--destructive,#c00)">${w.lastError}</div>
+                ${turnErrorNotice(w.lastError)}
               </div>`
             : ""
         }

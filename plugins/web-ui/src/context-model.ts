@@ -11,7 +11,7 @@ import {
 } from "./model-options";
 import { html, t } from "./i18n.ts";
 import { fieldSelect } from "./ui";
-import { errMessage } from "../../chassis/src/errors";
+import { userErrorMessage as errMessage } from "./error-banner";
 
 const INHERIT = "";
 

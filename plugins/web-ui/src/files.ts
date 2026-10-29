@@ -16,7 +16,7 @@ import {
 } from "lucide";
 import { api, fileContentUrl, webFetch, withBase } from "./core-bridge";
 import { html, t } from "./i18n.ts";
-import { errMessage } from "../../chassis/src/errors";
+import { userErrorMessage as errMessage } from "./error-banner";
 import { browserRenderableImage, fieldSelect, formatBytes, icon, relTime } from "./ui";
 import { contextsState, ensureContexts, personalScopeId, scopeChip, scopeTitle } from "./contexts";
 import { appState } from "./shell";

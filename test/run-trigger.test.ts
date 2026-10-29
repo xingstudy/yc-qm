@@ -272,10 +272,7 @@ describe("runTrigger: an autonomous cron does NOT go live (it may be conditional
     assert.equal(out.note, "failed: TypeError: fetch failed at sandbox.ts:42", "the operator record keeps the detail");
     const pending = await d.deliveries.pending("slack");
     assert.equal(pending.length, 1);
-    assert.equal(
-      pending[0]!.text,
-      "⚠️ could not run: an unexpected internal error interrupted the turn; try again or contact an administrator",
-    );
+    assert.equal(pending[0]!.text, "⚠️ could not run: a required service could not be reached; try again");
   });
 
   it("a busy-session fire's error notice says the conversation was busy, never the raw status", async () => {

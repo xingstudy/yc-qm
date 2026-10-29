@@ -132,8 +132,8 @@ import "./slack-setup";
 import { connectorLinksIn, stripConnectorLinks, type ConnectorLink } from "./connector-link";
 import { deepLinkPath, UI_BASE } from "./deep-link";
 import type { ChatSurface, ConvCtx } from "./conv-types";
-import { errMessage, swallow } from "../../chassis/src/errors";
-import { showStateError } from "./error-banner";
+import { swallow } from "../../chassis/src/errors";
+import { composerErrorNotice, showStateError, turnErrorNotice, userErrorMessage as errMessage } from "./error-banner";
 import { splitLinks } from "./linkify";
 import { slackWireToPlain, splitSlackWire, stripSlackDirectives } from "./slack-text";
 import { installMarkdownSanitizer } from "./markdown-sanitize";
@@ -810,7 +810,7 @@ export function createChatSurface(
         });
     } catch (err) {
       if (agent === chatState.agent) {
-        ctx.composer.state.error = err instanceof Error ? err.message : "Could not send the approval.";
+        ctx.composer.state.error = errMessage(err, "Could not send the approval.");
         drawActiveChat(agent);
       }
     } finally {
@@ -1018,7 +1018,7 @@ export function createChatSurface(
       await completion;
     } catch (err) {
       if (agent === chatState.agent)
-        ctx.composer.state.error = err instanceof Error ? err.message : "Could not reconnect to the running task.";
+        ctx.composer.state.error = errMessage(err, "Could not reconnect to the running task.");
     } finally {
       if (agent === chatState.agent) {
         agent.streamFn = normalStreamFn;
@@ -1211,7 +1211,7 @@ export function createChatSurface(
                     ? shownMessages.map((m, i) => chatMessage(m, i))
                     : html`<div class="empty compact">No readable messages in this conversation.</div>`
                 }
-                ${ctx.composer.state.error ? html`<div class="composer-error inline">${ctx.composer.state.error}</div>` : nothing}
+                ${ctx.composer.state.error ? composerErrorNotice(ctx.composer.state.error) : nothing}
               </div>
             </section>
           </div>
@@ -1610,7 +1610,7 @@ export function createChatSurface(
               ${chatState.earlierCount > 0 ? earlierNotice(agent) : nothing} ${messageContent}
               ${glanceTier ? nothing : liveWorkStatus(agent)}
               ${emptyChat && !isNewUser && !editingApp && !showWelcome ? html`<h1 class="chat-cta">${chatCta()}</h1>` : nothing}
-              ${showStateError(messages, agent.state.errorMessage) ? html`<div class="composer-error inline">${agent.state.errorMessage}</div>` : nothing}
+              ${showStateError(messages, agent.state.errorMessage) ? turnErrorNotice(agent.state.errorMessage!) : nothing}
             </div>
           </section>
           <div class="chat-bottom-dock">
@@ -1903,7 +1903,7 @@ export function createChatSurface(
         <article class="message-row assistant-row ${isStreaming ? "streaming" : ""}" data-index=${index}>
           <div class="assistant-body">
             ${workView} ${assistantContent(msg, isStreaming, showWork)} ${assistantFileList(deliveredFiles)}
-            ${msg.stopReason === "error" && msg.errorMessage ? html`<div class="composer-error inline">${msg.errorMessage}</div>` : nothing}
+            ${msg.stopReason === "error" && msg.errorMessage ? turnErrorNotice(msg.errorMessage) : nothing}
             ${isStreaming ? nothing : messageMeta(msg, index)}
           </div>
         </article>

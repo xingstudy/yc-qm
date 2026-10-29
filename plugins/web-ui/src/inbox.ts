@@ -1,3 +1,4 @@
+import { userErrorMessage } from "./error-banner";
 import {
   ensureSentMail,
   openSentEmail,
@@ -401,7 +402,7 @@ export async function refreshInbox(opts: { silent?: boolean; ifStaleMs?: number 
     inboxState.error = null;
     inboxState.fetchedAt = Date.now();
   } catch (e) {
-    inboxState.error = e instanceof Error ? e.message : String(e);
+    inboxState.error = userErrorMessage(e);
   } finally {
     inboxState.loading = false;
     drawAll();
@@ -498,7 +499,7 @@ async function continueSentReply(item: InboxItem): Promise<void> {
     replaceItem(await postAction(item, "reply"));
     drawAll();
   } catch (error) {
-    notify(`Couldn't start a reply: ${error instanceof Error ? error.message : error}`);
+    notify(userErrorMessage(error, "Couldn't start a reply."));
   }
 }
 
@@ -646,7 +647,7 @@ async function persistDraftNow(itemId: string): Promise<void> {
     replaceItem(next);
   } catch (e) {
     if (isDraftConflict(e)) return explainDraftConflict(item, true);
-    notify(`Couldn't save the draft: ${e instanceof Error ? e.message : e}`);
+    notify(userErrorMessage(e, "Couldn't save the draft."));
   }
 }
 
@@ -688,7 +689,7 @@ async function sendItemNow(itemId: string): Promise<void> {
     if (isDraftConflict(e)) return explainDraftConflict(item, Boolean(edited));
     const hint =
       e instanceof ApiError && e.status === 409 && /connect/i.test(e.message) ? ". Reconnect it under Keychain" : "";
-    notify(`Send failed: ${e instanceof Error ? e.message : e}${hint}`);
+    notify(`${userErrorMessage(e, "Could not confirm that the message was sent.")}${hint}`);
   }
 }
 
@@ -701,7 +702,7 @@ export async function setItemStatus(item: InboxItem, status: "open" | "dismissed
     if (status === "dismissed") showArchiveToast(item);
     return true;
   } catch (e) {
-    notify(`Couldn't update the item: ${e instanceof Error ? e.message : e}`);
+    notify(userErrorMessage(e, "Couldn't update the item."));
     return false;
   } finally {
     acting.delete(item.id);
@@ -725,7 +726,7 @@ export async function askAgent(item: InboxItem, message: string): Promise<void> 
     draftEdits.delete(item.id);
     replaceItem(mapped);
   } catch (e) {
-    notify(`The agent couldn't answer: ${e instanceof Error ? e.message : e}`);
+    notify(userErrorMessage(e, "The agent couldn't answer."));
     if (!chatDrafts.has(item.id)) chatDrafts.set(item.id, text);
   } finally {
     chatting.delete(item.id);
@@ -746,7 +747,7 @@ async function setUpSync(): Promise<void> {
     inboxState.loopId = out.loop?.id ?? inboxState.loopId;
     notify("Inbox sync is on. First pass runs within 15 minutes.");
   } catch (e) {
-    notify(`Couldn't set up sync: ${e instanceof Error ? e.message : e}`);
+    notify(userErrorMessage(e, "Couldn't set up sync."));
   } finally {
     inboxState.syncBusy = false;
     drawAll();
@@ -762,7 +763,7 @@ async function syncNow(): Promise<void> {
     await api(`/api/crons/${encodeURIComponent(cron.id)}/run`, { method: "POST", body: "{}" });
     notify("Sync kicked off. New items appear as the agent finishes drafting.");
   } catch (e) {
-    notify(`Couldn't start a sync: ${e instanceof Error ? e.message : e}`);
+    notify(userErrorMessage(e, "Couldn't start a sync."));
   } finally {
     inboxState.syncBusy = false;
     drawAll();

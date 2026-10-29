@@ -415,7 +415,7 @@ test("a failed run renders friendly copy, never the internal failure reason", as
   assert.doesNotMatch(final.errorMessage ?? "", /TypeError|sandbox\.ts/, "raw internals never reach the transcript");
   assert.equal(
     final.errorMessage,
-    "An unexpected internal error interrupted the turn. Try again, or ask an administrator to check the error log. (run run-failed-copy)",
+    "I couldn't finish that turn: a required service could not be reached; try again. (run run-failed-copy)",
   );
 });
 

@@ -1,6 +1,6 @@
 import { nothing, type TemplateResult } from "lit";
 import { api } from "./core-bridge";
-import { errMessage } from "../../chassis/src/errors";
+import { userErrorMessage as errMessage } from "./error-banner";
 import { html, t } from "./i18n";
 import { fieldSelect } from "./ui";
 

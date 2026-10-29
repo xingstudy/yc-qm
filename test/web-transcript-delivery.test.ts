@@ -319,7 +319,10 @@ test("a parked web run's failure note lands as a turn_failure entry the web tran
   assert.equal(entries[0]!.type, "system");
   const payload = entries[0]!.payload as { kind?: string; message?: string; runId?: string };
   assert.equal(payload.kind, "turn_failure");
-  assert.match(payload.message ?? "", /I couldn't finish that turn: an unexpected internal error/);
+  assert.match(
+    payload.message ?? "",
+    /I couldn't finish that turn: the request could not be completed for an unknown reason/,
+  );
   assert.doesNotMatch(payload.message ?? "", /lease expired/, "the internal park reason never reaches the transcript");
   assert.ok(payload.runId, "carries the run id so the surface-agnostic onTerminal recorder stays idempotent");
 });

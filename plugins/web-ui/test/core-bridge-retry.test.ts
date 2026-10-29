@@ -133,6 +133,25 @@ test("a 4xx is definitive — the poll fails immediately without retrying", asyn
   assert.equal(i, 1, "no retries after a definitive 4xx");
 });
 
+test("an exhausted provider quota reaches the live chat as actionable usage guidance", async () => {
+  globalThis.fetch = (async () =>
+    Response.json({
+      status: "failed",
+      result: {
+        status: "failed",
+        reason: 'provider 429 {"code":"usage_limit_reached","reset_seconds":11143,"message":"private"}',
+      },
+    })) as typeof fetch;
+  const stream = createAssistantMessageEventStream();
+  await pollRun(stream, blankAssistant(), "run-quota", freshAcc(Date.now()));
+  const final = await drain(stream);
+  assert.equal(final.stopReason, "error");
+  assert.match(final.errorMessage!, /usage limit has been reached/);
+  assert.match(final.errorMessage!, /186 minutes/);
+  assert.match(final.errorMessage!, /run run-quota/);
+  assert.doesNotMatch(final.errorMessage!, /private|429|reset_seconds/);
+});
+
 test("persistent transient failures past the idle window fail with a timeout, not a crash", async () => {
   let clock = 4_000_000;
   setClock(() => clock);
