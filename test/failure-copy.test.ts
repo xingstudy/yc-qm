@@ -126,6 +126,9 @@ test("known provider and service errors share safe guidance even when non-retrya
     ["No available default model is configured private", FAILURE_REASONS.model],
     ["Codex OAuth auth is unavailable (private)", FAILURE_REASONS.authentication],
     ["connect ECONNREFUSED private:403", FAILURE_REASONS.connection],
+    ["Connection error.", FAILURE_REASONS.connection],
+    ["Connection failed. private", FAILURE_REASONS.connection],
+    ["Failed to connect to private", FAILURE_REASONS.connection],
   ] as const) {
     assert.equal(safeFailureReason(raw), expected, raw);
     for (const error of [

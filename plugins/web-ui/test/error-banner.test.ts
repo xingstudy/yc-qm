@@ -165,6 +165,7 @@ test("live and historical failures render localized guidance with diagnostics co
       ["rate_limit_error private", "服务请求过多，请稍后再试", /等几分钟/],
       [FAILURE_REASONS.timeout, "任务执行超时", /缩小任务范围/],
       ["fetch failed private", "暂时无法连接所需服务", /检查网络连接/],
+      ["Connection error. (run becdd3c0-bfbd-4f44-b9d3-4570cb1b1596)", "暂时无法连接所需服务", /检查网络连接/],
       ["HTTP 503 private", "所需服务暂时不可用", /稍后重试/],
       ["invalid_api_key private", "需要重新连接账户", /重新连接对应账户/],
       ["context_length_exceeded private", "对话或请求内容过长", /新开对话/],

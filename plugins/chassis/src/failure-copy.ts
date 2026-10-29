@@ -47,7 +47,7 @@ export function safeFailureReason(reason: string | undefined): string | undefine
   const known = Object.values(FAILURE_REASONS).find((safe) => reason.includes(safe));
   if (known) return known;
   if (
-    /\b(?:ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|fetch failed|failed to fetch|network error|network unreachable|socket hang up)\b/i.test(
+    /\b(?:ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|fetch failed|failed to fetch|network error|network unreachable|connection error|connection failed|failed to connect|socket hang up)\b/i.test(
       reason,
     )
   )
