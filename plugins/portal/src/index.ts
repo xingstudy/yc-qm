@@ -41,6 +41,7 @@ import {
 } from "./oidc.ts";
 import {
   proxyToSurface,
+  proxyViteHmr,
   proxyToDeployment,
   proxyToUpstream,
   proxyToAppHost,
@@ -1090,6 +1091,29 @@ const server = createServer((req, res) => {
     if (!res.headersSent) json(res, 500, { error: "internal_error" });
     else res.end();
   });
+});
+
+server.on("upgrade", (req, socket, head) => {
+  socket.on("error", () => socket.destroy());
+  const protocol = req.headers["sec-websocket-protocol"];
+  if (IS_PROD || req.method !== "GET" || (protocol !== "vite-hmr" && protocol !== "vite-ping")) {
+    socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    return;
+  }
+  if (!sameOriginRequest(req)) {
+    socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    return;
+  }
+  void currentSession(req)
+    .then((session) => {
+      if (socket.destroyed) return;
+      if (!session) {
+        socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+        return;
+      }
+      proxyViteHmr(req, socket, head, UPSTREAMS["web-ui"]!);
+    })
+    .catch(() => socket.destroy());
 });
 
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
