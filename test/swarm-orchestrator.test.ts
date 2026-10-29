@@ -6,6 +6,7 @@ import * as mockHarness from "../src/harness/mock-harness.ts";
 import { installFakeModal } from "./support/fake-modal.ts";
 import { testConfig } from "./support/test-config.ts";
 import { runResultDelivery } from "../src/delivery/run-result-delivery.ts";
+import { FAILURE_REASONS } from "../plugins/chassis/src/failure-copy.ts";
 import type { HarnessTurnInput } from "../src/harness/harness.ts";
 import { createServer } from "../src/api/server.ts";
 import { signedRequestHeaders } from "../src/auth/source-auth-sign.ts";
@@ -530,7 +531,7 @@ test("disabled swarms park queued notifications once without running the model o
     const completed = await built.runs.waitFor(run.id, 15_000);
     assert.equal(completed.status, "failed");
     assert.equal(completed.attempts, 1);
-    assert.equal(completed.result?.reason, "swarm service unavailable");
+    assert.equal(completed.result?.reason, FAILURE_REASONS.unavailable);
     assert.equal(swarmModelCalls, 0);
     assert.equal(runResultDelivery(completed), null);
     const entries = await built.sessions.getEntries(root.id);
@@ -552,7 +553,7 @@ test("disabled swarms park queued notifications once without running the model o
       const rejected = await built.runs.waitFor(manual.id, 15_000);
       assert.equal(rejected.status, "failed");
       assert.equal(rejected.attempts, 1);
-      assert.equal(rejected.result?.reason, "swarm service unavailable");
+      assert.equal(rejected.result?.reason, FAILURE_REASONS.unavailable);
       assert.equal(swarmModelCalls, 0);
     }
   } finally {

@@ -198,7 +198,7 @@ test("sent view pages Gmail messages and opens the matching Google account", asy
       throw new Error("Connect Google");
     };
     await loadSentMail(draw);
-    assert.match(host.querySelector('[role="alert"]')!.textContent!, /Connect Google/);
+    assert.match(host.querySelector('[role="alert"]')!.textContent!, /Google account under Keychain/);
     assert.equal(host.querySelectorAll(".inbox-sent-row").length, 0);
     resetSentMail();
     assert.deepEqual(domErrors, []);

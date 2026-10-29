@@ -106,7 +106,7 @@ test("runResultDelivery still posts a surface-spine turn's FAILURE note", () => 
   spine.request = { ...spine.request, surfaceTools: true };
   assert.equal(
     runResultDelivery(spine)?.text,
-    "⚠️ I couldn't finish that turn: an unexpected internal error interrupted the turn; try again or contact an administrator (run r-1)",
+    "⚠️ I couldn't finish that turn: the request could not be completed for an unknown reason; check any results before retrying or contact an administrator (run r-1)",
   );
 });
 
@@ -183,7 +183,7 @@ test("runResultDelivery links the admin error page when a resolver is wired", ()
   const d = runResultDelivery(failed, [], (sessionId) => `https://portal.example.com/admin/?session=${sessionId}`);
   assert.equal(
     d?.text,
-    "⚠️ I couldn't finish that turn: an unexpected internal error interrupted the turn; try again or contact an administrator (run r-1) — full error: https://portal.example.com/admin/?session=b6f3f9e2-0000-4000-8000-000000000001",
+    "⚠️ I couldn't finish that turn: the request could not be completed for an unknown reason; check any results before retrying or contact an administrator (run r-1) — full error: https://portal.example.com/admin/?session=b6f3f9e2-0000-4000-8000-000000000001",
   );
 });
 
@@ -193,7 +193,7 @@ test("runResultDelivery turns a parked run into a visible failure note", () => {
   );
   assert.equal(
     d?.text,
-    "⚠️ I couldn't finish that turn: an unexpected internal error interrupted the turn; try again or contact an administrator (run r-1)",
+    "⚠️ I couldn't finish that turn: the request could not be completed for an unknown reason; check any results before retrying or contact an administrator (run r-1)",
   );
   assert.doesNotMatch(d?.text ?? "", /lease expired/, "the internal failure reason never reaches the user");
   assert.equal(d?.idempotencyKey, "run:r-1");
@@ -303,7 +303,7 @@ test("wired stores: a parked run lands a durable, non-ackable failure note", asy
   assert.equal(pending.length, 1, "the park enqueues a durable recovery copy");
   assert.equal(
     pending[0]!.text,
-    `⚠️ I couldn't finish that turn: an unexpected internal error interrupted the turn; try again or contact an administrator (run ${parked.id})`,
+    `⚠️ I couldn't finish that turn: the request could not be completed for an unknown reason; check any results before retrying or contact an administrator (run ${parked.id})`,
   );
   assert.equal(pending[0]!.idempotencyKey, `run:${parked.id}`);
 });
@@ -335,7 +335,7 @@ test("a parked run's failure lands as a turn_failure entry in the run's own sess
   assert.deepEqual(entries[0]!.payload, {
     kind: "turn_failure",
     message:
-      "I couldn't finish that turn: an unexpected internal error interrupted the turn; try again or contact an administrator",
+      "I couldn't finish that turn: the request could not be completed for an unknown reason; check any results before retrying or contact an administrator",
     runId: "r-1",
   });
   const tape = await sessions.getTape(session.id);
@@ -407,7 +407,7 @@ test("wired stores: a parked Slack run gets both the durable session entry and t
   assert.deepEqual(entries[0]!.payload, {
     kind: "turn_failure",
     message:
-      "I couldn't finish that turn: an unexpected internal error interrupted the turn; try again or contact an administrator",
+      "I couldn't finish that turn: the request could not be completed for an unknown reason; check any results before retrying or contact an administrator",
     runId: parked.id,
   });
 

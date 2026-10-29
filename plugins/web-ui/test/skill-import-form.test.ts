@@ -112,7 +112,7 @@ test("file selection keeps the complete upload and rejected imports clear stale 
     async () => {},
   );
   assert.equal(form.preview, null);
-  assert.equal(form.error, "Source changed");
+  assert.match(form.error, /Preview the skills again before importing/);
   assert.equal(form.busy, false);
 });
 

@@ -6,8 +6,8 @@ import { ExternalLink, LogOut, Monitor, Moon, ShieldUser, Sun, type IconNode } f
 import { icon } from "./ui";
 import { ADMIN_HOME_URL, appState, can, signOut } from "./shell";
 import { sessionsState, setWebOnly } from "./sessions";
-import { errMessage } from "../../chassis/src/errors";
-import { importTheme, isPalette, themeCss, themeTokens, type Palette } from "./theme-import";
+import { userErrorMessage as errMessage } from "./error-banner";
+import { importTheme, isPalette, themeCss, themeTokens, ThemeImportError, type Palette } from "./theme-import";
 
 export type ThemeChoice = "light" | "dark" | "system" | "custom";
 
@@ -106,7 +106,8 @@ async function onThemeFileChosen(e: Event): Promise<void> {
   try {
     installCustomTheme(importTheme(file.name, await file.text()));
   } catch (err) {
-    themeImportError = t(errMessage(err, "Couldn't read that theme file."));
+    themeImportError =
+      err instanceof ThemeImportError ? t(err.message) : errMessage(err, "Couldn't read that theme file.");
     drawSettings();
   }
 }

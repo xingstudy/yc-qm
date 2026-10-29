@@ -1,3 +1,4 @@
+import { userErrorMessage } from "./error-banner";
 import { nothing, type TemplateResult } from "lit";
 import { html, localeCode, t } from "./i18n.ts";
 import { ArrowUpRight, ChevronRight, Mail } from "lucide";
@@ -89,8 +90,7 @@ export async function openSentEmail(message: SentEmail, draw: () => void): Promi
       await loadSentChat(draw, current);
     }
   } catch (cause) {
-    if (current === detailGeneration)
-      detailError = cause instanceof Error ? cause.message : "Couldn't load this email.";
+    if (current === detailGeneration) detailError = userErrorMessage(cause, "Couldn't load this email.");
   } finally {
     if (current === detailGeneration) draw();
   }
@@ -123,7 +123,7 @@ async function loadSentChat(draw: () => void, current = detailGeneration): Promi
       updateSentChat(result.item);
     }
   } catch (cause) {
-    if (current === detailGeneration) chatError = cause instanceof Error ? cause.message : "Couldn't load chat.";
+    if (current === detailGeneration) chatError = userErrorMessage(cause, "Couldn't load chat.");
   } finally {
     if (current === detailGeneration) draw();
   }
@@ -210,7 +210,7 @@ export async function loadSentMail(draw: () => void, more = false): Promise<void
     loaded = true;
   } catch (cause) {
     if (current !== generation) return;
-    error = cause instanceof Error ? cause.message : "Couldn't load sent mail. Try again.";
+    error = userErrorMessage(cause, "Couldn't load sent mail. Try again.");
   } finally {
     if (current === generation) {
       loading = false;

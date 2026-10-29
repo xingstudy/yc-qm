@@ -1,4 +1,5 @@
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
+import type { Duplex } from "node:stream";
 import { signedHeaders } from "../../chassis/src/core-client.ts";
 import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 
@@ -38,6 +39,53 @@ function safeForwardHeaders(req: IncomingMessage, base: Record<string, string>):
 
 export function requestPort(upstream: URL): string | undefined {
   return upstream.port || undefined;
+}
+
+export function proxyViteHmr(req: IncomingMessage, socket: Duplex, head: Buffer, upstreamBase: string): void {
+  const upstream = new URL(upstreamBase);
+  const path = new URL(req.url ?? "/", "http://portal.local");
+  const headers: Record<string, string> = {
+    host: req.headers.host ?? upstream.host,
+    connection: "Upgrade",
+    upgrade: "websocket",
+  };
+  for (const name of ["origin", "sec-websocket-key", "sec-websocket-version", "sec-websocket-protocol"]) {
+    const value = req.headers[name];
+    if (typeof value === "string") headers[name] = value;
+  }
+  const up = httpRequest({
+    protocol: upstream.protocol,
+    hostname: upstream.hostname,
+    port: requestPort(upstream),
+    path: `${upstream.pathname.replace(/\/$/, "")}${path.pathname}${path.search}`,
+    headers,
+  });
+  up.setTimeout(5_000, () => up.destroy());
+  up.on("error", () => socket.destroy());
+  up.on("response", (res) => {
+    res.resume();
+    socket.end(
+      `HTTP/1.1 ${res.statusCode === 403 ? "403 Forbidden" : "502 Bad Gateway"}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
+    );
+  });
+  socket.on("close", () => up.destroy());
+  up.on("upgrade", (res, upstreamSocket, upstreamHead) => {
+    if (socket.destroyed) return void upstreamSocket.destroy();
+    upstreamSocket.setTimeout(0);
+    upstreamSocket.on("error", () => socket.destroy());
+    upstreamSocket.on("close", () => socket.destroy());
+    socket.on("close", () => upstreamSocket.destroy());
+    const responseHeaders = ["HTTP/1.1 101 Switching Protocols", "Connection: Upgrade", "Upgrade: websocket"];
+    for (const name of ["sec-websocket-accept", "sec-websocket-protocol"]) {
+      const value = res.headers[name];
+      if (typeof value === "string") responseHeaders.push(`${name}: ${value}`);
+    }
+    socket.write(`${responseHeaders.join("\r\n")}\r\n\r\n`);
+    if (upstreamHead.length) socket.write(upstreamHead);
+    if (head.length) upstreamSocket.write(head);
+    socket.pipe(upstreamSocket).pipe(socket);
+  });
+  up.end();
 }
 
 function declaresFrameAncestors(headers: Record<string, string | string[]>): boolean {

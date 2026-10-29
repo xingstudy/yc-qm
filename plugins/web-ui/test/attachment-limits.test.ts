@@ -76,7 +76,7 @@ test("one failing blob degrades that file only; the rest upload and the send sur
   assert.equal(skipped[0]!.note, oversizeAttachmentNote("rejected.txt"), "a 413 reads as the size limit, not raw HTTP");
 });
 
-test("a non-413 upload failure is noted per file with its reason", async () => {
+test("a non-413 upload failure shows safe guidance for the affected file", async () => {
   globalThis.fetch = (async () => {
     throw new Error("network unreachable");
   }) as typeof fetch;
@@ -84,7 +84,8 @@ test("a non-413 upload failure is noted per file with its reason", async () => {
   assert.deepEqual(uploaded, []);
   assert.equal(skipped.length, 1);
   assert.match(skipped[0]!.note, /"a\.txt" couldn't be uploaded/);
-  assert.match(skipped[0]!.note, /network unreachable/);
+  assert.match(skipped[0]!.note, /could not be reached; try again/);
+  assert.doesNotMatch(skipped[0]!.note, /network unreachable|HTTP|stack/);
 });
 
 test("requestStop targets the current submit generation, not a fixed flag", () => {

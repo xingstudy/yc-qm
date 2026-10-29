@@ -27,7 +27,7 @@ import {
   fileContentUrl,
 } from "./core-bridge";
 import { UI_BASE } from "./deep-link";
-import { errMessage } from "../../chassis/src/errors";
+import { userErrorMessage as errMessage } from "./error-banner";
 import { actionSnippet, fieldSelect, formatBytes, icon, initials, menuSelect, relTime } from "./ui";
 import { focusTextInputOnDesktop } from "./viewport";
 import { appState, replacePanePreservingFocus, switchView, syncUrlFromState } from "./shell";

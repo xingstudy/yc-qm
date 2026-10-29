@@ -72,7 +72,7 @@ import {
   type ChatBrowseStatus,
 } from "./session-list";
 import { tip } from "./tooltip";
-import { errMessage } from "../../chassis/src/errors";
+import { userErrorMessage as errMessage } from "./error-banner";
 import { copyText, icon, menuSelect, relTime, workingWave } from "./ui";
 import { focusTextInputOnDesktop } from "./viewport";
 import { listPageTpl } from "./list-page";

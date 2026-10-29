@@ -5,6 +5,171 @@ export type AppLocale = "en" | "zh-CN";
 export const LOCALE_KEY = "qm:locale";
 
 const ZH: Record<string, string> = {
+  "The import source changed": "导入来源已发生变化",
+  "The source changed since it was reviewed. Preview the skills again before importing.":
+    "预览后，导入来源的内容发生了变化。请重新预览并确认技能后再导入。",
+  "Connect your Google account": "请连接 Google 账户",
+  "Connect your Google account under Keychain, then try again.": "请先在钥匙串中连接 Google 账户，再重试此操作。",
+  "Selected model is unavailable. Choose a replacement to continue.": "当前模型不可用，请选择其他可用模型后继续。",
+  "a required service could not be reached; try again": "暂时无法连接所需服务，请检查网络连接后重试。",
+  "the AI service or a tool timed out; try again": "AI 服务或工具响应超时，请先查看已有结果后再决定是否重试。",
+  "a service is rate limiting requests; try again in a few minutes": "服务当前请求较多，请等几分钟后重试。",
+  "a required service is temporarily unavailable; try again shortly": "所需服务暂时不可用，请稍后重试。",
+  "a required account could not authenticate; reconnect it or ask an administrator":
+    "所需账户未能通过身份验证，请重新连接账户或联系管理员。",
+  "this request is not allowed with the current access; ask an administrator to check permissions":
+    "当前权限不足，请联系管理员检查访问权限。",
+  "the model's context limit was reached; try a shorter request":
+    "对话内容已超出模型可处理的长度，请缩短请求或新开对话。",
+  "the AI account has no available credit or quota; check its billing or ask an administrator to restore access":
+    "AI 账户的余额或额度不足，请检查账单或联系管理员恢复可用额度。",
+  "the selected AI model is unavailable or not configured; choose another available model or contact an administrator":
+    "当前模型不可用或尚未配置，请选择其他可用模型或联系管理员。",
+  "another task is still running in this conversation; wait for it to finish before sending the request again":
+    "此对话还有任务正在执行，请等待结束后再发送请求。",
+  "This request could not be completed, and the cause is unclear. Check any results already shown before retrying, or ask an administrator to check the error log.":
+    "本次请求未能完成，原因暂时无法确定。请先检查已有结果，再决定是否重试；也可以联系管理员查询错误记录。",
+  "This is a binary plist. In iTerm2, export the preset again to get the XML .itermcolors file.":
+    "这是二进制主题文件。请在 iTerm2 中重新导出 XML 格式的 .itermcolors 文件。",
+  "Expected an iTerm2 .itermcolors file with a Background Color and a Foreground Color.":
+    "请选择包含背景色和前景色的 iTerm2 .itermcolors 主题文件。",
+  "Couldn't read that file. Expected an iTerm2 .itermcolors or a VS Code color theme .json.":
+    "无法读取此文件。请选择 iTerm2 的 .itermcolors 文件或 VS Code 的主题 .json 文件。",
+  "Expected a VS Code color theme object.": "请选择有效的 VS Code 主题 JSON 文件。",
+  "Expected a VS Code color theme with an editor.background color.":
+    "此 VS Code 主题缺少编辑器背景色。请选择包含 editor.background 设置的主题文件。",
+  "Couldn't load this scope's standing orders.": "暂时无法加载此范围的长期指令。",
+  "Couldn't save. Try again.": "暂时无法确认保存成功，请查看最新状态后重试。",
+  "Could not send the approval.": "暂时无法提交操作确认。",
+  "Could not follow the queued message.": "暂时无法查看排队中的消息。",
+  "Could not reconnect to the running task.": "暂时无法重新连接正在执行的任务。",
+  "Could not retry the message.": "暂时无法重试这条消息。",
+  "Could not fork the conversation.": "暂时无法从此处创建新对话。",
+  "Couldn't load the full output.": "暂时无法加载完整输出。",
+  "Could not update the scope default.": "暂时无法更新默认模型设置。",
+  "Could not queue the message.": "暂时无法将消息加入队列。",
+  "Could not edit the queued message.": "暂时无法修改排队中的消息。",
+  "Could not remove the queued message.": "暂时无法移除排队中的消息。",
+  "Could not confirm steering. Try again.": "暂时无法确认补充指令是否已提交，请先查看任务状态。",
+  "Failed to load contexts.": "暂时无法加载项目列表。",
+  "Couldn't update that cron.": "暂时无法更新这项定时任务。",
+  "Couldn't delete that skill.": "暂时无法删除这项技能。",
+  "Couldn't add that person.": "暂时无法添加这位成员。",
+  "Couldn't remove that person.": "暂时无法移除这位成员。",
+  "Failed to load this context's resources.": "暂时无法加载此项目的资源。",
+  "Failed to load crons.": "暂时无法加载定时任务。",
+  "Couldn't load run history.": "暂时无法加载执行记录。",
+  "Could not create the scheduled task.": "暂时无法创建定时任务。",
+  "Could not update permissions.": "暂时无法更新权限设置。",
+  "Could not find people.": "暂时无法搜索成员。",
+  "Could not load permissions.": "暂时无法加载权限设置。",
+  "Could not load app details.": "暂时无法加载应用详情。",
+  "Could not save app settings.": "暂时无法保存应用设置。",
+  "Could not archive deployment.": "暂时无法归档此应用。",
+  "Could not restore deployment.": "暂时无法恢复此应用。",
+  "Failed to load apps.": "暂时无法加载应用列表。",
+  "Couldn't start a reply.": "暂时无法开始回复。",
+  "Couldn't save the draft.": "暂时无法确认草稿已保存，请保留当前内容。",
+  "Could not confirm that the message was sent.": "暂时无法确认消息是否已发送，请先检查发送记录，避免重复发送。",
+  "Couldn't update the item.": "暂时无法更新此内容。",
+  "The agent couldn't answer.": "本次未能获取 AI 回复。",
+  "Couldn't set up sync.": "暂时无法设置同步。",
+  "Couldn't start a sync.": "暂时无法启动同步。",
+  "Failed to load memory.": "暂时无法加载记忆。",
+  "Failed to save memory.": "暂时无法确认记忆已保存，请保留当前修改。",
+  "Failed to load memory history.": "暂时无法加载记忆的历史版本。",
+  "Could not restore that revision.": "暂时无法恢复此历史版本。",
+  "Could not check connected apps.": "暂时无法检查已连接的应用。",
+  "Could not load apps. Please try again.": "暂时无法加载应用，请稍后重试。",
+  "Could not open authorization. Please try again.": "暂时无法打开授权页面，请稍后重试。",
+  "Couldn't load this email.": "暂时无法加载这封邮件。",
+  "Couldn't load chat.": "暂时无法加载对话。",
+  "Couldn't load sent mail. Try again.": "暂时无法加载已发送邮件，请稍后重试。",
+  "Could not create share.": "暂时无法创建分享。",
+  "Failed to load conversations.": "暂时无法加载对话列表。",
+  "Failed to load skill details.": "暂时无法加载技能详情。",
+  "Failed to save skill.": "暂时无法保存技能。",
+  "Failed to create skill.": "暂时无法创建技能。",
+  "Failed to restore skill.": "暂时无法恢复技能。",
+  "Failed to archive skill.": "暂时无法归档技能。",
+  "Failed to load skills.": "暂时无法加载技能列表。",
+  "Failed to load webhooks.": "暂时无法加载 Webhook 列表。",
+  "Couldn't load messages.": "暂时无法加载消息。",
+  "That API key was rejected — check it and try again.": "AI 服务未接受这个 API 密钥。请检查密钥是否正确且有效后重试。",
+  "Sign-in didn't complete. Try again — the code may have expired.":
+    "登录未完成，验证码可能已过期。请重新获取验证码后再试。",
+  "Couldn't reach the sign-in service. Check your connection and try again.":
+    "暂时无法连接登录服务。请检查网络连接后重试。",
+  "Check the request details": "请检查请求内容",
+  "Some request details are missing or invalid. Check your entries, then try again.":
+    "请求中的部分内容缺失或不符合要求。请检查填写内容后重试。",
+  "This item is no longer available": "此内容暂时无法访问",
+  "This item may have been removed or moved. Refresh the page and check that you still have access.":
+    "此内容可能已删除或移动。请刷新页面，并确认你仍有访问权限。",
+  "The latest state has changed": "内容或任务状态已发生变化",
+  "The item or conversation changed before this action finished. Refresh its status before trying again.":
+    "操作完成前，内容或对话状态已发生变化。请先刷新查看最新状态，再决定是否重试。",
+  "The file or request is too large": "文件或请求内容过大",
+  "Choose a smaller file or shorten the request, then try again.": "请选择较小的文件，或缩短请求内容后重试。",
+  "This file type is not supported": "暂不支持此文件格式",
+  "Choose a supported file format, then try again.": "请换用支持的文件格式后重试。",
+  "The service could not complete this request": "服务暂时未能完成请求",
+  "The service could not complete this request, and the cause is unclear. Check its latest status before retrying. If this keeps happening, contact an administrator.":
+    "服务暂时未能完成本次请求，具体原因尚不明确。重试前请先查看最新状态；如果持续出现，请联系管理员。",
+  "The cause is unclear. Check the latest state before trying again. If this keeps happening, contact an administrator.":
+    "具体原因暂时无法确定。请先查看最新状态，再决定是否重试；如果持续出现，请联系管理员。",
+  "AI usage limit reached": "AI 用量已用完",
+  "Technical details": "技术详情",
+  "Too many requests right now": "服务请求过多，请稍后再试",
+  "The AI service or a tool has temporarily limited requests because it is busy. Wait a few minutes, then try again.":
+    "AI 服务或工具当前请求较多，暂时限制了访问。请等几分钟后再试。",
+  "The task took too long": "任务执行超时",
+  "The AI service or a tool did not respond in time, so this task did not finish. Check any results already shown before retrying, or ask for a smaller task.":
+    "AI 服务或工具未能及时响应，本次任务未完成。重试前请先检查已经产生的结果，或缩小任务范围后再试。",
+  "Could not connect to a required service": "暂时无法连接所需服务",
+  "A service needed for this request could not be reached. Check your connection and try again later. If this keeps happening, contact an administrator.":
+    "暂时无法连接本次请求所需的服务。请检查网络连接后稍后重试；如果持续出现，请联系管理员检查服务连接。",
+  "A required service is temporarily unavailable": "所需服务暂时不可用",
+  "The AI service or a tool is temporarily unavailable, so this task did not finish. Try again later. If this keeps happening, contact an administrator.":
+    "AI 服务或工具暂时无法提供服务，本次任务未完成。请稍后重试；如果持续出现，请联系管理员。",
+  "An account needs to be reconnected": "需要重新连接账户",
+  "An account needed for this request could not sign in. Reconnect the account, or ask an administrator to check its connection.":
+    "本次请求所需的账户未能通过身份验证。请重新连接对应账户，或联系管理员检查账户连接。",
+  "This conversation or request is too long": "对话或请求内容过长",
+  "The selected model cannot process this much conversation or content at once. Shorten the request or start a new conversation, then try again.":
+    "当前模型无法一次处理这么多对话或内容。请缩短请求，或新开对话后重试。",
+  "The AI account has no available credit or quota": "AI 账户余额或额度不足",
+  "The AI provider reports that this account has no available credit or quota. Check its billing or ask an administrator to restore access. Retrying immediately will not help.":
+    "AI 服务方提示当前账户的余额或额度不足。请检查账户账单，或联系管理员恢复可用额度。立即重试不会恢复额度。",
+  "Access is needed to continue": "当前权限不足，暂时无法继续",
+  "The current account or model does not have access to perform this request. Ask an administrator to check permissions, or choose another available model.":
+    "当前账户或模型没有执行本次请求的权限。请联系管理员检查访问权限，或选择其他可用模型。",
+  "The selected AI model is unavailable": "当前选择的 AI 模型不可用",
+  "This AI model is unavailable or is not configured for this conversation. Choose another available model, or contact an administrator.":
+    "当前选择的 AI 模型暂不可用，或尚未为此对话配置。请选择其他可用模型，或联系管理员。",
+  "Another task is still running": "当前对话还有任务正在执行",
+  "This conversation is still working on another task. Wait for it to finish, then send your request again.":
+    "当前对话仍在处理其他任务，本次请求未执行。请等待当前任务结束后再发送。",
+  "This request needs a safety review": "本次请求需要安全检查",
+  "A safety check stopped this request because of its message or conversation context. Adjust the request or ask an administrator to review it.":
+    "安全检查拦截了本次请求，原因与消息或对话上下文有关。请调整请求，或联系管理员查看拦截原因。",
+  "Your approval is needed": "需要你确认后才能继续",
+  "This conversation is waiting for a decision. Review the pending command and approve or deny it to continue.":
+    "当前对话正在等待你的决定。请查看待确认的操作，选择允许或拒绝后继续。",
+  "This approval is no longer available": "这项确认已失效或已处理",
+  "The approval may have expired or already been handled. Check the latest conversation status before trying again.":
+    "这项操作确认可能已过期或已处理。请先查看对话的最新状态，再决定是否重试。",
+  "A different approval is waiting": "请先处理当前待确认的操作",
+  "Review the current pending command in this conversation and approve or deny it to continue.":
+    "请查看此对话当前待确认的操作，选择允许或拒绝后继续。",
+  "We could not confirm the task's status": "暂时无法确认任务状态",
+  "The response could not be confirmed in time. The task may still be running. Check this conversation again before resending the request to avoid running it twice.":
+    "未能及时获取任务响应，任务可能仍在执行。请先重新查看此对话的状态，避免重复发送导致任务执行两次。",
+  "The message was not sent": "消息尚未发送",
+  "Enter a message or add an attachment, then try sending it again.": "请输入消息或添加附件后重新发送。",
+  "This request could not be completed": "本次请求未能完成",
+  "The request ended before we could confirm completion, and the cause is unclear. Check any results already shown before retrying. If this keeps happening, contact an administrator and include the technical details below.":
+    "本次请求已结束，但未能确认任务完成，具体原因暂时无法判断。重试前请先检查已经产生的结果；如果持续出现，请将下方技术详情提供给管理员排查。",
   "Set personal token": "设置个人令牌",
   "Personal access token": "个人访问令牌",
   "Could not save token.": "无法保存令牌。",
@@ -1522,6 +1687,19 @@ export function localeCode(locale: AppLocale = currentLocale()): string {
 
 function translatePattern(source: string): string | null {
   let match: RegExpMatchArray | null;
+  if ((match = source.match(/^"(.+)" couldn't be uploaded\. (.+)$/)))
+    return `“${match[1]}”未能上传。${translateText(match[2]!, "zh-CN")}`;
+  if (
+    (match = source.match(
+      /^[Tt]he AI service's usage limit has been reached; this request could not be completed\. Wait for the limit to reset before retrying, choose another available model, or contact an administrator(?: \(estimated wait when this request failed: (\d+) minutes\))?$/,
+    ))
+  ) {
+    const minutes = Number(match[1]);
+    const wait = minutes
+      ? `本次请求失败时，服务方预计约 ${minutes >= 60 ? `${Math.floor(minutes / 60)} 小时 ` : ""}${minutes % 60 ? `${minutes % 60} 分钟` : ""}后恢复。`
+      : "";
+    return `AI 服务当前的可用额度已用完，因此未能完成本次请求。${wait}请等待额度恢复后再试，或选择其他可用模型；也可以联系管理员。立即重试不会恢复额度。`;
+  }
   if ((match = source.match(/^Sign in with (.+)$/))) return `使用 ${match[1]} 登录`;
   if ((match = source.match(/^Uses your (.+) subscription and its usage limits\.$/)))
     return `使用你的 ${match[1]} 订阅及其用量限制。`;

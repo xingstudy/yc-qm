@@ -1,3 +1,4 @@
+import { userErrorMessage } from "./error-banner";
 import { render } from "lit";
 import { html, t } from "./i18n.ts";
 import { X, Link, Copy, Check, Users, Globe, ChevronDown } from "lucide";
@@ -59,7 +60,7 @@ export async function openSessionShare(id: string): Promise<void> {
     try {
       state = await api<ShareState>(endpoint, { method: "POST", body: JSON.stringify({ audience }) });
     } catch (e) {
-      error = e instanceof Error ? e.message : "Could not create share.";
+      error = userErrorMessage(e, "Could not create share.");
     } finally {
       busy = false;
       draw();

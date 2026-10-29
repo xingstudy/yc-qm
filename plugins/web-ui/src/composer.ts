@@ -44,7 +44,7 @@ import {
   type PendingApproval,
   type QueuedRun,
 } from "./core-bridge";
-import { errMessage } from "../../chassis/src/errors";
+import { composerErrorNotice, userErrorMessage as errMessage } from "./error-banner";
 import { fieldSelect, icon, modelMark } from "./ui";
 import {
   EFFORT_LEVELS,
@@ -518,8 +518,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
       return html`<div class="composer-wrap">
         ${header} ${composerApprovalPanel(ctx.chat.activePendingApprovals())}
         <p role="status">
-          ${composerState.error || activeRuntimeConfig?.unavailableReason || "Selected model is unavailable. Choose a replacement to continue."}
-          ${selected}
+          ${composerState.error || t("Selected model is unavailable. Choose a replacement to continue.")} ${selected}
         </p>
         <label
           >Replacement model
@@ -568,15 +567,15 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
       composerNotice = html`<div class="composer-note">${t("Preparing files...")}</div>`;
     } else if (!approvalPauses.length && runtimePending) {
       composerNotice = composerState.error
-        ? html`<div class="composer-error">
-            ${composerState.error}
+        ? html`<div>
+            ${composerErrorNotice(composerState.error)}
             <button type="button" @click=${() => void refreshRuntimeSelection(ctx.chat.state.scopeId, agent, true)}>
               Retry
             </button>
           </div>`
         : html`<div class="composer-note">${t("Loading runtime settings…")}</div>`;
     } else if (composerState.error) {
-      composerNotice = html`<div class="composer-error">${composerState.error}</div>`;
+      composerNotice = composerErrorNotice(composerState.error);
     }
 
     const compact = Boolean(ctx.pane) || isPhone();

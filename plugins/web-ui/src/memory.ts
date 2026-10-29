@@ -1,7 +1,7 @@
 import { nothing, render } from "lit";
 import { Clock3, Pencil, Search, Trash2 } from "lucide";
 import { api, ApiError } from "./core-bridge";
-import { errMessage } from "../../chassis/src/errors";
+import { userErrorMessage as errMessage } from "./error-banner";
 import { icon } from "./ui";
 import { appState, replacePanePreservingFocus } from "./shell";
 import { html, localeCode, t } from "./i18n.ts";

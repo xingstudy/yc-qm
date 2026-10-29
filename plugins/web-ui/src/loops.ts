@@ -2,7 +2,7 @@ import { nothing, render, type TemplateResult } from "lit";
 import { html, t } from "./i18n.ts";
 import { CheckCircle2, CornerUpLeft, Pause, Play, Zap } from "lucide";
 import { api } from "./core-bridge";
-import { errMessage } from "../../chassis/src/errors";
+import { userErrorMessage as errMessage } from "./error-banner";
 import { icon, relTime } from "./ui";
 import { listBackLink, listPageTpl } from "./list-page";
 import { appState, can } from "./shell";

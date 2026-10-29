@@ -1,3 +1,4 @@
+import { userErrorMessage } from "./error-banner";
 import {
   isConnectionReturn,
   takeConnectionReturn,
@@ -236,7 +237,7 @@ export class OnboardingWelcome extends LitElement {
       if (controller.signal.aborted || !this.isConnected) return;
       this.connections = [];
       this.connectionOutcome = "";
-      this.connectionError = error instanceof Error ? error.message : "Could not check connected apps.";
+      this.connectionError = userErrorMessage(error, "Could not check connected apps.");
       await this.updateComplete;
       this.drawPicker();
     }
@@ -269,7 +270,7 @@ export class OnboardingWelcome extends LitElement {
       this.services = services;
     } catch (error) {
       if (controller.signal.aborted) return;
-      this.error = error instanceof Error ? error.message : "Could not load apps. Please try again.";
+      this.error = userErrorMessage(error, "Could not load apps. Please try again.");
     }
     if (!this.isConnected || controller.signal.aborted) return;
     this.loading = false;
@@ -319,8 +320,7 @@ export class OnboardingWelcome extends LitElement {
       saveConnectionAttempt({ ...attempt, accountId: result.accountId });
       window.location.assign(result.url);
     } catch (error) {
-      this.authorizationError =
-        error instanceof Error ? error.message : "Could not open authorization. Please try again.";
+      this.authorizationError = userErrorMessage(error, "Could not open authorization. Please try again.");
     } finally {
       this.authorizing = "";
     }

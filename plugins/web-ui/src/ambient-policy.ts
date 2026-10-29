@@ -1,7 +1,7 @@
 import { nothing, type TemplateResult } from "lit";
 import { html, t } from "./i18n.ts";
 import { api } from "./core-bridge";
-import { errMessage } from "../../chassis/src/errors";
+import { userErrorMessage as errMessage } from "./error-banner";
 import { fieldSelect } from "./ui";
 import { tip } from "./tooltip";
 

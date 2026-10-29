@@ -3,7 +3,7 @@ import { openDeploymentPermissions } from "./deploy-permissions";
 import { live } from "lit/directives/live.js";
 import { Archive, Check, Copy, ExternalLink, RotateCcw, X } from "lucide";
 import { api, withBase } from "./core-bridge";
-import { errMessage } from "../../chassis/src/errors";
+import { userErrorMessage as errMessage } from "./error-banner";
 import { copyText, icon, relTime } from "./ui";
 import { listBackLink, listPageTpl } from "./list-page";
 import { contextsState, ensureContexts, scopeChip } from "./contexts";

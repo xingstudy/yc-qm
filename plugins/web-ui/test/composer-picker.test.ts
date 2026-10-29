@@ -232,7 +232,8 @@ test("the model picker remembers compatible harnesses without duplicating or cha
       .querySelector<HTMLButtonElement>(".loadout-make-default")!
       .click();
     await tick();
-    assert.match(siblingComposer!.state.error, /default save failed/);
+    assert.match(siblingComposer!.state.error, /cause is unclear/);
+    assert.doesNotMatch(siblingComposer!.state.error, /default save failed/);
     assert.equal(siblingComposer!.currentModelOption()?.value, "claude:alpha");
     assert.equal(siblingComposer!.state.effortLevel, "high");
     assert.equal(siblingComposer!.state.fastMode, true);

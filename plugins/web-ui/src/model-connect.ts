@@ -2,6 +2,7 @@ import { render, nothing, type TemplateResult } from "lit";
 import { html, t } from "./i18n.ts";
 import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
+import { userErrorMessage } from "./error-banner";
 import { brandMark, brandName } from "./ui";
 import { appState } from "./shell-state";
 import { trapDialogFocus, restoreDialogFocus } from "./dialog-focus";
@@ -195,12 +196,17 @@ async function load(): Promise<void> {
 
 function friendly(e: unknown): string {
   const raw = errMessage(e);
-  if (/invalid_api_key|rejected this API key/i.test(raw)) return "That API key was rejected — check it and try again.";
-  if (/oauth_start_failed|oauth_poll_failed|oauth_complete_failed/i.test(raw))
-    return "Sign-in didn't complete. Try again — the code may have expired.";
+  if (/invalid_api_key|rejected this API key/i.test(raw))
+    return t("That API key was rejected — check it and try again.");
+  if (
+    /oauth_start_failed|oauth_poll_failed|oauth_complete_failed|(?:code|login) (?:has )?expired|expired (?:device )?code/i.test(
+      raw,
+    )
+  )
+    return t("Sign-in didn't complete. Try again — the code may have expired.");
   if (/network|fetch failed|timeout/i.test(raw))
-    return "Couldn't reach the sign-in service. Check your connection and try again.";
-  return raw;
+    return t("Couldn't reach the sign-in service. Check your connection and try again.");
+  return userErrorMessage(e);
 }
 
 async function afterConnect(provider: "anthropic" | "openai"): Promise<void> {

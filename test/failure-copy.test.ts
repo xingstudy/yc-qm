@@ -8,7 +8,13 @@ import {
   userFacingFailureText,
 } from "../src/core/failure-copy.ts";
 import { SECURITY_QUARANTINE_REFUSAL_TEXT } from "../plugins/chassis/src/security-quarantine.ts";
-import { FAILURE_REASONS, GENERIC_FAILURE_TEXT, workWechatFailureText } from "../plugins/chassis/src/failure-copy.ts";
+import {
+  FAILURE_REASONS,
+  GENERIC_FAILURE_TEXT,
+  safeFailureReason,
+  usageLimitFailureReason,
+  workWechatFailureText,
+} from "../plugins/chassis/src/failure-copy.ts";
 import { NonRetryableTurnError, turnFailureMessage } from "../src/core/turn-error.ts";
 
 test("the shared failure policy renders quarantine canned, refused reasons verbatim, everything else generic", () => {
@@ -37,11 +43,8 @@ test("the shared failure policy renders quarantine canned, refused reasons verba
   assert.equal(standaloneFailureText(authored), undefined);
 
   const failed = { status: "failed", reason: "TypeError: fetch failed at sandbox.ts:42" };
-  assert.equal(userFacingFailureText(failed), GENERIC_FAILURE_TEXT);
-  assert.equal(
-    userFacingFailureClause(failed),
-    "an unexpected internal error interrupted the turn; try again or contact an administrator",
-  );
+  assert.match(userFacingFailureText(failed), /could not be reached/);
+  assert.equal(userFacingFailureClause(failed), FAILURE_REASONS.connection);
   assert.doesNotMatch(userFacingFailureText(failed), /TypeError|sandbox\.ts/);
 
   assert.equal(userFacingFailureText({ status: "refused" }), GENERIC_FAILURE_TEXT);
@@ -62,10 +65,10 @@ test("known infrastructure failures explain the cause without exposing raw diagn
     assert.equal(userFacingFailureClause({ status: "failed", reason }), reason);
     assert.doesNotMatch(visible, /private/);
   }
-  assert.equal(userFacingFailureText({ status: "failed", reason: "provider 429 private" }), GENERIC_FAILURE_TEXT);
-  assert.equal(turnFailureMessage(new NonRetryableTurnError("swarm service unavailable")), "swarm service unavailable");
+  assert.match(userFacingFailureText({ status: "failed", reason: "provider 429 private" }), /rate limiting/);
+  assert.equal(turnFailureMessage(new NonRetryableTurnError("swarm service unavailable")), FAILURE_REASONS.unavailable);
   const wallClock = turnFailureMessage(new NonRetryableTurnError("Codex turn exceeded 300s wall clock"));
-  assert.equal(wallClock, "Codex turn exceeded 300s wall clock");
+  assert.equal(wallClock, FAILURE_REASONS.timeout);
   assert.match(userFacingFailureText({ status: "failed", reason: wallClock }), /timed out; try again/);
   assert.equal(
     userFacingFailureClause({ status: "failed", reason: wallClock }),
@@ -85,8 +88,12 @@ test("WeCom explains failures, refusals, and empty replies without exposing raw 
     [FAILURE_REASONS.unavailable, /暂时不可用/],
     [FAILURE_REASONS.authentication, /认证失败/],
     [FAILURE_REASONS.context, /上下文.*限制/],
+    [FAILURE_REASONS.billing, /余额或额度不足/],
+    [FAILURE_REASONS.permission, /权限/],
+    [FAILURE_REASONS.model, /模型不可用/],
+    [FAILURE_REASONS.busy, /正在执行/],
     ["Codex turn exceeded 300s wall clock", /超时/],
-    ["token=private /secret/path", /内部异常/],
+    ["token=private /secret/path", /原因暂时无法确定/],
   ] as const) {
     const text = workWechatFailureText({ status: "failed", reason }, "r-1");
     assert.match(text, expected);
@@ -101,4 +108,83 @@ test("WeCom explains failures, refusals, and empty replies without exposing raw 
   assert.doesNotMatch(workWechatFailureText({ status: "refused", reason: "secret" }), /secret/);
   assert.match(workWechatFailureText({ status: "ok" }), /没有生成文字回复/);
   assert.doesNotMatch(workWechatFailureText({ status: "failed" }, "r-1\nsecret"), /secret|任务编号：/);
+});
+
+test("known provider and service errors share safe guidance even when non-retryable or wrapped", () => {
+  for (const [raw, expected] of [
+    ['API error (429): {"type":"rate_limit_error","message":"private"}', FAILURE_REASONS.rateLimit],
+    ['API error (503): {"error":{"type":"overloaded_error","message":"private"}}', FAILURE_REASONS.unavailable],
+    ['API error (401): {"type":"authentication_error","message":"private"}', FAILURE_REASONS.authentication],
+    ['API error (403): {"message":"private"}', FAILURE_REASONS.permission],
+    ['API error (402): {"code":"insufficient_quota","message":"private"}', FAILURE_REASONS.billing],
+    ['API error (400): {"code":"context_length_exceeded","message":"private"}', FAILURE_REASONS.context],
+    ['API error (404): {"code":"model_not_found","message":"private"}', FAILURE_REASONS.model],
+    ["workspace_owner_credits_depleted private", FAILURE_REASONS.billing],
+    ["Claude turn exceeded 300s wall clock", FAILURE_REASONS.timeout],
+    ["prompt is too long: estimated 200000 tokens private", FAILURE_REASONS.context],
+    ["model private is not allowed for this scope", FAILURE_REASONS.permission],
+    ["No available default model is configured private", FAILURE_REASONS.model],
+    ["Codex OAuth auth is unavailable (private)", FAILURE_REASONS.authentication],
+    ["connect ECONNREFUSED private:403", FAILURE_REASONS.connection],
+    ["Connection error.", FAILURE_REASONS.connection],
+    ["Connection failed. private", FAILURE_REASONS.connection],
+    ["Failed to connect to private", FAILURE_REASONS.connection],
+  ] as const) {
+    assert.equal(safeFailureReason(raw), expected, raw);
+    for (const error of [
+      new Error(raw),
+      new NonRetryableTurnError(raw),
+      new Error("failed", { cause: new Error(raw) }),
+    ]) {
+      const reason = turnFailureMessage(error);
+      assert.equal(reason, expected);
+      const visible = userFacingFailureText({ status: "failed", reason }, "r-1");
+      assert.match(visible, /run r-1/);
+      assert.doesNotMatch(visible, /private|API error|\{"/);
+    }
+  }
+  assert.equal(safeFailureReason("TypeError: cannot read property private"), undefined);
+  assert.equal(safeFailureReason(undefined), undefined);
+  assert.match(userFacingFailureText({ status: "failed", reason: "unknown private exception" }), /cause is unclear/);
+});
+
+test("usage exhaustion is explained before generic 429 and non-retryable errors", () => {
+  const raw =
+    'openai-qf2 API error (429): {"code":"model_cooldown","last_upstream_error":"usage_limit_reached: The usage limit has been reached","reset_seconds":11143,"message":"private credentials"}';
+  for (const error of [
+    new Error(raw),
+    new NonRetryableTurnError(raw),
+    new Error("provider failed", { cause: new Error(raw) }),
+  ]) {
+    const reason = turnFailureMessage(error);
+    assert.match(reason, /usage limit has been reached/);
+    assert.match(reason, /186 minutes/);
+    assert.match(reason, /Wait for the limit to reset/);
+    assert.equal(usageLimitFailureReason(reason), reason);
+    assert.equal(userFacingFailureClause({ status: "failed", reason }), reason);
+    const visible = userFacingFailureText({ status: "failed", reason }, "r-1");
+    assert.match(visible, /another available model/);
+    assert.match(visible, /run r-1/);
+    assert.doesNotMatch(visible, /private|429|model_cooldown|reset_seconds/);
+    assert.match(workWechatFailureText({ status: "failed", reason }), /额度已用完/);
+  }
+  assert.match(userFacingFailureText({ status: "failed", reason: raw }), /usage limit/);
+  assert.equal(turnFailureMessage(new Error("429 too many requests")), FAILURE_REASONS.rateLimit);
+  assert.equal(usageLimitFailureReason('429 {"code":"model_cooldown","reset_seconds":60}'), undefined);
+  assert.equal(usageLimitFailureReason("context limit reached"), undefined);
+});
+
+test("missing or invalid reset estimates never invent a recovery time or expose provider data", () => {
+  for (const reset of [
+    "",
+    '"reset_seconds":-1',
+    '"reset_seconds":0',
+    '"reset_seconds":"private"',
+    '"reset_seconds":1e309',
+    '"reset_seconds":999999999999999999999',
+  ]) {
+    assert.equal(usageLimitFailureReason(`usage_limit_reached {${reset}}`), FAILURE_REASONS.usageLimit);
+  }
+  assert.match(usageLimitFailureReason('usage_limit_reached {"reset_seconds":0.5}')!, /1 minutes/);
+  assert.equal(usageLimitFailureReason(undefined), undefined);
 });
