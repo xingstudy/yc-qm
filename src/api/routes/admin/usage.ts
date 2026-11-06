@@ -1,6 +1,10 @@
 import { parseUsageQuery } from "../../../usage/usage-store.ts";
 import { UsagePriceValidationError } from "../../../usage/usage-pricing.ts";
 import { UsageCostPreviewError } from "../../../usage/usage-cost-backfill.ts";
+import {
+  UsageDepartmentPreviewError,
+  type UsageDepartmentCorrectionInput,
+} from "../../../usage/usage-department-backfill.ts";
 import { sendJson } from "../../http.ts";
 import { audit, authorizeAdmin, orgScope } from "../shared.ts";
 import type { ApiCtx } from "../route.ts";
@@ -229,6 +233,51 @@ export async function adminUsageCost(ctx: ApiCtx): Promise<void> {
     const status = { invalid: 400, too_large: 413, not_found: 404, expired: 409, stale: 409 };
     return sendJson(ctx.res, status[error.code], {
       error: `cost_preview_${error.code}`,
+      message: messages[error.code],
+    });
+  }
+}
+
+export async function adminUsageDepartment(ctx: ApiCtx): Promise<void> {
+  const scope = orgScope(ctx.deps);
+  const actor = await authorizeAdmin(ctx, scope);
+  if (!actor) return;
+  const usage = ctx.deps.usage;
+  if (!usage?.previewDepartment || !usage.confirmDepartment)
+    return sendJson(ctx.res, 503, { error: "usage_unavailable" });
+  try {
+    const body = ctx.body as Record<string, unknown> | null;
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new UsageDepartmentPreviewError("invalid");
+    const confirm = ctx.url.pathname.endsWith("department-confirm");
+    if (confirm && (typeof body.previewId !== "string" || !body.previewId || body.previewId.length > 128))
+      throw new UsageDepartmentPreviewError("invalid");
+    const preview = confirm
+      ? await usage.confirmDepartment(scope.slice(4), actor.id, body.previewId as string)
+      : await usage.previewDepartment(scope.slice(4), actor.id, body as unknown as UsageDepartmentCorrectionInput);
+    audit(ctx.deps, {
+      principalId: actor.id,
+      action: confirm ? "usage.department.correct" : "usage.department.preview",
+      resource: preview.id,
+      scopeLabel: scope,
+      detail: JSON.stringify({
+        eligible: preview.eligible,
+        overwritten: preview.overwritten,
+        confirmedAt: preview.confirmedAt,
+      }),
+    });
+    return sendJson(ctx.res, 200, { preview });
+  } catch (error) {
+    if (!(error instanceof UsageDepartmentPreviewError))
+      return sendJson(ctx.res, 503, { error: "usage_unavailable", message: "部门更正暂时不可用，请稍后重试。" });
+    const messages = {
+      invalid: "请填写有效日期和更正原因；覆盖已有归属必须选择具体记录。",
+      too_large: "单次最多预览 10000 条，请缩小日期范围或选择用户。",
+      not_found: "未找到当前管理员的更正预览。",
+      expired: "预览已超过 15 分钟，请重新预览。",
+      stale: "组织关系或使用量已变化，请重新预览。",
+    };
+    return sendJson(ctx.res, { invalid: 400, too_large: 413, not_found: 404, expired: 409, stale: 409 }[error.code], {
+      error: `department_preview_${error.code}`,
       message: messages[error.code],
     });
   }

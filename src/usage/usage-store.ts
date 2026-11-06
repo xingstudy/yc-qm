@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { UsagePrice } from "./usage-pricing.ts";
 import type { UsageCostPreview } from "./usage-cost-backfill.ts";
+import type { UsageDepartmentCorrectionInput, UsageDepartmentPreview } from "./usage-department-backfill.ts";
+import type { UsageDepartmentNode } from "./usage-department-tree.ts";
 
 export type UsageSource = "human" | "automation" | "system" | "history";
 export type UsageState = "pending" | "success" | "failed" | "cancelled" | "unknown";
@@ -19,6 +21,7 @@ export interface UsageIdentity {
   unitName: string;
   unitPath: string[];
   unitAncestors?: Array<{ id: string; name: string }>;
+  unitAttribution?: "primary" | "single" | "ambiguous" | "unassigned" | "correction";
   scopeId: string;
   source: UsageSource;
   auth: "organization" | "personal" | "subscription" | "unknown";
@@ -81,6 +84,8 @@ export const METRIC_KEYS = [
 export type UsageMetrics = Record<(typeof METRIC_KEYS)[number], number> & { activeUsers: number };
 
 export interface UsageQuery {
+  departmentScope?: "subtree" | "direct";
+  showEmptyDepartments?: boolean;
   rankBy?: "requests" | "calls" | "tokens" | "costUsd";
   orgId: string;
   start: string;
@@ -107,6 +112,7 @@ interface UsageStatus {
 }
 
 interface UsageReport {
+  departmentTree?: UsageDepartmentNode[];
   query: UsageQuery;
   total: UsageMetrics;
   previous: UsageMetrics;
@@ -135,6 +141,12 @@ export interface UsageStore {
     input: { model: string; start: string; end: string },
   ): Promise<UsageCostPreview>;
   confirmCost(orgId: string, actorId: string, previewId: string): Promise<UsageCostPreview>;
+  previewDepartment?(
+    orgId: string,
+    actorId: string,
+    input: UsageDepartmentCorrectionInput,
+  ): Promise<UsageDepartmentPreview>;
+  confirmDepartment?(orgId: string, actorId: string, previewId: string): Promise<UsageDepartmentPreview>;
   report(query: UsageQuery): Promise<UsageReport>;
   trends?(
     query: UsageQuery,
@@ -148,7 +160,14 @@ export interface UsageStore {
   setDirectoryReader?(
     reader: (
       orgId: string,
-    ) => Promise<Partial<Record<UsageDimension, Array<{ id: string; name: string; status?: UsageObjectStatus }>>>>,
+    ) => Promise<
+      Partial<
+        Record<
+          UsageDimension,
+          Array<{ id: string; name: string; status?: UsageObjectStatus; parentId?: string | null; kind?: string }>
+        >
+      >
+    >,
   ): void;
   export(query: UsageQuery, summary: boolean): Promise<string>;
   close(): Promise<void>;
@@ -201,6 +220,10 @@ export function parseUsageQuery(params: URLSearchParams, orgId: string, now = Da
   if (!["user", "project", "department", "model", "source", "auth"].includes(dimension))
     throw new Error("统计维度无效");
   const rankBy = params.get("rankBy") ?? "calls";
+  const departmentScope = params.get("departmentScope") ?? "subtree";
+  if (!["subtree", "direct"].includes(departmentScope)) throw new Error("部门范围无效");
+  const showEmpty = params.get("showEmptyDepartments");
+  if (showEmpty !== null && !["true", "false"].includes(showEmpty)) throw new Error("空部门选项无效");
   if (!["requests", "calls", "tokens", "costUsd"].includes(rankBy)) throw new Error("排行指标无效");
   const list = (key: string) => {
     const values = [...new Set(params.getAll(key))];
@@ -213,6 +236,8 @@ export function parseUsageQuery(params: URLSearchParams, orgId: string, now = Da
     throw new Error("分页参数无效");
   return {
     orgId,
+    departmentScope: departmentScope as "subtree" | "direct",
+    showEmptyDepartments: showEmpty === "true",
     start,
     end,
     granularity: granularity as UsageQuery["granularity"],

@@ -1,5 +1,9 @@
 import { createPgPool, withPgTransaction } from "../persistence/pg-pool.ts";
 import { previewUsageCost, confirmUsageCost } from "./usage-cost-backfill.ts";
+import { previewUsageDepartment, confirmUsageDepartment } from "./usage-department-backfill.ts";
+import { buildDepartmentTree } from "./usage-department-tree.ts";
+import type { DepartmentUnit } from "./usage-departments.ts";
+import type { PoolClient } from "../persistence/pg-pool.ts";
 import { projectDisplayName } from "../../plugins/chassis/src/project-label.js";
 import {
   bucket,
@@ -72,7 +76,9 @@ function where(query: UsageQuery, facts = false): { sql: string; values: unknown
   if (query.departments.length) {
     values.push(query.departments);
     conditions.push(
-      `(${d}->>'unitId' = ANY($${values.length}::text[]) OR ${d}->'unitPath' ?| $${values.length}::text[])`,
+      query.departmentScope === "direct"
+        ? `${d}->>'unitId' = ANY($${values.length}::text[])`
+        : `(${d}->>'unitId' = ANY($${values.length}::text[]) OR ${d}->'unitPath' ?| $${values.length}::text[])`,
     );
   }
   return { sql: conditions.join(" AND "), values };
@@ -83,6 +89,42 @@ export function createPostgresUsageStore(connectionString: string): UsageStore {
   let directoryReader: Parameters<NonNullable<UsageStore["setDirectoryReader"]>>[0] | undefined;
   const projectNames = async (orgId: string) =>
     new Map(((await directoryReader?.(orgId))?.project ?? []).map((project) => [project.id, project.name]));
+  const departmentRows = async (client: PoolClient, query: UsageQuery, periods = false) => {
+    const filter = where(query);
+    const period =
+      query.granularity === "day" ? "day" : `to_char(date_trunc('${query.granularity}',day::date),'YYYY-MM-DD')`;
+    const result = await client.query(
+      `SELECT dims,${SELECT_METRICS}${periods ? `,${period} AS period` : ""}
+      FROM usage_daily WHERE ${filter.sql} GROUP BY dims${periods ? ",period" : ""}
+      HAVING SUM((metrics->>'requests')::numeric)+SUM((metrics->>'samples')::numeric)>0 LIMIT 100001`,
+      filter.values,
+    );
+    if (result.rows.length > 100000) throw new Error("export_too_large");
+    const directory = ((await directoryReader?.(query.orgId))?.department ?? []).filter(
+      (unit) => unit.kind && unit.parentId !== undefined,
+    ) as DepartmentUnit[];
+    const resultTree = buildDepartmentTree(
+      result.rows.map((row) => ({
+        dims: row.dims as Record<string, unknown>,
+        metrics: metrics(row),
+        period: periods ? String(row.period) : undefined,
+      })),
+      directory,
+      query.showEmptyDepartments,
+    );
+    if (query.departmentScope === "direct")
+      resultTree.departments = resultTree.departments.map((node) => ({
+        ...node,
+        metrics: node.directMetrics,
+        series: node.directSeries,
+      }));
+    return resultTree;
+  };
+  const sortDepartments = (nodes: ReturnType<typeof buildDepartmentTree>["departments"], metric: string) => {
+    const value = (m: UsageMetrics) =>
+      metric === "tokens" ? m.input + m.output + m.cacheRead + m.cacheWrite : m[metric as keyof UsageMetrics];
+    return nodes.sort((a, b) => value(b.metrics) - value(a.metrics) || a.id.localeCompare(b.id));
+  };
   const displayProject = (id: string, historical: string, names: Map<string, string>): string => {
     if (id) return projectDisplayName(id, names.get(id) || historical, "名称未知项目");
     return !historical || historical === "无 Project" ? "非项目" : historical;
@@ -92,7 +134,7 @@ export function createPostgresUsageStore(connectionString: string): UsageStore {
     dimension: UsageDimension,
     id: string,
   ): UsageObjectStatus | undefined => {
-    if (!states || !id || id === "__historical_unknown__" || !(dimension in states)) return undefined;
+    if (!states || !id || id.startsWith("__") || !(dimension in states)) return undefined;
     return states[dimension as keyof UsageLifecycle][id] ?? (dimension === "user" ? "unknown" : "deleted");
   };
   const recordStatus = (
@@ -145,8 +187,23 @@ export function createPostgresUsageStore(connectionString: string): UsageStore {
         `CREATE INDEX IF NOT EXISTS usage_facts_model ON usage_facts(org_id,(fact->>'model'),day)`,
       ],
     },
+    {
+      id: "usage/ledger/0004",
+      statements: [
+        `CREATE TABLE IF NOT EXISTS usage_department_previews(org_id TEXT NOT NULL,id TEXT NOT NULL,preview JSONB NOT NULL,PRIMARY KEY(org_id,id))`,
+        `CREATE TABLE IF NOT EXISTS usage_department_changes(org_id TEXT NOT NULL,preview_id TEXT NOT NULL,actor_id TEXT NOT NULL,at BIGINT NOT NULL,reason TEXT NOT NULL,changes JSONB NOT NULL,PRIMARY KEY(org_id,preview_id))`,
+      ],
+    },
   ]);
   const store: UsageStore = {
+    async previewDepartment(orgId, actorId, input) {
+      await db.q("SELECT 1");
+      return previewUsageDepartment(await db.pool(), orgId, actorId, input);
+    },
+    async confirmDepartment(orgId, actorId, previewId) {
+      await db.q("SELECT 1");
+      return confirmUsageDepartment(await db.pool(), orgId, actorId, previewId);
+    },
     async previewCost(orgId, actorId, price, input) {
       await db.q("SELECT 1");
       return previewUsageCost(await db.pool(), orgId, actorId, price, input);
@@ -175,6 +232,7 @@ export function createPostgresUsageStore(connectionString: string): UsageStore {
             'projectId',usage_facts.fact->'projectId','projectName',usage_facts.fact->'projectName',
             'unitId',usage_facts.fact->'unitId','unitName',usage_facts.fact->'unitName','unitPath',usage_facts.fact->'unitPath',
             'unitAncestors',COALESCE(usage_facts.fact->'unitAncestors','[]'::jsonb),
+            'unitAttribution',usage_facts.fact->'unitAttribution',
             'scopeId',usage_facts.fact->'scopeId','source',usage_facts.fact->'source','requestId',usage_facts.fact->'requestId',
             'kind',usage_facts.fact->'kind') || CASE WHEN usage_facts.fact->'costBackfill' IS NOT NULL THEN
               jsonb_build_object('costBackfill',usage_facts.fact->'costBackfill') || CASE WHEN
@@ -182,9 +240,9 @@ export function createPostgresUsageStore(connectionString: string): UsageStore {
                 jsonb_build_object('costUsd',usage_facts.fact->'costUsd','costSource',usage_facts.fact->'costSource','price',usage_facts.fact->'price') END
               ELSE '{}'::jsonb END,dirty=TRUE,
           updated_at=EXCLUDED.updated_at WHERE
-            (usage_facts.fact - ARRAY['at','principalId','principalName','projectId','projectName','unitId','unitName','unitPath','unitAncestors','scopeId','source','requestId','kind'])
+            (usage_facts.fact - ARRAY['at','principalId','principalName','projectId','projectName','unitId','unitName','unitPath','unitAncestors','unitAttribution','scopeId','source','requestId','kind'])
             IS DISTINCT FROM
-            (EXCLUDED.fact - ARRAY['at','principalId','principalName','projectId','projectName','unitId','unitName','unitPath','unitAncestors','scopeId','source','requestId','kind'])
+            (EXCLUDED.fact - ARRAY['at','principalId','principalName','projectId','projectName','unitId','unitName','unitPath','unitAncestors','unitAttribution','scopeId','source','requestId','kind'])
             AND COALESCE((usage_facts.fact->>'attempt')::int,0) <= COALESCE((EXCLUDED.fact->>'attempt')::int,0)`
         }`,
         [fact.orgId, fact.id, b.day, JSON.stringify(fact), Date.now()],
@@ -335,12 +393,15 @@ export function createPostgresUsageStore(connectionString: string): UsageStore {
           filter.values,
         );
         const ranking = RANK_SQL[query.rankBy ?? "calls"];
-        const breakdown = await q(
-          `SELECT dims->>'${field}' AS id,MAX(dims->>'${label}') AS name,${SELECT_METRICS}
+        const departments = query.dimension === "department" ? await departmentRows(client, query) : undefined;
+        const breakdown = departments
+          ? []
+          : await q(
+              `SELECT dims->>'${field}' AS id,MAX(dims->>'${label}') AS name,${SELECT_METRICS}
           FROM usage_daily WHERE ${filter.sql} GROUP BY 1 HAVING SUM((metrics->>'requests')::numeric)+SUM((metrics->>'samples')::numeric)>0
           ORDER BY ${ranking} DESC,id LIMIT 200`,
-          filter.values,
-        );
+              filter.values,
+            );
         const state = await q(
           `SELECT (SELECT COUNT(*) FROM usage_facts WHERE org_id=$1 AND dirty) AS pending,
           COALESCE(s.unresolved,0) AS unresolved,s.first_day,COALESCE(s.historical,0) AS historical,s.updated_at
@@ -350,18 +411,21 @@ export function createPostgresUsageStore(connectionString: string): UsageStore {
         const s = state[0];
         return {
           query,
+          departmentTree: departments?.tree,
           total: metrics(total[0]),
           previous: metrics(previous[0]),
           series: series.map((row) => ({ period: String(row.period), metrics: metrics(row) })),
-          breakdown: breakdown.map((row) => ({
-            id: String(row.id ?? ""),
-            name:
-              query.dimension === "project"
-                ? displayProject(String(row.id ?? ""), String(row.name ?? ""), names)
-                : String(row.name ?? ""),
-            status: lifecycleStatus(states, query.dimension, String(row.id ?? "")),
-            metrics: metrics(row),
-          })),
+          breakdown: departments
+            ? sortDepartments(departments.departments, query.rankBy ?? "calls").slice(0, 200)
+            : breakdown.map((row) => ({
+                id: String(row.id ?? ""),
+                name:
+                  query.dimension === "project"
+                    ? displayProject(String(row.id ?? ""), String(row.name ?? ""), names)
+                    : String(row.name ?? ""),
+                status: lifecycleStatus(states, query.dimension, String(row.id ?? "")),
+                metrics: metrics(row),
+              })),
           status: {
             durable: true,
             pending: Number(s?.pending ?? 0),
@@ -380,6 +444,10 @@ export function createPostgresUsageStore(connectionString: string): UsageStore {
       return withPgTransaction(await db.pool(), async (client) => {
         await client.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
         const filter = where(query);
+        if (query.dimension === "department") {
+          const departments = sortDepartments((await departmentRows(client, query, true)).departments, metric);
+          return { total: departments.length, items: departments.slice(query.offset, query.offset + query.limit) };
+        }
         const field = ID_FIELDS[query.dimension];
         const name = NAME_FIELDS[query.dimension];
         const period =
@@ -471,9 +539,19 @@ export function createPostgresUsageStore(connectionString: string): UsageStore {
               },
             ]),
           );
-          for (const item of directory?.[dimension] ?? [])
+          for (const item of (directory?.[dimension] ?? []).filter(
+            (item) => dimension !== "department" || item.kind !== "organization",
+          ))
             if (!items.has(item.id)) items.set(item.id, { ...item, status: item.status });
-          return [dimension, [...items.values()].sort((a, b) => a.name.localeCompare(b.name))] as const;
+          const roots = new Set(
+            (directory?.department ?? []).filter((item) => item.kind === "organization").map((item) => item.id),
+          );
+          return [
+            dimension,
+            [...items.values()]
+              .filter((item) => dimension !== "department" || !roots.has(item.id))
+              .sort((a, b) => a.name.localeCompare(b.name)),
+          ] as const;
         }),
       );
       return Object.fromEntries(entries) as Awaited<ReturnType<UsageStore["facets"]>>;
@@ -486,6 +564,35 @@ export function createPostgresUsageStore(connectionString: string): UsageStore {
         await client.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
         const filter = where(query, !summary);
         const rows: string[] = [];
+        if (summary && query.dimension === "department") {
+          const departments = (await departmentRows(client, query)).tree;
+          const columns = [...METRIC_KEYS, "activeUsers"] as const;
+          rows.push(
+            ["部门 ID", "名称", "分支 ID", "路径", "路径 ID", "历史分支", "口径", ...columns].map(csvCell).join(","),
+          );
+          for (const department of departments)
+            for (const [scope, m] of [
+              ["含子部门", department.metrics],
+              ["直属", department.directMetrics],
+            ] as const) {
+              if (department.depth === 0 && scope === "直属") continue;
+              rows.push(
+                [
+                  department.id,
+                  department.name,
+                  department.key,
+                  department.pathNames.join(" / "),
+                  JSON.stringify(department.path),
+                  department.historical,
+                  scope,
+                  ...columns.map((key) => m[key]),
+                ]
+                  .map(csvCell)
+                  .join(","),
+              );
+            }
+          return `\uFEFF${rows.join("\r\n")}\r\n`;
+        }
         if (summary) {
           const field = ID_FIELDS[query.dimension];
           const name = NAME_FIELDS[query.dimension];
@@ -534,6 +641,8 @@ export function createPostgresUsageStore(connectionString: string): UsageStore {
             "unitId",
             "unitName",
             "unitPath",
+            "unitAncestors",
+            "unitAttribution",
             "source",
             "harness",
             "model",
@@ -566,6 +675,8 @@ export function createPostgresUsageStore(connectionString: string): UsageStore {
                 .map((key) => {
                   if (key === "priceVersion") return csvCell(fact.price?.id);
                   if (key === "priceSource") return csvCell(fact.price?.source);
+                  if (key === "unitAncestors")
+                    return csvCell(fact.unitAncestors ? JSON.stringify(fact.unitAncestors) : null);
                   if (key === "costBackfill")
                     return csvCell(fact.costBackfill ? JSON.stringify(fact.costBackfill) : null);
                   return csvCell(fact[key]);

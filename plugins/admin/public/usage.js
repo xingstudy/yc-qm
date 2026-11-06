@@ -149,6 +149,8 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
     granularity: params.get("granularity") ?? "day",
     dimension: params.get("dimension") ?? "user",
     rankBy: params.get("rankBy") ?? "tokens",
+    departmentScope: params.get("departmentScope") === "direct" ? "direct" : "subtree",
+    showEmptyDepartments: params.get("showEmptyDepartments") === "true",
     enabled: true,
   };
   const filters = {};
@@ -252,6 +254,30 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
     state.granularity,
   );
   field(tr("汇总粒度", "Granularity"), granularity);
+  const departmentScope = select(
+    [
+      ["subtree", tr("含子部门", "With descendants")],
+      ["direct", tr("仅直属", "Direct only")],
+    ],
+    state.departmentScope,
+  );
+  field(tr("部门统计口径", "Department scope"), departmentScope);
+  const showEmpty = node("input");
+  showEmpty.type = "checkbox";
+  showEmpty.checked = state.showEmptyDepartments;
+  field(tr("显示空部门", "Show empty departments"), showEmpty);
+  departmentScope.onchange = () => {
+    state.departmentScope = departmentScope.value;
+    offset = 0;
+    save();
+    drawFilters();
+    load();
+  };
+  showEmpty.onchange = () => {
+    state.showEmptyDepartments = showEmpty.checked;
+    save();
+    load();
+  };
   const dimension = select(
     [
       ["user", tr("用户", "User")],
@@ -306,6 +332,141 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
     if (pricingPanel.open && !priceVersions && !priceLoading) loadPrices();
   };
   root.append(controls, results, pricingPanel);
+  const departmentPanel = node("details", undefined, "card");
+  departmentPanel.append(node("summary", tr("历史部门归属更正", "Correct historical departments")));
+  const correctionForm = node("div", undefined, "usage-fields");
+  const correctionField = (title, type, value = "") => {
+    const wrap = node("label", undefined, "usage-field");
+    const input = node("input");
+    input.type = type;
+    input.value = value;
+    wrap.append(node("span", title), input);
+    correctionForm.append(wrap);
+    return input;
+  };
+  const correctionStart = correctionField(tr("开始日期", "From"), "date", state.start);
+  const correctionEnd = correctionField(tr("结束日期", "To"), "date", state.end);
+  const correctionUsers = correctionField(
+    tr("用户 ID（逗号分隔，空白为全部）", "User IDs (comma separated, blank for all)"),
+    "text",
+  );
+  const correctionRecords = correctionField(tr("记录 ID（逗号分隔）", "Record IDs (comma separated)"), "text");
+  const correctionTarget = select(
+    [["", tr("当前主部门或唯一有效部门", "Current primary or sole eligible department")]],
+    "",
+  );
+  const correctionTargetField = node("label", undefined, "usage-field");
+  correctionTargetField.append(node("span", tr("目标部门", "Target department")), correctionTarget);
+  correctionForm.append(correctionTargetField);
+  const correctionReason = correctionField(tr("更正原因", "Correction reason"), "text");
+  const correctionReplace = correctionField(
+    tr("覆盖所选记录的已有归属", "Replace selected existing allocations"),
+    "checkbox",
+  );
+  const correctionPreview = node("button", tr("预览部门更正", "Preview department correction"));
+  const correctionConfirm = node("button", tr("确认部门更正", "Confirm department correction"));
+  correctionConfirm.disabled = true;
+  const correctionOutput = node("div");
+  correctionOutput.setAttribute("role", "status");
+  departmentPanel.append(
+    node(
+      "p",
+      tr(
+        "默认仅更正身份明确的未分配记录。覆盖已有归属须指定记录 ID；明细可查看 ID。预览展示前 100 条变更，确认更正全部符合条件的记录，并保留审计。",
+        "Defaults to identifiable unassigned records. Replacing allocations requires record IDs from details. Preview shows the first 100 changes; confirmation corrects all eligible records and retains an audit.",
+      ),
+      "usage-status",
+    ),
+    correctionForm,
+    correctionPreview,
+    correctionConfirm,
+    correctionOutput,
+  );
+  root.append(departmentPanel);
+  let departmentPreview;
+  let correctionRevision = 0;
+  let correctionBusy = false;
+  let correctionController;
+  const invalidateCorrection = () => {
+    correctionRevision++;
+    departmentPreview = null;
+    correctionConfirm.disabled = true;
+    correctionOutput.replaceChildren();
+  };
+  for (const input of [
+    correctionStart,
+    correctionEnd,
+    correctionUsers,
+    correctionRecords,
+    correctionTarget,
+    correctionReason,
+    correctionReplace,
+  ])
+    input.oninput = input.onchange = invalidateCorrection;
+  const splitIds = (input) => (input.value.trim() ? input.value.split(/[,，\s]+/).filter(Boolean) : undefined);
+  async function correctDepartment(confirm) {
+    if (correctionBusy || (confirm && !departmentPreview)) return;
+    const revision = correctionRevision;
+    correctionBusy = true;
+    correctionPreview.disabled = correctionConfirm.disabled = true;
+    correctionController = new win.AbortController();
+    try {
+      const body = confirm
+        ? { previewId: departmentPreview.id }
+        : {
+            start: correctionStart.value,
+            end: correctionEnd.value,
+            principalIds: splitIds(correctionUsers),
+            recordIds: splitIds(correctionRecords),
+            unitId: correctionTarget.value.trim() || undefined,
+            replace: correctionReplace.checked,
+            reason: correctionReason.value.trim(),
+          };
+      const response = await win.fetch(`${base}/api/usage/department-${confirm ? "confirm" : "preview"}`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: correctionController.signal,
+      });
+      const data = await response.json();
+      if (destroyed || revision !== correctionRevision) return;
+      if (!response.ok) throw new Error(data.message ?? String(response.status));
+      departmentPreview = data.preview;
+      const p = departmentPreview;
+      correctionOutput.replaceChildren(
+        node(
+          "p",
+          `${p.confirmedAt ? tr("已更正", "Corrected") : tr("可更正", "Eligible")}: ${p.eligible} · ${tr("覆盖", "Replaced")}: ${p.overwritten} · ${tr("待完成", "Pending")}: ${p.pending} · ${tr("身份缺失", "Missing identity")}: ${p.missingIdentity} · ${tr("归属未确定", "Unresolved")}: ${p.unresolved} · ${tr("无需变更", "Unchanged")}: ${p.unchanged}`,
+        ),
+      );
+      for (const change of p.changes)
+        correctionOutput.append(
+          node(
+            "p",
+            `${change.id} · ${change.principalId} · ${change.before.unitName || tr("未分配", "Unassigned")} → ${change.after.unitName} · ${change.basis}`,
+          ),
+        );
+      if (p.confirmedAt) {
+        departmentPreview = null;
+        load(true);
+      }
+    } catch (error) {
+      if (!destroyed && revision === correctionRevision) {
+        departmentPreview = null;
+        correctionOutput.replaceChildren(node("p", error.message));
+      }
+    } finally {
+      correctionBusy = false;
+      if (!destroyed) {
+        correctionPreview.disabled = false;
+        correctionConfirm.disabled = !departmentPreview?.eligible || !!departmentPreview?.confirmedAt;
+      }
+    }
+  }
+  correctionPreview.onclick = () => correctDepartment(false);
+  correctionConfirm.onclick = () => correctDepartment(true);
+  const collapsedDepartments = new Set();
 
   function query() {
     const q = new URLSearchParams({
@@ -314,13 +475,24 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
       granularity: state.granularity,
       dimension: state.dimension,
       rankBy: state.rankBy,
+      departmentScope: state.departmentScope,
+      showEmptyDepartments: String(state.showEmptyDepartments),
     });
     for (const [key, values] of Object.entries(filters)) for (const value of values) q.append(key, value);
     return q;
   }
   function save() {
     const url = new URL(win.location.href);
-    for (const key of ["start", "end", "granularity", "dimension", "rankBy", ...Object.keys(filters)])
+    for (const key of [
+      "start",
+      "end",
+      "granularity",
+      "dimension",
+      "rankBy",
+      "departmentScope",
+      "showEmptyDepartments",
+      ...Object.keys(filters),
+    ])
       url.searchParams.delete(key);
     for (const [key, value] of query()) url.searchParams.append(key, value);
     url.searchParams.set("range", preset.value);
@@ -1639,6 +1811,84 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
         if (event.key === "Enter") drill();
       };
     });
+    if (state.dimension === "department" && report.departmentTree) {
+      rank.hidden = true;
+      const tree = report.departmentTree;
+      const section = table(
+        tr("部门组织树", "Department tree"),
+        [
+          tr("部门", "Department"),
+          tr("请求", "Requests"),
+          tr("活跃用户", "Active users"),
+          tr("模型调用", "Model calls"),
+          "Token",
+          "USD",
+        ],
+        tree.map((item) => {
+          const m = item.depth === 0 || state.departmentScope !== "direct" ? item.metrics : item.directMetrics;
+          return [
+            item.name,
+            number(m.requests),
+            number(m.activeUsers),
+            calls(m),
+            `${tokens(m)} ${coverage(m, "tokens")}`,
+            `${cost(m)} ${coverage(m, "costUsd")}`,
+          ];
+        }),
+      );
+      section.append(
+        node(
+          "p",
+          tr(
+            "父部门包含下级，父子行不可相加。组织总计独立计算；历史分支保留发生时层级。点击部门筛选其全部历史分支。",
+            "Parents include descendants; do not add parent and child rows. The organization total is independently calculated. Historical branches retain their original hierarchy. Select a department to filter all its historical branches.",
+          ),
+          "usage-status",
+        ),
+      );
+      const rows = [...section.querySelectorAll("tbody tr")];
+      const byKey = new Map(tree.map((item) => [item.key, item]));
+      const visibility = () =>
+        rows.forEach((row, index) => {
+          let parent = byKey.get(tree[index].parentKey);
+          let hidden = false;
+          while (parent) {
+            if (collapsedDepartments.has(parent.key)) hidden = true;
+            parent = byKey.get(parent.parentKey);
+          }
+          row.hidden = hidden;
+        });
+      rows.forEach((row, index) => {
+        const item = tree[index];
+        const cell = row.querySelector("td");
+        cell.replaceChildren();
+        cell.style.paddingLeft = `${8 + item.depth * 18}px`;
+        if (tree.some((child) => child.parentKey === item.key)) {
+          const expand = node("button", collapsedDepartments.has(item.key) ? "▸" : "▾");
+          expand.setAttribute("aria-label", `${tr("展开或收起", "Expand or collapse")} ${item.name}`);
+          expand.setAttribute("aria-expanded", String(!collapsedDepartments.has(item.key)));
+          expand.onclick = () => {
+            if (collapsedDepartments.has(item.key)) collapsedDepartments.delete(item.key);
+            else collapsedDepartments.add(item.key);
+            expand.textContent = collapsedDepartments.has(item.key) ? "▸" : "▾";
+            expand.setAttribute("aria-expanded", String(!collapsedDepartments.has(item.key)));
+            visibility();
+          };
+          cell.append(expand);
+        }
+        const name = node("button", `${item.name}${item.historical ? tr("（历史分支）", " (historical)") : ""}`);
+        name.title = (item.pathNames ?? item.path).join(" / ");
+        name.onclick = () => {
+          filters.department = item.depth ? [item.id] : [];
+          offset = 0;
+          save();
+          drawFilters();
+          load();
+        };
+        cell.append(name);
+      });
+      visibility();
+    }
     const detailButton = node("button", showDetails ? tr("隐藏明细", "Hide details") : tr("查看明细", "View details"));
     detailButton.onclick = () => {
       showDetails = !showDetails;
@@ -1650,10 +1900,12 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
       table(
         tr("使用量明细", "Usage details"),
         [
+          tr("记录 ID", "Record ID"),
           tr("发生时间", "Time"),
           tr("用户", "User"),
           tr("项目", "Project"),
           tr("发生时部门", "Historical department"),
+          tr("归属依据", "Attribution basis"),
           tr("来源", "Source"),
           tr("模型", "Model"),
           tr("状态", "State"),
@@ -1666,6 +1918,7 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
           tr("粒度", "Grain"),
         ],
         details.records.map((r) => [
+          r.id,
           new Date(r.at).toLocaleString(locale, { timeZone: "Asia/Shanghai" }),
           objectName(r.principalName || tr("系统", "System"), r.principalStatus),
           objectName(
@@ -1673,6 +1926,13 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
             r.projectStatus,
           ),
           objectName(r.unitName, r.unitStatus),
+          {
+            primary: tr("显式主部门", "Explicit primary"),
+            single: tr("唯一有效部门", "Sole eligible department"),
+            ambiguous: tr("多部门待确认", "Ambiguous memberships"),
+            unassigned: tr("无有效部门", "No eligible department"),
+            correction: tr("管理员历史更正", "Administrator correction"),
+          }[r.unitAttribution] ?? tr("历史原因未记录", "Historical reason unavailable"),
           label(r.source),
           r.model,
           label(r.state),
@@ -1708,6 +1968,17 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
   }
   function drawFilters() {
     if (!facets) return;
+    const selectedDepartment = correctionTarget.value;
+    correctionTarget.replaceChildren();
+    for (const item of [
+      { id: "", name: tr("当前主部门或唯一有效部门", "Current primary or sole eligible department") },
+      ...(facets.department ?? []).filter((item) => item.id && !item.id.startsWith("__") && item.status === "active"),
+    ]) {
+      const option = node("option", item.name);
+      option.value = item.id;
+      correctionTarget.append(option);
+    }
+    correctionTarget.value = selectedDepartment;
     openFilter?.close();
     for (const dispose of filterCleanup) dispose();
     filterCleanup = [];
@@ -1716,7 +1987,10 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
       const titles = {
         user: tr("用户", "User"),
         project: tr("项目", "Project"),
-        department: tr("部门（含子部门）", "Department (with descendants)"),
+        department:
+          state.departmentScope === "direct"
+            ? tr("部门（仅直属）", "Department (direct only)")
+            : tr("部门（含子部门）", "Department (with descendants)"),
         model: tr("模型", "Model"),
         source: tr("来源", "Source"),
         auth: tr("授权", "Authorization"),
@@ -2051,6 +2325,7 @@ export function mountUsageDashboard(root, { base = "", locale = "zh-CN" } = {}) 
       openFilter?.close();
       priceController?.abort();
       layoutController?.abort();
+      correctionController?.abort();
     },
   };
 }
