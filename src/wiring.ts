@@ -462,6 +462,7 @@ import { createPostgresUsageStore } from "./usage/postgres-usage-store.ts";
 import { projectOptionName } from "../plugins/chassis/src/project-label.js";
 import type { UsageStore } from "./usage/usage-store.ts";
 import { createUsagePricingStore, type UsagePrice, type UsagePricingStore } from "./usage/usage-pricing.ts";
+import { resolveUsageDepartment } from "./usage/usage-departments.ts";
 import {
   createUsageService,
   instrumentUsageHarness,
@@ -2018,7 +2019,13 @@ export function buildApp(
           name: u.displayName ?? u.principalId,
           status: u.status === "invited" ? "unknown" : u.status,
         })),
-        department: units.map((u) => ({ id: u.id, name: u.name, status: u.status })),
+        department: units.map((u) => ({
+          id: u.id,
+          name: u.name,
+          status: u.status,
+          parentId: u.parentId,
+          kind: u.kind,
+        })),
         project: choices.map((p) => ({ id: p.id, name: projectOptionName(p, choices), status: "active" })),
       };
     });
@@ -2048,24 +2055,12 @@ export function buildApp(
         return organizationStore.transact(config.orgId, async (tx) => {
           const user = principalId ? await tx.getUser(config.orgId, principalId) : null;
           const members = principalId ? await tx.listUnitMembersForUser(config.orgId, principalId) : [];
-          const primary = members.find((member) => member.isPrimary);
-          const unit = primary ? await tx.getUnit(config.orgId, primary.unitId) : null;
-          const unitPath: string[] = [];
-          const unitAncestors: Array<{ id: string; name: string }> = [];
-          let current = unit;
-          while (current && !unitPath.includes(current.id)) {
-            unitPath.push(current.id);
-            unitAncestors.push({ id: current.id, name: current.name });
-            current = current.parentId ? await tx.getUnit(config.orgId, current.parentId) : null;
-          }
+          const department = resolveUsageDepartment(await tx.listUnits(config.orgId), members);
           return {
             principalName: user?.displayName ?? principalId,
             projectId,
             projectName: project?.name ?? (projectId ? "已删除 Project" : "无 Project"),
-            unitId: unit?.id ?? "",
-            unitName: unit?.name ?? "未分配",
-            unitPath,
-            unitAncestors,
+            ...department,
           };
         });
       },

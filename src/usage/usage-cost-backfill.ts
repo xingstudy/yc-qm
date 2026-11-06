@@ -137,6 +137,7 @@ export async function confirmUsageCost(
   now = Date.now(),
 ): Promise<UsageCostPreview> {
   return withPgTransaction(pool, async (client) => {
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`usage:${orgId}`]);
     const result = await client.query("SELECT preview FROM usage_cost_previews WHERE org_id=$1 AND id=$2 FOR UPDATE", [
       orgId,
       id,

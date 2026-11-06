@@ -35,7 +35,19 @@ export function createUsageService(
   snapshot: (
     principalId: string,
     scopeId: string,
-  ) => Promise<Pick<UsageIdentity, "principalName" | "projectId" | "projectName" | "unitId" | "unitName" | "unitPath">>,
+  ) => Promise<
+    Pick<
+      UsageIdentity,
+      | "principalName"
+      | "projectId"
+      | "projectName"
+      | "unitId"
+      | "unitName"
+      | "unitPath"
+      | "unitAncestors"
+      | "unitAttribution"
+    >
+  >,
   pricing?: { store: UsagePricingStore; model: (model: string) => { provider: string; id: string } | undefined },
 ): UsageService {
   const failedWrites = new Map<string, UsageFact>();

@@ -10,6 +10,7 @@ import { createUsagePricingStore } from "../src/usage/usage-pricing.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { createMemoryAdvisoryLock } from "../src/persistence/advisory-lock.ts";
 import { UsageCostPreviewError, type UsageCostPreview } from "../src/usage/usage-cost-backfill.ts";
+import { UsageDepartmentPreviewError, type UsageDepartmentPreview } from "../src/usage/usage-department-backfill.ts";
 import type { PersistedUiState } from "../src/surfaces/ui-state.ts";
 
 test("usage API requires org admin, pins org, validates queries and audits exports", async () => {
@@ -20,6 +21,7 @@ test("usage API requires org admin, pins org, validates queries and audits expor
   let layoutOffline = false;
   const layouts = createMemoryMap<PersistedUiState>();
   let costPreview: UsageCostPreview | undefined;
+  let departmentPreview: UsageDepartmentPreview | undefined;
   const priceLock = createMemoryAdvisoryLock();
   const prices = createUsagePricingStore(createMemoryMap(), (key, fn) => priceLock.withLock(key, fn));
   const usage: UsageStore = {
@@ -27,6 +29,38 @@ test("usage API requires org admin, pins org, validates queries and audits expor
     get: async () => null,
     project: async () => 0,
     backfill: async () => 0,
+    previewDepartment: async (orgId, actorId, input) => {
+      assert.equal(orgId, "default-org");
+      assert.equal(actorId, "admin-alice");
+      if (offline) throw new Error("offline");
+      if (!input.reason) throw new UsageDepartmentPreviewError("invalid");
+      departmentPreview = {
+        id: "department",
+        orgId,
+        actorId,
+        input,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 900000,
+        confirmedAt: null,
+        scanned: 2,
+        eligible: 1,
+        overwritten: 0,
+        pending: 0,
+        missingIdentity: 1,
+        unresolved: 0,
+        unchanged: 0,
+        changes: [],
+      };
+      return departmentPreview;
+    },
+    confirmDepartment: async (orgId, actorId, id) => {
+      assert.equal(orgId, "default-org");
+      if (offline) throw new Error("offline");
+      if (id === "stale") throw new UsageDepartmentPreviewError("stale");
+      if (!departmentPreview || departmentPreview.actorId !== actorId || id !== departmentPreview.id)
+        throw new UsageDepartmentPreviewError("not_found");
+      return { ...departmentPreview, confirmedAt: Date.now() };
+    },
     previewCost: async (orgId, actorId, price, input) => {
       if (offline) throw new Error("database down");
       assert.equal(orgId, "default-org");
@@ -115,6 +149,24 @@ test("usage API requires org admin, pins org, validates queries and audits expor
     assert.equal((await fetch(base, { headers: { "x-admin-actor": "nobody@default-org" } })).status, 403);
     assert.equal((await fetch(base, { headers: { "x-admin-actor": "admin-alice@other-org" } })).status, 403);
     assert.equal(reads, 0);
+    const postDepartment = (mode: string, body: unknown, actor = "admin-alice@default-org") =>
+      fetch(`${base}/department-${mode}`, {
+        method: "POST",
+        headers: { "x-admin-actor": actor, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const correction = { start: "2026-10-05", end: "2026-10-05", reason: "Repair", orgId: "other", actorId: "other" };
+    assert.equal((await postDepartment("preview", correction, "nobody@default-org")).status, 403);
+    assert.equal((await postDepartment("preview", {})).status, 400);
+    assert.equal((await postDepartment("confirm", {})).status, 400);
+    assert.equal((await postDepartment("preview", correction)).status, 200);
+    assert.equal((await postDepartment("confirm", { previewId: "department" }, "admin-bob@default-org")).status, 404);
+    assert.equal((await postDepartment("confirm", { previewId: "stale" })).status, 409);
+    assert.equal((await postDepartment("confirm", { previewId: "department", orgId: "other" })).status, 200);
+    assert.ok((await built.auditLog.events()).some((event) => event.action === "usage.department.correct"));
+    offline = true;
+    assert.equal((await postDepartment("preview", correction)).status, 503);
+    offline = false;
     const layoutBody = {
       panels: [{ id: "p1", dimension: "user", metric: "tokens", visual: "area", width: "half" }],
       expectedUpdatedAt: 0,

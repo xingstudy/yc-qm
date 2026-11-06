@@ -110,6 +110,10 @@ test("manual and scheduled refresh update facets while retaining selected filter
       return this.children.filter((c) => c.selected || c.value === this.value);
     }
     querySelectorAll(selector: string): Element[] {
+      if (selector.includes(" ")) {
+        const [parent, ...descendants] = selector.split(" ");
+        return this.querySelectorAll(parent!).flatMap((element) => element.querySelectorAll(descendants.join(" ")));
+      }
       return this.children
         .flatMap((c) => [c, ...c.querySelectorAll("*")])
         .filter(
@@ -156,6 +160,20 @@ test("manual and scheduled refresh update facets while retaining selected filter
     breakdown: [{ id: "a", name: "User 0", metrics }],
   };
   let facetRequests = 0;
+  const departmentData: {
+    tree?: Array<{
+      key: string;
+      parentKey: string | null;
+      id: string;
+      name: string;
+      path: string[];
+      depth: number;
+      historical: boolean;
+      metrics: typeof metrics;
+      directMetrics: typeof metrics;
+    }>;
+  } = {};
+  const corrections: Array<{ mode: string; body: Record<string, unknown> }> = [];
   let trendCount = 3;
   let failSeriesPage = false;
   let deferredSeriesPage: Promise<void> | null = null;
@@ -203,6 +221,30 @@ test("manual and scheduled refresh update facets while retaining selected filter
     fetch: async (url: string, options?: { method?: string; body?: string }) => ({
       ok: true,
       json: async () => {
+        if (/department-(preview|confirm)$/.test(url)) {
+          corrections.push({ mode: url.split("-").at(-1)!, body: JSON.parse(options!.body!) });
+          return {
+            preview: {
+              id: "department-preview",
+              eligible: 1,
+              overwritten: 0,
+              pending: 0,
+              missingIdentity: 0,
+              unresolved: 0,
+              unchanged: 0,
+              confirmedAt: url.endsWith("confirm") ? Date.now() : null,
+              changes: [
+                {
+                  id: "r1",
+                  principalId: "a",
+                  before: { unitName: "未分配" },
+                  after: { unitName: "研发" },
+                  basis: "single",
+                },
+              ],
+            },
+          };
+        }
         if (url.endsWith("/layout")) {
           if (options?.method === "POST") {
             savedLayout = JSON.parse(options.body!);
@@ -267,7 +309,7 @@ test("manual and scheduled refresh update facets while retaining selected filter
               name: `User ${i}`,
             })),
           };
-        return report;
+        return { ...report, departmentTree: departmentData.tree };
       },
     }),
     clearTimeout() {},
@@ -423,7 +465,7 @@ test("manual and scheduled refresh update facets while retaining selected filter
   const costPoint = costChart.querySelector(".usage-plot-point")!;
   costPoint.onfocus!();
   assert.ok(nodes(costChart.querySelector(".usage-legend")!).some((el) => el.textContent === "$0.00"));
-  const dateFields = nodes(root).filter(
+  const dateFields = nodes(root.children.find((el) => el.tag === "section")!).filter(
     (el) => el.tag === "label" && ["开始日期", "结束日期"].includes(el.children[0]?.textContent ?? ""),
   );
   assert.ok(dateFields.every((el) => el.hidden));
@@ -547,6 +589,75 @@ test("manual and scheduled refresh update facets while retaining selected filter
   delayed.resolve();
   await new Promise(setImmediate);
   assert.equal(userPanel().querySelectorAll(".usage-plot-series").length, 20);
+  departmentData.tree = [
+    {
+      key: "root",
+      parentKey: null,
+      id: "__usage_organization__",
+      name: "组织总计",
+      path: [],
+      depth: 0,
+      historical: false,
+      metrics,
+      directMetrics: metrics,
+    },
+    {
+      key: "parent",
+      parentKey: "root",
+      id: "parent",
+      name: "研发",
+      path: ["parent"],
+      depth: 1,
+      historical: true,
+      metrics,
+      directMetrics: metrics,
+    },
+    {
+      key: "team",
+      parentKey: "parent",
+      id: "team",
+      name: "测试组",
+      path: ["parent", "team"],
+      depth: 2,
+      historical: false,
+      metrics,
+      directMetrics: metrics,
+    },
+  ];
+  nodes(root).find((el) => el.tag === "button" && el.textContent === "部门")!.onclick!();
+  await new Promise(setImmediate);
+  assert.ok(nodes(root).some((el) => el.textContent === "部门组织树"));
+  const expand = nodes(root).find((el) => el.attributes.get("aria-label") === "展开或收起 研发")!;
+  expand.onclick!();
+  assert.equal(expand.attributes.get("aria-expanded"), "false");
+  const treeSection = nodes(root).find(
+    (el) => el.tag === "section" && el.querySelector("h3")?.textContent === "部门组织树",
+  )!;
+  assert.equal(treeSection.querySelectorAll("tbody tr")[2]!.hidden, true);
+  const scopeSelect = nodes(root).find((el) => el.tag === "label" && el.children[0]?.textContent === "部门统计口径")!
+    .children[1]!;
+  scopeSelect.value = "direct";
+  scopeSelect.onchange!();
+  await new Promise(setImmediate);
+  const correctionReason = nodes(root).find((el) => el.tag === "label" && el.children[0]?.textContent === "更正原因")!
+    .children[1]!;
+  correctionReason.value = "Repair";
+  correctionReason.onchange!();
+  const previewCorrection = () => nodes(root).find((el) => el.textContent === "预览部门更正")!.onclick!();
+  const confirmCorrection = () => nodes(root).find((el) => el.textContent === "确认部门更正")!;
+  previewCorrection();
+  await new Promise(setImmediate);
+  assert.equal(confirmCorrection().disabled, false);
+  assert.equal(corrections[0]!.body.reason, "Repair");
+  correctionReason.value = "Changed";
+  correctionReason.onchange!();
+  assert.equal(confirmCorrection().disabled, true);
+  previewCorrection();
+  await new Promise(setImmediate);
+  confirmCorrection().onclick!();
+  await new Promise(setImmediate);
+  assert.deepEqual(corrections.at(-1), { mode: "confirm", body: { previewId: "department-preview" } });
+  assert.equal(confirmCorrection().disabled, true);
   dashboard.destroy();
   assert.equal(observedCharts.size, 0);
   assert.ok(chartDisconnects > 1);
@@ -591,7 +702,14 @@ test("usage proxies signed requests and denies manager-only principals", async (
   const path = "/api/usage/details?start=2026-10-01&end=2026-10-07&department=parent&user=a&user=b";
   assert.equal((await fetch(base + path, { headers: { cookie: "admin=admin" } })).status, 200);
   assert.equal(received, path.replace("/api/", "/v1/admin/"));
-  for (const mode of ["pricing", "cost-preview", "cost-confirm", "layout"]) {
+  for (const mode of [
+    "pricing",
+    "cost-preview",
+    "cost-confirm",
+    "department-preview",
+    "department-confirm",
+    "layout",
+  ]) {
     assert.equal(
       (
         await fetch(`${base}/api/usage/${mode}`, {
@@ -608,7 +726,7 @@ test("usage proxies signed requests and denies manager-only principals", async (
   assert.equal((await fetch(`${base}/api/usage/export`, { headers: { cookie: "admin=manager" } })).status, 403);
   assert.equal(
     (
-      await fetch(`${base}/api/usage/cost-confirm`, {
+      await fetch(`${base}/api/usage/department-confirm`, {
         method: "POST",
         headers: { cookie: "admin=manager", "content-type": "application/json" },
         body: "{}",
@@ -666,7 +784,7 @@ test("admin routing retains usage dates, granularity and repeated filters on rel
     `${routing}\nreturn stateToUrl(urlToState());`,
   );
   const input = new URL(
-    "http://localhost/admin/usage?start=2026-09-01&end=2026-09-30&range=custom&granularity=month&dimension=department&user=a&user=b&department=parent",
+    "http://localhost/admin/usage?start=2026-09-01&end=2026-09-30&range=custom&granularity=month&dimension=department&departmentScope=direct&showEmptyDepartments=true&user=a&user=b&department=parent",
   );
   const output = new URL(
     canonicalize("/admin", "history", ["usage", "history"], new Set(), input, "org:acme", "acme"),

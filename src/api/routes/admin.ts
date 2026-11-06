@@ -48,7 +48,13 @@ import { deleteModelProvider, getModelProviders, putModelProvider } from "./admi
 import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./admin/custom-providers.ts";
 import { deleteMcpServer, getMcpServers, putMcpServer } from "./admin/mcp-servers.ts";
 import { directorySourceAdminRoutes } from "./admin/directory-sources.ts";
-import { adminUsage, adminUsagePricing, adminUsageCost, adminUsageLayout } from "./admin/usage.ts";
+import {
+  adminUsage,
+  adminUsagePricing,
+  adminUsageCost,
+  adminUsageLayout,
+  adminUsageDepartment,
+} from "./admin/usage.ts";
 import { listSecurityFlags, releaseSecurityTaint } from "./admin/security.ts";
 
 const timed =
@@ -118,6 +124,8 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/admin/usage/pricing", auth: "either", handle: adminUsagePricing },
   { method: "POST", path: "/v1/admin/usage/cost-preview", auth: "either", handle: adminUsageCost },
   { method: "POST", path: "/v1/admin/usage/cost-confirm", auth: "either", handle: adminUsageCost },
+  { method: "POST", path: "/v1/admin/usage/department-preview", auth: "either", handle: adminUsageDepartment },
+  { method: "POST", path: "/v1/admin/usage/department-confirm", auth: "either", handle: adminUsageDepartment },
   { method: "GET", path: "/v1/admin/usage/:mode", auth: "either", handle: adminUsage },
   { method: "GET", path: "/v1/admin/egress", auth: "either", handle: egress },
   { method: "GET", path: "/v1/admin/sessions", auth: "either", handle: listAdminSessions },

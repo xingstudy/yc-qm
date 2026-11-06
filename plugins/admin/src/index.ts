@@ -527,7 +527,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
   if (
     method === "POST" &&
-    ["/api/usage/pricing", "/api/usage/cost-preview", "/api/usage/cost-confirm", "/api/usage/layout"].includes(pathname)
+    [
+      "/api/usage/pricing",
+      "/api/usage/cost-preview",
+      "/api/usage/cost-confirm",
+      "/api/usage/department-preview",
+      "/api/usage/department-confirm",
+      "/api/usage/layout",
+    ].includes(pathname)
   ) {
     if (!principal) return json(res, 401, { error: "signed_out" });
     return forward(req, res, principal, "POST", `/v1/admin${pathname.slice(4)}`, await readBody(req));
