@@ -27,7 +27,7 @@ RUN apt-get update \
        dpkg-query -s "$package" > "/runtime/var/lib/dpkg/status.d/$package"; \
      done
 
-FROM gcr.io/distroless/nodejs24-debian13:latest@sha256:96df910f65fdd8a21d00d14d4cc046adcfcf3ced2d5e96be4b39ebde9f4866c6
+FROM gcr.io/distroless/nodejs24-debian13:latest@sha256:b770c59f44ed459329508a73794e6d284f6c10143f83c8012a8f775cd514eca2
 
 COPY --from=envoy /usr/local/bin/envoy /usr/local/bin/envoy
 COPY --from=firewall /runtime/usr/ /usr/

@@ -58,7 +58,8 @@
     "@mariozechner/mini-lit": {
       "marked": "^18.0.5"
     },
-    "qs": "6.16.0",
+    "qs": "6.17.1",
+    "follow-redirects": "1.16.2",
     "zod": "4.6.7",
     "@lmstudio/sdk": {
       "zod": "3.25.76"

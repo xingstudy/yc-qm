@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 
@@ -71,8 +72,10 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
   assert.deepEqual(lockedVersions(packages, "toml"), ["5.0.1"]);
   assert.deepEqual(lockedVersions(packages, "zod"), ["4.6.7"]);
   assert.deepEqual(lockedVersions(packages, "body-parser"), ["2.4.0"]);
-  assert.deepEqual(lockedVersions(packages, "follow-redirects"), ["1.16.1"]);
-  assert.deepEqual(lockedVersions(webUiLock.packages ?? {}, "follow-redirects"), ["1.16.1"]);
+  assert.deepEqual(lockedVersions(packages, "follow-redirects"), ["1.16.2"]);
+  assert.deepEqual(lockedVersions(webUiLock.packages ?? {}, "follow-redirects"), ["1.16.2"]);
+  assert.deepEqual(lockedVersions(packages, "glob"), ["14.0.3"]);
+  assert.deepEqual(lockedVersions(packages, "minimatch"), ["11.0.3"]);
   assert.match(
     readFileSync(new URL(`../${piLicensePath}`, import.meta.url), "utf8"),
     /Copyright \(c\) 2025 Mario Zechner/,
@@ -87,13 +90,13 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
   assert.deepEqual(lockedVersions(packages, "fast-uri").sort(), ["3.1.9", "4.2.3"]);
   assert.deepEqual(lockedVersions(packages, "fastify"), ["5.12.7"]);
   assert.deepEqual(lockedVersions(packages, "protobufjs"), ["7.6.5"]);
-  assert.deepEqual(lockedVersions(packages, "qs"), ["6.16.0"]);
-  assert.deepEqual(lockedVersions(webUiLock.packages ?? {}, "qs"), ["6.16.0"]);
-  assert.deepEqual(lockedVersions(packages, "@hono/node-server"), ["2.0.10"]);
+  assert.deepEqual(lockedVersions(packages, "qs"), ["6.17.1"]);
+  assert.deepEqual(lockedVersions(webUiLock.packages ?? {}, "qs"), ["6.17.1"]);
+  assert.deepEqual(lockedVersions(packages, "@hono/node-server"), ["2.1.5"]);
   assert.equal(dependencyVersion(minimatchManifest, "brace-expansion"), "5.0.12");
   assert.equal(dependencyVersion(piManifest, "undici"), "8.12.3");
   assert.equal(dependencyVersion(piManifest, "protobufjs"), "7.6.5");
-  assert.equal(installedVersion("@hono/node-server"), "2.0.10");
+  assert.equal(installedVersion("@hono/node-server"), "2.1.5");
   assert.equal(installedVersion("hono"), "4.13.14");
 });
 
@@ -114,6 +117,24 @@ test("OpenCode tool validation and Effect TOML parsing work with patched depende
     models: [{ name: "example" }],
   });
   assert.throws(() => toml.parse("port = ["));
+});
+
+test("patched model globs preserve matching and file traversal respects cancellation", async () => {
+  const piManifest = new URL("../node_modules/@earendil-works/pi-coding-agent/package.json", import.meta.url);
+  const { minimatch } = createRequire(piManifest)("minimatch") as {
+    minimatch: (value: string, pattern: string) => boolean;
+  };
+  assert.equal(minimatch("openai/gpt-5", "openai/*"), true);
+  assert.equal(minimatch("anthropic/claude", "openai/*"), false);
+  assert.equal(minimatch("openai/gpt-5", "{openai,anthropic}/*"), true);
+
+  const e2bManifest = new URL("../node_modules/e2b/package.json", import.meta.url);
+  const { glob } = createRequire(e2bManifest)("glob") as {
+    glob: (pattern: string, options: { cwd: string; signal?: AbortSignal }) => Promise<string[]>;
+  };
+  const cwd = fileURLToPath(new URL("../licenses", import.meta.url));
+  assert.ok((await glob("*.LICENSE", { cwd })).includes("earendil-works-pi-coding-agent.LICENSE"));
+  await assert.rejects(glob("**/*", { cwd, signal: AbortSignal.abort() }), { name: "AbortError" });
 });
 
 test("the bundled connector SDK resolves patched HTTP and schema dependencies", () => {
