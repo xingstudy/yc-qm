@@ -1,10 +1,11 @@
 FROM golang:1.26.10-alpine@sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba AS wireproxy-build
+ENV GOTOOLCHAIN=local
 
 RUN go mod download github.com/windtf/wireproxy@v1.1.3 \
   && cp -R /go/pkg/mod/github.com/windtf/wireproxy@v1.1.3 /wireproxy \
   && chmod -R u+w /wireproxy \
   && cd /wireproxy \
-  && go get golang.org/x/crypto@v0.57.0 golang.org/x/net@v0.60.0 \
+  && go get golang.org/x/crypto@v0.58.0 golang.org/x/net@v0.62.0 \
   && mkdir -p /out \
   && CGO_ENABLED=0 go build -o /out/wireproxy ./cmd/wireproxy
 

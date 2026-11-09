@@ -48,7 +48,7 @@ test("the sandbox base builds a patched GitHub CLI", () => {
   assert.match(dockerfile, /ARG PIP_INDEX_URL=https:\/\/pypi\.org\/simple/);
   assert.match(dockerfile, /GOPROXY="\$GOPROXY" go mod download/);
   assert.match(dockerfile, /go get "golang\.org\/x\/mod@v\$\{X_MOD_VERSION\}"/);
-  assert.match(dockerfile, /go get[^\n]*golang\.org\/x\/net@v0\.60\.0\b/);
+  assert.match(dockerfile, /go get[^\n]*golang\.org\/x\/net@v0\.62\.0\b/);
   assert.match(dockerfile, /go version -m \/usr\/local\/bin\/gh \| grep -Eq/);
   assert.match(localBuild, /--build-arg "GOPROXY=\$\{GOPROXY\}"/);
   assert.match(localBuild, /--build-arg "PIP_INDEX_URL=\$\{PIP_INDEX_URL\}"/);
@@ -63,8 +63,9 @@ test("the sandbox base replaces browser-use's vulnerable aiohttp, anyio and pypd
   assert.match(browserRuntime, /importlib\.metadata\.version\('aiohttp'\) == '3\.14\.4'/);
   assert.match(browserRuntime, /s\/anyio==4\.12\.1\/anyio==4\.14\.2\/g/);
   assert.match(browserRuntime, /importlib\.metadata\.version\('anyio'\) == '4\.14\.2'/);
-  assert.match(browserRuntime, /s\/pypdf==6\.10\.2\/pypdf==6\.21\.2\//);
-  assert.match(browserRuntime, /importlib\.metadata\.version\('pypdf'\) == '6\.21\.2'/);
+  assert.match(browserRuntime, /s\/pypdf==6\.10\.2\/pypdf==6\.21\.4\//);
+  assert.match(browserRuntime, /importlib\.metadata\.version\('pypdf'\) == '6\.21\.4'/);
+  assert.match(browserRuntime, /msgpack==1\.2\.3/);
   assert.equal(browserRuntime.match(/s\/pillow==12\.2\.0\/pillow==13\.0\.0\//g)?.length, 2);
   assert.match(browserRuntime, /importlib\.metadata\.version\('pillow'\) == '13\.0\.0'/);
 });
@@ -80,6 +81,18 @@ test("the sandbox base patches pip's vendored urllib3 and its inventory", () => 
   assert.match(pipRuntime, /pkg:pypi\/urllib3@2\.8\.0/);
   assert.match(pipRuntime, /assert urllib3\.__version__ == "2\.8\.0"/);
   assert.match(pipRuntime, /pip index versions pip/);
+});
+
+test("the sandbox base patches msgpack code and pip's vendored inventory together", () => {
+  const dockerfile = readFileSync(new URL("../fly/Dockerfile", import.meta.url), "utf8");
+  const pipRuntime = dockerfile.slice(dockerfile.indexOf("RUN agent_site="));
+
+  assert.match(pipRuntime, /msgpack==1\.2\.3/);
+  assert.match(pipRuntime, /s\/msgpack==1\.1\.2\/msgpack==1\.2\.3\//);
+  assert.match(pipRuntime, /\.name == "msgpack" then[\s\S]*?\.version = "1\.2\.3"/);
+  assert.match(pipRuntime, /\.name == "msgpack" and \.version == "1\.2\.3"/);
+  assert.match(pipRuntime, /pkg:pypi\/msgpack@1\.2\.3/);
+  assert.match(pipRuntime, /assert msgpack\.version == \(1, 2, 3\)/);
 });
 
 test("the sandbox base pins pip with patched vendored certifi", () => {
