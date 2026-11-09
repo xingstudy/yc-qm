@@ -1,0 +1,10 @@
+[
+  "Dockerfile",
+  "agent.mjs",
+  "litestream.go.mod",
+  "litestream.go.sum",
+  "patch-npm.sh",
+  "patch-pip-vendor.sh",
+  "awscli-constraints.txt",
+  "build-files.json"
+]
