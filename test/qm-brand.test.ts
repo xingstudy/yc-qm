@@ -33,7 +33,8 @@ const camelShortPattern = new RegExp(
   "g",
 );
 
-function isAccessibilityToken(token: string): boolean {
+function isAllowedTechnicalToken(token: string): boolean {
+  if (token === [shortName, "width"].join("")) return true;
   const match = new RegExp(`^${accessibilityName}(\\d*)(.*)$`, "i").exec(token);
   if (!match) return false;
   return match[2] === "" || /^[A-Z]/.test(match[2] ?? "");
@@ -51,7 +52,9 @@ function findLegacyNames(
   }
 
   for (const [index, line] of text.split(/\r?\n/).entries()) {
-    const searchableLine = line.replace(/(["']integrity["']\s*:\s*["'])[^"'\r\n]*(["'])/gi, "$1$2");
+    const searchableLine = line
+      .replace(/(["']integrity["']\s*:\s*["'])[^"'\r\n]*(["'])/gi, "$1$2")
+      .replace(/\bh1:[A-Za-z0-9+/]+={0,2}(?=\s|$)/g, "");
 
     camelShortPattern.lastIndex = 0;
     if (shortPrefixPattern.test(searchableLine) || camelShortPattern.test(searchableLine)) {
@@ -64,7 +67,7 @@ function findLegacyNames(
       const hasLegacyBinaryName = [...searchableLine.matchAll(binaryShortPattern)].some((match) => {
         const rawToken = match[1] ?? "";
         const token = rawToken.toLowerCase();
-        if (isAccessibilityToken(rawToken)) return false;
+        if (isAllowedTechnicalToken(rawToken)) return false;
         if (token !== shortName) return true;
         if (!options.compressed) return true;
         const tokenStart = (match.index ?? 0) + match[0].lastIndexOf(match[1] ?? "");
@@ -102,7 +105,7 @@ function findLegacyNames(
 
     compactTextPattern.lastIndex = 0;
     for (const match of searchableLine.matchAll(compactTextPattern)) {
-      if (isAccessibilityToken(match[1] ?? "")) continue;
+      if (isAllowedTechnicalToken(match[1] ?? "")) continue;
       matches.push(`${index + 1}:${line}`);
       break;
     }
@@ -248,4 +251,13 @@ test("brand guard recognizes legacy variants", () => {
   assert.deepEqual(findLegacyNames("WCAG2Config"), []);
   assert.deepEqual(findLegacyNames("wcagConfig"), []);
   assert.deepEqual(findLegacyNames("myWCAGConfig"), []);
+});
+
+test("brand guard distinguishes dependency identifiers and checksums from product names", () => {
+  const dependency = [shortName, "width==0.2.14"].join("");
+  const checksum = ["h1:", "a".repeat(20), shortName.toUpperCase(), "9", "a".repeat(20), "="].join("");
+  assert.deepEqual(findLegacyNames(dependency), []);
+  assert.deepEqual(findLegacyNames(`example.com/module v1.2.3 ${checksum}`), []);
+  assert.ok(findLegacyNames(`name: ${shortName} ${checksum}`).length > 0);
+  assert.ok(findLegacyNames([shortName, "widthProduct"].join("")).length > 0);
 });

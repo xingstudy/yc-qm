@@ -1,0 +1,96 @@
+name: MicroVM image security
+
+on:
+  pull_request:
+    paths:
+      - aws/microvm-agent/**
+      - cli/templates/aws/microvm-agent/**
+      - .github/workflows/microvm-image.yml
+      - scripts/test-microvm-litestream.py
+      - scripts/test-microvm-awscli.py
+  push:
+    branches: [main]
+    paths:
+      - aws/microvm-agent/**
+      - cli/templates/aws/microvm-agent/**
+      - .github/workflows/microvm-image.yml
+      - scripts/test-microvm-litestream.py
+      - scripts/test-microvm-awscli.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: microvm-image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  image:
+    name: ARM64 MicroVM image
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: Prepare the AWS archive build context
+        run: |
+          python3 - <<'PY'
+          import json, os, zipfile
+          from pathlib import Path
+          source = Path("aws/microvm-agent")
+          packaged = Path("cli/templates/aws/microvm-agent")
+          manifest = json.loads((source / "build-files.json").read_text())
+          target = Path(os.environ["RUNNER_TEMP"]) / "microvm-context"
+          target.mkdir()
+          with zipfile.ZipFile(target.parent / "microvm-context.zip", "w") as archive:
+              for name in manifest:
+                  assert (source / name).read_bytes() == (packaged / name).read_bytes(), name
+                  archive.write(source / name, name)
+          with zipfile.ZipFile(target.parent / "microvm-context.zip") as archive:
+              archive.extractall(target)
+          PY
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: ${{ runner.temp }}/microvm-context
+          file: ${{ runner.temp }}/microvm-context/Dockerfile
+          platforms: linux/arm64
+          load: true
+          push: false
+          tags: qm-microvm-security:${{ github.sha }}
+          build-args: PKG_REFRESH_RUN_ID=${{ github.run_id }}
+          cache-from: type=gha,scope=qm-microvm-security
+          cache-to: type=gha,mode=max,scope=qm-microvm-security
+      - name: Scan complete MicroVM image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: qm-microvm-security:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: 1
+      - name: Check packaged tools
+        run: |
+          docker run --rm --entrypoint /bin/sh qm-microvm-security:${{ github.sha }} -c '
+            set -eu
+            node --version
+            npm --version
+            npx --version
+            aws --version
+            gh --version
+            litestream version
+            /opt/agent-venv/bin/pip check
+          '
+      - name: Verify Litestream snapshot and WAL recovery
+        run: |
+          docker run --rm --entrypoint /usr/bin/python3.12 \
+            -v "$GITHUB_WORKSPACE/scripts/test-microvm-litestream.py:/tmp/test-litestream.py:ro" \
+            qm-microvm-security:${{ github.sha }} \
+            /tmp/test-litestream.py /usr/local/bin/litestream
+      - name: Verify AWS CLI streaming S3 commands
+        run: |
+          docker run --rm --entrypoint /usr/bin/python3.12 \
+            -v "$GITHUB_WORKSPACE/scripts/test-microvm-awscli.py:/tmp/test-awscli.py:ro" \
+            qm-microvm-security:${{ github.sha }} \
+            /tmp/test-awscli.py /usr/local/bin/aws

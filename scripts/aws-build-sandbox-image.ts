@@ -41,8 +41,9 @@ async function main(): Promise<void> {
 
   const work = mkdtempSync(join(tmpdir(), "aws-microvm-image-"));
   const zipPath = join(work, "context.zip");
-  await execFileAsync("zip", ["-j", "-q", zipPath, join(AGENT_DIR, "Dockerfile"), join(AGENT_DIR, "agent.mjs")]);
-  console.log(`[build] packaged Dockerfile + agent.mjs -> ${zipPath}`);
+  const files = JSON.parse(readFileSync(join(AGENT_DIR, "build-files.json"), "utf8")) as string[];
+  await execFileAsync("zip", ["-j", "-q", zipPath, ...files.map((name) => join(AGENT_DIR, name))]);
+  console.log(`[build] packaged ${files.length} build assets -> ${zipPath}`);
 
   try {
     await s3.send(new HeadBucketCommand({ Bucket: bucket }));

@@ -108,10 +108,8 @@ function asset(name: string): Buffer {
 }
 
 export function microvmBuildArchive(): Buffer {
-  return zipFiles([
-    { name: "Dockerfile", body: asset("Dockerfile") },
-    { name: "agent.mjs", body: asset("agent.mjs") },
-  ]);
+  const files = JSON.parse(asset("build-files.json").toString("utf8")) as string[];
+  return zipFiles(files.map((name) => ({ name, body: asset(name) })));
 }
 
 function imageList(awsBin: string, region: string, name: string): ImageSummary[] {

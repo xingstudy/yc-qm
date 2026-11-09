@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inflateRawSync } from "node:zlib";
 import { buildAwsMicrovmImage, deleteAwsMicrovmImage, microvmBuildArchive } from "../src/commands/infra.ts";
 import { loadConfigAt, type QmConfig } from "../src/config.ts";
 
@@ -204,12 +205,30 @@ test("infra delete-image accepts an empty successful S3 version response", async
   });
 });
 
-test("the packaged MicroVM archive is deterministic and contains both root build files", () => {
+test("the packaged MicroVM archive is deterministic and contains every Docker COPY input", () => {
   const first = microvmBuildArchive();
   assert.deepEqual(first, microvmBuildArchive());
   assert.equal(first.readUInt32LE(0), 0x04034b50);
   assert.ok(first.includes(Buffer.from("Dockerfile")));
   assert.ok(first.includes(Buffer.from("agent.mjs")));
+  const files = new Map<string, Buffer>();
+  let offset = 0;
+  while (first.readUInt32LE(offset) === 0x04034b50) {
+    const size = first.readUInt32LE(offset + 18);
+    const nameLength = first.readUInt16LE(offset + 26);
+    const extraLength = first.readUInt16LE(offset + 28);
+    const name = first.subarray(offset + 30, offset + 30 + nameLength).toString("utf8");
+    const start = offset + 30 + nameLength + extraLength;
+    files.set(name, inflateRawSync(first.subarray(start, start + size)));
+    offset = start + size;
+  }
+  const manifest = JSON.parse(files.get("build-files.json")!.toString("utf8")) as string[];
+  assert.deepEqual([...files.keys()], manifest);
+  for (const name of manifest) {
+    assert.deepEqual(files.get(name), readFileSync(new URL(`../templates/aws/microvm-agent/${name}`, import.meta.url)));
+  }
+  const dockerfile = files.get("Dockerfile")!.toString("utf8");
+  for (const match of dockerfile.matchAll(/^COPY ([\w.-]+) /gm)) assert.ok(files.has(match[1]!));
 });
 
 for (const mode of ["create", "update"] as const) {
