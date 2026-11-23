@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 
-const piCodingAgentTarball = "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.0.1.tgz";
+const piVersion = "1.5.2";
+const piCodingAgentTarball = `https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-${piVersion}.tgz`;
 const piLicensePath = "licenses/earendil-works-pi-coding-agent.LICENSE";
 
 function installedVersion(path: string): string {
@@ -57,9 +58,17 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
   assert.notEqual(pi?.hasShrinkwrap, true);
   assert.equal(pi?.license, "MIT");
 
+  for (const name of ["pi-ai", "pi-agent-core", "pi-schema", "pi-telemetry"]) {
+    assert.deepEqual(lockedVersions(packages, `@earendil-works/${name}`), [piVersion]);
+    assert.deepEqual(lockedVersions(webUiLock.packages ?? {}, `@earendil-works/${name}`), [piVersion]);
+  }
+  for (const name of ["pi-coding-agent", "pi-codemode", "pi-mcp", "pi-tui"]) {
+    assert.deepEqual(lockedVersions(packages, `@earendil-works/${name}`), [piVersion]);
+  }
+
   assert.deepEqual(lockedVersions(packages, "brace-expansion"), ["5.0.12"]);
   assert.deepEqual(lockedVersions(packages, "fast-uri").sort(), ["3.1.9", "4.2.3"]);
-  assert.deepEqual(lockedVersions(packages, "hono"), ["4.13.14"]);
+  assert.deepEqual(lockedVersions(packages, "hono"), ["4.13.16"]);
   assert.deepEqual(lockedVersions(packages, "protobufjs"), ["7.6.5"]);
   assert.deepEqual(lockedVersions(packages, "undici"), ["8.12.3"]);
   assert.deepEqual(lockedVersions(packages, "undici8"), ["8.12.3"]);
@@ -92,12 +101,12 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
   assert.deepEqual(lockedVersions(packages, "protobufjs"), ["7.6.5"]);
   assert.deepEqual(lockedVersions(packages, "qs"), ["6.17.1"]);
   assert.deepEqual(lockedVersions(webUiLock.packages ?? {}, "qs"), ["6.17.1"]);
-  assert.deepEqual(lockedVersions(packages, "@hono/node-server"), ["2.1.5"]);
+  assert.deepEqual(lockedVersions(packages, "@hono/node-server"), ["2.1.6"]);
   assert.equal(dependencyVersion(minimatchManifest, "brace-expansion"), "5.0.12");
   assert.equal(dependencyVersion(piManifest, "undici"), "8.12.3");
   assert.equal(dependencyVersion(piManifest, "protobufjs"), "7.6.5");
-  assert.equal(installedVersion("@hono/node-server"), "2.1.5");
-  assert.equal(installedVersion("hono"), "4.13.14");
+  assert.equal(installedVersion("@hono/node-server"), "2.1.6");
+  assert.equal(installedVersion("hono"), "4.13.16");
 });
 
 test("OpenCode tool validation and Effect TOML parsing work with patched dependencies", async () => {
@@ -107,6 +116,7 @@ test("OpenCode tool validation and Effect TOML parsing work with patched depende
   assert.equal(schema.safeParse({ name: "example", count: -1 }).success, false);
 
   const pluginManifest = new URL("../node_modules/@opencode-ai/plugin/package.json", import.meta.url);
+  assert.equal(dependencyVersion(pluginManifest, "effect"), "4.0.0-beta.103");
   const effectManifest = dependencyManifest(pluginManifest, "effect");
   assert.equal(dependencyVersion(effectManifest, "toml"), "5.0.1");
   const toml = createRequire(effectManifest)("toml") as { parse: (source: string) => unknown };

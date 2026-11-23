@@ -80,7 +80,10 @@ function gatedSse(events: Array<Record<string, unknown>>, gate: Promise<void>): 
   return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
 }
 
-for (const variant of ["text", "images", "documents", "finished during preparation"]) {
+const steeredImageBase64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+for (const variant of ["text", "images", "invalid image", "documents", "finished during preparation"]) {
   const withImages = variant !== "text";
   const finishDuringPreparation = variant === "finished during preparation";
   test(`tape rows land in consumption order, including steered ${variant}`, async () => {
@@ -134,7 +137,13 @@ for (const variant of ["text", "images", "documents", "finished during preparati
           }
           return {
             text: `${text}\nFile available in inbox/photo.png`,
-            images: [{ mimeType: "image/png", dataBase64: "YWJj", artifactId: "steered-photo" }],
+            images: [
+              {
+                mimeType: "image/png",
+                dataBase64: variant === "invalid image" ? "YWJj" : steeredImageBase64,
+                artifactId: "steered-photo",
+              },
+            ],
             ...(variant === "documents"
               ? { documents: [{ name: "steered.pdf", mimeType: "application/pdf", dataBase64: documentBase64 }] }
               : {}),
@@ -195,14 +204,12 @@ for (const variant of ["text", "images", "documents", "finished during preparati
       assert.equal(messageRows[2]!.meta?.ts, "1712.001", "the steer row is stamped with its arrival ts");
       if (withImages) {
         const content = (messageRows[2]!.payload as { content: Array<Record<string, unknown>> }).content;
-        assert.deepEqual(
-          content.find((block) => block.type === "image"),
-          {
-            type: "image",
-            mimeType: "image/png",
-            artifactRef: "steered-photo",
-          },
-        );
+        const image = content.find((block) => block.type === "image");
+        if (variant === "invalid image") {
+          assert.equal(image, undefined);
+        } else {
+          assert.deepEqual(image, { type: "image", mimeType: "image/png", artifactRef: "steered-photo" });
+        }
       }
       if (variant === "documents") {
         assert.ok(!JSON.stringify(requestMessages[0]).includes(documentBase64));

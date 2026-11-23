@@ -55,7 +55,7 @@ for (const ending of ["Reconstruct the migration hash from the test files.", "wh
         assert.match(prompt.slice(end), /Create a structured context checkpoint summary/);
         assert.match(prompt.slice(end), /## Constraints & Preferences/);
         assert.match(prompt, /user#136/);
-        assert.equal(options?.maxTokens, 8000);
+        assert.equal(options?.maxTokens, undefined);
         assert.equal(options?.cacheRetention, "none");
         return response();
       },

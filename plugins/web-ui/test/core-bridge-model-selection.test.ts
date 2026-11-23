@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import type { Agent } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import { normalizeContext, type Api, type Model } from "@earendil-works/pi-ai";
 import { makeCoreStreamFn, queueTurn } from "../src/core-bridge.ts";
 
 const realFetch = globalThis.fetch;
@@ -28,7 +28,7 @@ for (const mode of ["send", "queue"] as const) {
         "web:tester:model-selection",
         agent,
         () => selected,
-      )(model, { messages: [] });
+      )(model, normalizeContext({ messages: [] }));
       await stream.result();
     }
     assert.equal(requests.length, 1);

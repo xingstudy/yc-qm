@@ -1229,18 +1229,24 @@ export async function buildModelRuntime(
         if (!body || typeof body !== "object" || Array.isArray(body)) {
           throw new Error("model request payload must be an object");
         }
-        if (
-          (model.api === "openai-codex-responses" || model.api === "openai-responses") &&
-          "tools" in body &&
-          Array.isArray(body.tools)
-        ) {
+        if (model.api === "openai-codex-responses" || model.api === "openai-responses") {
           const nonStrictTools = new Set(
             (context.tools ?? getCurrentTools(context.messages))
               .filter((tool) => tool.constrainedSampling === false)
               .map((tool) => tool.name),
           );
-          for (const tool of body.tools) {
-            if (tool?.type === "function" && nonStrictTools.has(tool.name) && tool.strict == null) tool.strict = false;
+          const toolLists = [
+            "tools" in body ? body.tools : undefined,
+            ...("input" in body && Array.isArray(body.input)
+              ? body.input.filter((item) => item?.type === "additional_tools").map((item) => item.tools)
+              : []),
+          ];
+          for (const tools of toolLists) {
+            if (!Array.isArray(tools)) continue;
+            for (const tool of tools) {
+              if (tool?.type === "function" && nonStrictTools.has(tool.name) && tool.strict == null)
+                tool.strict = false;
+            }
           }
         }
         return { ...body, model: await target() };
@@ -1920,7 +1926,9 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             message: unknown,
           ): { meta: TapeMeta; images?: HarnessTurnInput["images"] } | undefined => {
             const text = textFromContent((message as { content?: unknown }).content);
-            const at = pendingSteerTapeMeta.findIndex((p) => p.text === text);
+            const at = pendingSteerTapeMeta.findIndex(
+              (p) => p.text === text || (p.images?.length && text.startsWith(`${p.text}\n\n[Image `)),
+            );
             if (at < 0) return undefined;
             const [steer] = pendingSteerTapeMeta.splice(at, 1);
             return {

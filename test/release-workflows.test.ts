@@ -60,6 +60,7 @@ test("production image releases refresh OS packages on every run", () => {
     "deploy/portal/Dockerfile",
     "deploy/auth/Dockerfile",
     "deploy/edge/Dockerfile",
+    "deploy/egress-proxy/Dockerfile",
     "fly/Dockerfile",
   ]) {
     const dockerfile = readFileSync(path, "utf8");

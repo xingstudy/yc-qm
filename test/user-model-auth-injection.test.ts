@@ -239,7 +239,19 @@ test("individual OAuth routing preserves exact supported runtime selections", ()
     "claude-sonnet-5",
   );
   assert.equal(resolveIndividualAuthRouting(null, oauth("openai"), "gpt-6-astra", "codex")?.model, "gpt-6-astra");
-  assert.equal(resolveIndividualAuthRouting(null, oauth("openai"), "codex/gpt-5.5", "pi")?.model, "codex/gpt-5.5");
-  assert.equal(resolveIndividualAuthRouting(null, oauth("openai"), "codex/gpt-5.5", "codex")?.model, "gpt-5.5");
-  assert.equal(resolveIndividualAuthRouting(null, apikey("openai", "test"), "codex/gpt-5.5", "pi"), null);
+  assert.equal(
+    resolveIndividualAuthRouting(null, oauth("openai"), "codex/gpt-5.6-terra", "pi")?.model,
+    "codex/gpt-5.6-terra",
+  );
+  assert.equal(
+    resolveIndividualAuthRouting(null, oauth("openai"), "codex/gpt-5.6-terra", "codex")?.model,
+    "gpt-5.6-terra",
+  );
+  assert.equal(resolveIndividualAuthRouting(null, apikey("openai", "test"), "codex/gpt-5.6-terra", "pi"), null);
+});
+
+test("Pi OAuth routing rejects models missing from the ChatGPT subscription catalog", () => {
+  assert.equal(resolveIndividualAuthRouting(null, oauth("openai"), "codex/gpt-5.5", "pi"), null);
+  assert.equal(resolveIndividualAuthRouting(null, oauth("openai"), "gpt-5.5", "pi"), null);
+  assert.equal(resolveIndividualAuthRouting(null, apikey("openai", "test"), "gpt-5.5", "pi")?.model, "gpt-5.5");
 });

@@ -7,7 +7,15 @@ import { postCallText, postResultOk } from "./surface-post.ts";
 import type { ModelMetadata } from "./pi-models.ts";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { Attachment } from "@earendil-works/pi-web-ui";
-import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Usage } from "@earendil-works/pi-ai";
+import type {
+  Api,
+  AssistantMessage,
+  AssistantMessageEventStream,
+  Context,
+  Message,
+  Model,
+  Usage,
+} from "@earendil-works/pi-ai";
 import type { Agent, AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import { errMessage, swallow } from "../../chassis/src/errors.ts";
 import { projectOptionName, projectScopeName } from "../../chassis/src/project-label.js";
@@ -596,13 +604,13 @@ function zeroUsage(): Usage {
   };
 }
 
-function baseAssistant(model: Model<Api>): AssistantMessage {
+function baseAssistant(model?: Model<Api>): AssistantMessage {
   return {
     role: "assistant",
     content: [{ type: "text", text: "" }],
-    api: model.api,
-    provider: model.provider,
-    model: model.id,
+    api: model?.api ?? "unknown",
+    provider: model?.provider ?? "unknown",
+    model: model?.id ?? "unknown",
     usage: zeroUsage(),
     stopReason: "stop",
     timestamp: Date.now(),
@@ -971,13 +979,13 @@ export async function resolveApproval(decision: ApprovalDecision): Promise<strin
 }
 
 export async function runApprovalTurn(
-  agent: Agent,
+  model: Model<Api> | undefined,
   decision: ApprovalDecision,
   onWork: WorkObserver | undefined,
   slot?: RunSlot,
 ): Promise<void> {
   const stream = createAssistantMessageEventStream();
-  await driveApproval(stream, agent.state.model, decision, onWork, slot);
+  await driveApproval(stream, model, decision, onWork, slot);
   const outcome = await stream.result();
   if (outcome.stopReason === "error") throw new Error(outcome.errorMessage || "Could not send the approval.");
 }
@@ -988,7 +996,7 @@ const APPROVAL_NOT_APPLIED_MESSAGE =
 
 async function driveApproval(
   stream: AssistantMessageEventStream,
-  model: Model<Api>,
+  model: Model<Api> | undefined,
   decision: ApprovalDecision,
   onWork?: WorkObserver,
   slot?: RunSlot,
@@ -1090,6 +1098,25 @@ function turnRequestBody(
     ...(attachments.length ? { attachments } : {}),
     ...(idempotencyKey ? { idempotencyKey } : {}),
   };
+}
+
+export function messagesForModel(messages: AgentMessage[]): Message[] {
+  return messages.flatMap((message): Message[] => {
+    if (message.role === "user-with-attachments") {
+      const content =
+        typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : [...message.content];
+      for (const attachment of message.attachments ?? []) {
+        if (attachment.type === "image") {
+          content.push({ type: "image", data: attachment.content, mimeType: attachment.mimeType });
+        } else if (attachment.extractedText) {
+          content.push({ type: "text", text: `\n\n[Document: ${attachment.fileName}]\n${attachment.extractedText}` });
+        }
+      }
+      return [{ role: "user", content, timestamp: message.timestamp }];
+    }
+    if (message.role === "user" || message.role === "assistant" || message.role === "toolResult") return [message];
+    return [];
+  });
 }
 
 interface SendKeyed {

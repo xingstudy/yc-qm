@@ -32,7 +32,7 @@ export async function summarizeHistory(
   const text = await generateSummary(
     [{ role: "user", content: compactTranscript(messages), timestamp: messages.at(-1)?.createdAt ?? 0 }],
     model,
-    10_000,
+    undefined,
     undefined,
     undefined,
     undefined,
