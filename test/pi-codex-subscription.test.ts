@@ -66,8 +66,12 @@ test("codex subscription requests reach chatgpt.com with the bare model id on bo
     globalThis.fetch = originalFetch;
   });
   for (const method of ["stream", "streamSimple"] as const) {
+    type WireTool = { strict?: boolean | null; parameters: unknown };
     let request:
-      | { url: string; body: { model?: string; tools: Array<{ strict?: boolean | null; parameters: unknown }> } }
+      | {
+          url: string;
+          body: { model?: string; tools?: WireTool[]; input?: Array<{ type?: string; tools?: WireTool[] }> };
+        }
       | undefined;
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const encoded = new Headers(init?.headers).get("content-encoding") === "zstd";
@@ -96,10 +100,12 @@ test("codex subscription requests reach chatgpt.com with the bare model id on bo
     assert.ok(request, `${method} must reach the provider request: ${response.errorMessage ?? "no error"}`);
     assert.match(request.url, /^https:\/\/chatgpt\.com\/backend-api\//);
     assert.equal(request.body.model, "gpt-5.6-sol", `${method} must send the provider's own model id`);
-    assert.equal(request.body.tools[0]!.strict, false, "optional fields must remain optional at the provider");
-    assert.deepEqual(request.body.tools[0]!.parameters, parameters);
-    assert.equal(request.body.tools[1]!.strict, true, "explicit strict sampling must be preserved");
-    assert.equal(request.body.tools[2]!.strict, null, "other tools must keep the provider's original settings");
+    const tools = request.body.tools ?? request.body.input?.find((item) => item.type === "additional_tools")?.tools;
+    assert.ok(tools, `${method} must send its tool declarations`);
+    assert.equal(tools[0]!.strict, false, "optional fields must remain optional at the provider");
+    assert.deepEqual(tools[0]!.parameters, parameters);
+    assert.equal(tools[1]!.strict, true, "explicit strict sampling must be preserved");
+    assert.equal(tools[2]!.strict, null, "other tools must keep the provider's original settings");
     assert.equal(response.model, "codex/gpt-5.6-sol", `${method} keeps QM's namespaced id on the assistant message`);
   }
 });

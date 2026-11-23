@@ -3,7 +3,7 @@ import { metadata } from "./model-metadata.ts";
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import type { Agent } from "@earendil-works/pi-agent-core";
-import type { Context } from "@earendil-works/pi-ai";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import { makeOpenerStreamFn } from "../src/core-bridge.ts";
 import { getModelOptions } from "../src/model-options.ts";
 
@@ -39,7 +39,7 @@ test("a web turn submits the fetched OpenRouter model selected by runtime config
     agent,
     () => ({ harness: "pi" }),
     undefined,
-  )(model, {} as Context);
+  )(model, normalizeContext({ messages: [] }));
   await stream.result();
   assert.equal(submitted[0]?.model, "anthropic/claude-sonnet-4.5");
   assert.equal(submitted[0]?.harness, "pi");

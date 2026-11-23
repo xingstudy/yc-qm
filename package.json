@@ -71,8 +71,8 @@
     "@aws-sdk/client-secrets-manager": "^3.1089.0",
     "@aws-sdk/client-sts": "^3.1075.0",
     "@aws-sdk/credential-provider-node": "^3.972.70",
-    "@earendil-works/pi-ai": "1.0.1",
-    "@earendil-works/pi-coding-agent": "1.0.1",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-coding-agent": "1.5.2",
     "@fly/sprites": "0.0.1",
     "@larksuiteoapi/node-sdk": "^1.73.0",
     "@openai/codex": "0.144.5",
@@ -112,16 +112,15 @@
     "e2b": "^2.39.0"
   },
   "overrides": {
-    "@earendil-works/chord": "1.0.1",
-    "@earendil-works/pi-agent-core": "1.0.1",
+    "@earendil-works/pi-agent-core": "1.5.2",
     "@earendil-works/pi-ai": "$@earendil-works/pi-ai",
-    "@earendil-works/pi-codemode": "1.0.1",
-    "@earendil-works/pi-mcp": "1.0.1",
-    "@earendil-works/pi-tui": "1.0.1",
+    "@earendil-works/pi-codemode": "1.5.2",
+    "@earendil-works/pi-mcp": "1.5.2",
+    "@earendil-works/pi-tui": "1.5.2",
     "@grpc/grpc-js": "1.14.5",
     "@modelcontextprotocol/sdk": "$@modelcontextprotocol/sdk",
-    "@hono/node-server": "2.1.5",
-    "hono": "4.13.14",
+    "@hono/node-server": "2.1.6",
+    "hono": "4.13.16",
     "@fastify/ajv-compiler": {
       "fast-uri": "3.1.9"
     },
@@ -145,6 +144,7 @@
     "undici8": "npm:undici@8.12.3",
     "zod": "$zod",
     "effect": {
+      ".": "4.0.0-beta.103",
       "toml": "5.0.1"
     }
   },

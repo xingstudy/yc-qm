@@ -3,7 +3,7 @@ import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
 import { makeRunResumeStreamFn, createRunSlot, requestStop, type AssistantWork } from "../src/core-bridge.ts";
-import type { Api, Model, Context } from "@earendil-works/pi-ai";
+import { normalizeContext, type Api, type Model } from "@earendil-works/pi-ai";
 
 const fetch = globalThis.fetch;
 afterEach(() => {
@@ -34,7 +34,7 @@ test("stop before run discovery follows the run until server confirmation", asyn
     },
     slot,
   );
-  const stream = await fn(model, {} as Context, {});
+  const stream = await fn(model, normalizeContext({ messages: [] }), {});
   let settled = false;
   const result = stream.result().then((value) => {
     settled = true;
@@ -73,7 +73,7 @@ for (const status of [404, 409, 500]) {
       },
       slot,
     );
-    const stream = await fn(model, {} as Context, {});
+    const stream = await fn(model, normalizeContext({ messages: [] }), {});
     const final = await stream.result();
     assert.equal(final.stopReason, "stop");
     assert.deepEqual(errors, status === 500 ? ["Could not request stop. Try again."] : []);
@@ -102,7 +102,7 @@ test("a stalled stop acknowledgment cannot delay confirmation or report a late e
     },
     slot,
   );
-  const stream = await fn(model, {} as Context, {});
+  const stream = await fn(model, normalizeContext({ messages: [] }), {});
   const result = stream.result();
   const first = await Promise.race([result, sleep(100).then(() => null)]);
   signalReply.reject(new TypeError("late transport failure"));
@@ -123,7 +123,7 @@ test("the authoritative final answer replaces longer accumulated commentary", as
       { seq: 2, type: "text", payload: { text: "I will check this carefully." }, createdAt: 2 },
     ],
   });
-  const stream = await fn(model, {} as Context, {});
+  const stream = await fn(model, normalizeContext({ messages: [] }), {});
   const final = (await stream.result()) as AssistantWork;
   assert.deepEqual(final.content, [{ type: "text", text: "OK" }]);
   assert.equal(final.work?.activity.length, 2);
@@ -136,7 +136,7 @@ test("a failure after commentary preserves only unfinished text outside its work
     result: { status: "failed", reason: "provider failed" },
     activity: [{ seq: 1, type: "text", payload: { text: "Checking.", phase: "commentary" }, createdAt: 1 }],
   });
-  const stream = await fn(model, {} as Context, {});
+  const stream = await fn(model, normalizeContext({ messages: [] }), {});
   const final = (await stream.result()) as AssistantWork;
   assert.equal(final.stopReason, "error");
   const text = final.content[0];
@@ -151,6 +151,6 @@ test("resume carries already visible text as its streaming animation baseline", 
     undefined,
     "Existing",
   );
-  const stream = await fn(model, {} as Context, {});
+  const stream = await fn(model, normalizeContext({ messages: [] }), {});
   assert.equal(((await stream.result()) as AssistantWork).streamingBaseline, "Existing reply");
 });

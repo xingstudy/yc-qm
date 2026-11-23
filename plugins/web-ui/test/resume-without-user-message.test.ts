@@ -102,7 +102,7 @@ test("the anchor is never drawn", () => {
 
 test("neither attach path refuses a live run over the shape of the loaded transcript", () => {
   const resume = chat.slice(chat.indexOf("async function resumeTrackedRun"));
-  const body = resume.slice(0, resume.indexOf("agent.streamFn = makeRunResumeStreamFn"));
+  const body = resume.slice(0, resume.indexOf("agent.streamFunction = makeRunResumeStreamFn"));
   assert.doesNotMatch(body, /if \(!msgs\.length\) return false;/, "resume no longer bails on an anchorless window");
   assert.doesNotMatch(body, /if \(!agent\.state\.messages\.length\) return false;/, "nor on an empty one");
   assert.match(
@@ -111,7 +111,7 @@ test("neither attach path refuses a live run over the shape of the loaded transc
   );
 
   const follow = chat.slice(chat.indexOf("async function followNextQueuedRun"));
-  const followBody = follow.slice(0, follow.indexOf("agent.streamFn = makeRunResumeStreamFn"));
+  const followBody = follow.slice(0, follow.indexOf("agent.streamFunction = makeRunResumeStreamFn"));
   assert.doesNotMatch(followBody, /if \(!recorded && !next\) return drawActiveChat/, "following no longer bails");
   assert.match(followBody, /agent\.state\.messages = \[\.\.\.agent\.state\.messages, resumeAnchor\(\)\];/);
 });
@@ -122,7 +122,7 @@ test("a run whose reply already landed is not something to attach to", () => {
   assert.equal(runIsTerminal({ status: "running", result: null }), false);
 
   const follow = chat.slice(chat.indexOf("async function followNextQueuedRun"));
-  const followBody = follow.slice(0, follow.indexOf("agent.streamFn = makeRunResumeStreamFn"));
+  const followBody = follow.slice(0, follow.indexOf("agent.streamFunction = makeRunResumeStreamFn"));
   assert.match(
     followBody,
     /if \(!active\.runId \|\| !active\.run \|\| runIsTerminal\(active\.run\)\) return drawActiveChat\(agent\);/,

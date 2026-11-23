@@ -5,18 +5,38 @@ import {
   continuableMessages,
   makeCoreStreamFn,
   makeRunResumeStreamFn,
+  messagesForModel,
   messagesWithStreaming,
   resumeAnchor,
   RUN_IDLE_MS,
   setClock,
   userSendMessage,
 } from "../src/core-bridge.ts";
-import type { Api, Context, Model } from "@earendil-works/pi-ai";
+import { normalizeContext, type Api, type Model } from "@earendil-works/pi-ai";
 
 const model = { id: "m", api: "anthropic", provider: "anthropic" } as unknown as Model<Api>;
 const flush = async () => {
   for (let i = 0; i < 100; i++) await Promise.resolve();
 };
+
+test("model context keeps image and extracted document content and filters UI artifacts", () => {
+  const input = userSendMessage("Inspect these files", [
+    { type: "image", fileName: "figure.png", mimeType: "image/png", content: "aW1hZ2U=" },
+    { type: "document", fileName: "notes.txt", extractedText: "Project notes" },
+  ]);
+  const artifact = { role: "artifact", action: "create", filename: "report.html", timestamp: "2026-11-23" } as const;
+  assert.deepEqual(messagesForModel([input, artifact]), [
+    {
+      role: "user",
+      timestamp: input.timestamp,
+      content: [
+        { type: "text", text: "Inspect these files" },
+        { type: "image", mimeType: "image/png", data: "aW1hZ2U=" },
+        { type: "text", text: "\n\n[Document: notes.txt]\nProject notes" },
+      ],
+    },
+  ]);
+});
 
 for (const withAttachments of [false, true]) {
   test(`a timed-out send reconnects to its original input${withAttachments ? " with attachments" : ""}`, async (t) => {
@@ -27,7 +47,11 @@ for (const withAttachments of [false, true]) {
       ? [{ id: "notes", type: "document", fileName: "notes.txt", mimeType: "text/plain", size: 5, content: "bm90ZXM=" }]
       : undefined;
     const input = userSendMessage("Check my document", attachments);
-    const agent = new Agent({ initialState: { model, messages: [input] } });
+    const agent: Agent = new Agent({
+      initialState: { model, messages: [input] },
+      convertToLlm: messagesForModel,
+      streamFn: (...args) => makeCoreStreamFn("web:u:reconnect", agent)(...args),
+    });
     t.mock.method(globalThis, "fetch", async (url: unknown) => {
       if (String(url).includes("/api/blobs")) return Response.json({ blobId: "notes-blob", sizeBytes: 5 });
       if (String(url).endsWith("/api/turn")) return Response.json({ status: "queued", runId: "r" });
@@ -35,7 +59,6 @@ for (const withAttachments of [false, true]) {
       time = RUN_IDLE_MS + 1;
       return Response.json({ status: "running", result: null });
     });
-    agent.streamFn = makeCoreStreamFn("web:u:reconnect", agent);
     await agent.continue();
     const failed = agent.state.messages.at(-1);
     assert.equal((failed as { stopReason?: string }).stopReason, "error");
@@ -49,7 +72,7 @@ for (const withAttachments of [false, true]) {
     assert.deepEqual(resumed.popped, [failed]);
     assert.deepEqual((resumed.messages[0] as unknown as { attachments?: unknown[] }).attachments, attachments);
     agent.state.messages = resumed.messages;
-    agent.streamFn = makeRunResumeStreamFn("r", { status: "done", result: { status: "ok", reply: "Done" } });
+    agent.streamFunction = makeRunResumeStreamFn("r", { status: "done", result: { status: "ok", reply: "Done" } });
     await agent.continue();
     assert.equal(agent.state.messages.length, 2);
     assert.equal(agent.state.messages[0], input);
@@ -112,7 +135,7 @@ for (const heartbeat of [false, true]) {
   test(`a silent stream falls back to polling${heartbeat ? " after its last heartbeat" : ""}`, async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const state = streamingFetch(t);
-    const stream = await makeRunResumeStreamFn("r")(model, {} as Context, {});
+    const stream = await makeRunResumeStreamFn("r")(model, normalizeContext({ messages: [] }), {});
     await flush();
     if (heartbeat) {
       t.mock.timers.tick(20_000);
@@ -149,7 +172,7 @@ test("a stalled poll times out and retries without losing the run", async (t) =>
       requestSignal?.addEventListener("abort", () => reject(requestSignal?.reason)),
     );
   });
-  const stream = await makeRunResumeStreamFn("r")(model, {} as Context, {});
+  const stream = await makeRunResumeStreamFn("r")(model, normalizeContext({ messages: [] }), {});
   await flush();
   assert.ok(requestSignal);
   timeout.abort(new DOMException("timed out", "TimeoutError"));
@@ -165,7 +188,9 @@ for (const terminal of [true, false]) {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const state = streamingFetch(t);
     const controller = new AbortController();
-    const stream = await makeRunResumeStreamFn("r")(model, {} as Context, { signal: controller.signal });
+    const stream = await makeRunResumeStreamFn("r")(model, normalizeContext({ messages: [] }), {
+      signal: controller.signal,
+    });
     await flush();
     if (terminal)
       state.send({ type: "CUSTOM", name: "run", value: { status: "done", result: { status: "ok", reply: "done" } } });
@@ -180,7 +205,7 @@ for (const terminal of [true, false]) {
 
 test("TanStack assembles snapshot hydration and overlapping Unicode deltas exactly once", async (t) => {
   const state = streamingFetch(t);
-  const stream = await makeRunResumeStreamFn("r")(model, {} as Context, {});
+  const stream = await makeRunResumeStreamFn("r")(model, normalizeContext({ messages: [] }), {});
   await flush();
   state.send({ type: "CUSTOM", name: "run", value: { status: "running", result: null, partial: "hello " } });
   state.send({ type: "CUSTOM", name: "delta", value: { offset: 6, delta: "🌍" } });
@@ -195,7 +220,7 @@ test("TanStack assembles snapshot hydration and overlapping Unicode deltas exact
 
 test("TanStack reconnects after a transport drop and deduplicates replayed offsets", async (t) => {
   const state = streamingFetch(t);
-  const stream = await makeRunResumeStreamFn("r")(model, {} as Context, {});
+  const stream = await makeRunResumeStreamFn("r")(model, normalizeContext({ messages: [] }), {});
   await flush();
   state.send({ type: "CUSTOM", name: "delta", value: { offset: 0, delta: "hello" } }, "text:5");
   await flush();
@@ -211,7 +236,7 @@ test("TanStack reconnects after a transport drop and deduplicates replayed offse
 
 test("reply completion waits for final result metadata rather than dropping approvals", async (t) => {
   const state = streamingFetch(t);
-  const stream = await makeRunResumeStreamFn("r")(model, {} as Context, {});
+  const stream = await makeRunResumeStreamFn("r")(model, normalizeContext({ messages: [] }), {});
   await flush();
   state.send({
     type: "CUSTOM",
@@ -242,10 +267,12 @@ test("reply completion waits for final result metadata rather than dropping appr
 
 test("approval activity reaches the visible transcript before any response text", async (t) => {
   const transport = streamingFetch(t);
-  const agent = new Agent({ initialState: { model, messages: [resumeAnchor()] } });
   let projected: ReturnType<typeof messagesWithStreaming> = [];
-  agent.streamFn = makeRunResumeStreamFn("r", undefined, () => {
-    projected = messagesWithStreaming(agent.state.messages, agent.state.streamingMessage);
+  const agent: Agent = new Agent({
+    initialState: { model, messages: [resumeAnchor()] },
+    streamFn: makeRunResumeStreamFn("r", undefined, () => {
+      projected = messagesWithStreaming(agent.state.messages, agent.state.streamingMessage);
+    }),
   });
   const completion = agent.continue();
   await flush();
