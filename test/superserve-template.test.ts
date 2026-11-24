@@ -65,6 +65,14 @@ test("agent template defaults to 8 vCPUs, 16 GiB memory, and 32 GiB disk", async
   assert.equal(creates[0]!.body.memory_mib, 16384);
 });
 
+test("agent template installs the patched Claude Code release", async (t) => {
+  const b = await builder(t);
+  await b.run();
+  const create = b.requests.find((r) => r.method === "POST");
+  assert.ok(create);
+  assert.match(JSON.stringify(create.body), /@anthropic-ai\/claude-code@2\.1\.251\b/);
+});
+
 for (const { flag, field, values } of [
   { flag: "vcpu", field: "vcpu", values: [2, 16] },
   { flag: "memory-mib", field: "memory_mib", values: [2048, 32768] },

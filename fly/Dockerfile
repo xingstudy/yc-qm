@@ -16,7 +16,7 @@ RUN GOPROXY="$GOPROXY" go mod download "github.com/cli/cli/v2@v${GH_VERSION}" \
 FROM node:24-trixie-slim@sha256:0711b541c1c33a8a530ac4f0d391baa9a15b3d804695b1b24a47daa5fb60e74d AS node-runtime
 
 RUN npm install -g --allow-scripts=@anthropic-ai/claude-code \
-      @anthropic-ai/claude-code@2.1.232 \
+      @anthropic-ai/claude-code@2.1.251 \
       @openai/codex@0.147.0 \
       npm@12.0.2 \
   && npm install --prefix /tmp/npm-fixes --ignore-scripts --omit=dev \
@@ -127,10 +127,10 @@ RUN if [ "$INSTALL_BROWSER_ENGINE" = "1" ]; then \
       echo "$BROWSER_HARNESS_SHA  /tmp/browser-harness.tgz" | sha256sum -c -; \
       tar xzf /tmp/browser-harness.tgz -C /tmp; \
       sed -i \
-        -e 's/version = "0.13.7"/version = "0.13.7+qm.1"/' \
+        -e 's/version = "0.13.7"/version = "0.13.7+qm.2"/' \
         -e 's/aiohttp==3.13.4/aiohttp==3.14.4/' \
         -e 's/anyio==4.12.1/anyio==4.14.2/g' \
-        -e 's/mcp==1.26.0/mcp==1.28.1/' \
+        -e 's/mcp==1.26.0/mcp==1.30.0/' \
         -e 's/pillow==12.2.0/pillow==13.0.0/' \
         -e 's/pypdf==6.10.2/pypdf==6.21.4/' \
         -e 's/browser-harness==0.1.8/browser-harness==0.1.8+qm.1/' \
@@ -147,7 +147,7 @@ RUN if [ "$INSTALL_BROWSER_ENGINE" = "1" ]; then \
       /opt/browser-engine/venv/bin/pip check; \
       /opt/browser-engine/venv/bin/python -c "import browser_use; print('browser-use ok')"; \
       /opt/browser-engine/venv/bin/pip uninstall -y setuptools pip; \
-      /opt/browser-engine/venv/bin/python -c "import browser_use, importlib.metadata, msgpack; assert importlib.metadata.version('aiohttp') == '3.14.4'; assert importlib.metadata.version('anyio') == '4.14.2'; assert importlib.metadata.version('pypdf') == '6.21.4'; assert importlib.metadata.version('pillow') == '13.0.0'; print('browser runtime ok')"; \
+      /opt/browser-engine/venv/bin/python -c "import browser_use, importlib.metadata, mcp, msgpack; assert importlib.metadata.version('aiohttp') == '3.14.4'; assert importlib.metadata.version('anyio') == '4.14.2'; assert importlib.metadata.version('mcp') == '1.30.0'; assert importlib.metadata.version('pypdf') == '6.21.4'; assert importlib.metadata.version('pillow') == '13.0.0'; print('browser runtime ok')"; \
       /usr/bin/chromium --version; \
       /usr/bin/chromium --headless --no-sandbox --disable-gpu --dump-dom 'data:text/html,<p>browser-ok</p>' | grep browser-ok; \
       rm -rf \
